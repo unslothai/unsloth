@@ -12,33 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-import os
-
-# Currently only supports 1 GPU, or else seg faults will occur.
-reload_package = False
-n_gpus = torch.cuda.device_count()
-if n_gpus == 0:
-	raise RuntimeError("Unsloth: Requires at least 1 GPU. Found 0.")
-elif n_gpus > 1:
-	if "CUDA_VISIBLE_DEVICES" in os.environ:
-		device = os.environ["CUDA_VISIBLE_DEVICES"]
-		if not device.isdigit():
-			print(f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {device} "\
-				   "but we require 'CUDA_VISIBLE_DEVICES=0'\n"\
-				   "We shall set it ourselves.")
-			os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-			reload_package = True
-	else:
-		print("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
-		os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-		reload_package = True
-pass
-
-# Reload Pytorch with CUDA_VISIBLE_DEVICES
-if reload_package:
-	import importlib
-	importlib.reload(torch)
-pass
-
 from .llama import FastLlamaModel
