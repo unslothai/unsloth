@@ -1,5 +1,6 @@
-# Unsloth
-### 2x faster 50% less memory LLM finetuning on a single GPU.
+<img src="./images/unsloth logo only.png" width="300" />
+
+## 2x faster 50% less memory LLM finetuning
 * Manual autograd engine.
 * All kernels written in OpenAI's Triton language.
 * 0% loss in accuracy.
@@ -87,3 +88,5 @@ Change `cu121` to `cu118` for CUDA version 11.8 or 12.1. Go to https://pytorch.o
 !ldconfig /usr/lib64-nvidia
 ```
 2. Windows is not supported as of yet - we rely on Xformers and Triton support, so until both packages support Windows officially, Unsloth will then support Windows.
+
+<img src="./images/unsloth loading page render.png" width="300" />
