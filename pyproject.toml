@@ -25,6 +25,12 @@ classifiers = [
 [tool.setuptools.dynamic]
 version = {attr = "unsloth.__version__"}
 
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+exclude = ["images*"]
+
 [project.optional-dependencies]
 huggingface = [
 	"transformers",
