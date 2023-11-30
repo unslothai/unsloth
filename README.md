@@ -13,6 +13,7 @@
 
 1. Try our Colab examples for [the Alpaca 52K dataset](https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing) or [the Slim Orca 518K dataset](https://colab.research.google.com/drive/1VNqLARpE8N8eYwNrUSDoHVjtbR9W0_c7?usp=sharing).
 2. Try our Kaggle example for [the LAION OIG Chip2 dataset](https://www.kaggle.com/danielhanchen/unsloth-laion-chip2-kaggle)
+3. Join our [Discord](https://discord.gg/nsS4V5Z6ge)!
 
 # Installation Instructions
 Unsloth currently only supports Linux distros and Pytorch >= 2.1.
