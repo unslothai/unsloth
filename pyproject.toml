@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unsloth"
-dynamic = ["version", "dependencies"]
+dynamic = ["version", "dependencies", "optional-dependencies"]
 description = "2X faster LLM finetuning"
 readme = "README.md"
 requires-python = ">=3.9"
