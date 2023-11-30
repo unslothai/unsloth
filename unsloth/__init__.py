@@ -44,16 +44,9 @@ elif n_gpus > 1:
                  "We shall set it ourselves."
             )
             os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-            reload_package = True
     else:
         warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        reload_package = True
-pass
-
-# Reload Pytorch with CUDA_VISIBLE_DEVICES
-if reload_package:
-    importlib.reload(torch)
 pass
 
 # Try loading bitsandbytes and triton
