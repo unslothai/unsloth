@@ -43,9 +43,18 @@ elif n_gpus > 1:
                  "but we require 'CUDA_VISIBLE_DEVICES=0'\n"\
                  "We shall set it ourselves."
             )
+            os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
             os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        elif "CUDA_DEVICE_ORDER" not in os.environ:
+            warnings.warn(
+                f"Unsloth: 'CUDA_DEVICE_ORDER' is not set "\
+                 "but we require 'CUDA_DEVICE_ORDER=PCI_BUS_ID'\n"\
+                 "We shall set it ourselves."
+            )
+            os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     else:
         warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 pass
 
