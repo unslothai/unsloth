@@ -16,6 +16,30 @@ import os
 import warnings
 import importlib
 
+# Currently only supports 1 GPU, or else seg faults will occur.
+if "CUDA_VISIBLE_DEVICES" in os.environ:
+    device = os.environ["CUDA_VISIBLE_DEVICES"]
+    if not device.isdigit():
+        warnings.warn(
+            f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {device} "\
+             "but we require 'CUDA_VISIBLE_DEVICES=0'\n"\
+             "We shall set it ourselves."
+        )
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    elif "CUDA_DEVICE_ORDER" not in os.environ:
+        warnings.warn(
+            f"Unsloth: 'CUDA_DEVICE_ORDER' is not set "\
+             "but we require 'CUDA_DEVICE_ORDER=PCI_BUS_ID'\n"\
+             "We shall set it ourselves."
+        )
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+else:
+    warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+pass
+
 try:
     import torch
 except:
@@ -29,34 +53,6 @@ if (major_torch != 2) or (major_torch == 2 and minor_torch < 1):
     raise ImportError("Unsloth only supports Pytorch 2.1 for now. Please update your Pytorch to 2.1.\n"\
                       "We have some installation instructions on our Github page.")
 
-# Currently only supports 1 GPU, or else seg faults will occur.
-reload_package = False
-n_gpus = torch.cuda.device_count()
-if n_gpus == 0:
-    raise RuntimeError("Unsloth: Requires at least 1 GPU. Found 0.")
-elif n_gpus > 1:
-    if "CUDA_VISIBLE_DEVICES" in os.environ:
-        device = os.environ["CUDA_VISIBLE_DEVICES"]
-        if not device.isdigit():
-            warnings.warn(
-                f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {device} "\
-                 "but we require 'CUDA_VISIBLE_DEVICES=0'\n"\
-                 "We shall set it ourselves."
-            )
-            os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        elif "CUDA_DEVICE_ORDER" not in os.environ:
-            warnings.warn(
-                f"Unsloth: 'CUDA_DEVICE_ORDER' is not set "\
-                 "but we require 'CUDA_DEVICE_ORDER=PCI_BUS_ID'\n"\
-                 "We shall set it ourselves."
-            )
-            os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    else:
-        warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-pass
 
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb
