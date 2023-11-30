@@ -56,7 +56,6 @@ cu121 = [
 ]
 kaggle = [
 	"unsloth[huggingface]",
-	"unsloth[cu118only]",
 ]
 colab = [
 	"unsloth[cu118]",
