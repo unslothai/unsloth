@@ -52,4 +52,11 @@ if reload_package:
 	importlib.reload(torch)
 pass
 
+# Try loading bitsandbytes
+import bitsandbytes as bnb
+try:
+	cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+except:
+	raise ImportError("CUDA is not linked properly. Try running `ldconfig /usr/lib64-nvidia` first.")
+
 from .models import *
