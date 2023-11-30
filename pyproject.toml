@@ -25,6 +25,10 @@ classifiers = [
 [tool.setuptools.dynamic]
 version = {attr = "unsloth.__version__"}
 dependencies = {file = ["requirements.txt"]}
+optional-dependencies = {
+	cu118 = { file = ["requirements_cu118.txt"] },
+	cu121 = { file = ["requirements_cu121.txt"] },
+}
 
 [project.urls]
 homepage = "http://www.unsloth.ai"
