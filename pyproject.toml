@@ -58,6 +58,9 @@ kaggle = [
 	"unsloth[huggingface]",
 	"unsloth[cu118only]",
 ]
+colab = [
+	"unsloth[cu118]",
+]
 
 [project.urls]
 homepage = "http://www.unsloth.ai"
