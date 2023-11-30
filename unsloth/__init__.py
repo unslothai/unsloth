@@ -56,14 +56,26 @@ if reload_package:
     importlib.reload(torch)
 pass
 
-# Try loading bitsandbytes
+# Try loading bitsandbytes and triton
 import bitsandbytes as bnb
+import triton
+from triton.common.build import libcuda_dirs
 try:
     cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+    libcuda_dirs()
 except:
     warnings.warn("CUDA is not linked properly. We shall run `ldconfig /usr/lib64-nvidia` to try to fix it.")
     os.system("ldconfig /usr/lib64-nvidia")
     importlib.reload(bnb)
+    importlib.reload(triton)
+    try:
+        import bitsandbytes as bnb
+        from triton.common.build import libcuda_dirs
+        cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+        libcuda_dirs()
+    except:
+        raise ImportError("CUDA is not linked properly. We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
+                          "You need to run in your terminal `ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.")
 pass
 
 from .models import *
