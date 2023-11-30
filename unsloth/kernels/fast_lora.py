@@ -43,7 +43,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
 
     out = torch.matmul(X, W, out = out)
     if W_quant is not None: del W
-    out += (X @ A) @ (s * B)
+    out += (X @ A.to(dtype)) @ (s * B.to(dtype))
     return out.view(batch, seq_len, -1) if reshape else out
 pass
 
