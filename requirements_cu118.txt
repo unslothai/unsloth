@@ -1,0 +1,2 @@
+--index-url https://download.pytorch.org/whl/cu118
+xformers
