@@ -1,4 +1,4 @@
-<img src="./images/unsloth logo only.png" width="300" />
+<img src="./images/unsloth new logo.png" width="400" />
 
 ## 2x faster 50% less memory LLM finetuning
 * Manual autograd engine.
