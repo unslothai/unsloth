@@ -26,40 +26,37 @@ classifiers = [
 version = {attr = "unsloth.__version__"}
 
 [project.optional-dependencies]
-kaggle = [
+huggingface = [
 	"transformers",
     "datasets",
     "sentencepiece",
     "accelerate",
     "trl",
     "peft",
-    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
-	"xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
-	"xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
 ]
-cu118 = [
-	"transformers",
-    "bitsandbytes",
-    "datasets",
-    "sentencepiece",
-    "accelerate",
-    "trl",
-    "peft",
+cu118only = [
 	"xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
 	"xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
 	"xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
 ]
-cu121 = [
-	"transformers",
-    "bitsandbytes",
-    "datasets",
-    "sentencepiece",
-    "accelerate",
-    "trl",
-    "peft",
+cu121only = [
 	"xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
 	"xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
 	"xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+]
+cu118 = [
+	"unsloth[huggingface]",
+	"bitsandbytes",
+	"unsloth[cu118only]",
+]
+cu121 = [
+	"unsloth[huggingface]",
+	"bitsandbytes",
+	"unsloth[cu121only]",
+]
+kaggle = [
+	"unsloth[huggingface]",
+	"unsloth[cu118only]",
 ]
 
 [project.urls]
