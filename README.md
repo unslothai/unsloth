@@ -8,9 +8,9 @@
 * Manual autograd engine - hand derived backprop steps.
 * QLoRA / LoRA 80% faster, 50% less memory.
 * All kernels written in OpenAI's Triton language.
-* 0% loss in accuracy.
-* No change of hardware necessary. Supports Tesla T4, RTX 20, 30, 40 series, A100, H100s
-* Flash Attention support
+* 0% loss in accuracy - no approximation methods - all exact.
+* No change of hardware necessary. Supports NVIDIA GPUs since 2018+. CUDA 7.5+. Tesla T4, RTX 20, 30, 40 series, A100, H100s
+* Flash Attention support via Xformers.
 * Supports 4bit and 16bit LoRA finetuning.
 * Train Slim Orca **fully locally in 260 hours from 1301 hours (5x faster).**
 * Check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
@@ -131,3 +131,5 @@ trainer = .... Use Huggingface's Trainer and dataset loading
 2. Windows is not supported as of yet - we rely on Xformers and Triton support, so until both packages support Windows officially, Unsloth will then support Windows.
 
 <img src="./images/unsloth loading page render.png" width="300" />
+
+3. If it doesn't install - maybe try updating `pip`.
