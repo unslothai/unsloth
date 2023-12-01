@@ -6,7 +6,8 @@
 * All kernels written in OpenAI's Triton language.
 * 0% loss in accuracy.
 * No change of hardware necessary. Supports Tesla T4, RTX 20, 30, 40 series, A100, H100s
-* Flash Attention
+* Flash Attention support
+* Supports 4bit and 16bit LoRA finetuning.
 * Train Slim Orca **fully locally in 260 hours from 1301 hours (5x faster).**
 * Check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
   
