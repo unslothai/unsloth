@@ -1,7 +1,7 @@
 <img src="./images/unsloth new logo.png" width="400" />
 
 ## 80% faster 50% less memory LLM local finetuning
-* Manual autograd engine.
+* Manual autograd engine - hand derived backprop steps.
 * All kernels written in OpenAI's Triton language.
 * 0% loss in accuracy.
 * No change of hardware necessary. Supports Tesla T4, RTX 20, 30, 40 series, A100, H100s
