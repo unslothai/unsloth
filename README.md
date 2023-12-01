@@ -1,6 +1,6 @@
 <img src="./images/unsloth new logo.png" width="400" />
 
-## 2x faster 50% less memory LLM local finetuning
+## 50% faster 50% less memory LLM local finetuning
 * Manual autograd engine.
 * All kernels written in OpenAI's Triton language.
 * 0% loss in accuracy.
