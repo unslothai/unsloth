@@ -1,4 +1,8 @@
-<img src="./images/unsloth new logo.png" width="400" />
+<div class="align-center">
+  <img src="./images/unsloth new logo.png" width="400" />
+  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" width="100"></a>
+</div>
+
 
 ## 80% faster 50% less memory local QLoRA finetuning
 * Manual autograd engine - hand derived backprop steps.
