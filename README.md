@@ -53,7 +53,7 @@ Change `cu121` to `cu118` for CUDA version 11.8 or 12.1. Go to https://pytorch.o
 ```
 from unsloth import FastLlamaModel
 import torch
-max_seq_length = 2048
+max_seq_length = 2048 # Can change to any number <= 4096
 dtype = None # None for auto detection. Float16 for Tesla T4, V100, Bfloat16 for Ampere+
 load_in_4bit = True # Use 4bit quantization to reduce memory usage. Can be False.
 
@@ -82,6 +82,10 @@ model = FastLlamaModel.get_peft_model(
 
 trainer = .... Use Huggingface's Trainer and dataset loading
 ```
+
+If you trained a model with Unsloth, we made a cool sticker!!
+<img src="./images/unsloth made with love.png" width="200" />
+
 
 # Future Milestones and limitations
 1. Support sqrt gradient checkpointing which further slashes memory usage by 25%.
@@ -130,6 +134,6 @@ trainer = .... Use Huggingface's Trainer and dataset loading
 ```
 2. Windows is not supported as of yet - we rely on Xformers and Triton support, so until both packages support Windows officially, Unsloth will then support Windows.
 
-<img src="./images/unsloth loading page render.png" width="300" />
-
 3. If it doesn't install - maybe try updating `pip`.
+
+<img src="./images/unsloth loading page render.png" width="300" />
