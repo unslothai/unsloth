@@ -1,6 +1,6 @@
 <div class="align-center">
   <img src="./images/unsloth new logo.png" width="400" />
-  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" width="100"></a>
+  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" width="150"></a>
 </div>
 
 
