@@ -4,7 +4,9 @@
 * Manual autograd engine.
 * All kernels written in OpenAI's Triton language.
 * 0% loss in accuracy.
-* No change of hardware necessary.
+* No change of hardware necessary. Supports Tesla T4, RTX 20, 30, 40 series, A100, H100s
+* Flash Attention
+* Train Alpaca **fully locally in 13 hours from 23 hours.**
 
 <div class="align-center">
   <img src="./images/SlimOrca%201GPU.svg" width="400" />
@@ -15,33 +17,64 @@
 2. Try our Kaggle example for [the LAION OIG Chip2 dataset](https://www.kaggle.com/danielhanchen/unsloth-laion-chip2-kaggle)
 3. Join our [Discord](https://discord.gg/nsS4V5Z6ge)!
 
-# Installation Instructions
+# Installation Instructions - Conda
 Unsloth currently only supports Linux distros and Pytorch >= 2.1.
+```
+conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
+  -c pytorch -c nvidia -c xformers -c conda-forge -y
+pip install "unsloth[kaggle] @ git+https://github.com/unslothai/unsloth.git"
+```
 
-You must first update Pytorch to 2.1 before using pip. If you have Conda, you MUST first upgrade your Pytorch installation with the command we provided, since it also installs xformers and bitsandbytes.
-
+# Installation Instructions - Pip
 1. Find your CUDA version via
 ```
 import torch; torch.version.cuda
 ```
-2. For CUDA 11.8 or CUDA 12.1. If you are using Kaggle or Colab notebooks, we also provide a distro: DO NOT run this first if you have Conda - do step 3 then 2.
+2. Select either cu118 for CUDA 11.8 or cu121 for CUDA 12.1
 ```
 pip install "unsloth[cu118] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[colab] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[kaggle] @ git+https://github.com/unslothai/unsloth.git"
 ```
-3. To update Pytorch to 2.1: (You MUST run this if you have Conda FIRST)
-```
-conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
-  -c pytorch -c nvidia -c xformers -c conda-forge -y
-```
-or
+3. We only support Pytorch 2.1: You can update Pytorch via Pip:
 ```
 pip install --upgrade --force-reinstall --no-cache-dir torch triton \
   --index-url https://download.pytorch.org/whl/cu121
 ```
 Change `cu121` to `cu118` for CUDA version 11.8 or 12.1. Go to https://pytorch.org/ to learn more.
+
+# Alpaca Example
+```
+from unsloth import FastLlamaModel
+import torch
+max_seq_length = 2048
+dtype = None # None for auto detection. Float16 for Tesla T4, V100, Bfloat16 for Ampere+
+load_in_4bit = True # Use 4bit quantization to reduce memory usage. Can be False.
+
+# Load Llama model
+model, tokenizer = FastLlamaModel.from_pretrained(
+    model_name = "unsloth/llama-2-7b", # Supports any llama model
+    max_seq_length = max_seq_length,
+    dtype = dtype,
+    load_in_4bit = load_in_4bit,
+    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
+)
+
+# Do model patching and add fast LoRA weights
+model = FastLlamaModel.get_peft_model(
+    model,
+    r = 16,
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                      "gate_proj", "up_proj", "down_proj",],
+    lora_alpha = 16,
+    lora_dropout = 0, # Currently only supports dropout = 0
+    bias = "none",    # Currently only supports bias = "none"
+    use_gradient_checkpointing = True,
+    random_state = 3407,
+    max_seq_length = max_seq_length,
+)
+
+trainer = .... Use Huggingface's Trainer and dataset loading
+```
 
 # Future Milestones and limitations
 1. Support sqrt gradient checkpointing which further slashes memory usage by 25%.
