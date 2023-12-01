@@ -1,6 +1,6 @@
 <img src="./images/unsloth new logo.png" width="400" />
 
-## 80% faster 50% less memory local LoRA finetuning
+## 80% faster 50% less memory local QLoRA finetuning
 * Manual autograd engine - hand derived backprop steps.
 * QLoRA / LoRA 80% faster, 50% less memory.
 * All kernels written in OpenAI's Triton language.
