@@ -82,9 +82,6 @@ trainer = .... Use Huggingface's Trainer and dataset loading
 1. Support sqrt gradient checkpointing which further slashes memory usage by 25%.
 2. Does not support non Llama models - we do so in the future.
 
-# Unsloth Pro and Max
-1. If you want 
-
 # Performance comparisons on 1 Tesla T4 GPU:
 **Time taken for 1 epoch**
 
