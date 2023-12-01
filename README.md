@@ -10,7 +10,7 @@
 * Check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
   
 <div class="align-center">
-  <img src="./images/SlimOrca%201GPU.svg" width="400" />
+  <img src="./images/Slim Orca 2GPUs.png" width="400" />
   <img src="./images/LAION%202GPU.svg" width="400" />
 </div>
 
