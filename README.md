@@ -13,7 +13,7 @@
 * Flash Attention support via Xformers.
 * Supports 4bit and 16bit LoRA finetuning.
 * Train Slim Orca **fully locally in 260 hours from 1301 hours (5x faster).**
-* Check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
+* Open source version trains 5x faster or you can check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
   
 <div class="align-center">
   <img src="./images/Slim Orca 2GPUs.png" width="400" />
