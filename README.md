@@ -1,13 +1,15 @@
 <img src="./images/unsloth new logo.png" width="400" />
 
-## 2x faster 50% less memory LLM finetuning
+## 2x faster 50% less memory LLM local finetuning
 * Manual autograd engine.
 * All kernels written in OpenAI's Triton language.
 * 0% loss in accuracy.
 * No change of hardware necessary. Supports Tesla T4, RTX 20, 30, 40 series, A100, H100s
 * Flash Attention
 * Train Alpaca **fully locally in 13 hours from 23 hours.**
-
+* Train Open Assistant **fully locally in 4 hours from 8 hours.**
+* Check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
+  
 <div class="align-center">
   <img src="./images/SlimOrca%201GPU.svg" width="400" />
   <img src="./images/LAION%202GPU.svg" width="400" />
@@ -79,6 +81,9 @@ trainer = .... Use Huggingface's Trainer and dataset loading
 # Future Milestones and limitations
 1. Support sqrt gradient checkpointing which further slashes memory usage by 25%.
 2. Does not support non Llama models - we do so in the future.
+
+# Unsloth Pro and Max
+1. If you want 
 
 # Performance comparisons on 1 Tesla T4 GPU:
 **Time taken for 1 epoch**
