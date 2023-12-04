@@ -17,7 +17,7 @@
   
 <div class="align-center">
   <img src="./images/Slim Orca 2GPUs.png" width="400" />
-  <img src="./images/LAION%202GPU.svg" width="400" />
+  <img src="./images/LAION 2GPU.png" width="400" />
 </div>
 
 1. Try our Colab examples for [the Alpaca 52K dataset](https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing) or [the Slim Orca 518K dataset](https://colab.research.google.com/drive/1VNqLARpE8N8eYwNrUSDoHVjtbR9W0_c7?usp=sharing).
