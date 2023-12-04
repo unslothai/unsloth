@@ -121,7 +121,7 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION):
+    if (n_groups == 1) and (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
@@ -131,12 +131,18 @@ def LlamaAttention_fast_forward(
 
         # Grouped query attention
         if n_groups != 1:
-            Q = Q.reshape(bsz, q_len, n_groups, n_kv_heads, head_dim)
+            K = K.reshape(bsz, q_len, n_kv_heads,        1, head_dim)
+            V = V.reshape(bsz, q_len, n_kv_heads,        1, head_dim)
+            K = K .expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            V = V .expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
 
-            K = K.reshape(bsz, q_len, n_groups,          1, head_dim)
-            V = V.reshape(bsz, q_len, n_groups,          1, head_dim)
-            K = K .expand(bsz, q_len, n_groups, n_kv_heads, head_dim)
-            V = V .expand(bsz, q_len, n_groups, n_kv_heads, head_dim)
+            if not hidden_states.requires_grad:
+                # Currently xformers does not support GQA backward
+                K = K.reshape(bsz, q_len, n_heads, head_dim)
+                V = V.reshape(bsz, q_len, n_heads, head_dim)
+            else:
+                Q = Q.reshape(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            pass
         pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
