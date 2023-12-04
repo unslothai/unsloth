@@ -725,12 +725,7 @@ class FastLlamaModel:
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10
         extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda")
-        internal_model = model
-        internal_model.extra_ignored_labels = extra_ignored_labels
-        while hasattr(internal_model, "model"):
-            internal_model = internal_model.model
-            internal_model.extra_ignored_labels = extra_ignored_labels
-        pass
+        model.model.extra_ignored_labels = extra_ignored_labels
         return model
     pass
 pass
