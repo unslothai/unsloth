@@ -544,17 +544,15 @@ class FastLlamaModel:
         model_max_seq_length = \
             AutoConfig.from_pretrained(model_name, token = token).max_position_embeddings
 
-        if (rope_scaling is None) or (max_seq_length > model_max_seq_length):
+        if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
             rope_scaling = max_seq_length / model_max_seq_length
             logger.warning_once(
                 f"Unsloth: {model_name} can only handle sequence lengths of of most "\
                 f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
-                f"{round(rope_scaling, 3)}, "\
-                f"it can be magically be extended to {max_seq_length}!"
+                f"{round(rope_scaling, 3)}, it can be magically be extended to "\
+                f"{max_seq_length}!"
             )
             rope_scaling = {"type": "linear", "factor": rope_scaling,}
-        else:
-            rope_scaling = None
         pass
 
         bnb_config = None
