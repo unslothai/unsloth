@@ -55,7 +55,7 @@ import bitsandbytes as bnb
 import numpy as np
 import types
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 
@@ -516,6 +516,7 @@ class FastLlamaModel:
         load_in_4bit = True,
         token = None,
         device_map = "sequential",
+        rope_scaling = None,
     ):
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
@@ -539,18 +540,22 @@ class FastLlamaModel:
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # RoPE scaling [Need to check]
-        # if max_seq_length > 4096:
-        #     rope_scaling = max_seq_length / 4096
-        #     logger.warning_once(
-        #         f"Unsloth: {model_name} can only handle sequence lengths of of most "\
-        #         f"{4096}.\nBut with kaiokendev's RoPE scaling of {round(rope_scaling, 3)}, "\
-        #         f"it can be magically be extended to {max_seq_length}!"
-        #     )
-        #     rope_scaling = {"type": "linear", "factor": rope_scaling,}
-        # else:
-        #     rope_scaling = None
-        # pass
+        # RoPE scaling
+        model_max_seq_length = \
+            AutoConfig.from_pretrained(model_name, token = token).max_position_embeddings
+
+        if (rope_scaling is None) or (max_seq_length > model_max_seq_length):
+            rope_scaling = max_seq_length / model_max_seq_length
+            logger.warning_once(
+                f"Unsloth: {model_name} can only handle sequence lengths of of most "\
+                f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
+                f"{round(rope_scaling, 3)}, "\
+                f"it can be magically be extended to {max_seq_length}!"
+            )
+            rope_scaling = {"type": "linear", "factor": rope_scaling,}
+        else:
+            rope_scaling = None
+        pass
 
         bnb_config = None
         if load_in_4bit:
