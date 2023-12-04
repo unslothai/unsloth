@@ -4,7 +4,6 @@
   <a href="https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing"><img src="./images/try live demo green.png" width="130"></a>
 </div>
 
-
 ## 2-5x faster 50% less memory local LLM finetuning
 * Manual autograd engine - hand derived backprop steps.
 * 2x to 5x faster than QLoRA. 50% less memory usage.
@@ -12,6 +11,8 @@
 * 0% loss in accuracy - no approximation methods - all exact.
 * No change of hardware necessary. Supports NVIDIA GPUs since 2018+. Minimum CUDA Compute Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU](https://developer.nvidia.com/cuda-gpus)
 * [Flash Attention v2](https://github.com/Dao-AILab/flash-attention) support via [Xformers](https://github.com/facebookresearch/xformers).
+* **NEW!** Works on **Linux** and **Windows** via WSL.
+* **NEW!** Experimental support for [DPO (Direct Preference Optimization)](https://arxiv.org/abs/2305.18290)!
 * Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
 * Train Slim Orca **fully locally in 260 hours from 1301 hours (5x faster).**
 * Open source version trains 5x faster or you can check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
@@ -56,6 +57,7 @@ pip install --upgrade pip
 ```
 
 # Documentation
+We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
 ```
 from unsloth import FastLlamaModel
 import torch
@@ -92,6 +94,10 @@ trainer = .... Use Huggingface's Trainer and dataset loading (TRL, transformers 
 If you trained a model with Unsloth, we made a cool sticker!!
 <img src="./images/unsloth made with love.png" width="200" />
 
+# DPO (Direct Preference Optimization) Experimental support
+[152334H](https://github.com/152334H) hacked Unsloth to work with DPO via TRL!
+1. Hack the model's `config.json` to be llama model. [Example gist](https://gist.github.com/152334H/d8a68b51b83bac008a02e69ecc81d5c1).
+2. Use Unsloth for DPO for both base and reference models. [Example gist](https://gist.github.com/152334H/4847f3a8cca12894877e6b30698b0b64).
 
 # Future Milestones and limitations
 1. Support sqrt gradient checkpointing which further slashes memory usage by 25%.
@@ -153,5 +159,9 @@ Two Tesla T4s on Kaggle
 2. Windows is not supported as of yet - we rely on Xformers and Triton support, so until both packages support Windows officially, Unsloth will then support Windows.
 
 3. If it doesn't install - maybe try updating `pip`.
+
+# Credits
+1. [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
+2. [152334H](https://github.com/152334H) for experimental DPO support
 
 <img src="./images/unsloth loading page render.png" width="300" />
