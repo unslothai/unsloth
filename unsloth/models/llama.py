@@ -121,7 +121,7 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (n_groups == 1) and (not HAS_FLASH_ATTENTION):
+    if (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
