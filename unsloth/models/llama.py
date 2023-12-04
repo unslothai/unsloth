@@ -539,18 +539,18 @@ class FastLlamaModel:
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # RoPE scaling
-        if max_seq_length > 4096:
-            rope_scaling = max_seq_length / 4096
-            logger.warning_once(
-                f"Unsloth: {model_name} can only handle sequence lengths of of most "\
-                f"{4096}.\nBut with kaiokendev's RoPE scaling of {round(rope_scaling, 3)}, "\
-                f"it can be magically be extended to {max_seq_length}!"
-            )
-            rope_scaling = {"type": "linear", "factor": rope_scaling,}
-        else:
-            rope_scaling = None
-        pass
+        # RoPE scaling [Need to check]
+        # if max_seq_length > 4096:
+        #     rope_scaling = max_seq_length / 4096
+        #     logger.warning_once(
+        #         f"Unsloth: {model_name} can only handle sequence lengths of of most "\
+        #         f"{4096}.\nBut with kaiokendev's RoPE scaling of {round(rope_scaling, 3)}, "\
+        #         f"it can be magically be extended to {max_seq_length}!"
+        #     )
+        #     rope_scaling = {"type": "linear", "factor": rope_scaling,}
+        # else:
+        #     rope_scaling = None
+        # pass
 
         bnb_config = None
         if load_in_4bit:
