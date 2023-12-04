@@ -4,7 +4,7 @@
 </div>
 
 
-## 5x faster 50% less memory local LLM finetuning
+## 2-5x faster 50% less memory local LLM finetuning
 * Manual autograd engine - hand derived backprop steps.
 * 2x to 5x faster than QLoRA. 50% less memory usage.
 * All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language.
@@ -139,6 +139,10 @@ Two Tesla T4s on Kaggle
 | Unsloth Max | 2 T4 | 10.5GB \| 5GB | 10.6GB \| 5GB | 10.6GB \| 5GB | 10.5GB \| 5GB * |
 
 * Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
+
+### For replication of timings:
+* [Huggingface LAION DDP reference implementation](https://www.kaggle.com/code/danielhanchen/huggingface-original-laion-oig) 60 steps on DDP Kaggle 2 Tesla T4 GPUs takes 40 minutes and 46 seconds
+* [Unsloth LAION DDP fast implementation](https://www.kaggle.com/code/danielhanchen/unsloth-laion-chip2-kaggle) 60 steps on DDP Kaggle 2 Tesla T4 GPUs - **Unsloth only uses 1 GPU whilst Pro plans use more.** takes 4 minutes and 34 seconds **(8.64x speedup)**
 
 # Troubleshooting
 1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
