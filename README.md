@@ -4,14 +4,14 @@
 </div>
 
 
-## 80% faster 50% less memory local QLoRA finetuning
+## 5x faster 50% less memory local LLM finetuning
 * Manual autograd engine - hand derived backprop steps.
-* QLoRA / LoRA 80% faster, 50% less memory.
-* All kernels written in OpenAI's Triton language.
+* 2x to 5x faster than QLoRA. 50% less memory usage.
+* All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language.
 * 0% loss in accuracy - no approximation methods - all exact.
-* No change of hardware necessary. Supports NVIDIA GPUs since 2018+. CUDA 7.5+. Tesla T4, RTX 20, 30, 40 series, A100, H100s
-* Flash Attention support via Xformers.
-* Supports 4bit and 16bit LoRA finetuning.
+* No change of hardware necessary. Supports NVIDIA GPUs since 2018+. Minimum CUDA Compute Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU](https://developer.nvidia.com/cuda-gpus)
+* [Flash Attention v2](https://github.com/Dao-AILab/flash-attention) support via [Xformers](https://github.com/facebookresearch/xformers).
+* Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
 * Train Slim Orca **fully locally in 260 hours from 1301 hours (5x faster).**
 * Open source version trains 5x faster or you can check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
   
@@ -49,7 +49,12 @@ pip install --upgrade --force-reinstall --no-cache-dir torch triton \
 ```
 Change `cu121` to `cu118` for CUDA version 11.8 or 12.1. Go to https://pytorch.org/ to learn more.
 
-# Alpaca Example
+4. If you get errors, try the below first, then go back to step 1:
+```
+pip install --upgrade pip
+```
+
+# Documentation
 ```
 from unsloth import FastLlamaModel
 import torch
@@ -59,7 +64,7 @@ load_in_4bit = True # Use 4bit quantization to reduce memory usage. Can be False
 
 # Load Llama model
 model, tokenizer = FastLlamaModel.from_pretrained(
-    model_name = "unsloth/llama-2-7b", # Supports any llama model
+    model_name = "unsloth/llama-2-7b", # Supports any llama model eg meta-llama/Llama-2-7b-hf
     max_seq_length = max_seq_length,
     dtype = dtype,
     load_in_4bit = load_in_4bit,
@@ -80,7 +85,7 @@ model = FastLlamaModel.get_peft_model(
     max_seq_length = max_seq_length,
 )
 
-trainer = .... Use Huggingface's Trainer and dataset loading
+trainer = .... Use Huggingface's Trainer and dataset loading (TRL, transformers etc)
 ```
 
 If you trained a model with Unsloth, we made a cool sticker!!
@@ -93,6 +98,9 @@ If you trained a model with Unsloth, we made a cool sticker!!
 
 # Performance comparisons on 1 Tesla T4 GPU:
 **Time taken for 1 epoch**
+
+One Tesla T4 on Google Colab
+`bsz = 2, ga = 4, max_grad_norm = 0.3, num_train_epochs = 1, seed = 3047, lr = 2e-4, wd = 0.01, optim = "adamw_8bit", schedule = "linear", schedule_steps = 10`
 
 | System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) |
 | --- | --- | --- | --- | --- | --- |
@@ -113,19 +121,24 @@ If you trained a model with Unsloth, we made a cool sticker!!
 # Performance comparisons on 2 Tesla T4 GPUs via DDP:
 **Time taken for 1 epoch**
 
-| System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) |
+Two Tesla T4s on Kaggle
+`bsz = 2, ga = 4, max_grad_norm = 0.3, num_train_epochs = 1, seed = 3047, lr = 2e-4, wd = 0.01, optim = "adamw_8bit", schedule = "linear", schedule_steps = 10`
+
+| System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) * |
 | --- | --- | --- | --- | --- | --- |
-| Huggingface | 2 T4 | 84h 47m | 163h 48m | 30h 51m | 1301h 24m |
-| Unsloth Pro | 2 T4 | 3h 20m (25.4x) | 5h 43m (28.7x) | 1h 12m (25.7x) | 71h 40m (18.1x) |
-| Unsloth Max | 2 T4 | 3h 4m (27.6x) | 5h 14m (31.3x) | 1h 6m (28.1x) | 54h 20m (23.9x) |
+| Huggingface | 2 T4 | 84h 47m | 163h 48m | 30h 51m | 1301h 24m * |
+| Unsloth Pro | 2 T4 | 3h 20m (25.4x) | 5h 43m (28.7x) | 1h 12m (25.7x) | 71h 40m (18.1x) * |
+| Unsloth Max | 2 T4 | 3h 4m (27.6x) | 5h 14m (31.3x) | 1h 6m (28.1x) | 54h 20m (23.9x) * |
 
 **Peak Memory Usage on a Multi GPU System (2 GPUs)**
 
-| System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) |
+| System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) * |
 | --- | --- | --- | --- | --- | --- |
-| Huggingface | 2 T4 | 8.4GB \| 6GB | 7.2GB \| 5.3GB | 14.3GB \| 6.6GB | 10.9GB \| 5.9GB |
-| Unsloth Pro | 2 T4 | 7.7GB \| 4.9GB | 7.5GB \| 4.9GB | 8.5GB \| 4.9GB | 6.2GB \| 4.7GB |
-| Unsloth Max | 2 T4 | 10.5GB \| 5GB | 10.6GB \| 5GB | 10.6GB \| 5GB | 10.5GB \| 5GB |
+| Huggingface | 2 T4 | 8.4GB \| 6GB | 7.2GB \| 5.3GB | 14.3GB \| 6.6GB | 10.9GB \| 5.9GB * |
+| Unsloth Pro | 2 T4 | 7.7GB \| 4.9GB | 7.5GB \| 4.9GB | 8.5GB \| 4.9GB | 6.2GB \| 4.7GB * |
+| Unsloth Max | 2 T4 | 10.5GB \| 5GB | 10.6GB \| 5GB | 10.6GB \| 5GB | 10.5GB \| 5GB * |
+
+* Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
 
 # Troubleshooting
 1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
