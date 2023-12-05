@@ -35,7 +35,6 @@ def _rope_embedding(
     mask = col_offsets < half_head_dim
 
     # TODO: Fixup int32 locations to int64
-    # https://github.com/Dao-AILab/flash-attention/commit/c79de85ffa0d19b80fa468f90c5086e837499d72
     rot_position = row_position % seqlen
 
     Q   += row_position*  Q_row_stride + head_position*head_dim
@@ -48,8 +47,6 @@ def _rope_embedding(
 
     Q2   = tl.load(Q   + half_head_dim*1 + col_offsets, mask = mask, other = 0)
     # RoPE repeats sin and cos so 128 = [64, 64].
-    # sin2 = tl.load(sin + half_head_dim*1, mask = mask, other = 0)
-    # cos2 = tl.load(cos + half_head_dim*1, mask = mask, other = 0)
 
     if BACKWARD_PASS:
         """
@@ -62,11 +59,8 @@ def _rope_embedding(
             where R.T is again the same  [ 0, -I]
             but the minus is transposed. [ I,  0]
         """
-        # sin1, sin2 = -sin1, -sin2
         sin1 = -sin1
-
-    # tl.store(Q + half_head_dim*0, Q1*cos1 - Q2*sin1, mask = mask)
-    # tl.store(Q + half_head_dim*1, Q2*cos2 + Q1*sin2, mask = mask)
+    
     # RoPE repeats sin and cos so 128 = [64, 64].
     tl.store(Q + half_head_dim*0 + col_offsets, Q1*cos1 - Q2*sin1, mask = mask)
     tl.store(Q + half_head_dim*1 + col_offsets, Q2*cos1 + Q1*sin1, mask = mask)

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-__version__ = "2023.11"
+__version__ = "2023.12"
 import os
 import warnings
 import importlib
@@ -35,7 +35,7 @@ if "CUDA_VISIBLE_DEVICES" in os.environ:
         )
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 else:
-    warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
+    # warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 pass
