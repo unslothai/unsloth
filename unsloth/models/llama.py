@@ -153,14 +153,6 @@ def LlamaAttention_fast_forward(
         # Flash Attention v2 auto supports grouped query attention
         A = flash_attn_func(Q, K, V, causal = True)
     else:
-        # Uses Pytorch's scaled dot product attention
-        # if attention_mask is not None:
-        #     if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-        #         raise ValueError(
-        #             f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-        #         )
-        # pass
-
         # Grouped query attention
         if n_groups != 1:
             K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
@@ -168,7 +160,6 @@ def LlamaAttention_fast_forward(
             K = K.reshape(bsz, n_heads, q_len, head_dim)
             V = V.reshape(bsz, n_heads, q_len, head_dim)
         pass
-
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
         A = scaled_dot_product_attention(Q, K, V, attn_mask = None, is_causal = True)
