@@ -525,8 +525,8 @@ class FastLlamaModel:
 
         statistics = \
             "==((====))==  Unsloth: Fast Llama patching release 2023.12\n"\
-           f"   \\\   /|   GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
-           f"O^O/ \_/ \\   CUDA compute capability = {gpu_stats.major}.{gpu_stats.minor}\n"\
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
+           f"O^O/ \_/ \\    CUDA compute capability = {gpu_stats.major}.{gpu_stats.minor}\n"\
            f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
            f' "-____-"     bfloat16 support = {str(SUPPORTS_BFLOAT16).upper()}\n'
         print(statistics)
