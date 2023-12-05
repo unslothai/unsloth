@@ -16,14 +16,15 @@ import torch
 from typing import Optional, Tuple, List, Union
 from torch.nn.functional import scaled_dot_product_attention
 from transformers.models.llama.modeling_llama import (
-    # apply_rotary_pos_emb,
-    # repeat_kv,
-    # _prepare_4d_causal_attention_mask,
+    _prepare_4d_causal_attention_mask,
     logger,
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
 from ..kernels import *
+from ._utils import (
+    prepare_model_for_kbit_training,
+)
 
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()
@@ -37,7 +38,6 @@ else:
     # Tri Dao's benchmark shows xformers is faster for now.
     HAS_FLASH_ATTENTION = False
 pass
-
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 
@@ -55,12 +55,9 @@ import bitsandbytes as bnb
 import numpy as np
 import types
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from ._utils import (
-    prepare_model_for_kbit_training,
-)
 
 
 def original_apply_qkv(self, X):
@@ -92,10 +89,6 @@ def LlamaAttention_fast_forward(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
     bsz, q_len, _ = hidden_states.size()
-
-    # Q = self.q_proj(hidden_states)
-    # K = self.k_proj(hidden_states)
-    # V = self.v_proj(hidden_states)
     Q, K, V = self.apply_qkv(self, hidden_states)
 
     n_heads    = self.num_heads
@@ -112,8 +105,6 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    # cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
-    # Q, K = apply_rotary_pos_emb(Q, K, cos, sin, position_ids)
     if position_ids is None:
         cos = self.rotary_emb.cos_cached
         sin = self.rotary_emb.sin_cached
@@ -130,10 +121,9 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    # no_attention_mask = attention_mask is None
-    # Ignore attention_mask
-
-    if (not HAS_FLASH_ATTENTION): #and no_attention_mask:
+    # Xformers doesnt support backward pass for GQA (yet)
+    # TEMP fix
+    if (n_groups == 1) and (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
@@ -143,18 +133,17 @@ def LlamaAttention_fast_forward(
 
         # Grouped query attention
         if n_groups != 1:
-            Q = Q.reshape(bsz, q_len, n_groups, n_kv_heads, head_dim)
-
-            K = K.reshape(bsz, q_len, n_groups,          1, head_dim)
-            V = V.reshape(bsz, q_len, n_groups,          1, head_dim)
-            K = K .expand(bsz, q_len, n_groups, n_kv_heads, head_dim)
-            V = V .expand(bsz, q_len, n_groups, n_kv_heads, head_dim)
+            Q = Q.reshape(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            K = K.reshape(bsz, q_len, n_kv_heads,        1, head_dim)
+            V = V.reshape(bsz, q_len, n_kv_heads,        1, head_dim)
+            K = K .expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            V = V .expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
         pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif HAS_FLASH_ATTENTION:# and no_attention_mask:
+    elif HAS_FLASH_ATTENTION:
         # Flash Attention
         # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
         Q = Q.transpose(1, 2)
@@ -163,37 +152,22 @@ def LlamaAttention_fast_forward(
 
         # Flash Attention v2 auto supports grouped query attention
         A = flash_attn_func(Q, K, V, causal = True)
-
     else:
-        # Uses Pytorch's scaled dot product attention
-        if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
-        pass
-
         # Grouped query attention
-        # K = repeat_kv(K, n_groups)
-        # V = repeat_kv(V, n_groups)
         if n_groups != 1:
             K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
             V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
             K = K.reshape(bsz, n_heads, q_len, head_dim)
             V = V.reshape(bsz, n_heads, q_len, head_dim)
         pass
-
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = attention_mask is None)
+        A = scaled_dot_product_attention(Q, K, V, attn_mask = None, is_causal = True)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2)
     pass
     attn_output = A.reshape(bsz, q_len, self.hidden_size)
-
-    # attn_output = self.o_proj(attn_output)
     attn_output = self.apply_o(self, attn_output)
-
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 pass
@@ -227,7 +201,6 @@ def LlamaDecoderLayer_fast_forward(
     """
     residual = hidden_states
 
-    # hidden_states = self.input_layernorm(hidden_states)
     hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
 
     # Self Attention
@@ -245,7 +218,6 @@ def LlamaDecoderLayer_fast_forward(
 
     # Fully Connected
     residual = hidden_states
-    # hidden_states = self.post_attention_layernorm(hidden_states)
     hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
     hidden_states = self.mlp(hidden_states)
     hidden_states = residual + hidden_states
@@ -308,7 +280,7 @@ def LlamaModel_fast_forward(
     if (past_key_values_length != 0):
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
-            dtype  = torch.int32,#dtype=torch.long,
+            dtype  = torch.int32,
             device = "cuda",
         )
         position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
@@ -326,11 +298,7 @@ def LlamaModel_fast_forward(
         inputs_embeds = self.embed_tokens(input_ids)
 
     # Ignore attention_mask
-    if True:
-    # if attention_mask is None:
-        # attention_mask = torch.ones(
-        #     (batch_size, seq_length_with_past), dtype=torch.bool, device=inputs_embeds.device
-        # )
+    if attention_mask is None:
         padding_mask = None
     else:
         if 0 in attention_mask:
@@ -339,7 +307,7 @@ def LlamaModel_fast_forward(
             padding_mask = None
 
         attention_mask = _prepare_4d_causal_attention_mask(
-            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
+            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length,
         )
     pass
 
@@ -403,7 +371,6 @@ def LlamaModel_fast_forward(
             all_self_attns += (layer_outputs[1],)
     pass
 
-    # hidden_states = self.norm(hidden_states)
     hidden_states = fast_rms_layernorm(self.norm, hidden_states)
 
     # add hidden states from the last decoder layer
@@ -466,19 +433,13 @@ def LlamaForCausalLM_fast_forward(
 
     loss = None
     if labels is not None:
-        # logits = logits.float()
-        # shift_logits = logits[..., :-1, :].contiguous()
-        # shift_labels = labels[..., 1:].contiguous()
-        # shift_labels = shift_labels.view(-1)
-        # shift_logits = shift_logits.view(-1, self.config.vocab_size)
         shift_logits = logits
+        if not hasattr(self, "extra_ignored_labels"):
+            # Fixes https://github.com/unslothai/unsloth/issues/10
+            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda")
+        pass
+        
         shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-
-        # loss_fct = torch.nn.CrossEntropyLoss(
-        #     ignore_index = self.ignore_index,
-        #     label_smoothing = self.label_smoothing,
-        # )
-        # loss = loss_fct(shift_logits, shift_labels)
         loss = fast_cross_entropy_loss(
             logits = shift_logits,
             labels = shift_labels,
@@ -547,13 +508,14 @@ class FastLlamaModel:
         load_in_4bit = True,
         token = None,
         device_map = "sequential",
+        rope_scaling = None,
     ):
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
 
         statistics = \
-            "==((====))==  Unsloth: Fast Llama patching release 23.11\n"\
+            "==((====))==  Unsloth: Fast Llama patching release 2023.12\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
            f"O^O/ \_/ \\    CUDA compute capability = {gpu_stats.major}.{gpu_stats.minor}\n"\
            f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
@@ -570,9 +532,20 @@ class FastLlamaModel:
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # [TODO]: Determine RoPE scaling
-        # https://github.com/huggingface/transformers/pull/24653
-        assert(max_seq_length <= 4096)
+        # RoPE scaling
+        model_max_seq_length = \
+            AutoConfig.from_pretrained(model_name, token = token).max_position_embeddings
+
+        if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
+            rope_scaling = max_seq_length / model_max_seq_length
+            logger.warning_once(
+                f"Unsloth: {model_name} can only handle sequence lengths of of most "\
+                f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
+                f"{round(rope_scaling, 3)}, it can be magically be extended to "\
+                f"{max_seq_length}!"
+            )
+            rope_scaling = {"type": "linear", "factor": rope_scaling,}
+        pass
 
         bnb_config = None
         if load_in_4bit:
@@ -589,6 +562,7 @@ class FastLlamaModel:
             torch_dtype = dtype,
             quantization_config = bnb_config,
             token = token,
+            rope_scaling = rope_scaling,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
@@ -596,9 +570,22 @@ class FastLlamaModel:
             padding_side = "right",
             token = token,
         )
-        tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token});
-        tokenizer.pad_token = tokenizer.unk_token
-        config = model.config.update({"pad_token_id" : tokenizer.unk_token_id});
+
+        if not hasattr(tokenizer, "pad_token"):
+            # Fixes https://github.com/unslothai/unsloth/issues/5
+            if hasattr(tokenizer, "unk_token"):
+                tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token})
+                tokenizer.pad_token = tokenizer.unk_token
+            else:
+                logger.warning_one(
+                    f"{model_name} does not have a padding or unknown token!\n"\
+                    f"Will use the EOS token of id {tokenizer.eos_token_id} as padding."
+                )
+                assert(hasattr(tokenizer, "eos_token"))
+                tokenizer.add_special_tokens({"pad_token" : tokenizer.eos_token})
+                tokenizer.pad_token = tokenizer.eos_token
+            config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
+        pass
 
         model = FastLlamaModel.post_patch(model)
 
@@ -607,6 +594,8 @@ class FastLlamaModel:
             layer.self_attn.apply_qkv = original_apply_qkv
             layer.self_attn.apply_o   = original_apply_o
         pass
+
+        model.max_seq_length = max_seq_length
         return model, tokenizer
     pass
 
@@ -668,6 +657,8 @@ class FastLlamaModel:
         random_state = 3407,
         max_seq_length = 2048,
     ):
+        assert(max_seq_length <= model.max_seq_length)
+
         if lora_dropout != 0:
             raise TypeError("Unsloth: Fast Llama patching only works with dropout = 0.")
         if bias != "none":
@@ -727,8 +718,14 @@ class FastLlamaModel:
         pass
 
         # Patch cross entropy loss labels
-        model.model.extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda")
-        
+        # Fixes https://github.com/unslothai/unsloth/issues/10
+        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda")
+        model.model.extra_ignored_labels = extra_ignored_labels
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model.max_seq_length = max_seq_length
+            internal_model = internal_model.model
+        pass
         return model
     pass
 pass

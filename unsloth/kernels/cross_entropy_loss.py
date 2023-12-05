@@ -43,7 +43,6 @@ def _cross_entropy_forward(logits_ptr, logits_row_stride,
     mask = col_offsets < n_cols
 
     # TODO: Fixup int32 locations to int64
-    # https://github.com/Dao-AILab/flash-attention/commit/c79de85ffa0d19b80fa468f90c5086e837499d72
     label_idx = tl.load(labels_ptr).to(tl.int32)
     logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
     max_logits = tl.max(logits, 0)
@@ -88,7 +87,6 @@ def _cross_entropy_backward(logits_ptr, logits_row_stride,
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
     # TODO: Fixup int32 locations to int64
-    # https://github.com/Dao-AILab/flash-attention/commit/c79de85ffa0d19b80fa468f90c5086e837499d72
     label_idx = tl.load(labels_ptr + row_idx).to(tl.int32)
 
     if label_idx != -100:
