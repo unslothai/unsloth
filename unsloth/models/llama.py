@@ -121,7 +121,9 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION):
+    # Xformers doesnt support backward pass for GQA (yet)
+    # TEMP fix
+    if (n_groups == 1) and (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
@@ -131,18 +133,11 @@ def LlamaAttention_fast_forward(
 
         # Grouped query attention
         if n_groups != 1:
+            Q = Q.reshape(bsz, q_len, n_kv_heads, n_groups, head_dim)
             K = K.reshape(bsz, q_len, n_kv_heads,        1, head_dim)
             V = V.reshape(bsz, q_len, n_kv_heads,        1, head_dim)
             K = K .expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
             V = V .expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-
-            if not hidden_states.requires_grad:
-                # Currently xformers does not support GQA backward
-                K = K.reshape(bsz, q_len, n_heads, head_dim)
-                V = V.reshape(bsz, q_len, n_heads, head_dim)
-            else:
-                Q = Q.reshape(bsz, q_len, n_kv_heads, n_groups, head_dim)
-            pass
         pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
@@ -321,7 +316,7 @@ def LlamaModel_fast_forward(
             padding_mask = None
 
         attention_mask = _prepare_4d_causal_attention_mask(
-            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
+            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length,
         )
     pass
 
@@ -450,7 +445,7 @@ def LlamaForCausalLM_fast_forward(
         shift_logits = logits
         if not hasattr(self, "extra_ignored_labels"):
             # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda")
+            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda")
         pass
         
         shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
@@ -735,6 +730,11 @@ class FastLlamaModel:
         # Fixes https://github.com/unslothai/unsloth/issues/10
         extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda")
         model.model.extra_ignored_labels = extra_ignored_labels
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model.max_seq_length = max_seq_length
+            internal_model = internal_model.model
+        pass
         return model
     pass
 pass
