@@ -66,6 +66,22 @@ kaggle = [
 colab = [
 	"unsloth[cu118]",
 ]
+cu118_ampere = [
+	"unsloth[huggingface]",
+	"bitsandbytes",
+	"unsloth[cu118only]",
+	"flash-attn",
+]
+cu121_ampere = [
+	"unsloth[huggingface]",
+	"bitsandbytes",
+	"unsloth[cu121only]",
+	"flash-attn",
+]
+colab_ampere = [
+	"unsloth[cu118]",
+	"flash-attn",
+]
 
 [project.urls]
 homepage = "http://www.unsloth.ai"
