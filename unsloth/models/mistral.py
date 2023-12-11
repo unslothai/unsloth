@@ -21,7 +21,6 @@ from transformers.models.llama.modeling_mistral import (
     MistralForCausalLM,
 ) 
 
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
 def MistralAttention_fast_forward(
     self,
     hidden_states:        torch.Tensor,
