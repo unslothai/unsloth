@@ -13,3 +13,4 @@
 # limitations under the License.
 
 from .llama import FastLlamaModel
+from .mistral import FastMistralModel
