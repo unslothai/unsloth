@@ -14,7 +14,7 @@
 
 from .llama import *
 
-from transformers.models.llama.modeling_mistral import (
+from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
     MistralDecoderLayer,
     MistralModel,
