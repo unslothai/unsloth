@@ -312,7 +312,12 @@ def LlamaModel_fast_forward(
             padding_mask = None
 
         attention_mask = _prepare_4d_causal_attention_mask(
-            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length,
+            attention_mask,
+            (batch_size, seq_length),
+            inputs_embeds,
+            past_key_values_length,
+            sliding_window = None if not hasattr(self.config "sliding_window") else \
+                self.config.sliding_window,
         )
     pass
 
