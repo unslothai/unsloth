@@ -121,9 +121,7 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    # Xformers doesnt support backward pass for GQA (yet)
-    # TEMP fix
-    if (n_groups == 1) and (not HAS_FLASH_ATTENTION):
+    if (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
@@ -131,15 +129,21 @@ def LlamaAttention_fast_forward(
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
 
-        # Grouped query attention
+        # Group query attention
         if n_groups != 1:
-            Q = Q.reshape(bsz, q_len, n_kv_heads, n_groups, head_dim)
-            K = K.reshape(bsz, q_len, n_kv_heads,        1, head_dim)
-            V = V.reshape(bsz, q_len, n_kv_heads,        1, head_dim)
-            K = K .expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-            V = V .expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
+            V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
+            K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            if hidden_states.requires_grad:
+                # Xformers does not support backward, so we have to convert
+                # GQA to MQA by cloning K and V
+                K = K.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
+                V = V.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
+            else:
+                # Xformers does support the forward pass though
+                Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
         pass
-
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
@@ -162,10 +166,11 @@ def LlamaAttention_fast_forward(
         pass
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = None, is_causal = True)
+        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2)
     pass
+    
     attn_output = A.reshape(bsz, q_len, self.hidden_size)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
@@ -567,7 +572,7 @@ class FastLlamaModel:
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             model_max_length = max_seq_length,
-            padding_side = "right",
+            padding_side = "right", # MUST be right or else attention fails!
             token = token,
         )
 
@@ -726,6 +731,7 @@ class FastLlamaModel:
             internal_model.max_seq_length = max_seq_length
             internal_model = internal_model.model
         pass
+        internal_model.max_seq_length = max_seq_length
         return model
     pass
 pass
