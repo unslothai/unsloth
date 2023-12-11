@@ -74,7 +74,6 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    # [TODO] Support SWA via Xformers
     if (q_len <= sliding_window) and (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
