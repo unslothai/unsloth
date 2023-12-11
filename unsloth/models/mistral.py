@@ -231,18 +231,8 @@ class FastMistralModel(FastLlamaModel):
         device_map = "sequential",
         # rope_scaling = None, Mistral does not support RoPE scaling
     ):
-        gpu_stats = torch.cuda.get_device_properties(0)
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-
-        statistics = \
-            "==((====))==  Unsloth: Fast Mistral patching release 2023.12\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
-           f"O^O/ \_/ \\    CUDA compute capability = {gpu_stats.major}.{gpu_stats.minor}\n"\
-           f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
-           f' "-____-"     bfloat16 support = {str(SUPPORTS_BFLOAT16).upper()}\n'
-        print(statistics)
-
+        print_unsloth_message("Mistral")
         FastMistralModel.pre_patch()
 
         if dtype is None:
@@ -277,22 +267,7 @@ class FastMistralModel(FastLlamaModel):
             token = token,
         )
 
-        if not hasattr(tokenizer, "pad_token"):
-            # Fixes https://github.com/unslothai/unsloth/issues/5
-            if hasattr(tokenizer, "unk_token"):
-                tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token})
-                tokenizer.pad_token = tokenizer.unk_token
-            else:
-                logger.warning_one(
-                    f"{model_name} does not have a padding or unknown token!\n"\
-                    f"Will use the EOS token of id {tokenizer.eos_token_id} as padding."
-                )
-                assert(hasattr(tokenizer, "eos_token"))
-                tokenizer.add_special_tokens({"pad_token" : tokenizer.eos_token})
-                tokenizer.pad_token = tokenizer.eos_token
-            config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
-        pass
-
+        model, tokenizer = patch_tokenizer(model, tokenizer)
         model = FastMistralModel.post_patch(model)
 
         # Patch up QKV / O and MLP
