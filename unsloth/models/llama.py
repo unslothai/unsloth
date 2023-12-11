@@ -15,8 +15,8 @@
 import torch
 from typing import Optional, Tuple, List, Union
 from torch.nn.functional import scaled_dot_product_attention
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from transformers.models.llama.modeling_llama import (
-    _prepare_4d_causal_attention_mask,
     logger,
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
