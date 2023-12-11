@@ -411,7 +411,7 @@ def LlamaModel_fast_forward(
             (batch_size, seq_length),
             inputs_embeds,
             past_key_values_length,
-            sliding_window = None if not hasattr(self.config "sliding_window") else \
+            sliding_window = None if not hasattr(self.config, "sliding_window") else \
                 self.config.sliding_window,
         )
     pass
@@ -821,7 +821,7 @@ class FastLlamaModel:
                 layer.self_attn.apply_o = apply_lora_o
             pass
         pass
-        
+
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10
         extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda")
