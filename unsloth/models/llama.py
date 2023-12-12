@@ -614,7 +614,7 @@ class FastLlamaModel:
         rope_scaling = None,
     ):
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-        print_unsloth_message("Mistral")
+        print_unsloth_message("Llama")
         FastLlamaModel.pre_patch()
 
         if dtype is None:
@@ -734,6 +734,7 @@ class FastLlamaModel:
         use_gradient_checkpointing = True,
         random_state = 3407,
         max_seq_length = 2048,
+        **kwargs,
     ):
         assert(max_seq_length <= model.max_seq_length)
 
@@ -759,6 +760,7 @@ class FastLlamaModel:
             bias           = "none",
             task_type      = TaskType.CAUSAL_LM,
             layers_to_transform = layers_to_transform,
+            **kwargs,
         )
 
         model = prepare_model_for_kbit_training(
