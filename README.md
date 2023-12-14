@@ -297,8 +297,7 @@ Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unslo
 
 $$
 \begin{align}
-\text{RMSLayernorm}(X) &= y = \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot w \\
-\frac{dC}{dX} &= \frac{1}{n} \frac{1}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}}  \bigg( n (dY \cdot w) - \bigg( \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot \sum{dY \cdot \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}}  \cdot w }  \bigg) \bigg) \\
+y &= \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot w \\
 y &= \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot w \\
 r &= \frac{1}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \\
 \frac{dC}{dX} &= \frac{1}{n} r \bigg( n (dY \cdot w) - \bigg( x_i \cdot r \cdot \sum{dY \cdot y_i }  \bigg) \bigg)
