@@ -65,7 +65,7 @@ kaggle = [
 	"unsloth[huggingface]",
 ]
 colab = [
-	"unsloth[cu118]",
+	"unsloth[cu121]",
 ]
 cu118_ampere = [
 	"unsloth[huggingface]",
@@ -82,7 +82,7 @@ cu121_ampere = [
 	"flash-attn",
 ]
 colab_ampere = [
-	"unsloth[cu118]",
+	"unsloth[cu121]",
 	"ninja",
 	"flash-attn",
 ]
