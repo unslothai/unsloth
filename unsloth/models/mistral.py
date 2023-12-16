@@ -37,6 +37,17 @@ def MistralAttention_fast_forward(
     bsz, q_len, _ = hidden_states.size()
     Q, K, V = self.apply_qkv(self, hidden_states)
 
+    # Check for inference
+    if use_cache and past_key_value is not None and q_len == 1:
+        A, past_key_value = LlamaAttention_fast_forward_inference(
+            self,
+            hidden_states,
+            past_key_value,
+            position_ids,
+        )
+        return A, None, past_key_value
+    pass
+
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.num_key_value_heads
@@ -152,8 +163,10 @@ def MistralForCausalLM_fast_forward(
         elif q_len <= sliding_window:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
         else:
-            causal_mask = xformers.attn_bias.BlockDiagonalCausalLocalAttentionMask.\
-                make_local_attention(window_size = sliding_window)
+            # Fix from https://github.com/Rypo
+            causal_mask = xformers.attn_bias.BlockDiagonalCausalMask\
+                .from_seqlens([qlen]*bsz)\
+                .make_local_attention(window_size = sliding_window)
     pass
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions

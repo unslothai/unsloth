@@ -7,7 +7,7 @@
 ## 2-5x faster 60% less memory local QLoRA finetuning
 * Supports Llama 7b, 13b, 70b, CodeLlama 34b, Mistral 7b, TinyLlama and all Llama archs!
 * Llama 7b [Colab T4 example](https://colab.research.google.com/drive/1n-fgduZhRUsSjgpqNtVkXA3rSfE7iBdg?usp=sharing) on 1 T4 2x faster, uses 43% less VRAM (8.4GB) LAION dataset. [Alpaca T4 example](https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing) 2x faster on 1 T4, using 6.4GB VRAM.
-* Mistral 7b [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) on 1 A100 2.2x faster, uses 62% less VRAM (12.4GB).
+* Mistral 7b [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) on 1 A100 2.2x faster, uses 62% less VRAM (12.4GB). [Colab T4 example](https://colab.research.google.com/drive/15pyLgRN97B_jA56HS0esx56knA9I5tuv?usp=sharing)
 * CodeLlama 34b [Colab example](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) does not OOM is 1.9x faster, uses 32% less VRAM (27GB).
 * Kaggle 2 Tesla T4s 5.28x faster on Alpaca. [Kaggle example](https://www.kaggle.com/danielhanchen/unsloth-laion-t4-ddp)
 * All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language.
