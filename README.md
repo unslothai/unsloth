@@ -5,23 +5,20 @@
 </div>
 
 ## 2-5x faster 60% less memory local QLoRA finetuning
-* Supports Llama 7b, 13b, 70b, CodeLlama 34b, Mistral 7b, TinyLlama and all Llama archs!
-* Llama 7b [Colab T4 example](https://colab.research.google.com/drive/1n-fgduZhRUsSjgpqNtVkXA3rSfE7iBdg?usp=sharing) on 1 T4 2x faster, uses 43% less VRAM (8.4GB) LAION dataset. [Alpaca T4 example](https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing) 2x faster on 1 T4, using 6.4GB VRAM.
-* Mistral 7b [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) on 1 A100 2.2x faster, uses 62% less VRAM (12.4GB). [Colab T4 example](https://colab.research.google.com/drive/15pyLgRN97B_jA56HS0esx56knA9I5tuv?usp=sharing)
-* CodeLlama 34b [Colab example](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) does not OOM is 1.9x faster, uses 32% less VRAM (27GB).
-* Kaggle 2 Tesla T4s 5.28x faster on Alpaca. [Kaggle example](https://www.kaggle.com/danielhanchen/unsloth-laion-t4-ddp)
+| Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
+|-----------------------------|-----------------------------|-------------------------|------------------------|
+| **2.2x faster, -43%  VRAM**     | **2.2x faster, -62%  VRAM**     | **1.9x faster, -27% VRAM**  | **5.5x faster, -44% VRAM** |
+| [Colab Alpaca example + inference](https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing) | [Colab T4 example](https://colab.research.google.com/drive/15pyLgRN97B_jA56HS0esx56knA9I5tuv?usp=sharing) | [A100 example](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
+| [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
+
+* Supports Llama (7, 13, 70b), Yi (6, 34b), Mistral (7b), Tinyllama, CodeLlama (7, 13, 34b), and all Llama / Mistral derived architectures!
 * All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language.
-* 0% loss in accuracy - no approximation methods - all exact.
+* **0% loss in accuracy** - no approximation methods - all exact.
 * No change of hardware necessary. Supports NVIDIA GPUs since 2018+. Minimum CUDA Compute Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU](https://developer.nvidia.com/cuda-gpus)
 * **NEW!** Works on **Linux** and **Windows** via WSL.
 * **NEW!** Experimental support for [DPO (Direct Preference Optimization)](https://arxiv.org/abs/2305.18290)!
 * Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
 * Open source version trains 5x faster or you can check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
-  
-<div class="align-center">
-  <img src="./images/Slim Orca 2GPUs.png" width="400" />
-  <img src="./images/LAION 2GPU.png" width="400" />
-</div>
 
 | 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
 |--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
@@ -35,7 +32,7 @@ If you trained a model with Unsloth, we made a cool sticker!!
 <img src="./images/unsloth made with love.png" width="200" />
 
 # Installation Instructions - Conda
-Unsloth currently only supports Linux distros and Pytorch >= 2.1.
+Unsloth currently only supports Linux distros and Pytorch == 2.1.
 ```
 conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
   -c pytorch -c nvidia -c xformers -c conda-forge -y
@@ -47,17 +44,17 @@ pip install "unsloth[kaggle] @ git+https://github.com/unslothai/unsloth.git"
 ```
 import torch; torch.version.cuda
 ```
+2. We only support Pytorch 2.1 (2.1.1 bugs out for now): You can update Pytorch via Pip (interchange cu121 / cu118)
+```
+pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.0 triton \
+  --index-url https://download.pytorch.org/whl/cu121
+```
 2. Select either cu118 for CUDA 11.8 or cu121 for CUDA 12.1. If you have a RTX 3060 or higher (A100, H100 etc), use the "ampere" path.
 ```
 pip install "unsloth[cu118] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu118_ampere] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121_ampere] @ git+https://github.com/unslothai/unsloth.git"
-```
-3. We only support Pytorch 2.1: You can update Pytorch via Pip:
-```
-pip install --upgrade --force-reinstall --no-cache-dir torch triton \
-  --index-url https://download.pytorch.org/whl/cu121
 ```
 Change `cu121` to `cu118` for CUDA version 11.8 or 12.1. Go to https://pytorch.org/ to learn more.
 
