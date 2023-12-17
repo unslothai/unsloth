@@ -20,6 +20,7 @@ import gc
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
+import platform
 
 __version__ = "2023.12"
 __all__ = [
@@ -99,6 +100,6 @@ def print_unsloth_message(name):
        f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
        f"O^O/ \_/ \\    CUDA compute capability = {gpu_stats.major}.{gpu_stats.minor}\n"\
        f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
-       f' "-____-"     bfloat16 support = {str(SUPPORTS_BFLOAT16).upper()}\n'
+       f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform.system()}\n'
     print(statistics)
 pass
