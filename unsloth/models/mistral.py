@@ -165,7 +165,7 @@ def MistralForCausalLM_fast_forward(
         else:
             # Fix from https://github.com/Rypo
             causal_mask = xformers.attn_bias.BlockDiagonalCausalMask\
-                .from_seqlens([qlen]*bsz)\
+                .from_seqlens([q_len]*bsz)\
                 .make_local_attention(window_size = sliding_window)
     pass
 
