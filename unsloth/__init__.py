@@ -48,7 +48,7 @@ except:
 
 # We only support torch 2.1
 # Fixes https://github.com/unslothai/unsloth/issues/38
-torch_version =  = torch.__version__.split(".")
+torch_version = torch.__version__.split(".")
 major_torch, minor_torch = torch_version[0], torch_version[1]
 major_torch, minor_torch = int(major_torch), int(minor_torch)
 if (major_torch != 2) or (major_torch == 2 and minor_torch < 1):
