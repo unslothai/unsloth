@@ -47,6 +47,7 @@ __all__ = [
     "xformers_attention",
     "xformers_version",
     "__version__",
+    "HAS_FLASH_ATTENTION",
 ]
 
 
