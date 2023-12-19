@@ -45,7 +45,7 @@ class FastLanguageModel:
             )
         elif model_type == "mistral":
             if rope_scaling is not None:
-                logger.warning_once("Mistral models do not support RoPE scaling.")
+                logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
             return FastMistralModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
@@ -57,7 +57,8 @@ class FastLanguageModel:
             )
         else:
             raise NotImplementedError(
-                f"{model_name} not supported yet! Make an issue to https://github.com/unslothai/unsloth!",
+                f"Unsloth: {model_name} not supported yet!\n"\
+                "Make an issue to https://github.com/unslothai/unsloth!",
             )
     pass
 pass
