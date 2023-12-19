@@ -21,6 +21,7 @@ warnings.filterwarnings(action = "ignore", category = UserWarning, module = "tor
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from platform import system as platform_system
+platform_system = platform_system()
 
 __version__ = "2023.12"
 
