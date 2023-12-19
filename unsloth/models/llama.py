@@ -23,6 +23,8 @@ from transformers.models.llama.modeling_llama import (
 )
 from ..kernels import *
 from ._utils import *
+if HAS_FLASH_ATTENTION:
+    from flash_attn import flash_attn_func
 
 # Final patching code
 from transformers.models.llama.modeling_llama import (

@@ -40,6 +40,15 @@ import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
 
+__all__ = [
+    "prepare_model_for_kbit_training",
+    "patch_tokenizer",
+    "xformers",
+    "xformers_attention",
+    "xformers_version",
+    "__version__",
+]
+
 
 def prepare_model_for_kbit_training(
     model                      : Any,
