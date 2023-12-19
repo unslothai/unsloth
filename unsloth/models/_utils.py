@@ -20,7 +20,7 @@ import gc
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
-import platform
+from platform import system as platform_system
 
 __version__ = "2023.12"
 
@@ -48,6 +48,7 @@ __all__ = [
     "xformers_version",
     "__version__",
     "HAS_FLASH_ATTENTION",
+    "platform_system",
 ]
 
 

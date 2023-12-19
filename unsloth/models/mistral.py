@@ -254,7 +254,7 @@ class FastMistralModel(FastLlamaModel):
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
            f"O^O/ \_/ \\    CUDA capability = {gpu_stats.major}.{gpu_stats.minor}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
-           f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform.system()}\n'
+           f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform_system}\n'
         logger.warning_once(statistics)
         FastMistralModel.pre_patch()
 
