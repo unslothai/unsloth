@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from ._utils import __version__
 
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
