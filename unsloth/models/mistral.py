@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from ._utils import __version__
 
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
@@ -245,7 +246,16 @@ class FastMistralModel(FastLlamaModel):
         # rope_scaling = None, Mistral does not support RoPE scaling
     ):
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-        print_unsloth_message("Mistral")
+        gpu_stats = torch.cuda.get_device_properties(0)
+        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+
+        statistics = \
+           f"==((====))==  Unsloth: Fast Mistral patching release {__version__}\n"\
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
+           f"O^O/ \_/ \\    CUDA capability = {gpu_stats.major}.{gpu_stats.minor}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
+           f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
+           f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform_system}\n'
+        logger.warning_once(statistics)
         FastMistralModel.pre_patch()
 
         if dtype is None:

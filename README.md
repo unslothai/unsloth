@@ -33,7 +33,7 @@ If you trained a model with Unsloth, we made a cool sticker!!
 
 # Installation Instructions - Conda
 Unsloth currently only supports Linux distros and Pytorch == 2.1.
-```
+```bash
 conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
   -c pytorch -c nvidia -c xformers -c conda-forge -y
 pip install "unsloth[kaggle] @ git+https://github.com/unslothai/unsloth.git"
@@ -41,16 +41,16 @@ pip install "unsloth[kaggle] @ git+https://github.com/unslothai/unsloth.git"
 
 # Installation Instructions - Pip
 1. Find your CUDA version via
-```
+```python
 import torch; torch.version.cuda
 ```
 2. We only support Pytorch 2.1 (2.1.1 bugs out for now): You can update Pytorch via Pip (interchange cu121 / cu118)
-```
+```bash
 pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.0 triton \
   --index-url https://download.pytorch.org/whl/cu121
 ```
 2. Select either cu118 for CUDA 11.8 or cu121 for CUDA 12.1. If you have a RTX 3060 or higher (A100, H100 etc), use the "ampere" path.
-```
+```bash
 pip install "unsloth[cu118] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu118_ampere] @ git+https://github.com/unslothai/unsloth.git"
@@ -59,13 +59,13 @@ pip install "unsloth[cu121_ampere] @ git+https://github.com/unslothai/unsloth.gi
 Change `cu121` to `cu118` for CUDA version 11.8 or 12.1. Go to https://pytorch.org/ to learn more.
 
 4. If you get errors, try the below first, then go back to step 1:
-```
+```bash
 pip install --upgrade pip
 ```
 
 # Documentation
 We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
-```
+```python
 from unsloth import FastLlamaModel, FastMistralModel
 import torch
 max_seq_length = 2048 # Can change to any number <= 4096
@@ -305,7 +305,7 @@ $$
 
 # Troubleshooting
 1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
-```
+```bash
 !ldconfig /usr/lib64-nvidia
 ```
 2. Windows is not supported as of yet - we rely on Xformers and Triton support, so until both packages support Windows officially, Unsloth will then support Windows.
@@ -315,5 +315,5 @@ $$
 # Credits
 1. [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
 2. [152334H](https://github.com/152334H) for experimental DPO support
-
+3. [atgctg](https://github.com/atgctg) for syntax highlighting
 <img src="./images/unsloth loading page render.png" width="300" />

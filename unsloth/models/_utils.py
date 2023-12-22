@@ -20,13 +20,36 @@ import gc
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
-import platform
+from platform import system as platform_system
+platform_system = platform_system()
 
 __version__ = "2023.12"
+
+# Get Flash Attention v2 if Ampere (RTX 30xx, A100)
+major_version, minor_version = torch.cuda.get_device_capability()
+if major_version >= 8:
+    try:
+        from flash_attn import flash_attn_func
+        HAS_FLASH_ATTENTION = True
+    except:
+        HAS_FLASH_ATTENTION = False
+else:
+    # Tri Dao's benchmark shows xformers is faster for now.
+    HAS_FLASH_ATTENTION = False
+pass
+import xformers.ops.fmha as xformers
+xformers_attention = xformers.memory_efficient_attention
+from xformers import __version__ as xformers_version
+
 __all__ = [
     "prepare_model_for_kbit_training",
     "patch_tokenizer",
-    "print_unsloth_message",
+    "xformers",
+    "xformers_attention",
+    "xformers_version",
+    "__version__",
+    "HAS_FLASH_ATTENTION",
+    "platform_system",
 ]
 
 
@@ -71,6 +94,7 @@ pass
 
 
 def patch_tokenizer(model, tokenizer):
+    model.config.update({"unsloth_version" : __version__})
     if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
         # Fixes https://github.com/unslothai/unsloth/issues/5
         if hasattr(tokenizer, "unk_token"):
@@ -87,19 +111,4 @@ def patch_tokenizer(model, tokenizer):
         config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
     pass
     return model, tokenizer
-pass
-
-
-def print_unsloth_message(name):
-    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-    gpu_stats = torch.cuda.get_device_properties(0)
-    max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
-
-    statistics = \
-       f"==((====))==  Unsloth: Fast {name} patching release {__version__}\n"\
-       f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
-       f"O^O/ \_/ \\    CUDA compute capability = {gpu_stats.major}.{gpu_stats.minor}\n"\
-       f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
-       f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform.system()}\n'
-    print(statistics)
 pass
