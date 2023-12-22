@@ -630,7 +630,7 @@ class FastLlamaModel:
         if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
             rope_scaling = max_seq_length / model_max_seq_length
             logger.warning_once(
-                f"Unsloth: {model_name} can only handle sequence lengths of of most "\
+                f"Unsloth: {model_name} can only handle sequence lengths of at most "\
                 f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
                 f"{round(rope_scaling, 3)}, it can be magically be extended to "\
                 f"{max_seq_length}!"
