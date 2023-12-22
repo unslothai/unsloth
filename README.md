@@ -315,5 +315,5 @@ $$
 # Credits
 1. [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
 2. [152334H](https://github.com/152334H) for experimental DPO support
-
+3. [atgctg](https://github.com/atgctg) for syntax highlighting
 <img src="./images/unsloth loading page render.png" width="300" />
