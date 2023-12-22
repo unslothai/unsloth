@@ -23,21 +23,9 @@ from transformers.models.llama.modeling_llama import (
 )
 from ..kernels import *
 from ._utils import *
-
-# Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-major_version, minor_version = torch.cuda.get_device_capability()
-if major_version >= 8:
-    try:
-        from flash_attn import flash_attn_func
-        HAS_FLASH_ATTENTION = True
-    except:
-        HAS_FLASH_ATTENTION = False
-else:
-    # Tri Dao's benchmark shows xformers is faster for now.
-    HAS_FLASH_ATTENTION = False
-pass
-import xformers.ops.fmha as xformers
-xformers_attention = xformers.memory_efficient_attention
+from ._utils import __version__
+if HAS_FLASH_ATTENTION:
+    from flash_attn import flash_attn_func
 
 # Final patching code
 from transformers.models.llama.modeling_llama import (
@@ -139,19 +127,20 @@ def LlamaAttention_fast_forward_inference(
     # V = repeat_kv(V, n_groups)
     if n_groups != 1:
         _, _, cached_len, _ = Kn.shape
-        Kn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Vn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Kn = Kn.reshape(bsz, n_heads, cached_len, head_dim)
-        Vn = Vn.reshape(bsz, n_heads, cached_len, head_dim)
-    pass
+        Knn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Vnn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Knn = Knn.view(bsz, n_heads, cached_len, head_dim)
+        Vnn = Vnn.view(bsz, n_heads, cached_len, head_dim)
+    else:
+        Knn, Vnn = Kn, Vn
 
     # Attention
-    A = torch.matmul(Qn, Kn.transpose(2, 3))
+    A = torch.matmul(Qn, Knn.transpose(2, 3))
     A *= 1.0 / (self.head_dim**0.5)
     A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(A.dtype)
-    A = torch.matmul(A, Vn)
+    A = torch.matmul(A, Vnn)
     A = A.transpose(1, 2)
-    A = A.reshape(bsz, 1, self.hidden_size)
+    A = A.view(bsz, 1, self.hidden_size)
     A = original_apply_o(self, A)
     return A, (Kn, Vn)
 pass
@@ -359,13 +348,13 @@ def LlamaModel_fast_forward(
 
     # retrieve input_ids and inputs_embeds
     if input_ids is not None and inputs_embeds is not None:
-        raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
+        raise ValueError("Unsloth: You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
     elif input_ids is not None:
         batch_size, seq_length = input_ids.shape
     elif inputs_embeds is not None:
         batch_size, seq_length, _ = inputs_embeds.shape
     else:
-        raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
+        raise ValueError("Unsloth: You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
     seq_length_with_past = seq_length
     past_key_values_length = 0
@@ -419,7 +408,7 @@ def LlamaModel_fast_forward(
     if self.gradient_checkpointing and self.training:
         if use_cache:
             logger.warning_once(
-                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                "Unsloth: `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`"
             )
             use_cache = False
     pass
@@ -614,7 +603,16 @@ class FastLlamaModel:
         rope_scaling = None,
     ):
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-        print_unsloth_message("Llama")
+        gpu_stats = torch.cuda.get_device_properties(0)
+        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+
+        statistics = \
+           f"==((====))==  Unsloth: Fast Llama patching release {__version__}\n"\
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
+           f"O^O/ \_/ \\    CUDA capability = {gpu_stats.major}.{gpu_stats.minor}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
+           f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
+           f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform_system}\n'
+        logger.warning_once(statistics)
         FastLlamaModel.pre_patch()
 
         if dtype is None:
@@ -632,7 +630,7 @@ class FastLlamaModel:
         if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
             rope_scaling = max_seq_length / model_max_seq_length
             logger.warning_once(
-                f"Unsloth: {model_name} can only handle sequence lengths of of most "\
+                f"Unsloth: {model_name} can only handle sequence lengths of at most "\
                 f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
                 f"{round(rope_scaling, 3)}, it can be magically be extended to "\
                 f"{max_seq_length}!"
@@ -686,6 +684,7 @@ class FastLlamaModel:
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(model.model.embed_tokens.weight)
+        model.config.update({"unsloth_version" : __version__})
 
         # We also do this for the lm_head
         lm_head = torch.nn.Linear(1, 1, bias = None)
@@ -747,6 +746,7 @@ class FastLlamaModel:
 
         accepted_modules = frozenset(("q_proj", "k_proj", "v_proj", "o_proj",
                                       "gate_proj", "up_proj", "down_proj",),)
+        model.config.update({"unsloth_version" : __version__})
         for module in target_modules:
             assert(module in accepted_modules)
         pass
@@ -771,6 +771,9 @@ class FastLlamaModel:
         model = _get_peft_model(model, lora_config)
 
         # Do patching
+        n_mlp = 0
+        n_qkv = 0
+        n_o   = 0
         for idx, layer in enumerate(model.model.model.layers):
 
             # MLP patching
@@ -780,6 +783,7 @@ class FastLlamaModel:
 
                 # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
                 layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                n_mlp += 1
             pass
 
             # QKV attention patching
@@ -788,14 +792,21 @@ class FastLlamaModel:
                 hasattr(layer.self_attn.v_proj, "lora_A"):
 
                 layer.self_attn.apply_qkv = apply_lora_qkv
+                n_qkv += 1
             pass
 
             # O attention patching
             if hasattr(layer.self_attn.o_proj, "lora_A"):
 
                 layer.self_attn.apply_o = apply_lora_o
+                n_o += 1
             pass
         pass
+
+        logger.warning_once(
+            f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "\
+            f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.",
+        )
 
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10
