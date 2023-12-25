@@ -369,6 +369,7 @@ def LlamaModel_fast_forward(
         raise ValueError("Unsloth: You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
     seq_length_with_past = seq_length
+    assert(seq_length <= self.max_seq_length)
     past_key_values_length = 0
 
     if past_key_values is not None:
@@ -661,6 +662,9 @@ class FastLlamaModel:
                 bnb_4bit_compute_dtype    = dtype,
             )
 
+        # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
+        # RoPE Scaling's max_position_embeddings must be updated
+        max_position_embeddings = max(max_seq_length, model_max_seq_length)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map = device_map,
@@ -668,6 +672,7 @@ class FastLlamaModel:
             quantization_config = bnb_config,
             token = token,
             rope_scaling = rope_scaling,
+            max_position_embeddings = max_position_embeddings,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
@@ -685,7 +690,7 @@ class FastLlamaModel:
             layer.self_attn.apply_o   = original_apply_o
         pass
 
-        model.max_seq_length = max_seq_length
+        model.max_seq_length = max_position_embeddings
         return model, tokenizer
     pass
 
@@ -746,7 +751,7 @@ class FastLlamaModel:
         layers_to_transform = None,
         use_gradient_checkpointing = True,
         random_state = 3407,
-        max_seq_length = 2048,
+        max_seq_length = 2048, # not used anymore
         **kwargs,
     ):
         assert(max_seq_length <= model.max_seq_length)
@@ -824,6 +829,7 @@ class FastLlamaModel:
 
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10
+        max_seq_length = model.max_seq_length
         extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda")
         model.model.extra_ignored_labels = extra_ignored_labels
         internal_model = model
