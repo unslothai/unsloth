@@ -125,7 +125,7 @@ def MistralAttention_fast_forward(
         V = V.transpose(1, 2)
 
         # Flash Attention v2 auto supports grouped query attention
-        sliding_window = self.config.sliding_window
+        sliding_window = getattr(self.config, "sliding_window")
         sliding_window = q_len if sliding_window is None else sliding_window
         window = (-1, -1) if (q_len <= sliding_window) else (sliding_window, sliding_window)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
@@ -169,7 +169,7 @@ def MistralForCausalLM_fast_forward(
 
     if causal_mask is None:
         bsz, q_len = input_ids.shape
-        sliding_window = self.config.sliding_window
+        sliding_window = getattr(self.config, "sliding_window")
         if sliding_window is None or sliding_window <= 0:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
         elif q_len <= sliding_window:
@@ -312,7 +312,7 @@ class FastMistralModel(FastLlamaModel):
             layer.self_attn.apply_o   = original_apply_o
         pass
 
-        model.max_seq_length = max_seq_length
+        model.max_seq_length = max(max_seq_length, model.config.max_position_embeddings)
         return model, tokenizer
     pass
 pass
