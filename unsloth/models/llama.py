@@ -33,7 +33,19 @@ from transformers.models.llama.modeling_llama import (
     LlamaDecoderLayer,
     LlamaModel,
     LlamaForCausalLM,
-) 
+)
+
+# For Pytorch 2.1.1
+try:
+    from transformers.models.llama.modeling_llama import (
+        LlamaSdpaAttention,
+        LlamaFlashAttention2,
+    )
+except:
+    LlamaSdpaAttention   = LlamaAttention
+    LlamaFlashAttention2 = LlamaAttention
+pass
+
 from peft import PeftModelForCausalLM
 import gc
 import peft
@@ -584,6 +596,8 @@ class FastLlamaModel:
     @staticmethod
     def pre_patch():
         LlamaAttention      .forward = LlamaAttention_fast_forward
+        LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
+        LlamaFlashAttention2.forward = LlamaAttention_fast_forward
         LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         LlamaModel          .forward = LlamaModel_fast_forward
         LlamaForCausalLM    .forward = LlamaForCausalLM_fast_forward
