@@ -674,6 +674,7 @@ class FastLlamaModel:
             rope_scaling = rope_scaling,
             max_position_embeddings = max_position_embeddings,
         )
+        print(max_position_embeddings)
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             model_max_length = max_seq_length,
