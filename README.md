@@ -1,6 +1,6 @@
 <div class="align-center">
-  <img src="./images/unsloth new logo.png" width="400" />
-  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" width="180"></a>
+  <img src="./images/unsloth new logo.png" width="350" />
+  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" width="160"></a>
   <a href="https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing"><img src="./images/try live demo green.png" width="130"></a>
 </div>
 
@@ -36,7 +36,7 @@ Unsloth currently only supports Linux distros and Pytorch == 2.1.
 ```bash
 conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
   -c pytorch -c nvidia -c xformers -c conda-forge -y
-pip install "unsloth[kaggle] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[conda] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
 # Installation Instructions - Pip
@@ -66,23 +66,26 @@ pip install --upgrade pip
 # Documentation
 We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
 ```python
-from unsloth import FastLlamaModel, FastMistralModel
+from unsloth import FastLanguageModel
 import torch
-max_seq_length = 2048 # Can change to any number <= 4096
-dtype = None # None for auto detection. Float16 for Tesla T4, V100, Bfloat16 for Ampere+
-load_in_4bit = True # Use 4bit quantization to reduce memory usage. Can be False.
+from trl import SFTTrainer
+from transformers import TrainingArguments
+from datasets import load_dataset
+max_seq_length = 2048 # Supports RoPE Scaling interally, so choose any!
+# Get LAION dataset
+url = "https://huggingface.co/datasets/laion/OIG/resolve/main/unified_chip2.jsonl"
+dataset = load_dataset("json", data_files = {"train" : url}, split = "train")
 
 # Load Llama model
-model, tokenizer = FastLlamaModel.from_pretrained(
-    model_name = "unsloth/llama-2-7b", # Supports any llama model eg meta-llama/Llama-2-7b-hf
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name = "unsloth/llama-2-7b", # Supports Llama, Mistral - replace this!
     max_seq_length = max_seq_length,
-    dtype = dtype,
-    load_in_4bit = load_in_4bit,
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
+    dtype = None,
+    load_in_4bit = True,
 )
 
 # Do model patching and add fast LoRA weights
-model = FastLlamaModel.get_peft_model(
+model = FastLanguageModel.get_peft_model(
     model,
     r = 16,
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
@@ -95,7 +98,26 @@ model = FastLlamaModel.get_peft_model(
     max_seq_length = max_seq_length,
 )
 
-trainer = .... Use Huggingface's Trainer and dataset loading (TRL, transformers etc)
+trainer = SFTTrainer(
+    model = model,
+    train_dataset = dataset,
+    dataset_text_field = "text",
+    max_seq_length = max_seq_length,
+    tokenizer = tokenizer,
+    args = TrainingArguments(
+        per_device_train_batch_size = 2,
+        gradient_accumulation_steps = 4,
+        warmup_steps = 10,
+        max_steps = 60,
+        fp16 = not torch.cuda.is_bf16_supported(),
+        bf16 = torch.cuda.is_bf16_supported(),
+        logging_steps = 1,
+        output_dir = "outputs",
+        optim = "adamw_8bit",
+        seed = 3407,
+    ),
+)
+trainer.train()
 ```
 
 # DPO (Direct Preference Optimization) Experimental support
@@ -295,7 +317,6 @@ Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unslo
 
 $$
 \begin{align}
-y &= \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot w \\
 y &= \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot w \\
 r &= \frac{1}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \\
 \frac{dC}{dX} &= \frac{1}{n} r \bigg( n (dY \cdot w) - \bigg( x_i \cdot r \cdot \sum{dY \cdot y_i }  \bigg) \bigg)

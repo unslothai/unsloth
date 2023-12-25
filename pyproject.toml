@@ -64,6 +64,9 @@ cu121 = [
 kaggle = [
 	"unsloth[huggingface]",
 ]
+conda = [
+	"unsloth[huggingface]",
+]
 colab = [
 	"unsloth[cu121]",
 ]

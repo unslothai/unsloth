@@ -20,7 +20,18 @@ from transformers.models.mistral.modeling_mistral import (
     MistralDecoderLayer,
     MistralModel,
     MistralForCausalLM,
-) 
+)
+# For Pytorch 2.1.1
+try:
+    from transformers.models.mistral.modeling_mistral import (
+        MistralSdpaAttention,
+        MistralFlashAttention2,
+    )
+except:
+    MistralSdpaAttention   = MistralAttention
+    MistralFlashAttention2 = MistralAttention
+pass
+
 
 def MistralAttention_fast_forward(
     self,
@@ -227,6 +238,8 @@ class FastMistralModel(FastLlamaModel):
     @staticmethod
     def pre_patch():
         MistralAttention      .forward = MistralAttention_fast_forward
+        MistralSdpaAttention  .forward = MistralAttention_fast_forward
+        MistralFlashAttention2.forward = MistralAttention_fast_forward
         MistralDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         MistralModel          .forward = LlamaModel_fast_forward
         MistralForCausalLM    .forward = MistralForCausalLM_fast_forward
