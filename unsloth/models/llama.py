@@ -141,8 +141,8 @@ def LlamaAttention_fast_forward_inference(
         _, _, cached_len, _ = Kn.shape
         Knn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Knn = Knn.view(bsz, n_heads, cached_len, head_dim)
-        Vnn = Vnn.view(bsz, n_heads, cached_len, head_dim)
+        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
+        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
     else:
         Knn, Vnn = Kn, Vn
 
@@ -152,7 +152,7 @@ def LlamaAttention_fast_forward_inference(
     A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(A.dtype)
     A = torch.matmul(A, Vnn)
     A = A.transpose(1, 2)
-    A = A.view(bsz, 1, self.hidden_size)
+    A = A.reshape(bsz, 1, self.hidden_size)
     A = original_apply_o(self, A)
     return A, (Kn, Vn)
 pass
