@@ -17,10 +17,10 @@ from .mistral import FastMistralModel
 from transformers import AutoConfig
 
 
-class FastLanguageModel:
+class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name = "mistralai/Mistral-7B-v0.1",
+        model_name = "unsloth/mistral-7b-bnb-4bit",
         max_seq_length = 4096,
         dtype = None,
         load_in_4bit = True,

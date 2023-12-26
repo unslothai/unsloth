@@ -609,7 +609,7 @@ class FastLlamaModel:
 
     @staticmethod
     def from_pretrained(
-        model_name = "meta-llama/Llama-2-7b-hf",
+        model_name = "unsloth/llama-2-7b-bnb-4bit",
         max_seq_length = 4096,
         dtype = None,
         load_in_4bit = True,
