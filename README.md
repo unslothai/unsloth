@@ -8,7 +8,7 @@
 | Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
 |-----------------------------|-----------------------------|-------------------------|------------------------|
 | **2.2x faster, -43%  VRAM**     | **2.2x faster, -62%  VRAM**     | **1.9x faster, -27% VRAM**  | **5.5x faster, -44% VRAM** |
-| [Colab Alpaca example + inference](https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing) | [Colab T4 example](https://colab.research.google.com/drive/15pyLgRN97B_jA56HS0esx56knA9I5tuv?usp=sharing) | [A100 example](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
+| [Colab Alpaca example + inference, saving](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Colab T4 example + inference, saving](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [A100 example](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
 | [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
 * Supports Llama (7, 13, 70b), Yi (6, 34b), Mistral (7b), Tinyllama, CodeLlama (7, 13, 34b), and all Llama / Mistral derived architectures!
