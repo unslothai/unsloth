@@ -765,9 +765,9 @@ class FastLlamaModel:
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
-            raise TypeError("Unsloth: Fast Llama patching only works with dropout = 0.")
+            raise TypeError("Unsloth: Fast model patching only works with dropout = 0.")
         if bias != "none":
-            raise TypeError("Unsloth: Fast Llama patching only works with bias = 'none'.")
+            raise TypeError("Unsloth: Fast model patching only works with bias = 'none'.")
 
         transformers_set_seed(random_state)
 

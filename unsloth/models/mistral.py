@@ -243,7 +243,7 @@ class FastMistralModel(FastLlamaModel):
         MistralDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         MistralModel          .forward = LlamaModel_fast_forward
         MistralForCausalLM    .forward = MistralForCausalLM_fast_forward
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM  .forward = PeftModelForCausalLM_fast_forward
         return
     pass
 
