@@ -5,21 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "unsloth"
 dynamic = ["version"]
-description = "2X faster LLM finetuning"
+description = "2-5X faster LLM finetuning"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {file = "LICENSE"}
 keywords = ["ai", "llm",]
 authors = [
-	{email = "info@unsloth.ai"},
-	{name = "Unsloth AI team"},
+    {email = "info@unsloth.ai"},
+    {name = "Unsloth AI team"},
 ]
 maintainers = [
- 	{name = "Daniel Han", email = "danielhanchen@gmail.com"},
- 	{name = "Michael Han", email = "info@unsloth.ai"},
+    {name = "Daniel Han", email = "danielhanchen@gmail.com"},
+    {name = "Michael Han", email = "info@unsloth.ai"},
 ]
 classifiers = [
- 	"Programming Language :: Python",
+    "Programming Language :: Python",
 ]
 
 [tool.setuptools.dynamic]
@@ -40,54 +40,84 @@ huggingface = [
     "trl",
     "peft",
     "packaging",
+    "ninja",
 ]
 cu118only = [
-	"xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
-	"xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
-	"xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
 ]
 cu121only = [
-	"xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
-	"xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
-	"xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.22.post7-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+]
+cu118only_torch211 = [
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.23%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.23%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.23%2Bcu118-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+]
+cu121only_torch211 = [
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.23-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.23-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.23-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
 ]
 cu118 = [
-	"unsloth[huggingface]",
-	"bitsandbytes",
-	"unsloth[cu118only]",
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu118only]",
 ]
 cu121 = [
-	"unsloth[huggingface]",
-	"bitsandbytes",
-	"unsloth[cu121only]",
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121only]",
+]
+cu118_torch211 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu118only_torch211]",
+]
+cu121_torch211 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121only_torch211]",
 ]
 kaggle = [
-	"unsloth[huggingface]",
+    "unsloth[huggingface]",
 ]
 conda = [
-	"unsloth[huggingface]",
+    "unsloth[huggingface]",
 ]
 colab = [
-	"unsloth[cu121]",
-]
-cu118_ampere = [
-	"unsloth[huggingface]",
-	"bitsandbytes",
-	"unsloth[cu118only]",
-	"ninja",
-	"flash-attn",
-]
-cu121_ampere = [
-	"unsloth[huggingface]",
-	"bitsandbytes",
-	"unsloth[cu121only]",
-	"ninja",
-	"flash-attn",
+    "unsloth[cu121]",
 ]
 colab_ampere = [
-	"unsloth[cu121]",
-	"ninja",
-	"flash-attn",
+    "unsloth[cu121]",
+    "flash-attn",
+]
+cu118_ampere = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu118only]",
+    "flash-attn",
+]
+cu121_ampere = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121only]",
+    "flash-attn",
+]
+cu118_ampere_torch211 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu118only_torch211]",
+    "flash-attn",
+]
+cu121_ampere_torch211 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121only_torch211]",
+    "flash-attn",
 ]
 
 [project.urls]

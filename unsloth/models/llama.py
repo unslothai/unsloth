@@ -369,7 +369,8 @@ def LlamaModel_fast_forward(
         raise ValueError("Unsloth: You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
     seq_length_with_past = seq_length
-    assert(seq_length <= self.max_seq_length)
+    if hasattr(self, "max_seq_length"):
+        assert(seq_length <= self.max_seq_length)
     past_key_values_length = 0
 
     if past_key_values is not None:
@@ -690,7 +691,14 @@ class FastLlamaModel:
             layer.self_attn.apply_o   = original_apply_o
         pass
 
+        # Save max_seq_length
         model.max_seq_length = max_position_embeddings
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model.max_seq_length = max_position_embeddings
+            internal_model = internal_model.model
+        pass
+        internal_model.max_seq_length = max_position_embeddings
         return model, tokenizer
     pass
 
@@ -757,9 +765,9 @@ class FastLlamaModel:
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
-            raise TypeError("Unsloth: Fast Llama patching only works with dropout = 0.")
+            raise TypeError("Unsloth: Fast model patching only works with dropout = 0.")
         if bias != "none":
-            raise TypeError("Unsloth: Fast Llama patching only works with bias = 'none'.")
+            raise TypeError("Unsloth: Fast model patching only works with bias = 'none'.")
 
         transformers_set_seed(random_state)
 
