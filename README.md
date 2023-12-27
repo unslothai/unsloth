@@ -8,7 +8,7 @@
 | Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
 |-----------------------------|-----------------------------|-------------------------|------------------------|
 | **2.2x faster, -43%  VRAM**     | **2.2x faster, -62%  VRAM**     | **1.9x faster, -27% VRAM**  | **5.5x faster, -44% VRAM** |
-| [Free Colab Alpaca example](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Free Colab Alpaca example example](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [Colab A100 example example](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
+| [Free Colab Alpaca example](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Free Colab Alpaca example](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
 | [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca example](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
 * Supports Llama, Yi, Mistral, CodeLlama, and their derived models (Open Hermes etc).
@@ -33,7 +33,7 @@ If you trained a model with Unsloth, we made a cool sticker if you want to use i
 <img src="./images/unsloth made with love.png" width="200" />
 
 # Installation Instructions - Conda
-Unsloth currently only supports Linux and WSL.
+Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1.
 ```bash
 conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
   -c pytorch -c nvidia -c xformers -c conda-forge -y
@@ -58,7 +58,7 @@ pip install "unsloth[cu121] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu118_ampere] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121_ampere] @ git+https://github.com/unslothai/unsloth.git"
 ```
-3. For Pytorch 2.1.1:
+3. For Pytorch 2.1.1: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
 ```bash
 pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.1 triton \
   --index-url https://download.pytorch.org/whl/cu121
@@ -182,6 +182,19 @@ Two Tesla T4s on Kaggle
 | Unsloth Max | 2 T4 | 10.5GB \| 5GB | 10.6GB \| 5GB | 10.6GB \| 5GB | 10.5GB \| 5GB * |
 
 * Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
+
+**Llama-Factory 3rd party performance benchmarking**
+[Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table.
+
+| Method | Bits | TGS | GRAM | Speed |
+| --- | --- | --- | --- | --- |
+| HF | 16 | 2392 | 18GB | 100% |
+| HF+FA2 | 16 | 2954 | 17GB | 123% |
+| Unsloth+FA2 | 16 | 4007 | 16GB | **168%** |
+| HF | 4 | 2415 | 9GB | 101% |
+| Unsloth+FA2 | 4 | 3726 | 7GB | **160%** |
+
+TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
 
 # Full benchmarking tables
 Click  "Code" for a fully reproducible example.
