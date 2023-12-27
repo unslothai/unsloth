@@ -195,6 +195,28 @@ Two Tesla T4s on Kaggle
 
 [Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table. TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
 
+# How did we make it faster?
+Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unsloth.ai/blog/mistral-benchmark) for more info!
+
+$$
+\begin{align}
+y &= \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot w \\
+r &= \frac{1}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \\
+\frac{dC}{dX} &= \frac{1}{n} r \bigg( n (dY \cdot w) - \bigg( x_i \cdot r \cdot \sum{dY \cdot y_i }  \bigg) \bigg)
+\end{align}
+$$
+
+
+# Troubleshooting
+1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
+```bash
+!ldconfig /usr/lib64-nvidia
+```
+2. Windows is not supported as of yet - we rely on Xformers and Triton support, so until both packages support Windows officially, Unsloth will then support Windows.
+
+3. If it doesn't install - maybe try updating `pip`.
+
+
 # Full benchmarking tables
 Click  "Code" for a fully reproducible example.
 "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
@@ -333,27 +355,6 @@ Click  "Code" for a fully reproducible example.
 | seconds    | OOM      | OOM         | 2990            | 3444         | 2351          | 831         |
 | memory MB| OOM  | OOM  | 7594 | 8881 | | |
 | % saved | OOM  | OOM  |       |       |  | |
-
-# How did we make it faster?
-Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unsloth.ai/blog/mistral-benchmark) for more info!
-
-$$
-\begin{align}
-y &= \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot w \\
-r &= \frac{1}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \\
-\frac{dC}{dX} &= \frac{1}{n} r \bigg( n (dY \cdot w) - \bigg( x_i \cdot r \cdot \sum{dY \cdot y_i }  \bigg) \bigg)
-\end{align}
-$$
-
-
-# Troubleshooting
-1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
-```bash
-!ldconfig /usr/lib64-nvidia
-```
-2. Windows is not supported as of yet - we rely on Xformers and Triton support, so until both packages support Windows officially, Unsloth will then support Windows.
-
-3. If it doesn't install - maybe try updating `pip`.
 
 # Credits
 1. [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
