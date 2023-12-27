@@ -184,7 +184,6 @@ Two Tesla T4s on Kaggle
 * Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
 
 # Llama-Factory 3rd party benchmarking
-[Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table.
 
 | Method | Bits | TGS | GRAM | Speed |
 | --- | --- | --- | --- | --- |
@@ -194,7 +193,7 @@ Two Tesla T4s on Kaggle
 | HF | 4 | 2415 | 9GB | 101% |
 | Unsloth+FA2 | 4 | 3726 | 7GB | **160%** |
 
-TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
+[Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table. TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
 
 # Full benchmarking tables
 Click  "Code" for a fully reproducible example.
