@@ -15,7 +15,7 @@
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from transformers import AutoConfig
-import transformers.__version__ as transformers_version
+from transformers import __version__ as transformers_version
 
 FOURBIT_MAPPER = \
 {
