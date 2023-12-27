@@ -183,7 +183,7 @@ Two Tesla T4s on Kaggle
 
 * Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
 
-# Llama-Factory 3rd party performance benchmarking
+# Llama-Factory 3rd party benchmarking
 [Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table.
 
 | Method | Bits | TGS | GRAM | Speed |
