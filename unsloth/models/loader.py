@@ -15,6 +15,21 @@
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from transformers import AutoConfig
+from transformers import __version__ as transformers_version
+
+FOURBIT_MAPPER = \
+{
+    "unsloth/mistral-7b-bnb-4bit"    : "unsloth/mistral-7b",
+    "unsloth/llama-2-7b-bnb-4bit"    : "unsloth/llama-2-7b",
+    "unsloth/llama-2-13b-bnb-4bit"   : "unsloth/llama-13-7b",
+    "unsloth/codellama-34b-bnb-4bit" : "codellama/CodeLlama-34b-hf",
+}
+
+# https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
+major, minor = transformers_version.split(".")[:2]
+major, minor = int(major), int(minor)
+SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
+del major, minor
 
 
 class FastLanguageModel(FastLlamaModel):
@@ -29,36 +44,37 @@ class FastLanguageModel(FastLlamaModel):
         rope_scaling = None,
         *args, **kwargs,
     ):
+        if not SUPPORTS_FOURBIT and model_name in FOURBIT_MAPPER:
+            model_name = FOURBIT_MAPPER[model_name]
+            logger.warning_once(
+                f"Unsloth: Your transformers version of {transformers_version} does not support native "\
+                f"4bit loading.\nThe minimum required version is 4.37.\n"\
+                f'Try `pip install "git+https://github.com/huggingface/transformers.git"`\n'\
+                f"to obtain the latest transformers build, then restart this session.\n"\
+                f"For now, we shall load `{model_name}` instead (still 4bit, just slower downloading)."
+            )
+        pass
+
         model_config = AutoConfig.from_pretrained(model_name)
         model_type = model_config.model_type
 
-        if model_type == "llama":
-            return FastLlamaModel.from_pretrained(
-                model_name = model_name,
-                max_seq_length = max_seq_length,
-                dtype = dtype,
-                load_in_4bit = load_in_4bit,
-                token = token,
-                device_map = device_map,
-                rope_scaling = rope_scaling,
-                *args, **kwargs,
-            )
-        elif model_type == "mistral":
-            if rope_scaling is not None:
-                logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
-            return FastMistralModel.from_pretrained(
-                model_name = model_name,
-                max_seq_length = max_seq_length,
-                dtype = dtype,
-                load_in_4bit = load_in_4bit,
-                token = token,
-                device_map = device_map,
-                *args, **kwargs,
-            )
+        if   model_type == "llama":   dispatch_model = FastLlamaModel
+        elif model_type == "mistral": dispatch_model = FastMistralModel
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\
                 "Make an issue to https://github.com/unslothai/unsloth!",
             )
+
+        return dispatch_model.from_pretrained(
+            model_name = model_name,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            token = token,
+            device_map = device_map,
+            rope_scaling = rope_scaling,
+            *args, **kwargs,
+        )
     pass
 pass

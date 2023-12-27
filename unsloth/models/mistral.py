@@ -243,7 +243,7 @@ class FastMistralModel(FastLlamaModel):
         MistralDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         MistralModel          .forward = LlamaModel_fast_forward
         MistralForCausalLM    .forward = MistralForCausalLM_fast_forward
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM  .forward = PeftModelForCausalLM_fast_forward
         return
     pass
 
@@ -256,8 +256,11 @@ class FastMistralModel(FastLlamaModel):
         load_in_4bit = True,
         token = None,
         device_map = "sequential",
-        # rope_scaling = None, Mistral does not support RoPE scaling
-    ):
+        rope_scaling = None, # Mistral does not support RoPE scaling
+    ): 
+        if rope_scaling is not None:
+            logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
+
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
@@ -312,7 +315,15 @@ class FastMistralModel(FastLlamaModel):
             layer.self_attn.apply_o   = original_apply_o
         pass
 
-        model.max_seq_length = max(max_seq_length, model.config.max_position_embeddings)
+        # Save max_seq_length
+        max_position_embeddings = max(max_seq_length, model.config.max_position_embeddings)
+        model.max_seq_length = max_position_embeddings
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model.max_seq_length = max_position_embeddings
+            internal_model = internal_model.model
+        pass
+        internal_model.max_seq_length = max_position_embeddings
         return model, tokenizer
     pass
 pass
