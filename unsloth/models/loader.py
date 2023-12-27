@@ -27,6 +27,7 @@ FOURBIT_MAPPER = \
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 major, minor = transformers_version.split(".")[:2]
+major, minor = int(major), int(minor)
 SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
 del major, minor
 
