@@ -47,7 +47,10 @@ class FastLanguageModel(FastLlamaModel):
             model_name = FOURBIT_MAPPER[model_name]
             logger.warning_once(
                 f"Unsloth: Your transformers version of {transformers_version} does not support native "\
-                f"4bit loading. The minimum required version is 4.37. We will use {model_name} instead."
+                f"4bit loading. The minimum required version is 4.37.\n"\
+                f'Try `pip install "git+https://github.com/huggingface/transformers.git"` '\
+                f"to obtain the latest transformers build, then restart this session.\n"\
+                f"For now, we shall load {model_name} instead (still 4bit, just slower downloading)."
             )
         pass
 
