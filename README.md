@@ -1,26 +1,27 @@
 <div class="align-center">
   <img src="./images/unsloth new logo.png" width="350" />
   <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" width="160"></a>
-  <a href="https://colab.research.google.com/drive/1oW55fBmwzCOrBVX66RcpptL3a99qWBxb?usp=sharing"><img src="./images/try live demo green.png" width="130"></a>
+  <a href="https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing"><img src="./images/try live demo green.png" width="130"></a>
 </div>
 
 ## 2-5x faster 60% less memory local QLoRA finetuning
 | Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
 |-----------------------------|-----------------------------|-------------------------|------------------------|
 | **2.2x faster, -43%  VRAM**     | **2.2x faster, -62%  VRAM**     | **1.9x faster, -27% VRAM**  | **5.5x faster, -44% VRAM** |
-| [Colab Alpaca example + inference, saving](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Colab T4 example + inference, saving](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [A100 example](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
-| [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
+| [Colab Alpaca example + inference](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Colab Alpaca example example + inference](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [Colab A100 example example + inference](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
+| [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca example](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
-* Supports Llama (7, 13, 70b), Yi (6, 34b), Mistral (7b), Tinyllama, CodeLlama (7, 13, 34b), and all Llama / Mistral derived architectures!
-* All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language.
+* Supports Llama, Yi, Mistral, CodeLlama, and their derived models (Open Hermes etc).
+* All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backpropagation engine**
 * **0% loss in accuracy** - no approximation methods - all exact.
 * No change of hardware necessary. Supports NVIDIA GPUs since 2018+. Minimum CUDA Compute Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU](https://developer.nvidia.com/cuda-gpus)
 * **NEW!** Works on **Linux** and **Windows** via WSL.
-* **NEW!** Experimental support for [DPO (Direct Preference Optimization)](https://arxiv.org/abs/2305.18290)!
+* **NEW!** Support for [DPO (Direct Preference Optimization)](https://arxiv.org/abs/2305.18290), PPO and Reward Modelling via [TRL](https://huggingface.co/docs/trl/dpo_trainer).
+* **NEW!** Supports downloading 4 bit models directly from Huggingface. Now download models 4x faster!
 * Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
-* Open source version trains 5x faster or you can check out [Unsloth Pro and Max](https://unsloth.ai/) codepaths for **30x faster training**!
+* Open source version trains 5x faster - check out [Unsloth Max](https://unsloth.ai/) for **30x faster training**!
 
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+| 1 A100 40GB | Huggingface | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
 |--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
 | Alpaca       | 1x          | 1.04x       | 1.98x           | 2.48x        | 5.32x         | **15.64x**      |
 | LAION Chip2  | 1x          | 0.92x       | 1.61x           | 1.84x        | 7.05x         | **20.73x**      |
@@ -28,11 +29,11 @@
 | Slim Orca    | 1x          | 1.18x       | 2.22x           | 2.64x        | 5.04x         | **14.82x**      |
 
 Join our [Discord](https://discord.gg/nsS4V5Z6ge)!
-If you trained a model with Unsloth, we made a cool sticker!!
+If you trained a model with Unsloth, we made a cool sticker if you want to use it!
 <img src="./images/unsloth made with love.png" width="200" />
 
 # Installation Instructions - Conda
-Unsloth currently only supports Linux distros and Pytorch == 2.1.
+Unsloth currently only supports Linux distros
 ```bash
 conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
   -c pytorch -c nvidia -c xformers -c conda-forge -y
@@ -40,6 +41,8 @@ pip install "unsloth[conda] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
 # Installation Instructions - Pip
+Do NOT use this if you have Anaconda / Conda. You must use the Conda install path, or else linking will break.
+
 1. Find your CUDA version via
 ```python
 import torch; torch.version.cuda
@@ -120,10 +123,8 @@ trainer = SFTTrainer(
 trainer.train()
 ```
 
-# DPO (Direct Preference Optimization) Experimental support
-[152334H](https://github.com/152334H) hacked Unsloth to work with DPO via TRL!
-1. Hack the model's `config.json` to be llama model. [Example gist](https://gist.github.com/152334H/d8a68b51b83bac008a02e69ecc81d5c1).
-2. Use Unsloth for DPO for both base and reference models. [Example gist](https://gist.github.com/152334H/4847f3a8cca12894877e6b30698b0b64).
+# DPO (Direct Preference Optimization) Support
+DPO, PPO, Reward Modelling all seem to work as per 3rd party independent testing from [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory).
 
 # Future Milestones and limitations
 1. Support Mixtral.
