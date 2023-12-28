@@ -20,7 +20,7 @@ def get_lora_parameters(proj):
     # For DPO or disabled adapters
     base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
-    
+
     if proj.disable_adapters or proj.merged:
         return W, QUANT_STATE(W), None, None, None
     pass
@@ -53,9 +53,8 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         # LoRA is enabled
         A, B = A.t(), B.t()
         out += (X @ A.to(dtype)) @ (s * B.to(dtype))
-    else:
-        print("LoRA disabled")
     pass
+    
     return out.view(batch, seq_len, -1) if reshape else out
 pass
 
