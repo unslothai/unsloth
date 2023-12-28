@@ -369,8 +369,21 @@ def LlamaModel_fast_forward(
         raise ValueError("Unsloth: You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
     seq_length_with_past = seq_length
+
+    # Fix out of bounds tokenization
     if hasattr(self, "max_seq_length"):
-        assert(seq_length <= self.max_seq_length)
+        if seq_length > self.max_seq_length:
+            logger.warning_once(
+                f"Unsloth: Input IDs of length {seq_length} > the model's max sequence length of {self.max_seq_length}.\n"\
+                "We shall truncate it ourselves. It's imperative if you correct this issue first."
+            )
+        if input_ids is not None:
+            input_ids = input_ids[:,:self.max_seq_length]
+        elif inputs_embeds is not None:
+            inputs_embeds = inputs_embeds[:,:self.max_seq_length,:]
+        pass
+    pass
+    
     past_key_values_length = 0
 
     if past_key_values is not None:

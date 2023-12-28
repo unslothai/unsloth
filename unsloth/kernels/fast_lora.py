@@ -17,10 +17,16 @@ from .utils import fast_dequantize, QUANT_STATE
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 
 def get_lora_parameters(proj):
-    active_adapter = proj.active_adapters[0] if \
-        hasattr(proj, "active_adapters") else proj.active_adapter
+    # For DPO or disabled adapters
     base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
+
+    if proj.disable_adapters or proj.merged:
+        return W, QUANT_STATE(W), None, None, None
+    pass
+
+    active_adapter = proj.active_adapters[0] if \
+        hasattr(proj, "active_adapters") else proj.active_adapter
     A = proj.lora_A [active_adapter].weight
     B = proj.lora_B [active_adapter].weight
     s = proj.scaling[active_adapter]
@@ -31,7 +37,6 @@ pass
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
     dtype = X.dtype
     W = fast_dequantize(W.t(), W_quant)
-    A, B = A.t(), B.t()
 
     if X.dim() == 3:
         batch, seq_len, d = X.shape
@@ -43,7 +48,13 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
 
     out = torch.matmul(X, W, out = out)
     if W_quant is not None: del W
-    out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+
+    if A is not None:
+        # LoRA is enabled
+        A, B = A.t(), B.t()
+        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+    pass
+    
     return out.view(batch, seq_len, -1) if reshape else out
 pass
 
