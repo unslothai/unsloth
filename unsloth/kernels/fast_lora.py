@@ -18,14 +18,15 @@ from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 
 def get_lora_parameters(proj):
     # For DPO or disabled adapters
-    if proj.disable_adapters:
+    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
+    W = base_layer.weight
+    
+    if proj.disable_adapters or proj.merged:
         return W, QUANT_STATE(W), None, None, None
     pass
 
     active_adapter = proj.active_adapters[0] if \
         hasattr(proj, "active_adapters") else proj.active_adapter
-    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
-    W = base_layer.weight
     A = proj.lora_A [active_adapter].weight
     B = proj.lora_B [active_adapter].weight
     s = proj.scaling[active_adapter]
