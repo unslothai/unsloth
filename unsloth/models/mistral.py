@@ -97,21 +97,36 @@ def MistralAttention_fast_forward(
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
+        M = bsz * q_len
+
+        has_sliding_window = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
 
         # Group query attention
-        if n_groups != 1:
-            K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-            V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-            K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-            V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-            if hidden_states.requires_grad:
-                # Xformers does not support backward, so we have to convert
-                # GQA to MQA by cloning K and V
-                K = K.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
-                V = V.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
-            else:
-                # Xformers does support the forward pass though
-                Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
+        # if n_groups != 1:
+        K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
+        V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
+        K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+        V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+        if hidden_states.requires_grad:
+            # Xformers does not support backward, so we have to convert
+            # GQA to MQA by cloning K and V
+            K = K.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
+            V = V.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
+
+            if has_sliding_window:
+                Q = Q.view(1, M, n_heads, head_dim)
+                K = K.view(1, M, n_heads, head_dim)
+                V = V.view(1, M, n_heads, head_dim)
+            pass
+        else:
+            # Xformers does support the forward pass though
+            Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
+
+            if has_sliding_window:
+                Q = Q.view(1, M, n_kv_heads, n_groups, head_dim)
+                K = K.view(1, M, n_kv_heads, n_groups, head_dim)
+                V = V.view(1, M, n_kv_heads, n_groups, head_dim)
+            pass
         pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
@@ -131,12 +146,12 @@ def MistralAttention_fast_forward(
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
         # Grouped query attention
-        if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-            K = K.reshape(bsz, n_heads, q_len, head_dim)
-            V = V.reshape(bsz, n_heads, q_len, head_dim)
-        pass
+        # if n_groups != 1:
+        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
+        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
+        K = K.reshape(bsz, n_heads, q_len, head_dim)
+        V = V.reshape(bsz, n_heads, q_len, head_dim)
+        # pass
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
         A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
