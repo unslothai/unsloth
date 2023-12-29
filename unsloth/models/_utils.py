@@ -23,7 +23,7 @@ from transformers.models.llama.modeling_llama import logger
 from platform import system as platform_system
 platform_system = platform_system()
 
-__version__ = "2023.12"
+__version__ = "2024.1"
 
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()

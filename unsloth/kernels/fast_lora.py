@@ -16,6 +16,7 @@ import torch
 from .utils import fast_dequantize, QUANT_STATE
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 
+
 def get_lora_parameters(proj):
     # For DPO or disabled adapters
     base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
@@ -104,7 +105,7 @@ class LoRA_MLP(torch.autograd.Function):
         dtype = X.dtype
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
-        g = matmul_lora(X,   upW,   upW_quant,  upA,   upB,   upS)
+        g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
         h = swiglu_fg_kernel(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
@@ -123,10 +124,10 @@ class LoRA_MLP(torch.autograd.Function):
     def backward(ctx, dY : torch.Tensor):
         gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS, = \
             ctx.custom_saved_tensors
-        gateA, gateB, upA,upB, downA, downB, \
+        gateA, gateB, upA, upB, downA, downB, \
             X, e, g = ctx.saved_tensors
 
-        gateA, gateB, upA,upB, downA, downB = \
+        gateA, gateB, upA, upB, downA, downB = \
             gateA.t(), gateB.t(), upA.t(), upB.t(), downA.t(), downB.t()
 
         batch, seq_len, hd = X.shape

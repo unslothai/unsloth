@@ -15,7 +15,9 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings
+from .utils import calculate_settings, MAX_FUSED_SIZE
+from transformers.models.llama.modeling_llama import logger
+
 
 @triton.jit
 def _cross_entropy_forward(logits_ptr, logits_row_stride,
@@ -145,6 +147,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 pass
 
 
+slow_cross_entropy_loss = torch.nn.functional.cross_entropy
 def fast_cross_entropy_loss(logits, labels):
     """
     Arguments:
@@ -156,10 +159,25 @@ def fast_cross_entropy_loss(logits, labels):
     batch, seq_len, d = logits.shape
     assert(labels.shape == (batch, seq_len))
 
-    loss = Fast_CrossEntropyLoss.apply(
-        logits.view(batch*seq_len, d),
-        labels.view(-1),
-    )
-    n_items = torch.count_nonzero(labels != -100)
-    return loss.sum() / n_items
+    # Prelim support Qwen, Deepseek other large vocab sizes > 2^16
+    if d > MAX_FUSED_SIZE:
+        logger.warning_once(
+            f"Unsloth: Vocab size of {d} exceeds the max CUDA blocksize of {MAX_FUSED_SIZE}.\n"\
+            "For now, Unsloth will use Pytorch's CrossEntropyLoss, which will entail a\n"\
+            "25% increase in memory usage and be slower. Make an issue on \n"\
+            "Unsloth's Github page if you want a faster and more memory efficient kernel!"
+        )
+        loss = slow_cross_entropy_loss(
+            logits.float().view(batch*seq_len, d), # Must cast to float32 for numerical stability
+            labels.view(-1),
+        )
+        return loss
+    else:
+        loss = Fast_CrossEntropyLoss.apply(
+            logits.view(batch*seq_len, d),
+            labels.view(-1),
+        )
+        n_items = torch.count_nonzero(labels != -100)
+        return loss.sum() / n_items
+    pass
 pass
