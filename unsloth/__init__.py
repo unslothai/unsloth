@@ -46,12 +46,12 @@ except:
     raise ImportError("Pytorch is not installed. Go to https://pytorch.org/.\n"\
                       "We have some installation instructions on our Github page.")
 
-# We only support torch 2.1
+# We support torch 2.1 and 2.1.1
 # Fixes https://github.com/unslothai/unsloth/issues/38
 torch_version = torch.__version__.split(".")
 major_torch, minor_torch = torch_version[0], torch_version[1]
 major_torch, minor_torch = int(major_torch), int(minor_torch)
-if (major_torch != 2) or (major_torch == 2 and minor_torch < 1):
+if (major_torch != 2):# or (major_torch == 2 and minor_torch < 1):
     raise ImportError("Unsloth only supports Pytorch 2.1 for now. Please update your Pytorch to 2.1.\n"\
                       "We have some installation instructions on our Github page.")
 
