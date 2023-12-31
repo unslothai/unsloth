@@ -8,25 +8,25 @@
 | Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
 |-----------------------------|-----------------------------|-------------------------|------------------------|
 | **2.2x faster, -43%  VRAM**     | **2.2x faster, -62%  VRAM**     | **1.9x faster, -27% VRAM**  | **5.5x faster, -44% VRAM** |
-| [Free Colab Alpaca dataset example](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Free Colab Alpaca dataset example](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
+| [Free Colab Llama + Alpaca example](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Free Colab Mistral + Alpaca example](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
 | [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca example](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
 * Supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
-* All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backpropagation engine**.
+* All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
 * **0% loss in accuracy** - no approximation methods - all exact.
 * No change of hardware necessary. Supports NVIDIA GPUs since 2018+. Minimum CUDA Compute Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU](https://developer.nvidia.com/cuda-gpus)
 * **NEW!** Works on **Linux** and **Windows** via WSL.
-* **NEW!** Support for [DPO (Direct Preference Optimization)](https://arxiv.org/abs/2305.18290), PPO and Reward Modelling via [TRL](https://huggingface.co/docs/trl/dpo_trainer).
+* **NEW!** [DPO](https://arxiv.org/abs/2305.18290), PPO and Reward Modelling support via [TRL](https://huggingface.co/docs/trl/dpo_trainer). Example [DPO Colab notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
 * **NEW!** Download 4 bit models 4x faster from Huggingface! Eg: `unsloth/mistral-7b-bnb-4bit`.
 * Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
-* Open source version trains 5x faster - check out [Unsloth Max](https://unsloth.ai/) for **30x faster training**!
+* Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
 
-| 1 A100 40GB | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| Alpaca       | 1x          | 1.04x       | 1.98x           | 2.48x        | 5.32x         | **15.64x**      |
-| LAION Chip2  | 1x          | 0.92x       | 1.61x           | 1.84x        | 7.05x         | **20.73x**      |
-| OASST        | 1x          | 1.19x       | 2.17x           | 2.66x        | 5.04x         | **14.83x**      |
-| Slim Orca    | 1x          | 1.18x       | 2.22x           | 2.64x        | 5.04x         | **14.82x**      |
+| 1 A100 40GB  | Hugging Face | Flash Attention | Unsloth Open Source | [Unsloth Pro](https://unsloth.ai/pricing) |
+|--------------|--------------|-----------------|---------------------|-----------------|
+| Alpaca       | 1x           | 1.04x           | 1.98x               | **15.64x**      |
+| LAION Chip2  | 1x           | 0.92x           | 1.61x               | **20.73x**      |
+| OASST        | 1x           | 1.19x           | 2.17x               | **14.83x**      |
+| Slim Orca    | 1x           | 1.18x           | 2.22x               | **14.82x**      |
 
 Join our [Discord](https://discord.gg/nsS4V5Z6ge)!
 If you trained a model with Unsloth, we made a cool sticker if you want to use it!
