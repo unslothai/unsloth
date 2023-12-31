@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .loader import FastLanguageModel
+from .loader import FastLanguageModel, FastDPOTrainer
 from .llama import FastLlamaModel
 from .mistral import FastMistralModel
