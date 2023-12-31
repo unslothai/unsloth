@@ -14,6 +14,7 @@
 
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
+from .dpo import FastDPOTrainer
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 
@@ -23,6 +24,7 @@ FOURBIT_MAPPER = \
     "unsloth/llama-2-7b-bnb-4bit"    : "unsloth/llama-2-7b",
     "unsloth/llama-2-13b-bnb-4bit"   : "unsloth/llama-13-7b",
     "unsloth/codellama-34b-bnb-4bit" : "codellama/CodeLlama-34b-hf",
+    "unsloth/zephyr-sft-bnb-4bit"    : "unsloth/zephyr-sft",
 }
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
