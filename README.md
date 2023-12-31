@@ -11,14 +11,15 @@
 | [Free Colab Llama + Alpaca example](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Free Colab Mistral + Alpaca example](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
 | [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca example](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
+* **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support via [TRL](https://huggingface.co/docs/trl/dpo_trainer). [Free DPO Colab notebook example](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing). [Scroll](#DPO) to DPO.
 * Supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
 * All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
 * **0% loss in accuracy** - no approximation methods - all exact.
 * No change of hardware necessary. Supports NVIDIA GPUs since 2018+. Minimum CUDA Compute Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU](https://developer.nvidia.com/cuda-gpus)
 * **NEW!** Works on **Linux** and **Windows** via WSL.
-* **NEW!** [DPO](https://arxiv.org/abs/2305.18290), PPO and Reward Modelling support via [TRL](https://huggingface.co/docs/trl/dpo_trainer). Example [DPO Colab notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
-* **NEW!** Download 4 bit models 4x faster from Huggingface! Eg: `unsloth/mistral-7b-bnb-4bit`.
+* **NEW!** Download 4 bit models 4x faster from Huggingface! Eg: `unsloth/mistral-7b-bnb-4bit`
 * Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
+* **NEW!** Want a UI for finetuning? Try [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory) and use `--use_unsloth`!
 * Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
 
 | 1 A100 40GB  | Hugging Face | Flash Attention | Unsloth Open Source | [Unsloth Pro](https://unsloth.ai/pricing) |
@@ -139,8 +140,62 @@ trainer = SFTTrainer(
 trainer.train()
 ```
 
+<a name="DPO"></a>
 # DPO (Direct Preference Optimization) Support
 DPO, PPO, Reward Modelling all seem to work as per 3rd party independent testing from [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory). We have a preliminary Google Colab notebook for reproducing Zephyr on 1x A100 here: [notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
+```python
+from unsloth import FastLanguageModel, PatchDPOTrainer
+PatchDPOTrainer()
+import torch
+from transformers import TrainingArguments
+from trl import DPOTrainer
+
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name = "unsloth/zephyr-sft-bnb-4bit",
+    max_seq_length = max_seq_length,
+    dtype = None,
+    load_in_4bit = True,
+)
+
+# Do model patching and add fast LoRA weights
+model = FastLanguageModel.get_peft_model(
+    model,
+    r = 64,
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                      "gate_proj", "up_proj", "down_proj",],
+    lora_alpha = 64,
+    lora_dropout = 0, # Currently only supports dropout = 0
+    bias = "none",    # Currently only supports bias = "none"
+    use_gradient_checkpointing = True,
+    random_state = 3407,
+    max_seq_length = max_seq_length,
+)
+
+dpo_trainer = DPOTrainer(
+    model = model,
+    ref_model = None,
+    args = TrainingArguments(
+        per_device_train_batch_size = 4,
+        gradient_accumulation_steps = 8,
+        warmup_ratio = 0.1,
+        num_train_epochs = 3,
+        fp16 = not torch.cuda.is_bf16_supported(),
+        bf16 = torch.cuda.is_bf16_supported(),
+        logging_steps = 1,
+        optim = "adamw_8bit",
+        seed = 42,
+        output_dir = "outputs",
+    ),
+    beta = 0.1,
+    train_dataset = YOUR_DATASET_HERE,
+    # eval_dataset = YOUR_DATASET_HERE,
+    tokenizer = tokenizer,
+    max_length = 1024,
+    max_prompt_length = 512,
+)
+dpo_trainer.train()
+```
+
 
 # Future Milestones and limitations
 1. Support Mixtral.
