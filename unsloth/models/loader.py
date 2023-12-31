@@ -14,7 +14,6 @@
 
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
-from .dpo import FastDPOTrainer
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 
