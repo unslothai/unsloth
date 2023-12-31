@@ -17,9 +17,6 @@ from transformers.utils.notebook import (
     NotebookTrainingTracker,
     NotebookProgressCallback,
 )
-from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
-from trl import DPOTrainer
-import types
 
 DPOTrainer_metrics = [
     "rewards/chosen",
@@ -31,6 +28,7 @@ DPOTrainer_metrics = [
     "logits/rejected",
     "logits/chosen",
 ]
+
 
 def NotebookProgressCallback_on_train_begin(self, args, state, control, **kwargs):
     self.first_column = "Epoch" if args.evaluation_strategy == IntervalStrategy.EPOCH else "Step"
@@ -67,17 +65,10 @@ def NotebookProgressCallback_on_log(self, args, state, control, logs=None, **kwa
 pass
 
 
-class FastDPOTrainer(DPOTrainer):
+def PatchDPOTrainer():
     # Patch DPO notebook printing
-    if (DEFAULT_PROGRESS_CALLBACK is NotebookProgressCallback):
-
-        DEFAULT_PROGRESS_CALLBACK.on_train_begin = types.MethodType(
-            NotebookProgressCallback_on_train_begin,
-            DEFAULT_PROGRESS_CALLBACK,
-        )
-        DEFAULT_PROGRESS_CALLBACK.on_log = types.MethodType(
-            NotebookProgressCallback_on_log,
-            DEFAULT_PROGRESS_CALLBACK,
-        )
-    pass
+    from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
+    DEFAULT_PROGRESS_CALLBACK.on_train_begin = NotebookProgressCallback_on_train_begin
+    DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log
 pass
+
