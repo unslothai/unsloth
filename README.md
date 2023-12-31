@@ -11,7 +11,7 @@
 | [Free Colab Llama + Alpaca example](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | [Free Colab Mistral + Alpaca example](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [Kaggle Alpaca example](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
 | [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca example](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
-* **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support via [TRL](https://huggingface.co/docs/trl/dpo_trainer). [Free DPO Colab notebook example](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing). [Scroll](#DPO) to DPO.
+* **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support. [Free DPO Colab example](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing). [More info](#DPO).
 * Supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
 * All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
 * **0% loss in accuracy** - no approximation methods - all exact.
@@ -142,7 +142,7 @@ trainer.train()
 
 <a name="DPO"></a>
 # DPO (Direct Preference Optimization) Support
-DPO, PPO, Reward Modelling all seem to work as per 3rd party independent testing from [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory). We have a preliminary Google Colab notebook for reproducing Zephyr on 1x A100 here: [notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
+DPO, PPO, Reward Modelling all seem to work as per 3rd party independent testing from [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory). We have a preliminary Google Colab notebook for reproducing Zephyr on Tesla T4 here: [notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
 ```python
 from unsloth import FastLanguageModel, PatchDPOTrainer
 PatchDPOTrainer()
