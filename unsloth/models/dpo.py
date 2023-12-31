@@ -17,6 +17,9 @@ from transformers.utils.notebook import (
     NotebookTrainingTracker,
     NotebookProgressCallback,
 )
+from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
+from trl import DPOTrainer
+import types
 
 DPOTrainer_metrics = [
     "rewards/chosen",
@@ -46,23 +49,35 @@ def NotebookProgressCallback_on_log(self, args, state, control, logs=None, **kwa
     if args.evaluation_strategy == IntervalStrategy.NO and "loss" in logs:
         values = {"Training Loss": logs["loss"]}
         for metric in DPOTrainer_metrics:
-            values[metric.replace("/", " / ")] = logs[metric]
+            if metric in logs:
+                values[metric.replace("/", " / ")] = logs[metric]
+            else:
+                # Maybe not a DPO Trainer anymore? Redo the tracker
+                column_names = [self.first_column] + ["Training Loss"]
+                if args.evaluation_strategy != IntervalStrategy.NO:
+                    column_names.append("Validation Loss")
+                    self.training_tracker = NotebookTrainingTracker(state.max_steps, column_names)
+                break
+            pass
+        pass
         # First column is necessarily Step since we're not in epoch eval strategy
         values["Step"] = state.global_step
         self.training_tracker.write_line(values)
+    pass
 pass
 
 
-def patch_dpo_trainer():
-    # We patch Jupyter Notebook's printing to include all columns for DPO.
-    NotebookProgressCallback.on_train_begin = NotebookProgressCallback_on_train_begin
-    NotebookProgressCallback.on_log         = NotebookProgressCallback_on_log
-pass
-# Patch DPO notebook printing
-patch_dpo_trainer()
-
-
-from trl import DPOTrainer
 class FastDPOTrainer(DPOTrainer):
+    # Patch DPO notebook printing
+    if (DEFAULT_PROGRESS_CALLBACK is NotebookProgressCallback):
+
+        DEFAULT_PROGRESS_CALLBACK.on_train_begin = types.MethodType(
+            NotebookProgressCallback_on_train_begin,
+            DEFAULT_PROGRESS_CALLBACK,
+        )
+        DEFAULT_PROGRESS_CALLBACK.on_log = types.MethodType(
+            NotebookProgressCallback_on_log,
+            DEFAULT_PROGRESS_CALLBACK,
+        )
     pass
 pass
