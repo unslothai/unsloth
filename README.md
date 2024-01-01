@@ -12,6 +12,7 @@
 | [Colab A100 example](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Colab A100 example](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | (59 more examples if you scroll down) | [Kaggle Slim Orca example](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
 * **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support. [Free DPO Colab example](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing). [More info](#DPO).
+* **NEW!** [TinyLlama](https://github.com/jzhang38/TinyLlama) on 3T tokens. [Free Colab example](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing). We also show automatic RoPE Scaling extending TinyLlama from 2048 to 4096 tokens!
 * Supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
 * All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
 * **0% loss in accuracy** - no approximation methods - all exact.
@@ -95,10 +96,11 @@ fourbit_models = [
     "unsloth/llama-2-7b-bnb-4bit",
     "unsloth/llama-2-13b-bnb-4bit",
     "unsloth/codellama-34b-bnb-4bit",
+    "unsloth/tinyllama-bnb-4bit",
 ]
 # Load Llama model
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/mistral-7b", # Supports Llama, Mistral - replace this!
+    model_name = "unsloth/mistral-7b-bnb-4bit", # Supports Llama, Mistral - replace this!
     max_seq_length = max_seq_length,
     dtype = None,
     load_in_4bit = True,
