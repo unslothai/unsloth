@@ -756,6 +756,9 @@ class FastLlamaModel:
         # Clear deleted GPU items
         gc.collect()
         torch.cuda.empty_cache()
+
+        # We check the tokenizer first for errors
+        check_tokenizer(model, tokenizer)
         return model
     pass
 
@@ -790,9 +793,6 @@ class FastLlamaModel:
         for module in target_modules:
             assert(module in accepted_modules)
         pass
-
-        # We check the tokenizer first for errors
-        check_tokenizer(model, tokenizer)
 
         # Get LoRA
         lora_config = LoraConfig(
