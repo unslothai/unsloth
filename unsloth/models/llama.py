@@ -712,6 +712,9 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model.max_seq_length = max_position_embeddings
+
+        # We check the tokenizer first for errors
+        check_tokenizer(model, tokenizer)
         return model, tokenizer
     pass
 
@@ -756,9 +759,6 @@ class FastLlamaModel:
         # Clear deleted GPU items
         gc.collect()
         torch.cuda.empty_cache()
-
-        # We check the tokenizer first for errors
-        check_tokenizer(model, tokenizer)
         return model
     pass
 
