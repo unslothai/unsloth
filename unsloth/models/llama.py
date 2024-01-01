@@ -791,6 +791,9 @@ class FastLlamaModel:
             assert(module in accepted_modules)
         pass
 
+        # We check the tokenizer first for errors
+        check_tokenizer(model, tokenizer)
+
         # Get LoRA
         lora_config = LoraConfig(
             r              = r,

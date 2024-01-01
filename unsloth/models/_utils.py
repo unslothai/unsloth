@@ -44,6 +44,7 @@ from xformers import __version__ as xformers_version
 __all__ = [
     "prepare_model_for_kbit_training",
     "patch_tokenizer",
+    "check_tokenizer",
     "xformers",
     "xformers_attention",
     "xformers_version",
@@ -111,4 +112,27 @@ def patch_tokenizer(model, tokenizer):
         config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
     pass
     return model, tokenizer
+pass
+
+
+def check_tokenizer(model, tokenizer):
+    # Checks tokenizer for out of bounds ids.
+    # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
+    # where <sep> had token id=32002.
+    # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
+    special_tokens_map = tokenizer.special_tokens_map
+    max_embedding_size = model.model.embed_tokens.weight.shape[0]
+
+    for token_name, token_content in special_tokens_map.items():
+        if type(token_content) is not str: continue
+        token_ids = tokenizer([token_content], add_special_tokens = False, return_attention_mask = False)
+        token_ids = token_ids.input_ids[0][0]
+        if token_ids < 0 or token_ids >= max_embedding_size:
+            raise RuntimeError(
+                f"Unsloth: Extra special token `{token_content}` with id={token_ids} exceeds "\
+                f"the maximum vocabulary size of {max_embedding_size}. You must fix the tokenizer "\
+                "or else out of bounds memory accesses will occur."
+            )
+        pass
+    pass
 pass
