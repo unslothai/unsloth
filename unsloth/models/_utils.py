@@ -162,7 +162,7 @@ def check_tokenizer(
                 model = model,
                 tokenizer = tokenizer,
                 model_name = model_name,
-                model_max_length = 4096,
+                model_max_length = model_max_length,
                 padding_side = padding_side,
                 token = token,
                 _reload = False,
