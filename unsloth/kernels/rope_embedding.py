@@ -42,12 +42,12 @@ def _rope_embedding(
 
     Q1   = tl.load(Q + row_position*Q_row_stride + head_position*head_dim + \
                    half_head_dim*0 + col_offsets, mask = mask, other = 0)
+    Q2   = tl.load(Q + row_position*Q_row_stride + head_position*head_dim + \
+                   half_head_dim*1 + col_offsets, mask = mask, other = 0)
     sin1 = tl.load(sin + rot_position*sin_row_stride + \
                    half_head_dim*0 + col_offsets, mask = mask, other = 0)
     cos1 = tl.load(cos + rot_position*cos_row_stride + \
                    half_head_dim*0 + col_offsets, mask = mask, other = 0)
-
-    Q2   = tl.load(Q   + half_head_dim*1 + col_offsets, mask = mask, other = 0)
 
     if BACKWARD_PASS:
         # See our blog post for more info.
