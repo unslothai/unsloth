@@ -78,6 +78,34 @@ def LlamaAttention_fast_forward_inference(
     past_key_value: Optional[Tuple[torch.Tensor]],
     position_ids,
 ):
+    """
+        https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
+        Fast inference using KV cache.
+        QK^T can be computed in 4 chunks
+
+        [Q, q] @ [K, k].T where q, k are the new tokens.
+        [QK^T, Qk^T]
+        [qK^T, qk^T]
+
+        Since the attention mask wipes Qk^T, we just get
+        [QK^T,    0]
+        [qK^T, qk^T]
+
+        Since softmax is row-wise, we get
+        softmax([QK^T,    0])
+        softmax([qK^T, qk^T])
+
+        We then multiply by   [V]
+                              [v]
+        softmax([QK^T,    0]) [softmax(QK^T)V] *
+        softmax([qK^T, qk^T]) [softmax([qK^T, qk^T]) @ [V, v]]
+
+        But notice * [softmax(QK^T)V] is just the last attention.
+        We just need to compute the last final row.
+
+        This means we can pass in a row of Q, but we need to
+        remember K and V, which are called the KV cache.
+    """
     Xn = hidden_states
     bsz, _, _ = hidden_states.size()
     K1, V1 = past_key_value
