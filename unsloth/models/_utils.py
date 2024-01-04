@@ -141,15 +141,11 @@ def check_tokenizer(
         if index >= max_embedding_size:
             bad_indices = list(added_tokens_fast.keys  ())[j:]
             bad_tokens  = list(added_tokens_fast.values())[j:]
-            logger.warning_once(
-                f"Unsloth: Tokenizer for `{model_name}` was loaded as Rust fast tokenizer, but\n"\
-                f"will sadly do out of bounds memory accesses since the tokens={bad_tokens} with\n"\
-                f"token ids={bad_indices} exceeds the maximum vocab size of {max_embedding_size}.\n"\
-                f"Unsloth will attempt to load the tokenizer using a slow tokenizer instead."
-            )
             if not _reload:
                 raise RuntimeError(
-                    "Unsloth tried a slow tokenizer, but cannot succeed. Your tokenizer is broken."
+                    f"Unsloth tried to load `{model_name}`, but cannot succeed.\n"\
+                    f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"\
+                    f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
             # Try slow tokenizer which can fix things!
             tokenizer = AutoTokenizer.from_pretrained(
