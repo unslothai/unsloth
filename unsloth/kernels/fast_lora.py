@@ -75,12 +75,12 @@ class LoRA_MLP(torch.autograd.Function):
     i = h @ W
 
     ### Backpropagation chain rule
+    See our blog post for more details
+
     df = sigmoid(e) * (1 - f) + f
     dC/dW = h.T @ dY
     dC/dU = X.T @ (D @ W.T * f)
     dC/dG = X.T @ (D @ W.T * df * g)
-    dC/dX =       (D @ W.T * f)      @ U.T
-          +       (D @ W.T * df * g) @ G.T
 
     ### Down projection LoRA weights
     dC/dAw = dC/dW @ B.T
@@ -95,6 +95,8 @@ class LoRA_MLP(torch.autograd.Function):
     ### Gate projection LoRA weights
     dC/dAg =       X.T @ (D @ W.T * df * g) @ B.T
     dC/dBg = A.T @ X.T @ (D @ W.T * df * g)
+
+    Don't forget to see our blog post for more details!
     """
     @staticmethod
     @torch.cuda.amp.custom_fwd
@@ -141,13 +143,7 @@ class LoRA_MLP(torch.autograd.Function):
         # DW_dfg = (D @ W.T * df * g)
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
         DW, e, g = swiglu_DWf_DW_dfg_kernel(DW, e, g)
-        h, DW_f, DW_dfg = DW, e, g # Inplace replacements
-        # se = torch.nn.functional.sigmoid(e)
-        # f = e * se
-        # h = f * g
-        # df = se * (1 - f) + f
-        # DW_f   = DW * f
-        # DW_dfg = DW * df * g
+        h, DW_f, DW_dfg = DW, e, g
 
         # Down projection LoRA weights
         d_downA = h.t() @ (dY @ downB.t())
@@ -167,8 +163,8 @@ class LoRA_MLP(torch.autograd.Function):
         d_gateA *= gateS
         d_gateB *= gateS
 
-        # dC/dX = (D @ W.T * f)      @ (U.T + B.T @ A.T)
-        #       + (D @ W.T * df * g) @ (G.T + B.T @ A.T)
+        # Final derivatives to backpropagate backwards.
+        # See our blogpost for more details.
         # (D @ W.T * f) @ U.T
         upW = fast_dequantize(upW.t(), upW_quant)
         # (D @ W.T * f) @ (U.T + B.T @ A.T)
@@ -176,9 +172,8 @@ class LoRA_MLP(torch.autograd.Function):
         del upW
         dX += DW_f @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
 
-        # (D @ W.T * f) @ (U.T + B.T @ A.T) + (D @ W.T * df * g) @ G.T
+        # And add the derivative for the gate projection
         gateW = fast_dequantize(gateW.t(), gateW_quant)
-        # (D @ W.T * f) @ (U.T + B.T @ A.T) + (D @ W.T * df * g) @ (G.T + B.T @ A.T)
         dX += DW_dfg @ gateW.t()
         del gateW
         dX += DW_dfg @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
@@ -217,12 +212,12 @@ class LoRA_QKV(torch.autograd.Function):
     V = X @ Wv = X @ Wv + X @ Av @ Bv
 
     ### Backpropagation chain rule
+    See our blogpost for more details.
+
     dC/dWq = X.T @ D(Wq)
     dC/dWk = X.T @ D(Wk)
     dC/dWv = X.T @ D(Wv)
-    dC/dX =   D(Wq) @ Wq.T
-            + D(Wk) @ Wk.T
-            + D(Wv) @ Wv.T
+    We then sum them all find dC/dX
 
     ### Q projection LoRA weights
     dC/dAq =       X.T @ D(Wq) @ B.T
@@ -275,8 +270,7 @@ class LoRA_QKV(torch.autograd.Function):
         dtype = X.dtype
 
         ### Weight projection LoRA weights
-        # dC/dAq =       X.T @ D(Wq) @ B.T
-        # dC/dBq = A.T @ X.T @ D(Wq)
+        # See our blogpost for more details.
 
         # Q Projection
         d_QA = X.t() @ (dQ @ QB.t())
@@ -296,24 +290,21 @@ class LoRA_QKV(torch.autograd.Function):
         d_VA *= VS
         d_VB *= VS
 
-        # d/dX
-        # dC/dX = D(Wq) @ Wq.T
+        # Combine derivatives to find dX
+        # dQ
         QW = fast_dequantize(QW.t(), QW_quant)
-        # D(Wq) @ (Wq.T + B.T @ A.T)
         dX = torch.matmul(dQ, QW.t(), out = X)
         del QW
         dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
 
-        # D(Wq) @ Wq.T + D(Wk) @ Wk.T
+        # dK
         KW = fast_dequantize(KW.t(), KW_quant)
-        # D(Wq) @ Wq.T + D(Wk) @ (Wk.T + B.T @ A.T)
         dX += dK @ KW.t()
         del KW
         dX += dK @ KB.to(dtype).t() @ (KS * KA.to(dtype).t())
 
-        # D(Wq) @ Wq.T + D(Wk) @ Wk.T + D(Wv) @ Wv.T
+        # dV
         VW = fast_dequantize(VW.t(), VW_quant)
-        # D(Wq) @ Wq.T + D(Wk) @ Wk.T + D(Wv) @ (Wv.T + B.T @ A.T)
         dX += dV @ VW.t()
         del VW
         dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
@@ -356,9 +347,6 @@ class LoRA_W(torch.autograd.Function):
     dC/dWq = X.T @ D(Wq)
     dC/dWk = X.T @ D(Wk)
     dC/dWv = X.T @ D(Wv)
-    dC/dX =   D(Wq) @ Wq.T
-            + D(Wk) @ Wk.T
-            + D(Wv) @ Wv.T
 
     ### Q projection LoRA weights
     dC/dAq =       X.T @ D(Wq) @ B.T
@@ -392,21 +380,18 @@ class LoRA_W(torch.autograd.Function):
         A, B = A.t(), B.t()
 
         batch, seq_len, hd = X.shape
-        dY = dY.reshape(-1, dY.shape[-1]) # .view doesn't work on non contiguous
-        X  = X .reshape(-1, X .shape[-1]) # .view doesn't work on non contiguous
+        dY = dY.reshape(-1, dY.shape[-1]) # Must be reshape
+        X  = X .reshape(-1, X .shape[-1]) # Must be reshape
         dtype = X.dtype
 
         ### Weight projection LoRA weights
-        # dC/dAq =       X.T @ D(Wq) @ B.T
-        # dC/dBq = A.T @ X.T @ D(Wq)
-
         # Weight projection
         d_A = X.t() @ (dY @ B.t())
         d_B = (A.t() @ X.t()) @ dY
         d_A *= S
         d_B *= S
 
-        # dC/dX = D(Wq) @ Wq.T
+        # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W

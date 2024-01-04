@@ -135,8 +135,6 @@ def LlamaAttention_fast_forward_inference(
     Vn = torch.cat([V1, Vn], dim = 2)
 
     # Grouped query attention
-    # K = repeat_kv(K, n_groups)
-    # V = repeat_kv(V, n_groups)
     if n_groups != 1:
         _, _, cached_len, _ = Kn.shape
         Knn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
@@ -210,7 +208,6 @@ def LlamaAttention_fast_forward(
     pass
 
     if past_key_value is not None:
-        # reuse k, v, self_attention
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
@@ -219,7 +216,6 @@ def LlamaAttention_fast_forward(
     if (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
-        # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
@@ -231,25 +227,18 @@ def LlamaAttention_fast_forward(
             K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
             V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
             if hidden_states.requires_grad:
-                # Xformers does not support backward, so we have to convert
-                # GQA to MQA by cloning K and V
-                K = K.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
-                V = V.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
+                K = K.reshape(bsz, q_len, n_heads, head_dim)
+                V = V.reshape(bsz, q_len, n_heads, head_dim)
             else:
-                # Xformers does support the forward pass though
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
         pass
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
     elif HAS_FLASH_ATTENTION:
-        # Flash Attention
-        # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-
-        # Flash Attention v2 auto supports grouped query attention
         A = flash_attn_func(Q, K, V, causal = True)
     else:
         # Grouped query attention
@@ -714,7 +703,14 @@ class FastLlamaModel:
         internal_model.max_seq_length = max_position_embeddings
 
         # We check the tokenizer first for errors
-        check_tokenizer(model, tokenizer)
+        tokenizer = check_tokenizer(
+            model = model,
+            tokenizer = tokenizer,
+            model_name = model_name,
+            model_max_length = max_seq_length,
+            padding_side = "right",
+            token = token,
+        )
         return model, tokenizer
     pass
 
