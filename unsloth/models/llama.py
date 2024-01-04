@@ -714,7 +714,14 @@ class FastLlamaModel:
         internal_model.max_seq_length = max_position_embeddings
 
         # We check the tokenizer first for errors
-        check_tokenizer(model, tokenizer)
+        tokenizer = check_tokenizer(
+            model = model,
+            tokenizer = tokenizer,
+            model_name = model_name,
+            model_max_length = max_seq_length,
+            padding_side = "right",
+            token = token,
+        )
         return model, tokenizer
     pass
 
