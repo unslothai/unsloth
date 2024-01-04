@@ -92,28 +92,23 @@ def MistralAttention_fast_forward(
     # Attention module
     if (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
-        # Also has Flash Attention v2 dispatching
-        # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
         M = bsz * q_len
 
-        has_sliding_window = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
+        has_swa = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
 
         # Group query attention
-        # if n_groups != 1:
         K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
         V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
         K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
         V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
         if hidden_states.requires_grad:
-            # Xformers does not support backward, so we have to convert
-            # GQA to MQA by cloning K and V
-            K = K.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
-            V = V.reshape(bsz, q_len, n_heads, head_dim) # A copy will be made
+            K = K.reshape(bsz, q_len, n_heads, head_dim)
+            V = V.reshape(bsz, q_len, n_heads, head_dim)
 
-            if has_sliding_window:
+            if has_swa:
                 Q = Q.view(1, M, n_heads, head_dim)
                 K = K.view(1, M, n_heads, head_dim)
                 V = V.view(1, M, n_heads, head_dim)
@@ -122,7 +117,7 @@ def MistralAttention_fast_forward(
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
 
-            if has_sliding_window:
+            if has_swa:
                 Q = Q.view(1, M, n_kv_heads, n_groups, head_dim)
                 K = K.view(1, M, n_kv_heads, n_groups, head_dim)
                 V = V.view(1, M, n_kv_heads, n_groups, head_dim)
@@ -133,16 +128,12 @@ def MistralAttention_fast_forward(
         A = A.view(bsz, q_len, n_heads, head_dim)
 
     elif HAS_FLASH_ATTENTION:
-        # Flash Attention
-        # (batch_size, n_heads, seq_len, head_dim) -> (batch_size, seq_len, n_heads, head_dim)
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-
-        # Flash Attention v2 auto supports grouped query attention
-        sliding_window = getattr(self.config, "sliding_window")
-        sliding_window = q_len if sliding_window is None else sliding_window
-        window = (-1, -1) if (q_len <= sliding_window) else (sliding_window, sliding_window)
+        sw = getattr(self.config, "sliding_window")
+        sw = q_len if sw is None else sw
+        window = (-1, -1) if (q_len <= sw) else (sw, sw)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
         # Grouped query attention
@@ -317,7 +308,7 @@ class FastMistralModel(FastLlamaModel):
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             model_max_length = max_seq_length,
-            padding_side = "right", # MUST be right or else attention fails!
+            padding_side = "right",
             token = token,
         )
 
@@ -339,6 +330,16 @@ class FastMistralModel(FastLlamaModel):
             internal_model = internal_model.model
         pass
         internal_model.max_seq_length = max_position_embeddings
+
+        # We check the tokenizer first for errors
+        tokenizer = check_tokenizer(
+            model = model,
+            tokenizer = tokenizer,
+            model_name = model_name,
+            model_max_length = max_seq_length,
+            padding_side = "right",
+            token = token,
+        )
         return model, tokenizer
     pass
 pass

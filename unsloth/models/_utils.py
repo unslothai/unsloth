@@ -20,6 +20,7 @@ import gc
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
+from transformers import AutoTokenizer
 from platform import system as platform_system
 platform_system = platform_system()
 
@@ -115,24 +116,56 @@ def patch_tokenizer(model, tokenizer):
 pass
 
 
-def check_tokenizer(model, tokenizer):
+def check_tokenizer(
+    model,
+    tokenizer,
+    model_name = "unsloth/llama-2-7b-bnb-4bit",
+    model_max_length = 4096,
+    padding_side = "right",
+    token = None,
+    _reload = True,
+):
     # Checks tokenizer for out of bounds ids.
     # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
     # where <sep> had token id=32002.
     # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
-    special_tokens_map = tokenizer.special_tokens_map
-    max_embedding_size = model.model.embed_tokens.weight.shape[0]
+    # Seems like the Fast tokenizer in Rust breaks things!
 
-    for token_name, token_content in special_tokens_map.items():
-        if type(token_content) is not str: continue
-        token_ids = tokenizer([token_content], add_special_tokens = False, return_attention_mask = False)
-        token_ids = token_ids.input_ids[0][0]
-        if token_ids < 0 or token_ids >= max_embedding_size:
-            raise RuntimeError(
-                f"Unsloth: Extra special token `{token_content}` with id={token_ids} exceeds "\
-                f"the maximum vocabulary size of {max_embedding_size}. You must fix the tokenizer "\
-                "or else out of bounds memory accesses will occur."
+    max_embedding_size = model.model.embed_tokens.weight.shape[0]
+    added_tokens_fast = tokenizer.added_tokens_decoder
+    added_tokens_fast = {index : str(value) for index, value in added_tokens_fast.items()}
+    sorted_keys = sorted(added_tokens_fast)
+    added_tokens_fast = {key : added_tokens_fast[key] for key in sorted_keys}
+
+    for j, index in enumerate(added_tokens_fast.keys()):
+        if index >= max_embedding_size:
+            bad_indices = list(added_tokens_fast.keys  ())[j:]
+            bad_tokens  = list(added_tokens_fast.values())[j:]
+            if not _reload:
+                raise RuntimeError(
+                    f"Unsloth tried to load `{model_name}`, but cannot succeed.\n"\
+                    f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"\
+                    f"Fix your tokenizer since it'll perform out of bounds memory accesses."
+                )
+            # Try slow tokenizer which can fix things!
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                model_max_length = model_max_length,
+                padding_side = padding_side,
+                token = token,
+                use_fast = False,
             )
+            return check_tokenizer(
+                model = model,
+                tokenizer = tokenizer,
+                model_name = model_name,
+                model_max_length = model_max_length,
+                padding_side = padding_side,
+                token = token,
+                _reload = False,
+            )
+            break
         pass
     pass
+    return tokenizer
 pass

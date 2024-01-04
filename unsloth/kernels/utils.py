@@ -13,12 +13,11 @@
 # limitations under the License.
 
 import triton
-MAX_FUSED_SIZE = 65536 # 2**16 Solves https://github.com/unslothai/unsloth/issues/7
+MAX_FUSED_SIZE = 65536
 next_power_of_2 = triton.next_power_of_2
 
 def calculate_settings(n):
     BLOCK_SIZE = next_power_of_2(n)
-    # CUDA only supports 65536 - 2^16 threads per block
     if BLOCK_SIZE > MAX_FUSED_SIZE:
         raise RuntimeError(f"Cannot launch Triton kernel since n = {n} exceeds "\
                            f"the maximum CUDA blocksize = {MAX_FUSED_SIZE}.")

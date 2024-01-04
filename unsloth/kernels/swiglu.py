@@ -28,12 +28,11 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
     g_row = tl.load(g + offsets, mask = mask, other = 0).to(tl.float32)
 
     # f = e * sigmoid(e)
-    # https://github.com/openai/triton/issues/241 exp MUST be done in f32
-    # or else Triton crashes
     f_row = e_row / (1 + tl.exp(-e_row))
     # h = f * g
     h_row = f_row * g_row
 
+    # Store h
     tl.store(h + offsets, h_row, mask = mask)
 pass
 
@@ -59,23 +58,20 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     g_row  = tl.load(g  + offsets, mask = mask, other = 0).to(tl.float32)
 
     # f = e * sigmoid(e)
-    # https://github.com/openai/triton/issues/241 exp MUST be done in f32
-    # or else Triton crashes
     se_row = 1 / (1 + tl.exp(-e_row))
+    # f = e * se
     f_row = e_row * se_row
     # h = f * g
     h_row = f_row * g_row
-    # df = se * (1 - f) + f
     # DW_f = DW * f
     DWf_row = DW_row * f_row
-    # DW_dfg = DW * df * g
-    # DW_dfg = DW * (se * (1 - f) + f) * g
     # DW_dfg = DW * (se*(g - h) + h)
     DW_dfg_row = DW_row * (se_row*(g_row - h_row) + h_row)
 
-    tl.store(DW + offsets, h_row,      mask = mask) # h
-    tl.store(e  + offsets, DWf_row,    mask = mask) # DW * f
-    tl.store(g  + offsets, DW_dfg_row, mask = mask) # DW * df * g
+    # Store derivatives in buffers
+    tl.store(DW + offsets, h_row,      mask = mask)
+    tl.store(e  + offsets, DWf_row,    mask = mask)
+    tl.store(g  + offsets, DW_dfg_row, mask = mask)
 pass
 
 
@@ -84,5 +80,5 @@ def swiglu_DWf_DW_dfg_kernel(DW, e, g):
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
     _DWf_DW_dfg_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
-    return DW, e, g # h, DW * f, DW * df * g
+    return DW, e, g
 pass

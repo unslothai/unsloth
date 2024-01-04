@@ -28,42 +28,35 @@ def _rope_embedding(
     BACKWARD_PASS: tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
 ):
+    """
+        Calculates the RoPE Embedding quickly
+        RoPE is Q * cos + rotate_half(Q) * sin
+        See our blog post for more info
+    """
     row_position  = tl.program_id(0)
     head_position = tl.program_id(1)
     col_offsets  = tl.arange(0, BLOCK_SIZE)
     half_head_dim = head_dim // 2
     mask = col_offsets < half_head_dim
 
-    # TODO: Fixup int32 locations to int64
-    rot_position = row_position % seqlen
-
-    Q   += row_position*  Q_row_stride + head_position*head_dim
-    cos += rot_position*cos_row_stride
-    sin += rot_position*sin_row_stride
-
-    Q1   = tl.load(Q   + half_head_dim*0 + col_offsets, mask = mask, other = 0)
-    sin1 = tl.load(sin + half_head_dim*0 + col_offsets, mask = mask, other = 0)
-    cos1 = tl.load(cos + half_head_dim*0 + col_offsets, mask = mask, other = 0)
-
-    Q2   = tl.load(Q   + half_head_dim*1 + col_offsets, mask = mask, other = 0)
-    # RoPE repeats sin and cos so 128 = [64, 64].
+    Q1   = tl.load(Q + row_position*Q_row_stride + head_position*head_dim + \
+                   half_head_dim*0 + col_offsets, mask = mask, other = 0)
+    Q2   = tl.load(Q + row_position*Q_row_stride + head_position*head_dim + \
+                   half_head_dim*1 + col_offsets, mask = mask, other = 0)
+    sin1 = tl.load(sin + (row_position % seqlen)*sin_row_stride + \
+                   half_head_dim*0 + col_offsets, mask = mask, other = 0)
+    cos1 = tl.load(cos + (row_position % seqlen)*cos_row_stride + \
+                   half_head_dim*0 + col_offsets, mask = mask, other = 0)
 
     if BACKWARD_PASS:
-        """
-            Q * cos + rotate_half(Q) * sin
-            is equivalent to
-            Q * cos + Q @ R * sin
-            where R is a rotation matrix [ 0,  I]
-                                         [-I,  0]
-            dC/dY = dY * cos + dY @ R.T * sin
-            where R.T is again the same  [ 0, -I]
-            but the minus is transposed. [ I,  0]
-        """
+        # See our blog post for more info.
         sin1 = -sin1
-    
-    # RoPE repeats sin and cos so 128 = [64, 64].
-    tl.store(Q + half_head_dim*0 + col_offsets, Q1*cos1 - Q2*sin1, mask = mask)
-    tl.store(Q + half_head_dim*1 + col_offsets, Q2*cos1 + Q1*sin1, mask = mask)
+    pass
+
+    tl.store(Q + row_position*Q_row_stride + head_position*head_dim + \
+             half_head_dim*0 + col_offsets, Q1*cos1 - Q2*sin1, mask = mask)
+    tl.store(Q + row_position*Q_row_stride + head_position*head_dim + \
+             half_head_dim*1 + col_offsets, Q2*cos1 + Q1*sin1, mask = mask)
 pass
 
 
@@ -90,7 +83,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         )
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
-        ctx.cos = cos # Don't need save_for_backward since a view
+        ctx.cos = cos
         ctx.sin = sin
         return Q.view(batch, seq_len, n_heads, head_dim)
     pass
@@ -99,8 +92,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
     def backward(ctx, dY):
         batch, seq_len, n_heads, head_dim = dY.shape
         dY = dY.reshape(batch*seq_len, n_heads*head_dim)
-        # Cannot be .view since the problem lies with dK since
-        # K.T's strides are incorrect.
+        # Must be reshape not view
         n_rows, n_cols = dY.shape
 
         cos = ctx.cos
@@ -122,10 +114,8 @@ pass
 
 
 def fast_rope_embedding(Q, K, cos, sin):
-    # We need (batch, [seqlen, n_heads], head_dim)
     Q = Fast_RoPE_Embedding.apply(Q.transpose(1, 2), cos, sin).transpose(1, 2)
     K = Fast_RoPE_Embedding.apply(K.transpose(1, 2), cos, sin).transpose(1, 2)
-    # We need (batch, [n_heads, seqlen], head_dim)
     return Q, K
 pass
 
@@ -155,7 +145,6 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         cos, sin = ctx.saved_tensors
         # Q * cos + rotate_half.T(Q) * sin
         half = dY.shape[-1]//2
-        # We reverse the minus sign for R.T
         RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim = -1)
         dY *= cos
         RH_dY *= sin

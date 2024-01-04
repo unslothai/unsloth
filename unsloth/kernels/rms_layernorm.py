@@ -27,6 +27,11 @@ def _rms_layernorm_forward(
     n_cols, eps,
     BLOCK_SIZE : tl.constexpr
 ):
+    """
+        Fast RMS Layernorm kernel
+        Inspiration from a Triton tutorial:
+        https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
+    """
     row_idx = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
@@ -49,7 +54,6 @@ pass
 
 @triton.jit
 def _rms_layernorm_backward(
-    #dX, dX_row_stride,
     dY, dY_row_stride,
     X,   X_row_stride,
     W,   W_row_stride,
@@ -58,11 +62,15 @@ def _rms_layernorm_backward(
     n_cols, eps,
     BLOCK_SIZE : tl.constexpr,
 ):
+    """
+        Fast RMS Layernorm kernel for the backward pass
+        Inspiration from a Triton tutorial:
+        https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html
+    """
     row_idx = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
-    #dX += row_idx * dX_row_stride + col_offsets
     dY += row_idx * dY_row_stride
     X  += row_idx *  X_row_stride
     r  += row_idx *  r_row_stride
@@ -71,15 +79,13 @@ def _rms_layernorm_backward(
     X_row  = tl.load(X  + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row  = tl.load(W  + col_offsets, mask = mask, other = 0).to(tl.float32)
 
-    # row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
-    # inv_var = 1 / tl.sqrt(row_var + eps)
+    # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
 
     dY_W = dY_row * W_row
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
-    #tl.store(dX, output, mask = mask)
     tl.store(dY + col_offsets, output, mask = mask)
 pass
 
@@ -92,9 +98,10 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         X = X.view(-1, dim)
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda")
 
+        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda")
         r = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
+
         _rms_layernorm_forward[(n_rows,)](
             Y, Y.stride(0),
             X, X.stride(0),
@@ -120,10 +127,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows, n_cols = dY.shape
         dW = X
 
-        # dX = torch.empty_like(dY)
-        # dX = dY
         _rms_layernorm_backward[(n_rows,)](
-            #dX, dX.stride(0),
             dY, dY.stride(0),
             X,  X .stride(0),
             W,  W .stride(0),
@@ -133,9 +137,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             BLOCK_SIZE = ctx.BLOCK_SIZE,
             num_warps  = ctx.num_warps,
         )
-        #dX = dX.view(*shape)
         dX = dY.view(*shape)
-        # X, W, eps
         return dX, None, None
     pass
 pass
