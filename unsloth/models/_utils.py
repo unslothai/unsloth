@@ -20,6 +20,7 @@ import gc
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
+from transformers import AutoTokenizer
 from platform import system as platform_system
 platform_system = platform_system()
 
@@ -129,7 +130,7 @@ def check_tokenizer(
     # where <sep> had token id=32002.
     # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
     # Seems like the Fast tokenizer in Rust breaks things!
-    
+
     max_embedding_size = model.model.embed_tokens.weight.shape[0]
     added_tokens_fast = tokenizer.added_tokens_decoder
     added_tokens_fast = {index : str(value) for index, value in added_tokens_fast.items()}
