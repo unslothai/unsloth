@@ -262,15 +262,6 @@ Two Tesla T4s on Kaggle
 # How did we make it faster?
 Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unsloth.ai/blog/mistral-benchmark) for more info!
 
-$$
-\begin{align}
-y &= \frac{x_i}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \cdot w \\
-r &= \frac{1}{\sqrt{\frac{1}{n}\sum{x_i^2}+\epsilon}} \\
-\frac{dC}{dX} &= \frac{1}{n} r \bigg( n (dY \cdot w) - \bigg( x_i \cdot r \cdot \sum{dY \cdot y_i }  \bigg) \bigg)
-\end{align}
-$$
-
-
 # Troubleshooting
 1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
 ```bash
