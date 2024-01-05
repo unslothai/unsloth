@@ -1,5 +1,5 @@
 <div class="align-center">
-  <img src="./images/unsloth new logo.png" width="350" />
+  <a href="https://unsloth.ai/"><img src="./images/unsloth new logo.png" width="350"></a>
   <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/try live demo green.png" height="50"></a>
   <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" height="50"></a>
 </div>
