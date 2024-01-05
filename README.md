@@ -1,30 +1,30 @@
 <div class="align-center">
   <img src="./images/unsloth new logo.png" width="350" />
-  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/try live demo green.png" height="60"></a>
-  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" height="60"></a>
+  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/try live demo green.png" height="50"></a>
+  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" height="50"></a>
 </div>
 
 ## Finetune Mistral, Llama 2-5x faster with 50% less memory!
 | Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
 |-----------------------------|-----------------------------|-------------------------|------------------------|
 | **2.2x faster, -43%  VRAM**     | **2.2x faster, -62%  VRAM**     | **1.9x faster, -27% VRAM**  | **5.5x faster, -44% VRAM** |
-| **Free** Llama <a href="https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing"><img src="./images/Colab.png" height="20"> | **Free** Mistral <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/Colab.png" height="20"> | A100 Colab <a href="https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing"><img src="./images/Colab.png" height="20"> | **Free** Kaggle A <a href="https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp"><img src="./images/Kaggle.png" height="20"> |
-| A100 Colab <a href="https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing"><img src="./images/Colab.png" height="20"> | A100 Colab <a href="https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing"><img src="./images/Colab.png" height="20"> | (59 more examples below) | **Free** Kaggle B <a href="https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp"><img src="./images/Kaggle.png" height="20"> |
+| ⭐**Free!** Llama + Alpaca [Run Colab notebook](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing") | ⭐**Free!** Mistral + Alpaca [Run Colab notebook](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | 🦥A100 Code Llama + Alpaca [Run Colab notebook](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | ⭐**Free!** Alpaca [Run free Kaggle notebook](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp)
+| 🦥A100 Llama + Alpaca [Run Colab notebook](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | 🦥A100 Mistral + Alpaca [Run Colab notebook](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | 50+ more examples below! | ⭐**Free!** Slim Orca [Run free Kaggle notebook](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
-* **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support. **Free** DPO example <a href="https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing"><img src="./images/Colab.png" height="20">  [More info](#DPO)  on DPO
-* **NEW!** [TinyLlama 1.1b](https://github.com/jzhang38/TinyLlama) on 3T tokens! **Free** example <a href="https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing"><img src="./images/Colab.png" height="20">
+* **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support. ⭐**Free!** DPO Zephyr, Mistral example! <a href="https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing"><img src="./images/Colab.png" height="20">  [More info](#DPO) on DPO
+* **NEW!** [TinyLlama 1.1b](https://github.com/jzhang38/TinyLlama) on 3T tokens! ⭐**Free!** example <a href="https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing"><img src="./images/Colab.png" height="20">
 * **NEW!** We're in 🤗 Huggingface's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 * Supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
 * All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
 * **0% loss in accuracy** - no approximation methods - all exact.
-* No change of hardware necessary. Supports NVIDIA GPUs since 2018+. Minimum CUDA Compute Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070 and 1080 works, but is a bit slow!
+* No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
 * Works on **Linux** and **Windows** via WSL.
 * **NEW!** Download 4 bit models 4x faster from 🤗 Huggingface! Eg: `unsloth/mistral-7b-bnb-4bit`
 * Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
 * **NEW!** Want a UI for finetuning? Try [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory) and use `--use_unsloth`!
 * Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
 
-| 1 A100 40GB  | Hugging Face | Flash Attention | Unsloth Open Source | [Unsloth Pro](https://unsloth.ai/pricing) |
+| 1 A100 40GB  | 🤗 Hugging Face | Flash Attention | 🦥 Unsloth Open Source | [🦥 Unsloth Pro](https://unsloth.ai/pricing) |
 |--------------|--------------|-----------------|---------------------|-----------------|
 | Alpaca       | 1x           | 1.04x           | 1.98x               | **15.64x**      |
 | LAION Chip2  | 1x           | 0.92x           | 1.61x               | **20.73x**      |
@@ -34,7 +34,7 @@
 Join our [Discord](https://discord.gg/nsS4V5Z6ge)!
 
 <img src="./images/unsloth made with love.png" width="200" />
-If you trained a model with Unsloth, we made a cool sticker if you want to use it!
+If you trained a model with 🦥 Unsloth, we made a cool sticker if you want to use it!
 
 # Installation Instructions - Conda
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1.
