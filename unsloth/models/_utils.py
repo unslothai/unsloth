@@ -141,12 +141,49 @@ def check_tokenizer(
         if index >= max_embedding_size:
             bad_indices = list(added_tokens_fast.keys  ())[j:]
             bad_tokens  = list(added_tokens_fast.values())[j:]
+
             if not _reload:
+                # Try removing the token
+                added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
+                special_tokens = tokenizer.special_tokens_map
+                import itertools
+                special_tokens = frozenset(
+                    itertools.chain.from_iterable(
+                        [x] if type(x) is str else x for x in special_tokens.values()
+                    )
+                )
+                can_be_removed1 = [x for x in bad_tokens if x not in special_tokens]
+                can_be_removed2 = [x for x in can_be_removed1 if x in tokenizer._added_tokens_encoder.keys()]
+
+                # Check of extra tokens can in fact we removed!
+
+                if  (len(can_be_removed1) == len(bad_tokens)) and \
+                    (len(can_be_removed2) == len(bad_tokens)):
+                    # Yes it can be fixed!
+                    for bad_token in can_be_removed1:
+                        remove_id = tokenizer._added_tokens_encoder[bad_token]
+                        del tokenizer._added_tokens_decoder[remove_id]
+                        del tokenizer._added_tokens_encoder[bad_token]
+                    pass
+                    # Confirm 1 more time!
+                    if max(tokenizer.added_tokens_decoder.keys()) < max_embedding_size:
+                        logger.warning_once(
+                            f"Unsloth loaded a broken tokenizer `{model_name}`, but managed to repair it!\n"\
+                            f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"\
+                            "We removed these bad tokens. If you think this is incorrect, fix your tokenizer first."
+                        )
+                        return tokenizer
+                    pass
+                pass
+
+                # :( Failure
                 raise RuntimeError(
                     f"Unsloth tried to load `{model_name}`, but cannot succeed.\n"\
                     f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"\
                     f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
+            pass
+            
             # Try slow tokenizer which can fix things!
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
