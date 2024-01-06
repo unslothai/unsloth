@@ -24,6 +24,7 @@ FOURBIT_MAPPER = \
     "unsloth/llama-2-13b-bnb-4bit"   : "unsloth/llama-13-7b",
     "unsloth/codellama-34b-bnb-4bit" : "codellama/CodeLlama-34b-hf",
     "unsloth/zephyr-sft-bnb-4bit"    : "unsloth/zephyr-sft",
+    "unsloth/tinyllama-bnb-4bit"     : "unsloth/tinyllama",
 }
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
@@ -54,6 +55,13 @@ class FastLanguageModel(FastLlamaModel):
                 f"to obtain the latest transformers build, then restart this session.\n"\
                 f"For now, we shall load `{model_name}` instead (still 4bit, just slower downloading)."
             )
+        elif not load_in_4bit and model_name in FOURBIT_MAPPER:
+            new_model_name = FOURBIT_MAPPER[model_name]
+            logger.warning_once(
+                f"Unsloth: You passed in `{model_name}` which is a 4bit model, yet you set\n"\
+                f"`load_in_4bit = False`. We shall load `{new_model_name}` instead."
+            )
+            model_name = new_model_name
         pass
 
         model_config = AutoConfig.from_pretrained(model_name)

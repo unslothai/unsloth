@@ -777,9 +777,15 @@ class FastLlamaModel:
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
-            raise TypeError("Unsloth: Fast model patching only works with dropout = 0.")
+            logger.warning_once(
+                f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"\
+                f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
+            )
         if bias != "none":
-            raise TypeError("Unsloth: Fast model patching only works with bias = 'none'.")
+            logger.warning_once(
+                f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"\
+                f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
+            )
 
         transformers_set_seed(random_state)
 
@@ -795,8 +801,8 @@ class FastLlamaModel:
             r              = r,
             lora_alpha     = lora_alpha,
             target_modules = target_modules,
-            lora_dropout   = 0,
-            bias           = "none",
+            lora_dropout   = lora_dropout,
+            bias           = bias,
             task_type      = TaskType.CAUSAL_LM,
             layers_to_transform = layers_to_transform,
             **kwargs,
@@ -813,62 +819,64 @@ class FastLlamaModel:
         n_mlp = 0
         n_qkv = 0
         n_o   = 0
-        for idx, layer in enumerate(model.model.model.layers):
+        if lora_dropout == 0 and bias == "none":
+            for idx, layer in enumerate(model.model.model.layers):
 
-            # MLP patching
-            gate_proj = layer.mlp.gate_proj
-            up_proj   = layer.mlp.  up_proj
-            down_proj = layer.mlp.down_proj
+                # MLP patching
+                gate_proj = layer.mlp.gate_proj
+                up_proj   = layer.mlp.  up_proj
+                down_proj = layer.mlp.down_proj
 
-            if  hasattr(gate_proj, "lora_A") and \
-                hasattr(  up_proj, "lora_A") and \
-                hasattr(down_proj, "lora_A") and \
-                (gate_proj.base_layer if hasattr(gate_proj, "base_layer") else gate_proj).bias is None and \
-                (  up_proj.base_layer if hasattr(  up_proj, "base_layer") else   up_proj).bias is None and \
-                (down_proj.base_layer if hasattr(down_proj, "base_layer") else down_proj).bias is None:
+                if  hasattr(gate_proj, "lora_A") and \
+                    hasattr(  up_proj, "lora_A") and \
+                    hasattr(down_proj, "lora_A") and \
+                    (gate_proj.base_layer if hasattr(gate_proj, "base_layer") else gate_proj).bias is None and \
+                    (  up_proj.base_layer if hasattr(  up_proj, "base_layer") else   up_proj).bias is None and \
+                    (down_proj.base_layer if hasattr(down_proj, "base_layer") else down_proj).bias is None:
 
-                # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
-                n_mlp += 1
-            else:
-                logger.warning_once(
-                    "Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
-                    "are not enabled or a bias term (like in Qwen) is used."
-                )
-            pass
+                    # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
+                    layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                    n_mlp += 1
+                else:
+                    logger.warning_once(
+                        "Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
+                        "are not enabled or a bias term (like in Qwen) is used."
+                    )
+                pass
 
-            # QKV attention patching
-            q_proj = layer.self_attn.q_proj
-            k_proj = layer.self_attn.k_proj
-            v_proj = layer.self_attn.v_proj
-            if  hasattr(q_proj, "lora_A") and \
-                hasattr(k_proj, "lora_A") and \
-                hasattr(v_proj, "lora_A") and \
-                (q_proj.base_layer if hasattr(q_proj, "base_layer") else q_proj).bias is None and \
-                (k_proj.base_layer if hasattr(k_proj, "base_layer") else k_proj).bias is None and \
-                (v_proj.base_layer if hasattr(v_proj, "base_layer") else v_proj).bias is None:
+                # QKV attention patching
+                q_proj = layer.self_attn.q_proj
+                k_proj = layer.self_attn.k_proj
+                v_proj = layer.self_attn.v_proj
+                if  hasattr(q_proj, "lora_A") and \
+                    hasattr(k_proj, "lora_A") and \
+                    hasattr(v_proj, "lora_A") and \
+                    (q_proj.base_layer if hasattr(q_proj, "base_layer") else q_proj).bias is None and \
+                    (k_proj.base_layer if hasattr(k_proj, "base_layer") else k_proj).bias is None and \
+                    (v_proj.base_layer if hasattr(v_proj, "base_layer") else v_proj).bias is None:
 
-                layer.self_attn.apply_qkv = apply_lora_qkv
-                n_qkv += 1
-            else:
-                logger.warning_once(
-                    "Unsloth cannot patch Attention layers with our manual autograd engine since either LoRA adapters\n"\
-                    "are not enabled or a bias term (like in Qwen) is used."
-                )
-            pass
+                    layer.self_attn.apply_qkv = apply_lora_qkv
+                    n_qkv += 1
+                else:
+                    logger.warning_once(
+                        "Unsloth cannot patch Attention layers with our manual autograd engine since either LoRA adapters\n"\
+                        "are not enabled or a bias term (like in Qwen) is used."
+                    )
+                pass
 
-            # O attention patching
-            o_proj = layer.self_attn.o_proj
-            if hasattr(o_proj, "lora_A") and \
-                (o_proj.base_layer if hasattr(o_proj, "base_layer") else o_proj).bias is None:
+                # O attention patching
+                o_proj = layer.self_attn.o_proj
+                if hasattr(o_proj, "lora_A") and \
+                    (o_proj.base_layer if hasattr(o_proj, "base_layer") else o_proj).bias is None:
 
-                layer.self_attn.apply_o = apply_lora_o
-                n_o += 1
-            else:
-                logger.warning_once(
-                    "Unsloth cannot patch O projection layer with our manual autograd engine since either LoRA adapters\n"\
-                    "are not enabled or a bias term (like in Qwen) is used."
-                )
+                    layer.self_attn.apply_o = apply_lora_o
+                    n_o += 1
+                else:
+                    logger.warning_once(
+                        "Unsloth cannot patch O projection layer with our manual autograd engine since either LoRA adapters\n"\
+                        "are not enabled or a bias term (like in Qwen) is used."
+                    )
+                pass
             pass
         pass
 

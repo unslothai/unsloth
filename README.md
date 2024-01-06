@@ -51,7 +51,7 @@ Do **NOT** use this if you have Anaconda. You must use the Conda install method,
 ```python
 import torch; torch.version.cuda
 ```
-2. For Pytorch 2.1.0: You can update Pytorch via Pip (interchange `cu121` / `cu118`). Go to https://pytorch.org/ to learn more. Select either `cu118` for CUDA 11.8 or `cu121` for CUDA 12.1. If you have a RTX 3060 or higher (A100, H100 etc), use the `"ampere"` path.
+2. For Pytorch 2.1.0: You can update Pytorch via Pip (interchange `cu121` / `cu118`). Go to https://pytorch.org/ to learn more. Select either `cu118` for CUDA 11.8 or `cu121` for CUDA 12.1. If you have a RTX 3060 or higher (A100, H100 etc), use the `"ampere"` path. For Pytorch 2.1.1: got to step 3.
 ```bash
 pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.0 triton \
   --index-url https://download.pytorch.org/whl/cu121
@@ -118,8 +118,8 @@ model = FastLanguageModel.get_peft_model(
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                       "gate_proj", "up_proj", "down_proj",],
     lora_alpha = 16,
-    lora_dropout = 0, # Currently only supports dropout = 0
-    bias = "none",    # Currently only supports bias = "none"
+    lora_dropout = 0, # Supports any, but = 0 is optimized
+    bias = "none",    # Supports any, but = "none" is optimized
     use_gradient_checkpointing = True,
     random_state = 3407,
     max_seq_length = max_seq_length,
@@ -174,8 +174,8 @@ model = FastLanguageModel.get_peft_model(
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                       "gate_proj", "up_proj", "down_proj",],
     lora_alpha = 64,
-    lora_dropout = 0, # Currently only supports dropout = 0
-    bias = "none",    # Currently only supports bias = "none"
+    lora_dropout = 0, # Supports any, but = 0 is optimized
+    bias = "none",    # Supports any, but = "none" is optimized
     use_gradient_checkpointing = True,
     random_state = 3407,
     max_seq_length = max_seq_length,
@@ -209,7 +209,8 @@ dpo_trainer.train()
 
 # Future Milestones and limitations
 1. Support Mixtral.
-2. Does not support non Llama models - we do so in the future.
+2. Supports all Mistral, Llama type models, but some are unoptimized (Qwen with biases)
+3. Dropout, bias in LoRA matrices are supported, just not optimized.
 
 # Performance comparisons on 1 Tesla T4 GPU:
 **Time taken for 1 epoch**
