@@ -206,3 +206,55 @@ def check_tokenizer(
     pass
     return tokenizer
 pass
+
+
+# Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
+# For mixed precision, we need it to be in float32 not float16.
+def LoraLayer_update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights,
+    use_rslora = False):
+    # This code works for linear layers, override for other layer types
+    if r <= 0:
+        raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
+
+    self.r[adapter_name] = r
+    self.lora_alpha[adapter_name] = lora_alpha
+    if lora_dropout > 0.0:
+        lora_dropout_layer = torch.nn.Dropout(p=lora_dropout)
+    else:
+        lora_dropout_layer = torch.nn.Identity()
+
+    self.lora_dropout.update(torch.nn.ModuleDict({adapter_name: lora_dropout_layer}))
+    # Actual trainable parameters
+    self.lora_A[adapter_name] = torch.nn.Linear(self.in_features, r, bias=False)
+    self.lora_B[adapter_name] = torch.nn.Linear(r, self.out_features, bias=False)
+    if use_rslora:
+        self.scaling[adapter_name] = lora_alpha / math.sqrt(r)
+    else:
+        self.scaling[adapter_name] = lora_alpha / r
+
+    if init_lora_weights == "loftq":
+        self.loftq_init(adapter_name)
+    elif init_lora_weights:
+        self.reset_lora_parameters(adapter_name, init_lora_weights)
+
+    # check weight and qweight (for GPTQ)
+    for weight_name in ("weight", "qweight"):
+        weight = getattr(self.get_base_layer(), weight_name, None)
+        if weight is not None:
+            # [INCORRECT code]
+            # 
+            # the layer is already completely initialized, this is an update
+            # if weight.dtype.is_floating_point or weight.dtype.is_complex:
+            #     self.to(weight.device, dtype=weight.dtype)
+            # else:
+            #     self.to(weight.device)
+            self.to(weight.device, non_blocking = True)
+            break
+    self.set_adapter(self.active_adapters)
+pass
+
+# Fix up incorrect downcasting of LoRA weights
+from peft.tuners.lora.layer import LoraLayer
+LoraLayer.update_layer = LoraLayer_update_layer
+from peft.tuners.lora import LoraLayer
+LoraLayer.update_layer = LoraLayer_update_layer
