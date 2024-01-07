@@ -210,7 +210,8 @@ pass
 
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
-def LoraLayer_update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights, use_rslora):
+def LoraLayer_update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights,
+    use_rslora = False):
     # This code works for linear layers, override for other layer types
     if r <= 0:
         raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
