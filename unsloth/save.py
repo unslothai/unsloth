@@ -27,7 +27,7 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 
 __all__ = [
     "unsloth_save_model",
-    "colab_quantize_to_gguf",
+    #"colab_quantize_to_gguf",
 ]
 
 LLAMA_WEIGHTS = (
@@ -161,14 +161,15 @@ def unsloth_save_model(
 pass
 
 
-def colab_quantize_to_gguf(save_directory, quantization_method = "q4_k_m"):
+"""
+def _colab_quantize_to_gguf(save_directory, quantization_method = "q4_k_m"):
 
     logger.warning_once(
         "Unsloth: `colab_quantize_to_gguf` is still in development mode.\n"\
         "If anything errors or breaks, please file a ticket on Github.\n"\
         "Also, if you used this successfully, please tell us on Discord!"
     )
-    
+
     if quantization_method not in ALLOWED_QUANTS.keys():
         error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
         for key, value in ALLOWED_QUANTS.items():
@@ -186,20 +187,21 @@ def colab_quantize_to_gguf(save_directory, quantization_method = "q4_k_m"):
 
     if not os.path.exists("llama.cpp"):
         print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
-        exec("!git clone https://github.com/ggerganov/llama.cpp")
-        exec("!cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j")
-        exec("!pip install gguf protobuf")
+        !git clone https://github.com/ggerganov/llama.cpp
+        !cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j
+        !pip install gguf protobuf
     pass
 
     print("Unsloth: [1] Converting HF into GGUF 16bit. This will take 3 minutes...")
-    exec(f"!python llama.cpp/convert.py {save_directory} "\
-         f"--outfile {save_directory}-unsloth.gguf "\
-         "--outtype f16")
+    !python llama.cpp/convert.py {save_directory} \
+        --outfile {save_directory}-unsloth.gguf \
+        --outtype f16
 
     print("Unsloth: [2] Converting GGUF 16bit into q4_k_m. This will take 20 minutes...")
     final_location = f"./{save_directory}-{quantization_method}-unsloth.gguf"
-    exec(f"!./llama.cpp/quantize ./{save_directory}-unsloth.gguf "\
-         f"{final_location} {quantization_method}")
+    !./llama.cpp/quantize ./{save_directory}-unsloth.gguf \
+        {final_location} {quantization_method}
 
     print(f"Unsloth: Output location: {final_location}")
 pass
+"""
