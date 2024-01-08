@@ -24,7 +24,6 @@ from typing import Optional, Callable, Union
 
 __all__ = [
     "save_model",
-    "colab_quantize_to_gguf",
 ]
 
 
@@ -172,44 +171,4 @@ def save_model(
 
     # Remove temporary location
     shutil.rmtree(temporary_location)
-pass
-
-
-def colab_quantize_to_gguf(
-    save_directory,
-    quantization_method = "q4_k_m",
-):
-    if quantization_method not in ALLOWED_QUANTS.keys():
-        error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
-        for key, value in ALLOWED_QUANTS.items():
-            error += f"[{key}] => {value}\n"
-        raise RuntimeError(error)
-    pass
-
-    print_info = \
-        f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
-        f"   \\\   /|    [0] Installing llama.cpp will take 3 minutes.\n"\
-        f"O^O/ \_/ \\    [1] Converting HF to GUUF 16bits will take 3 minutes.\n"\
-        f"\        /    [2] Converting GGUF 16bits to q4_k_m will take 20 minutes.\n"\
-        f' "-____-"     In total, you will have to wait around 26 minutes.\n'
-    print(print_info)
-
-    if not os.path.exists("llama.cpp"):
-        print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
-        !git clone https://github.com/ggerganov/llama.cpp
-        !cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j
-        !pip install gguf protobuf
-    pass
-
-    print("Unsloth: [1] Converting HF into GGUF 16bit. This will take 3 minutes...")
-    !python llama.cpp/convert.py {save_directory} \
-        --outfile {save_directory}-unsloth.gguf \
-        --outtype f16
-
-    print("Unsloth: [2] Converting GGUF 16bit into q4_k_m. This will take 20 minutes...")
-    final_location = f"./{save_directory}-{quantization_method}-unsloth.gguf"
-    !./llama.cpp/quantize ./{save_directory}-unsloth.gguf \
-        {final_location} {quantization_method}
-
-    print(f"Unsloth: Output location: {final_location}")
 pass

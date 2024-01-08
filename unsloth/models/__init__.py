@@ -16,4 +16,4 @@ from .loader import FastLanguageModel
 from .llama import FastLlamaModel
 from .mistral import FastMistralModel
 from .dpo import PatchDPOTrainer
-from .save import save_model, colab_quantize_to_gguf
+from .save import save_model
