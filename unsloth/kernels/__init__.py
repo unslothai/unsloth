@@ -17,8 +17,9 @@ from .rms_layernorm import fast_rms_layernorm
 from .rope_embedding import fast_rope_embedding, inplace_rope_embedding
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 from .fast_lora import (
+	get_lora_parameters,
 	apply_lora_mlp,
 	apply_lora_qkv,
 	apply_lora_o,
 )
-from .utils import fast_dequantize, QUANT_STATE, get_lora_parameters
+from .utils import fast_dequantize, QUANT_STATE
