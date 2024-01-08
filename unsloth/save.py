@@ -26,7 +26,7 @@ from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 
 __all__ = [
-    "save_model",
+    "unsloth_save_model",
     "colab_quantize_to_gguf",
 ]
 
