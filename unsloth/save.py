@@ -22,16 +22,13 @@ from tqdm import tqdm as ProgressBar
 import shutil
 from typing import Optional, Callable, Union
 import torch
+from transformers.models.llama.modeling_llama import logger
+from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 
 __all__ = [
     "save_model",
     "colab_quantize_to_gguf",
 ]
-
-
-def QUANT_STATE(W):
-    return getattr(W, "quant_state", None)
-pass
 
 LLAMA_WEIGHTS = (
     "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
@@ -61,24 +58,6 @@ ALLOWED_QUANTS = \
 }
 
 
-def get_lora_parameters(proj):
-    # For DPO or disabled adapters
-    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
-    W = base_layer.weight
-
-    if proj.disable_adapters or proj.merged:
-        return W, QUANT_STATE(W), None, None, None
-    pass
-
-    active_adapter = proj.active_adapters[0] if \
-        hasattr(proj, "active_adapters") else proj.active_adapter
-    A = proj.lora_A [active_adapter].weight
-    B = proj.lora_B [active_adapter].weight
-    s = proj.scaling[active_adapter]
-    return W, QUANT_STATE(W), A, B, s
-pass
-
-
 def _merge_lora(layer, name):
     if isinstance(layer, (bnb.nn.Linear4bit, peft.tuners.lora.Linear4bit)):
         # Is LoRA so we need to merge!
@@ -97,7 +76,7 @@ pass
 
 
 @torch.inference_mode
-def save_model(
+def unsloth_save_model(
     model,
     tokenizer,
     save_directory: Union[str, os.PathLike],
@@ -113,6 +92,12 @@ def save_model(
     temporary_location = "_unsloth_temporary_saved_buffers",
     **kwargs,
 ):
+    logger.warning_once(
+        "Unsloth: `unsloth_save_model` is still in development mode.\n"\
+        "If anything errors or breaks, please file a ticket on Github.\n"\
+        "Also, if you used this successfully, please tell us on Discord!"
+    )
+
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
     pass
@@ -177,6 +162,13 @@ pass
 
 
 def colab_quantize_to_gguf(save_directory, quantization_method = "q4_k_m"):
+
+    logger.warning_once(
+        "Unsloth: `colab_quantize_to_gguf` is still in development mode.\n"\
+        "If anything errors or breaks, please file a ticket on Github.\n"\
+        "Also, if you used this successfully, please tell us on Discord!"
+    )
+    
     if quantization_method not in ALLOWED_QUANTS.keys():
         error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
         for key, value in ALLOWED_QUANTS.items():
