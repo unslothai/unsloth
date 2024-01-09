@@ -37,7 +37,7 @@ huggingface = [
     "datasets",
     "sentencepiece",
     "accelerate",
-    "trl",
+    "trl==0.7.7",
     "peft",
     "packaging",
     "ninja",
