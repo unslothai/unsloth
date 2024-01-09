@@ -44,6 +44,7 @@ class FastLanguageModel(FastLlamaModel):
         token = None,
         device_map = "sequential",
         rope_scaling = None,
+        check_tokenizer = True,
         *args, **kwargs,
     ):
         if not SUPPORTS_FOURBIT and model_name in FOURBIT_MAPPER:
@@ -83,6 +84,7 @@ class FastLanguageModel(FastLlamaModel):
             token = token,
             device_map = device_map,
             rope_scaling = rope_scaling,
+            check_tokenizer = check_tokenizer,
             *args, **kwargs,
         )
     pass

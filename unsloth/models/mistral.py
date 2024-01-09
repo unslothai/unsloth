@@ -263,6 +263,7 @@ class FastMistralModel(FastLlamaModel):
         token = None,
         device_map = "sequential",
         rope_scaling = None, # Mistral does not support RoPE scaling
+        check_tokenizer = True,
     ): 
         if rope_scaling is not None:
             logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
@@ -332,14 +333,16 @@ class FastMistralModel(FastLlamaModel):
         internal_model.max_seq_length = max_position_embeddings
 
         # We check the tokenizer first for errors
-        tokenizer = check_tokenizer(
-            model = model,
-            tokenizer = tokenizer,
-            model_name = model_name,
-            model_max_length = max_seq_length,
-            padding_side = "right",
-            token = token,
-        )
+        if check_tokenizer:
+            tokenizer = check_tokenizer(
+                model = model,
+                tokenizer = tokenizer,
+                model_name = model_name,
+                model_max_length = max_seq_length,
+                padding_side = "right",
+                token = token,
+            )
+        pass
         return model, tokenizer
     pass
 pass
