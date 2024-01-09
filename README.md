@@ -1,7 +1,8 @@
 <div class="align-center">
   <a href="https://unsloth.ai/"><img src="./images/unsloth new logo.png" width="350"></a>
-  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/try live demo green.png" height="50"></a>
-  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" height="50"></a>
+  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/Free version button.png" height="50"></a>
+  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord button.png" height="50"></a>
+  <a href="https://ko-fi.com/unsloth"><img src="./images/Kofi button.png" height="50"></a>
 </div>
 
 ## Finetune Mistral, Llama 2-5x faster with 50% less memory!
