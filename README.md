@@ -12,9 +12,10 @@
   <a href="https://ko-fi.com/unsloth"><img src="./images/Kofi button.png" height="50"></a>
 </p>
 
-<h3 align="center">
-    <p>Finetune Mistral, Llama 2-5x faster with 50% less memory!</p>
-</h3><br>
+<h2 align="center">
+    Finetune Mistral, Llama 2-5x faster with 50% less memory!
+</h2>
+<br>
 
 | Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
 |-----------------------------|-----------------------------|-------------------------|------------------------|
