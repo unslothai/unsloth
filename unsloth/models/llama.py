@@ -619,7 +619,7 @@ class FastLlamaModel:
         token = None,
         device_map = "sequential",
         rope_scaling = None,
-        check_tokenizer = True,
+        fix_tokenizer = True,
     ):
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
@@ -704,7 +704,7 @@ class FastLlamaModel:
         internal_model.max_seq_length = max_position_embeddings
 
         # We check the tokenizer first for errors
-        if check_tokenizer:
+        if fix_tokenizer:
             tokenizer = check_tokenizer(
                 model = model,
                 tokenizer = tokenizer,
