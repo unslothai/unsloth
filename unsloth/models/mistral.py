@@ -343,6 +343,16 @@ class FastMistralModel(FastLlamaModel):
                 token = token,
             )
         pass
+
+        # Fix up config for transformers uploading PEFT
+        name = model.config._name_or_path
+        if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+            name = name[:len(name) - len("-bnb-4bit")]
+            model.config.update({"_name_or_path" : name})
+        pass
+        # Log Unsloth version for future fastpaths for inference
+        model.config.update({"unsloth_version" : __version__})
+        
         return model, tokenizer
     pass
 pass

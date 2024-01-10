@@ -116,6 +116,11 @@ def patch_tokenizer(model, tokenizer):
 pass
 
 
+IGNORED_TOKENIZER_CHECKING = frozenset((
+    "CodeLlamaTokenizerFast",
+    "CodeLlamaTokenizer",
+))
+
 def check_tokenizer(
     model,
     tokenizer,
@@ -130,6 +135,11 @@ def check_tokenizer(
     # where <sep> had token id=32002.
     # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
     # Seems like the Fast tokenizer in Rust breaks things!
+
+    # We ignore some of them!
+    if tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
+        return tokenizer
+    pass
 
     max_embedding_size = model.model.embed_tokens.weight.shape[0]
     added_tokens_fast = tokenizer.added_tokens_decoder
