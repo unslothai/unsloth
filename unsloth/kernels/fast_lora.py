@@ -22,7 +22,7 @@ def get_lora_parameters(proj):
     base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
 
-    if proj.disable_adapters or proj.merged:
+    if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
         return W, QUANT_STATE(W), None, None, None
     pass
 
