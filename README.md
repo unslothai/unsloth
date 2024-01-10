@@ -1,9 +1,8 @@
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20white%20text.png">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png">
-    <img alt="unsloth logo" src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png" height="120" style="max-width: 100%;">
+    <img alt="unsloth logo" src="./images/unsloth%20logo%20black%20text.png" height="120" style="max-width: 100%;">
   </picture>
 </p>
 <p align="center">
@@ -17,10 +16,10 @@
 </h2>
 <br>
 
-| Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
+| Llama 2 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
 |-----------------------------|-----------------------------|-------------------------|------------------------|
 | **2.2x faster 43% less VRAM**     | **2.2x faster 62% less VRAM**     | **1.9x faster 27% less VRAM**  | **5.5x faster 44% less VRAM** |
-| [⭐Llama **free** Colab 2x faster](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing") | [⭐Mistral **free** Colab 2x faster](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [CodeLlama A100 Colab notebook](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [⭐Kaggle **free** Alpaca notebook](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp)
+| [⭐Llama **free** Colab notebook](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing") | [⭐Mistral **free** Colab notebook](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [CodeLlama A100 Colab notebook](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [⭐Kaggle **free** Alpaca notebook](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp)
 | [Llama A100 Colab notebook](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Mistral A100 Colab notebook](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | 50+ more examples below! | [⭐Kaggle **free** Slim Orca notebook](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
 * **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support. ⭐**Free!** DPO Zephyr, Mistral example! <a href="https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing"><img src="./images/Colab.png" height="20">  [More info](#DPO) on DPO
@@ -218,6 +217,9 @@ dpo_trainer = DPOTrainer(
 dpo_trainer.train()
 ```
 
+# Support us!
+We're currently 2 brothers trying to make LLMs for everyone! It'll be super cool if you can support our work!!
+<a href="https://ko-fi.com/unsloth"><img src="./images/Kofi button.png" height="50"></a>
 
 # Future Milestones and limitations
 1. Support Mixtral.
