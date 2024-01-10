@@ -1,10 +1,22 @@
-<div class="align-center">
-  <a href="https://unsloth.ai/"><img src="./images/unsloth new logo.png" width="350"></a>
-  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/try live demo green.png" height="50"></a>
-  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord.png" height="50"></a>
-</div>
 
-## Finetune Mistral, Llama 2-5x faster with 50% less memory!
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20white%20text.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png">
+    <img alt="unsloth logo" src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png" height="120" style="max-width: 100%;">
+  </picture>
+</p>
+<p align="center">
+  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/Free version button.png" height="50"></a>
+  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord button.png" height="50"></a>
+  <a href="https://ko-fi.com/unsloth"><img src="./images/Kofi button.png" height="50"></a>
+</p>
+
+<h2 align="center">
+    Finetune Mistral, Llama 2-5x faster with 50% less memory!
+</h2>
+<br>
+
 | Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
 |-----------------------------|-----------------------------|-------------------------|------------------------|
 | **2.2x faster 43% less VRAM**     | **2.2x faster 62% less VRAM**     | **1.9x faster 27% less VRAM**  | **5.5x faster 44% less VRAM** |
