@@ -56,6 +56,7 @@ import types
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
+from peft import PeftModel, PeftConfig
 
 
 def original_apply_qkv(self, X):
@@ -153,6 +154,28 @@ def LlamaAttention_fast_forward_inference(
     A = A.reshape(bsz, 1, self.hidden_size)
     A = original_apply_o(self, A)
     return A, (Kn, Vn)
+pass
+
+
+torch_silu = torch.nn.functional.silu
+def fast_mlp_inference(self, X):
+    gate = self.gate_proj(X)
+    up   = self.up_proj(X)
+    gate = torch_silu(gate, inplace = True)
+    gate *= up
+    X = self.down_proj(gate)
+    return X
+pass
+
+
+def fast_rms_layernorm_inference(self, X):
+    X = X.to(torch.float32)
+    variance = X.square().mean(-1, keepdim = True)
+    variance += self.variance_epsilon
+    X *= variance.rsqrt_()
+    X = X.to(residual.dtype)
+    X *= self.weight
+    return X
 pass
 
 
@@ -287,28 +310,51 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    residual = hidden_states
+    bsz, q_len, hd = hidden_states.size()
 
-    hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+    if (self.training):
+        # Self Attention
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+        )
+        hidden_states = residual + hidden_states
 
-    # Self Attention
-    hidden_states, self_attn_weights, present_key_value = self.self_attn(
-        hidden_states=hidden_states,
-        causal_mask=causal_mask,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_value=past_key_value,
-        output_attentions=output_attentions,
-        use_cache=use_cache,
-        padding_mask=padding_mask,
-    )
-    hidden_states = residual + hidden_states
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+    else:
+        # Self Attention
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+        )
+        hidden_states += residual
 
-    # Fully Connected
-    residual = hidden_states
-    hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-    hidden_states = self.mlp(hidden_states)
-    hidden_states = residual + hidden_states
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_mlp_inference(self.mlp, hidden_states)
+        hidden_states += residual
+    pass
 
     outputs = (hidden_states,)
 
@@ -414,8 +460,7 @@ def LlamaModel_fast_forward(
             (batch_size, seq_length),
             inputs_embeds,
             past_key_values_length,
-            sliding_window = None if not hasattr(self.config, "sliding_window") else \
-                self.config.sliding_window,
+            sliding_window = getattr(self.config, "sliding_window"),
         )
     pass
 
@@ -479,7 +524,11 @@ def LlamaModel_fast_forward(
             all_self_attns += (layer_outputs[1],)
     pass
 
-    hidden_states = fast_rms_layernorm(self.norm, hidden_states)
+    if (self.training):
+        hidden_states = fast_rms_layernorm(self.norm, hidden_states)
+    else:
+        hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
+    pass
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
@@ -513,7 +562,7 @@ def LlamaForCausalLM_fast_forward(
     *args, **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-    if causal_mask is None:
+    if self.training and causal_mask is None:
         causal_mask = xformers.attn_bias.LowerTriangularMask()
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -665,6 +714,7 @@ class FastLlamaModel:
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
             )
+        pass
 
         # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
         # RoPE Scaling's max_position_embeddings must be updated
@@ -721,6 +771,7 @@ class FastLlamaModel:
             name = name[:len(name) - len("-bnb-4bit")]
             model.config.update({"_name_or_path" : name})
         pass
+
         # Log Unsloth version for future fastpaths for inference
         model.config.update({"unsloth_version" : __version__})
 
@@ -827,6 +878,17 @@ class FastLlamaModel:
             use_reentrant = True,
         )
         model = _get_peft_model(model, lora_config)
+
+
+        # Fix up config for transformers uploading PEFT
+        name = model.peft_config["default"].base_model_name_or_path
+        if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+            name = name[:len(name) - len("-bnb-4bit")]
+            model.peft_config["default"].base_model_name_or_path = name
+        pass
+        # Add revision to enable future fast inference paths
+        model.peft_config["default"].revision = f"unsloth"
+
 
         # Do patching
         n_mlp = 0

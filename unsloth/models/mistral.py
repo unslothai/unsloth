@@ -350,6 +350,7 @@ class FastMistralModel(FastLlamaModel):
             name = name[:len(name) - len("-bnb-4bit")]
             model.config.update({"_name_or_path" : name})
         pass
+        
         # Log Unsloth version for future fastpaths for inference
         model.config.update({"unsloth_version" : __version__})
         

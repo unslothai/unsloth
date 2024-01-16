@@ -37,10 +37,10 @@ huggingface = [
     "datasets",
     "sentencepiece",
     "accelerate",
-    "trl",
+    "trl>=0.7.9",
     "peft",
-    "packaging",
-    "ninja",
+    "tqdm",
+    "psutil",
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
@@ -93,30 +93,40 @@ colab = [
 ]
 colab_ampere = [
     "unsloth[cu121]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 cu118_ampere = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118only]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 cu121_ampere = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121only]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 cu118_ampere_torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118only_torch211]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 cu121_ampere_torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121only_torch211]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 
