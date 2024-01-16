@@ -56,7 +56,6 @@ import types
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModel, PeftConfig
 
 
 def original_apply_qkv(self, X):
