@@ -285,6 +285,14 @@ def unsloth_save_model(
     state_dict["model.norm.weight"] = model.model.model.norm.weight
     state_dict["lm_head.weight"]    = model.model.lm_head.weight
 
+    # Edit save_pretrained_settings
+    # _create_repo has errors
+    save_pretrained_settings["state_dict"] = state_dict
+    for deletion in \
+        ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
+        del save_pretrained_settings[deletion]
+    pass
+
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
         tokenizer.save_pretrained(**save_pretrained_settings)
@@ -293,9 +301,6 @@ def unsloth_save_model(
         print()
 
     print("Unsloth: Saving model... This might take 10 minutes for Llama-7b...", end = "")
-    save_pretrained_settings["state_dict"] = state_dict
-
-    print(save_pretrained_settings)
     model.model.save_pretrained(**save_pretrained_settings)
     print(" Done.")
 
