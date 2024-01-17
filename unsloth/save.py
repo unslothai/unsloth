@@ -205,7 +205,8 @@ def unsloth_save_model(
             print("Unsloth: Saving tokenizer...", end = "")
             tokenizer.save_pretrained(**save_pretrained_settings)
             print(" Done.")
-        pass
+        else:
+            print()
 
         print("Unsloth: Saving model...", end = "")
         if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
@@ -288,13 +289,17 @@ def unsloth_save_model(
         print("Unsloth: Saving tokenizer...", end = "")
         tokenizer.save_pretrained(**save_pretrained_settings)
         print(" Done.")
-    pass
+    else:
+        print()
 
     print("Unsloth: Saving model... This might take 10 minutes for Llama-7b...", end = "")
     save_pretrained_settings["state_dict"] = state_dict
 
+    print(save_pretrained_settings)
     model.model.save_pretrained(**save_pretrained_settings)
     print(" Done.")
+
+    save_pretrained_settings["state_dict"] = None
 
     for j, (key, value) in enumerate(state_dict.items()):
         state_dict[key] = None
@@ -422,8 +427,7 @@ def unsloth_save_pretrained_merged(
     save_peft_format     : bool = True,
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,
-    **kwargs,        
+    maximum_memory_usage : float = 0.85,   
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
