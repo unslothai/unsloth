@@ -292,7 +292,7 @@ def unsloth_save_model(
 
     print("Unsloth: Saving model... This might take 10 minutes for Llama-7b...", end = "")
     save_pretrained_settings["state_dict"] = state_dict
-    
+
     model.model.save_pretrained(**save_pretrained_settings)
     print(" Done.")
 
@@ -458,7 +458,6 @@ def unsloth_push_to_hub_merged(
     tags                 : Optional[List[str]] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.85,
-    **deprecated_kwargs,
 ):
     """
         Same as .push_to_hub(...) except 4bit weights are auto
