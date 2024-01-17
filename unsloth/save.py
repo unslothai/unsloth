@@ -92,7 +92,6 @@ def unsloth_save_model(
     save_method          : str = "lora", # ["lora", "merged_16bit", "merged_4bit"]
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
-    repo_id              : str = None,
     is_main_process      : bool = True,
     state_dict           : Optional[dict] = None,
     save_function        : Callable = torch.save,
@@ -131,6 +130,12 @@ def unsloth_save_model(
         gc.collect()
     pass
 
+    if push_to_hub and not ("/" in save_directory):
+        raise RuntimeError(
+            "Unsloth: `push_to_hub` is True, whilst save_directory is not a Huggingface repo."
+        )
+    pass
+
     save_method = save_method.lower().replace(" ", "_")
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
@@ -163,10 +168,9 @@ def unsloth_save_model(
                 "Go to https://huggingface.co/settings/tokens."
             )
         pass
-        if repo_id is None: repo_id = save_directory
 
         model.push_to_hub(
-            repo_id            = repo_id,
+            repo_id            = save_directory,
             use_temp_dir       = use_temp_dir,
             commit_message     = commit_message,
             private            = private,
@@ -180,7 +184,7 @@ def unsloth_save_model(
         )
         if tokenizer is not None:
             tokenizer.push_to_hub(
-                repo_id            = repo_id,
+                repo_id            = save_directory,
                 use_temp_dir       = use_temp_dir,
                 commit_message     = commit_message,
                 private            = private,
@@ -214,17 +218,6 @@ def unsloth_save_model(
         model.save_pretrained(**save_pretrained_settings)
         print(" Done.")
         return
-    pass
-
-    if push_to_hub and (repo_id is None) and not ("/" in save_directory):
-        raise RuntimeError(
-            "Unsloth: `push_to_hub` is True, whilst your save_directory is not a\n"\
-            "Huggingface repo, or `repo_id` is not set."
-        )
-    pass
-    if repo_id is None:
-        repo_id = save_directory
-        save_pretrained_settings["repo_id"] = repo_id
     pass
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
@@ -291,11 +284,6 @@ def unsloth_save_model(
     for deletion in \
         ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
         del save_pretrained_settings[deletion]
-    pass
-
-    # Fix up for push_to_hub
-    if push_to_hub:
-        save_pretrained_settings["repo_id"] = None
     pass
 
     if tokenizer is not None:
@@ -427,7 +415,6 @@ def unsloth_save_pretrained_merged(
     save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
-    repo_id              : str = None,
     is_main_process      : bool = True,
     state_dict           : Optional[dict] = None,
     save_function        : Callable = torch.save,
@@ -488,6 +475,7 @@ def unsloth_push_to_hub_merged(
     arguments["save_directory"] = repo_id
     arguments["push_to_hub"]    = True
     del arguments["self"]
+    del arguments["repo_id"]
     return unsloth_save_model(**arguments)
 pass
 
