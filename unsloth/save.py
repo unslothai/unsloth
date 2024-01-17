@@ -353,12 +353,6 @@ def save_to_gguf(
     elif quantization_method == "quantized":      quantization_method = "q4_k_m"
     elif quantization_method is None:             quantization_method = "q8_0"
 
-    logger.warning_once(
-        "Unsloth: `colab_quantize_to_gguf` is still in development mode.\n"\
-        "If anything errors or breaks, please file a ticket on Github.\n"\
-        "Also, if you used this successfully, please tell us on Discord!"
-    )
-
     if quantization_method not in ALLOWED_QUANTS.keys():
         error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
         for key, value in ALLOWED_QUANTS.items():
@@ -545,6 +539,7 @@ def unsloth_save_pretrained_gguf(
     arguments["model"]       = self
     arguments["tokenizer"]   = None
     arguments["push_to_hub"] = False # We save ourselves
+    arguments["save_method"] = "merged_16bit" # Must be 16bit
     del arguments["self"]
     del arguments["quantization_method"]
 
@@ -611,6 +606,7 @@ def unsloth_push_to_hub_gguf(
     arguments["tokenizer"]      = None
     arguments["save_directory"] = repo_id
     arguments["push_to_hub"]    = False # We save ourselves
+    arguments["save_method"]    = "merged_16bit" # Must be 16bit
     del arguments["self"]
     del arguments["repo_id"]
     del arguments["quantization_method"]
