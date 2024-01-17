@@ -87,7 +87,7 @@ pass
 @torch.inference_mode
 def unsloth_save_model(
     model,
-    tokenizer            = None,
+    tokenizer,
     save_directory       : Union[str, os.PathLike],
     save_method          : str = "lora", # ["lora", "merged_16bit", "merged_4bit"]
     push_to_hub          : bool = False,
