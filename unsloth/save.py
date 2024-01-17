@@ -286,11 +286,16 @@ def unsloth_save_model(
     state_dict["lm_head.weight"]    = model.model.lm_head.weight
 
     # Edit save_pretrained_settings
-    # _create_repo has errors
+    # [TODO] _create_repo has errors due to **kwargs getting accepted
     save_pretrained_settings["state_dict"] = state_dict
     for deletion in \
         ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
         del save_pretrained_settings[deletion]
+    pass
+
+    # Fix up for push_to_hub
+    if push_to_hub:
+        save_pretrained_settings["repo_id"] = None
     pass
 
     if tokenizer is not None:
