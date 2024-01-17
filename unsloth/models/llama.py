@@ -15,7 +15,6 @@
 import torch
 from typing import Optional, Tuple, List, Union
 from torch.nn.functional import scaled_dot_product_attention
-from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
@@ -46,16 +45,13 @@ except:
     LlamaFlashAttention2 = LlamaAttention
 pass
 
-from peft import PeftModelForCausalLM
-import gc
-import peft
-import bitsandbytes as bnb
-import numpy as np
-import types
-
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
+from peft import PeftModelForCausalLM
+from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+from .save import patch_push_to_hub
 
 
 def original_apply_qkv(self, X):
@@ -110,18 +106,15 @@ def LlamaAttention_fast_forward_inference(
     bsz, _, _ = hidden_states.size()
     K1, V1 = past_key_value
 
-    Wq = self.q_proj.weight
-    Wk = self.k_proj.weight
-    Wv = self.v_proj.weight
-    Wo = self.o_proj.weight
-
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
-    Qn, Kn, Vn = original_apply_qkv(self, Xn)
+    Qn = self.q_proj(Xn)
+    Kn = self.k_proj(Xn)
+    Vn = self.v_proj(Xn)
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -423,6 +416,7 @@ def LlamaModel_fast_forward(
     if past_key_values is not None:
         past_key_values_length = past_key_values[0][0].shape[2]
         seq_length_with_past = seq_length_with_past + past_key_values_length
+    pass
 
     # We already handle KV cache position_ids ourselves.
     if (past_key_values_length != 0):
@@ -436,10 +430,12 @@ def LlamaModel_fast_forward(
         position_ids = position_ids.view(-1, seq_length).to(torch.int32)#.long()
     else:
         position_ids = None
+    pass
 
     if position_ids is not None:
         if position_ids.shape[0] != batch_size:
             position_ids = position_ids.repeat((batch_size, 1))
+    pass
 
     # embed positions
     if inputs_embeds is None:
@@ -448,12 +444,16 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
+    elif self.is_training:
+        attention_mask = None
+        padding_mask = None
     else:
         if 0 in attention_mask:
             padding_mask = attention_mask
         else:
             padding_mask = None
 
+        from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
         attention_mask = _prepare_4d_causal_attention_mask(
             attention_mask,
             (batch_size, seq_length),
@@ -561,7 +561,7 @@ def LlamaForCausalLM_fast_forward(
     *args, **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-    if self.training and causal_mask is None:
+    if causal_mask is None:
         causal_mask = xformers.attn_bias.LowerTriangularMask()
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -763,6 +763,7 @@ class FastLlamaModel:
                 token = token,
             )
         pass
+        patch_push_to_hub(tokenizer)
 
         # Fix up config for transformers uploading PEFT
         name = model.config._name_or_path
@@ -801,7 +802,7 @@ class FastLlamaModel:
         correct_dtype = lm_head.weight.dtype
 
         for name, module in model.named_modules():
-            if isinstance(module, (bnb.nn.Linear4bit, peft.tuners.lora.Linear4bit)):
+            if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
                 weight = module.weight
                 quant_state = weight.quant_state
 
@@ -816,8 +817,10 @@ class FastLlamaModel:
         pass
 
         # Clear deleted GPU items
-        gc.collect()
-        torch.cuda.empty_cache()
+        import gc
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
         return model
     pass
 
@@ -832,11 +835,26 @@ class FastLlamaModel:
         lora_dropout = 0,
         bias = "none",
         layers_to_transform = None,
+        layers_pattern = None,
         use_gradient_checkpointing = True,
         random_state = 3407,
         max_seq_length = 2048, # not used anymore
+        use_rslora = False,
+        init_lora_weights = True,
+        loftq_config = None,
         **kwargs,
     ):
+        if isinstance(model, PeftModelForCausalLM):
+            raise TypeError(
+                "Unsloth: Your model already has LoRA adapters. No need to run this again!"
+            )
+        pass
+
+        import inspect
+        signature = str(inspect.signature(LoraConfig))
+        SUPPORTS_LOFTQ  = "loftq_config" in signature
+        SUPPORTS_RSLORA = "use_rslora"   in signature
+
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
@@ -844,11 +862,61 @@ class FastLlamaModel:
                 f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"\
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
+        pass
+
         if bias != "none":
             logger.warning_once(
                 f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"\
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
+        pass
+
+        if not (type(init_lora_weights) is bool or \
+            init_lora_weights == "gaussian" or init_lora_weights == "loftq"):
+            raise ValueError(
+                'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
+            )
+        pass
+
+        if init_lora_weights == "loftq":
+
+            if not SUPPORTS_LOFTQ:
+                import peft
+                raise RuntimeError(
+                    f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
+                    "Please install PEFT 0.7.2 or higher.\n"\
+                    "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+                )
+            pass
+
+            if loftq_config is None:
+                from peft import LoftQConfig
+                logger.warning_once(
+                    f"Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
+                    f"We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
+                )
+                loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
+            pass
+            
+            if hasattr(model.config, "quantization_config"):
+                raise ValueError(
+                    "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"
+                    "Reload your model without any quantization by setting `load_in_4bit = False`".
+                )
+            pass
+        pass
+
+        assert(type(use_rslora) is bool)
+        if use_rslora:
+            if not SUPPORTS_RSLORA:
+                import peft
+                raise RuntimeError(
+                    f"Unsloth: Your PEFT version of {peft.__version__} does not support use_rslora.\n"\
+                    "Please install PEFT 0.7.2 or higher.\n"\
+                    "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+                )
+            pass
+        pass
 
         transformers_set_seed(random_state)
 
@@ -860,16 +928,23 @@ class FastLlamaModel:
         pass
 
         # Get LoRA
-        lora_config = LoraConfig(
-            r              = r,
-            lora_alpha     = lora_alpha,
-            target_modules = target_modules,
-            lora_dropout   = lora_dropout,
-            bias           = bias,
-            task_type      = TaskType.CAUSAL_LM,
+        arguments = dict(
+            r                   = r,
+            lora_alpha          = lora_alpha,
+            target_modules      = target_modules,
+            lora_dropout        = lora_dropout,
+            bias                = bias,
+            task_type           = TaskType.CAUSAL_LM,
             layers_to_transform = layers_to_transform,
+            init_lora_weights   = init_lora_weights,
+            loftq_config        = loftq_config,
+            use_rslora          = use_rslora,
             **kwargs,
         )
+        if not SUPPORTS_LOFTQ:  del arguments["loftq_config"]
+        if not SUPPORTS_RSLORA: del arguments["use_rslora"]
+
+        lora_config = LoraConfig(**arguments)
 
         model = prepare_model_for_kbit_training(
             model,
@@ -877,7 +952,6 @@ class FastLlamaModel:
             use_reentrant = True,
         )
         model = _get_peft_model(model, lora_config)
-
 
         # Fix up config for transformers uploading PEFT
         name = model.peft_config["default"].base_model_name_or_path
@@ -888,11 +962,12 @@ class FastLlamaModel:
         # Add revision to enable future fast inference paths
         model.peft_config["default"].revision = f"unsloth"
 
-
         # Do patching
         n_mlp = 0
         n_qkv = 0
         n_o   = 0
+        import types
+
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
@@ -958,6 +1033,7 @@ class FastLlamaModel:
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "\
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.",
         )
+        patch_push_to_hub(model)
 
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10

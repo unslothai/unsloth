@@ -12,26 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from peft import PeftModelForCausalLM
-from collections import OrderedDict
-import bitsandbytes as bnb
-import peft
-import os
-from tqdm import tqdm as ProgressBar
-import shutil
+from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from typing import Optional, Callable, Union
 import torch
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
-import re
-import psutil
-import gc
-import subprocess
 
 __all__ = [
     "print_quantization_methods",
     "unsloth_save_model",
     "save_to_gguf",
+    "patch_push_to_hub",
 ]
 
 
@@ -46,8 +38,9 @@ LLAMA_LAYERNORMS = (
 # From https://mlabonne.github.io/blog/posts/Quantize_Llama_2_models_using_ggml.html
 ALLOWED_QUANTS = \
 {
-    "not quantized" : "Recommended. Fast conversion. Slow inference, big files.",
-    "quantized"     : "Recommended. Slow conversion. Fast inference, small files.",
+    "not quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
+    "fast quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
+    "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
     "f32"     : "Not recommended. Retains 100% accuracy, but super slow and memory hungry.",
     "f16"     : "Fastest conversion + retains 100% accuracy. Slow and memory hungry.",
     "q8_0"    : "Fast conversion. High resource use, but generally acceptable.",
@@ -74,7 +67,7 @@ pass
 
 
 def _merge_lora(layer, name):
-    if isinstance(layer, (bnb.nn.Linear4bit, peft.tuners.lora.Linear4bit)):
+    if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit)):
         # Is LoRA so we need to merge!
         W, quant_state, A, B, s = get_lora_parameters(layer)
         dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
@@ -90,25 +83,81 @@ def _merge_lora(layer, name):
 pass
 
 
+def patch_push_to_hub(model):
+    import inspect
+    import re
+    import types
+    from typing import Callable, Optional, Union, List
+
+    if hasattr(model, "_original_push_to_hub"): return
+
+    original_push_to_hub = model.push_to_hub
+    signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
+    signature = signature[1:]
+    signature = re.sub("<function save at .+?>", "torch.save", signature)
+    docs = original_push_to_hub.__doc__.encode("utf-8").decode("utf-8")
+    model._original_push_to_hub = original_push_to_hub
+
+    push_to_hub_text = f'''def unsloth_push_to_hub(self, {signature}:
+    """
+    {docs}
+    """
+    arguments = dict(locals())
+    del arguments["self"]
+    if arguments["tags"] is not None:
+        assert(isinstance(arguments["tags"], (list, tuple)))
+        arguments["tags"] = list(arguments["tags"]) + ["unsloth",]
+    else:
+        arguments["tags"] = ["unsloth",]
+    try:
+        return self._original_push_to_hub(**arguments)
+    except:
+        del arguments["tags"]
+        return self._original_push_to_hub(**arguments)
+    pass
+    '''
+    exec(push_to_hub_text, globals())
+    model.push_to_hub = types.MethodType(unsloth_push_to_hub, model)
+
+    original_model = model
+    while hasattr(original_model, "model"):
+        original_model = original_model.model
+        if hasattr(original_model, "_original_push_to_hub"): continue
+        
+        original_model._original_push_to_hub = original_model.push_to_hub
+        original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+    pass
+    return
+pass
+
+
 @torch.inference_mode
 def unsloth_save_model(
     model,
     tokenizer,
-    save_directory: Union[str, os.PathLike],
-    save_method = "lora", # ["lora", "merged_16bit", "merged_4bit"]
-    push_to_hub: bool = False,
-    token: Optional[Union[str, bool]] = None,
-    repo_id : str = None,
-    is_main_process: bool = True,
-    state_dict: Optional[dict] = None,
-    save_function: Callable = torch.save,
-    max_shard_size: Union[int, str] = "5GB",
-    safe_serialization: bool = True,
-    variant: Optional[str] = None,
-    save_peft_format: bool = True,
-    temporary_location = "_unsloth_temporary_saved_buffers",
+    save_directory       : Union[str, os.PathLike],
+    save_method          : str = "lora", # ["lora", "merged_16bit", "merged_4bit"]
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+    repo_id              : str = None,
+    is_main_process      : bool = True,
+    state_dict           : Optional[dict] = None,
+    save_function        : Callable = torch.save,
+    max_shard_size       : Union[int, str] = "5GB",
+    safe_serialization   : bool = True,
+    variant              : Optional[str] = None,
+    save_peft_format     : bool = True,
+    tags                 : List[str] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.85,
     **kwargs,        
 ):
+    import gc
+    import re
+    import psutil
+
+    assert(maximum_memory_usage > 0 and maximum_memory_usage <= 0.95)
+
     # Clean memory up first
     for _ in range(3):
         torch.cuda.empty_cache()
@@ -132,6 +181,13 @@ def unsloth_save_model(
         print("Done.")
     pass
 
+    if tags is not None:
+        assert(isinstance(tags, (list, tuple)))
+        tags = list(tags) + ["unsloth",]
+    else:
+        tags = ["unsloth",]
+    pass
+
     if (save_method == "lora") and push_to_hub:
         if token is None:
             raise RuntimeError(
@@ -146,7 +202,7 @@ def unsloth_save_model(
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
             token = token,
-            tags = ["unsloth",],
+            tags = tags,
             **kwargs,
         )
         tokenizer.push_to_hub(
@@ -154,7 +210,7 @@ def unsloth_save_model(
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
             token = token,
-            tags = ["unsloth",],
+            tags = tags,
             **kwargs,
         )
         return
@@ -170,7 +226,7 @@ def unsloth_save_model(
             save_directory = save_directory,
             push_to_hub = push_to_hub,
             token = token,
-            tags = ["unsloth",],
+            tags = tags,
         )
         print(" Done.")
 
@@ -187,7 +243,7 @@ def unsloth_save_model(
             variant = variant,
             token = token,
             save_peft_format = save_peft_format,
-            tags = ["unsloth",],
+            tags = tags,
         )
         print(" Done.")
         return
@@ -197,13 +253,17 @@ def unsloth_save_model(
 
     # Determine max RAM usage minus sharding
     max_ram = psutil.virtual_memory().total
-    gb_found = re.match("([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
-    mb_found = re.match("([0-9]{1,})[\s]{0,}MB", max_shard_size, flags = re.IGNORECASE)
-    if   gb_found: sharded_ram_usage = int(gb_found.group(1)) * 1024 * 1024 * 1024
-    elif mb_found: sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024
-    else: sharded_ram_usage = 5 * 1024 * 1024 * 1024
+    sharded_ram_usage = 5 * 1024 * 1024 * 1024
+    if type(max_shard_size) is str:
+        gb_found = re.match("([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
+        mb_found = re.match("([0-9]{1,})[\s]{0,}MB", max_shard_size, flags = re.IGNORECASE)
+        if   gb_found: sharded_ram_usage = int(gb_found.group(1)) * 1024 * 1024 * 1024
+        elif mb_found: sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024 
+    elif type(max_shard_size) is int:
+        sharded_ram_usage = sharded_ram_usage
+    pass
     max_ram -= sharded_ram_usage
-    max_ram = int(max(0, max_ram) * 0.85)
+    max_ram = int(max(0, max_ram) * maximum_memory_usage)
 
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
@@ -211,10 +271,13 @@ def unsloth_save_model(
     pass
 
     # HF also uses a OrderedDict
+    from collections import OrderedDict
     state_dict = OrderedDict()
     state_dict["model.embed_tokens.weight"] = model.model.model.embed_tokens.weight
 
-    max_vram = int(torch.cuda.get_device_properties(0).total_memory * 0.85)
+    max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
+
+    from tqdm import tqdm as ProgressBar
     for j, layer in enumerate(ProgressBar(model.model.model.layers)):
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
@@ -249,7 +312,7 @@ def unsloth_save_model(
         save_directory = save_directory,
         push_to_hub = push_to_hub,
         token = token,
-        tags = ["unsloth",],
+        tags = tags,
     )
     print(" Done.")
 
@@ -265,7 +328,7 @@ def unsloth_save_model(
         variant = variant,
         token = token,
         save_peft_format = save_peft_format,
-        tags = ["unsloth",],
+        tags = tags,
     )
     print(" Done.")
 
@@ -282,6 +345,7 @@ def unsloth_save_model(
     gc.collect()
 
     # Remove temporary location
+    import shutil
     shutil.rmtree(temporary_location)
 
     for _ in range(3):
@@ -291,13 +355,19 @@ def unsloth_save_model(
 pass
 
 
-def save_to_gguf(model_directory, quantization_method = "not quantized"):
+def save_to_gguf(
+    model_directory     : str = "finetuned_model",
+    quantization_method : str = "not quantized",
+):
     from transformers.models.llama.modeling_llama import logger
     import os
+    import subprocess
+    import psutil
 
-    if   quantization_method == "not quantized": quantization_method = "f16"
-    elif quantization_method == "quantized":     quantization_method = "q4_k_m"
-    elif quantization_method is None:            quantization_method = "f16"
+    if   quantization_method == "not quantized":  quantization_method = "f16"
+    elif quantization_method == "fast quantized": quantization_method = "q8_0"
+    elif quantization_method == "quantized":      quantization_method = "q4_k_m"
+    elif quantization_method is None:             quantization_method = "f16"
 
     logger.warning_once(
         "Unsloth: `colab_quantize_to_gguf` is still in development mode.\n"\
