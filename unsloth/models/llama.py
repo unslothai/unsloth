@@ -900,8 +900,8 @@ class FastLlamaModel:
             
             if hasattr(model.config, "quantization_config"):
                 raise ValueError(
-                    "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"
-                    "Reload your model without any quantization by setting `load_in_4bit = False`".
+                    "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"\
+                    "Reload your model without any quantization by setting `load_in_4bit = False`."
                 )
             pass
         pass
