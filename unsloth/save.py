@@ -130,12 +130,6 @@ def unsloth_save_model(
         gc.collect()
     pass
 
-    if push_to_hub and not ("/" in save_directory):
-        raise RuntimeError(
-            "Unsloth: `push_to_hub` is True, whilst save_directory is not a Huggingface repo."
-        )
-    pass
-
     save_method = save_method.lower().replace(" ", "_")
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
@@ -198,8 +192,16 @@ def unsloth_save_model(
             )
         pass
         return
+    pass
+
+    # If push_to_hub, we must remove the .../ part of a repo
+    if push_to_hub and "/" in save_directory:
+        logger.warning_once("You are pushing to hub, but you passed your HF username.")
+        save_directory = save_directory[save_directory.find("/"):]
+        save_pretrained_settings["save_directory"] = save_directory
+    pass
     
-    elif (save_method == "merged_4bit") or (save_method == "lora") or (
+    if (save_method == "merged_4bit") or (save_method == "lora") or (
         not hasattr(model, "model") or \
         not hasattr(model.model, "model") or \
         not hasattr(model.model.model, "layers")
