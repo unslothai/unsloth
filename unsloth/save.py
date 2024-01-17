@@ -204,7 +204,15 @@ def unsloth_save_model(
         not hasattr(model.model, "model") or \
         not hasattr(model.model.model, "layers")
     ):
-        # Do general saving?
+        # Do general saving
+        
+        # Edit save_pretrained_settings
+        # [TODO] _create_repo has errors due to **kwargs getting accepted
+        for deletion in \
+            ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
+            del save_pretrained_settings[deletion]
+        pass
+
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
             tokenizer.save_pretrained(**save_pretrained_settings)
@@ -280,6 +288,7 @@ def unsloth_save_model(
 
     # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
+    print(save_pretrained_settings)
     save_pretrained_settings["state_dict"] = state_dict
     for deletion in \
         ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
