@@ -551,6 +551,16 @@ def unsloth_save_pretrained_gguf(
     file_location = save_to_gguf(save_directory, quantization_method)
 
     if push_to_hub:
+        print("Unsloth: Uploading GGUF to Huggingface Hub...")
+        
+        from huggingface_hub import create_repo
+        create_repo(
+            repo_id   = save_directory,
+            token     = token,
+            repo_type = "model",
+            exist_ok  = True,
+        )
+
         from huggingface_hub import HfApi
         hf_api = HfApi(token = token)
         hf_api.upload_file(
@@ -621,6 +631,17 @@ def unsloth_push_to_hub_gguf(
 
     save_directory = unsloth_save_model(**arguments)
     file_location = save_to_gguf(save_directory, quantization_method)
+
+    print("Unsloth: Uploading GGUF to Huggingface Hub...")
+
+    from huggingface_hub import create_repo
+    create_repo(
+        repo_id   = save_directory,
+        private   = private,
+        token     = token,
+        repo_type = "model",
+        exist_ok  = True,
+    )
 
     from huggingface_hub import HfApi
     hf_api = HfApi(token = token)
