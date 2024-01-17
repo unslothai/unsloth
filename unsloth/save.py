@@ -528,6 +528,7 @@ def unsloth_save_pretrained_gguf(
     arguments["tokenizer"]   = None
     arguments["push_to_hub"] = False # We save ourselves
     del arguments["self"]
+    del arguments["quantization_method"]
 
     save_directory = unsloth_save_model(**arguments)
     file_location = save_to_gguf(save_directory, quantization_method)
@@ -576,6 +577,7 @@ def unsloth_push_to_hub_gguf(
     arguments["push_to_hub"]    = False # We save ourselves
     del arguments["self"]
     del arguments["repo_id"]
+    del arguments["quantization_method"]
 
     save_directory = unsloth_save_model(**arguments)
     file_location = save_to_gguf(save_directory, quantization_method)
