@@ -495,6 +495,7 @@ pass
 
 def unsloth_save_pretrained_gguf(
     self,
+    tokenizer,
     save_directory       : Union[str, os.PathLike],
     quantization_method  : str = "fast_quantized",
     push_to_hub          : bool = False,
@@ -537,7 +538,7 @@ def unsloth_save_pretrained_gguf(
     """
     arguments = dict(locals())
     arguments["model"]       = self
-    arguments["tokenizer"]   = None
+    arguments["tokenizer"]   = tokenizer
     arguments["push_to_hub"] = False # We save ourselves
     arguments["save_method"] = "merged_16bit" # Must be 16bit
     del arguments["self"]
@@ -561,6 +562,7 @@ pass
 
 def unsloth_push_to_hub_gguf(
     self,
+    tokenizer,
     repo_id              : str,
     quantization_method  : str = "fast_quantized",
     use_temp_dir         : Optional[bool] = None,
@@ -603,7 +605,7 @@ def unsloth_push_to_hub_gguf(
     """
     arguments = dict(locals())
     arguments["model"]          = self
-    arguments["tokenizer"]      = None
+    arguments["tokenizer"]      = tokenizer
     arguments["save_directory"] = repo_id
     arguments["push_to_hub"]    = False # We save ourselves
     arguments["save_method"]    = "merged_16bit" # Must be 16bit
