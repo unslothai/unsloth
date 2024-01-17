@@ -51,7 +51,7 @@ from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
-from ..save import patch_push_to_hub
+from ..save import patch_saving_functions
 
 
 def original_apply_qkv(self, X):
@@ -763,7 +763,7 @@ class FastLlamaModel:
                 token = token,
             )
         pass
-        patch_push_to_hub(tokenizer)
+        patch_saving_functions(tokenizer)
 
         # Fix up config for transformers uploading PEFT
         name = model.config._name_or_path
@@ -1033,7 +1033,7 @@ class FastLlamaModel:
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "\
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.",
         )
-        patch_push_to_hub(model)
+        patch_saving_functions(model)
 
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10

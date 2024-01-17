@@ -24,7 +24,7 @@ __all__ = [
     "print_quantization_methods",
     "unsloth_save_model",
     "save_to_gguf",
-    "patch_push_to_hub",
+    "patch_saving_functions",
 ]
 
 
@@ -84,58 +84,10 @@ def _merge_lora(layer, name):
 pass
 
 
-def patch_push_to_hub(model):
-    import inspect
-    import re
-    import types
-    from typing import Callable, Optional, Union, List
-
-    if hasattr(model, "_original_push_to_hub"): return
-
-    original_push_to_hub = model.push_to_hub
-    signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
-    signature = signature[1:]
-    signature = re.sub("<function save at .+?>", "torch.save", signature)
-    docs = original_push_to_hub.__doc__.encode("utf-8").decode("utf-8")
-    model._original_push_to_hub = original_push_to_hub
-
-    push_to_hub_text = f'''def unsloth_push_to_hub(self, {signature}:
-    """
-    {docs}
-    """
-    arguments = dict(locals())
-    del arguments["self"]
-    if arguments["tags"] is not None:
-        assert(isinstance(arguments["tags"], (list, tuple)))
-        arguments["tags"] = list(arguments["tags"]) + ["unsloth",]
-    else:
-        arguments["tags"] = ["unsloth",]
-    try:
-        return self._original_push_to_hub(**arguments)
-    except:
-        del arguments["tags"]
-        return self._original_push_to_hub(**arguments)
-    pass
-    '''
-    exec(push_to_hub_text, globals())
-    model.push_to_hub = types.MethodType(unsloth_push_to_hub, model)
-
-    original_model = model
-    while hasattr(original_model, "model"):
-        original_model = original_model.model
-        if hasattr(original_model, "_original_push_to_hub"): continue
-        
-        original_model._original_push_to_hub = original_model.push_to_hub
-        original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
-    pass
-    return
-pass
-
-
 @torch.inference_mode
 def unsloth_save_model(
     model,
-    tokenizer,
+    tokenizer            = None,
     save_directory       : Union[str, os.PathLike],
     save_method          : str = "lora", # ["lora", "merged_16bit", "merged_4bit"]
     push_to_hub          : bool = False,
@@ -151,7 +103,7 @@ def unsloth_save_model(
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.85,
-    **kwargs,        
+    **kwargs,
 ):
     import gc
     import re
@@ -206,14 +158,16 @@ def unsloth_save_model(
             tags = tags,
             **kwargs,
         )
-        tokenizer.push_to_hub(
-            repo_id = repo_id,
-            max_shard_size = max_shard_size,
-            safe_serialization = safe_serialization,
-            token = token,
-            tags = tags,
-            **kwargs,
-        )
+        if tokenizer is not None:
+            tokenizer.push_to_hub(
+                repo_id = repo_id,
+                max_shard_size = max_shard_size,
+                safe_serialization = safe_serialization,
+                token = token,
+                tags = tags,
+                **kwargs,
+            )
+        pass
         return
     
     elif (save_method == "merged_4bit") or (save_method == "lora") or (
@@ -222,14 +176,17 @@ def unsloth_save_model(
         not hasattr(model.model.model, "layers")
     ):
         # Do general saving?
-        print("Unsloth: Saving tokenizer...", end = "")
-        tokenizer.save_pretrained(
-            save_directory = save_directory,
-            push_to_hub = push_to_hub,
-            token = token,
-            tags = tags,
-        )
-        print(" Done.")
+        if tokenizer is not None:
+            print("Unsloth: Saving tokenizer...", end = "")
+            tokenizer.save_pretrained(
+                save_directory = save_directory,
+                push_to_hub = push_to_hub,
+                token = token,
+                tags = tags,
+                **kwargs,
+            )
+            print(" Done.")
+        pass
 
         print("Unsloth: Saving model...", end = "")
         if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
@@ -245,9 +202,20 @@ def unsloth_save_model(
             token = token,
             save_peft_format = save_peft_format,
             tags = tags,
+            **kwargs,
         )
         print(" Done.")
         return
+    pass
+
+    if push_to_hub and (repo_id is None) and not ("/" in save_directory):
+        raise RuntimeError(
+            "Unsloth: `push_to_hub` is True, whilst your save_directory is not a\n"\
+            "Huggingface repo, or `repo_id` is not set."
+        )
+    pass
+    if repo_id is None:
+        repo_id = save_directory
     pass
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
@@ -308,14 +276,18 @@ def unsloth_save_model(
     state_dict["model.norm.weight"] = model.model.model.norm.weight
     state_dict["lm_head.weight"]    = model.model.lm_head.weight
 
-    print("Unsloth: Saving tokenizer...", end = "")
-    tokenizer.save_pretrained(
-        save_directory = save_directory,
-        push_to_hub = push_to_hub,
-        token = token,
-        tags = tags,
-    )
-    print(" Done.")
+    if tokenizer is not None:
+        print("Unsloth: Saving tokenizer...", end = "")
+        tokenizer.save_pretrained(
+            save_directory = save_directory,
+            push_to_hub = push_to_hub,
+            token = token,
+            tags = tags,
+            repo_id = repo_id,
+            **kwargs,
+        )
+        print(" Done.")
+    pass
 
     print("Unsloth: Saving model... This might take 10 minutes for Llama-7b...", end = "")
     model.model.save_pretrained(
@@ -330,6 +302,8 @@ def unsloth_save_model(
         token = token,
         save_peft_format = save_peft_format,
         tags = tags,
+        repo_id = repo_id,
+        **kwargs,
     )
     print(" Done.")
 
@@ -440,4 +414,138 @@ def save_to_gguf(
         pass
         print(f"Unsloth: Conversion completed! Output location: {final_location}")
     pass
+pass
+
+
+def unsloth_save_pretrained_merged(
+    self,
+    save_directory       : Union[str, os.PathLike],
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+    repo_id              : str = None,
+    is_main_process      : bool = True,
+    state_dict           : Optional[dict] = None,
+    save_function        : Callable = torch.save,
+    max_shard_size       : Union[int, str] = "5GB",
+    safe_serialization   : bool = True,
+    variant              : Optional[str] = None,
+    save_peft_format     : bool = True,
+    tags                 : List[str] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.85,
+    **kwargs,        
+):
+    """
+        Same as .save_pretrained(...) except 4bit weights are auto
+        converted to float16 with as few overhead as possible.
+
+        Choose for `save_method` to be either:
+        1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+        2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+        3.         `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    """
+    arguments = dict(locals())
+    arguments["model"]     = self
+    arguments["tokenizer"] = None
+    return unsloth_save_model(**arguments)
+pass
+
+
+def unsloth_push_to_hub_merged(
+    self,
+    repo_id              : str,
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    use_temp_dir         : Optional[bool] = None,
+    commit_message       : Optional[str] = None,
+    private              : Optional[bool] = None,
+    token                : Union[bool, str, NoneType] = None,
+    max_shard_size       : Union[int, str, NoneType] = "5GB",
+    create_pr            : bool = False,
+    safe_serialization   : bool = True,
+    revision             : str = None,
+    commit_description   : str = None,
+    tags                 : Optional[List[str]] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.85,
+    **deprecated_kwargs,
+):
+    """
+        Same as .push_to_hub(...) except 4bit weights are auto
+        converted to float16 with as few overhead as possible.
+
+        Choose for `save_method` to be either:
+        1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+        2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+        3.         `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    """
+    arguments = dict(locals())
+    arguments["model"]          = self
+    arguments["tokenizer"]      = None
+    arguments["save_directory"] = repo_id
+    arguments["push_to_hub"]    = True
+    return unsloth_save_model(**arguments)
+pass
+
+
+def patch_saving_functions(model):
+    import inspect
+    import re
+    import types
+    from typing import Callable, Optional, Union, List
+
+    if hasattr(model, "_original_push_to_hub"): return
+
+    original_push_to_hub = model.push_to_hub
+    signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
+    signature = signature[1:]
+    signature = re.sub("<function save at .+?>", "torch.save", signature)
+    docs = original_push_to_hub.__doc__.encode("utf-8").decode("utf-8")
+    model._original_push_to_hub = original_push_to_hub
+
+    push_to_hub_text = f'''def unsloth_push_to_hub(self, {signature}:
+    """
+    {docs}
+    """
+    arguments = dict(locals())
+    del arguments["self"]
+    if arguments["tags"] is not None:
+        assert(isinstance(arguments["tags"], (list, tuple)))
+        arguments["tags"] = list(arguments["tags"]) + ["unsloth",]
+    else:
+        arguments["tags"] = ["unsloth",]
+    try:
+        return self._original_push_to_hub(**arguments)
+    except:
+        del arguments["tags"]
+        return self._original_push_to_hub(**arguments)
+    pass
+    '''
+    exec(push_to_hub_text, globals())
+    model.push_to_hub = types.MethodType(unsloth_push_to_hub, model)
+
+    if hasattr(model, "config"):
+        # Counteract tokenizers
+        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
+        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
+    pass
+
+    original_model = model
+    while hasattr(original_model, "model"):
+        original_model = original_model.model
+        if hasattr(original_model, "_original_push_to_hub"): continue
+        
+        original_model._original_push_to_hub = original_model.push_to_hub
+        original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+
+        if hasattr(original_model, "config"):
+            # Counteract tokenizers
+            original_model.push_to_hub_merged     = \
+                types.MethodType(unsloth_push_to_hub_merged,     original_model)
+
+            original_model.save_pretrained_merged = \
+                types.MethodType(unsloth_save_pretrained_merged, original_model)
+        pass
+    pass
+    return
 pass

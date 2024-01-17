@@ -343,7 +343,7 @@ class FastMistralModel(FastLlamaModel):
                 token = token,
             )
         pass
-        patch_push_to_hub(tokenizer)
+        patch_saving_functions(tokenizer)
 
         # Fix up config for transformers uploading PEFT
         name = model.config._name_or_path
