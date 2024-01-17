@@ -39,8 +39,8 @@ LLAMA_LAYERNORMS = (
 # From https://mlabonne.github.io/blog/posts/Quantize_Llama_2_models_using_ggml.html
 ALLOWED_QUANTS = \
 {
-    "not quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
-    "fast quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
+    "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
+    "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
     "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
     "f32"     : "Not recommended. Retains 100% accuracy, but super slow and memory hungry.",
     "f16"     : "Fastest conversion + retains 100% accuracy. Slow and memory hungry.",
@@ -191,14 +191,21 @@ def unsloth_save_model(
                 tags               = tags,
             )
         pass
-        return
+        return save_directory
     pass
 
     # If push_to_hub, we must remove the .../ part of a repo
     if push_to_hub and "/" in save_directory:
-        logger.warning_once("You are pushing to hub, but you passed your HF username.")
-        save_directory = save_directory[save_directory.find("/"):]
-        save_pretrained_settings["save_directory"] = save_directory
+
+        new_save_directory = save_directory[save_directory.find("/"):]
+
+        logger.warning_once(
+            f"Unsloth: You are pushing to hub, but you passed your HF username.\n"\
+            f"We shall truncate {save_directory} to {new_save_directory}"
+        )
+
+        save_pretrained_settings["save_directory"] = new_save_directory
+        save_directory = new_save_directory
     pass
     
     if (save_method == "merged_4bit") or (save_method == "lora") or (
@@ -227,7 +234,7 @@ def unsloth_save_model(
 
         model.save_pretrained(**save_pretrained_settings)
         print(" Done.")
-        return
+        return save_directory
     pass
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
@@ -290,10 +297,9 @@ def unsloth_save_model(
 
     # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
-    print(save_pretrained_settings)
     save_pretrained_settings["state_dict"] = state_dict
     for deletion in \
-        ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
+        ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description",):
         del save_pretrained_settings[deletion]
     pass
 
@@ -329,23 +335,23 @@ def unsloth_save_model(
     for _ in range(3):
         torch.cuda.empty_cache()
         gc.collect()
-    return
+    return save_directory
 pass
 
 
 def save_to_gguf(
     model_directory     : str = "unsloth_finetuned_model",
-    quantization_method : str = "not quantized",
+    quantization_method : str = "fast_quantized",
 ):
     from transformers.models.llama.modeling_llama import logger
     import os
     import subprocess
     import psutil
 
-    if   quantization_method == "not quantized":  quantization_method = "f16"
-    elif quantization_method == "fast quantized": quantization_method = "q8_0"
+    if   quantization_method == "not_quantized":  quantization_method = "f16"
+    elif quantization_method == "fast_quantized": quantization_method = "q8_0"
     elif quantization_method == "quantized":      quantization_method = "q4_k_m"
-    elif quantization_method is None:             quantization_method = "f16"
+    elif quantization_method is None:             quantization_method = "q8_0"
 
     logger.warning_once(
         "Unsloth: `colab_quantize_to_gguf` is still in development mode.\n"\
@@ -390,7 +396,7 @@ def save_to_gguf(
     elif quantization_method == "f16":  first_conversion = "f16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
 
-    n_cpus = psutil.cpu_count()*2
+    n_cpus = psutil.cpu_count()
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
     
     command = f"python llama.cpp/convert.py {model_directory} "\
@@ -417,6 +423,8 @@ def save_to_gguf(
         pass
         print(f"Unsloth: Conversion completed! Output location: {final_location}")
     pass
+
+    return final_location
 pass
 
 
@@ -450,7 +458,7 @@ def unsloth_save_pretrained_merged(
     arguments["model"]     = self
     arguments["tokenizer"] = None
     del arguments["self"]
-    return unsloth_save_model(**arguments)
+    unsloth_save_model(**arguments)
 pass
 
 
@@ -487,7 +495,98 @@ def unsloth_push_to_hub_merged(
     arguments["push_to_hub"]    = True
     del arguments["self"]
     del arguments["repo_id"]
-    return unsloth_save_model(**arguments)
+    unsloth_save_model(**arguments)
+pass
+
+
+def unsloth_save_pretrained_gguf(
+    self,
+    save_directory       : Union[str, os.PathLike],
+    quantization_method  : str = "fast_quantized",
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+    is_main_process      : bool = True,
+    state_dict           : Optional[dict] = None,
+    save_function        : Callable = torch.save,
+    max_shard_size       : Union[int, str] = "5GB",
+    safe_serialization   : bool = True,
+    variant              : Optional[str] = None,
+    save_peft_format     : bool = True,
+    tags                 : List[str] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.85,   
+):
+    f"""
+        Same as .save_pretrained(...) except 4bit weights are auto
+        converted to float16 then converted to GGUF / llama.cpp format.
+
+        Choose for `quantization_method` to be:
+        {ALLOWED_QUANTS}
+    """
+    arguments = dict(locals())
+    arguments["model"]     = self
+    arguments["tokenizer"] = None
+    del arguments["self"]
+
+    save_directory = unsloth_save_model(**arguments)
+    file_location = save_to_gguf(save_directory, quantization_method)
+
+    if push_to_hub:
+        from huggingface_hub import HfApi
+        hf_api = HfApi(token = token)
+        hf_api.upload_file(
+            path_or_fileobj = file_location,
+            path_in_repo    = "README.md",
+            repo_id         = save_directory,
+            repo_type       = "model",
+        )
+    pass
+pass
+
+
+def unsloth_push_to_hub_gguf(
+    self,
+    repo_id              : str,
+    quantization_method  : str = "fast_quantized",
+    use_temp_dir         : Optional[bool] = None,
+    commit_message       : Optional[str] = None,
+    private              : Optional[bool] = None,
+    token                : Union[bool, str, None] = None,
+    max_shard_size       : Union[int, str, None] = "5GB",
+    create_pr            : bool = False,
+    safe_serialization   : bool = True,
+    revision             : str = None,
+    commit_description   : str = None,
+    tags                 : Optional[List[str]] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.85,
+):
+    f"""
+        Same as .push_to_hub(...) except 4bit weights are auto
+        converted to float16 then converted to GGUF / llama.cpp format.
+
+        Choose for `quantization_method` to be:
+        {ALLOWED_QUANTS}
+    """
+    arguments = dict(locals())
+    arguments["model"]          = self
+    arguments["tokenizer"]      = None
+    arguments["save_directory"] = repo_id
+    arguments["push_to_hub"]    = False # We save ourselves
+    del arguments["self"]
+    del arguments["repo_id"]
+
+    save_directory = unsloth_save_model(**arguments)
+    file_location = save_to_gguf(save_directory, quantization_method)
+
+    from huggingface_hub import HfApi
+    hf_api = HfApi(token = token)
+    hf_api.upload_file(
+        path_or_fileobj = file_location,
+        path_in_repo    = "README.md",
+        repo_id         = save_directory,
+        repo_type       = "model",
+    )
 pass
 
 
@@ -531,6 +630,13 @@ def patch_saving_functions(model):
         # Counteract tokenizers
         model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
         model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
+        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
+        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
+    else:
+        model.push_to_hub_merged     = model.push_to_hub
+        model.save_pretrained_merged = model.save_pretrained_merged
+        model.push_to_hub_gguf       = model.push_to_hub
+        model.save_pretrained_gguf   = model.save_pretrained_merged
     pass
 
     original_model = model
@@ -548,6 +654,12 @@ def patch_saving_functions(model):
 
             original_model.save_pretrained_merged = \
                 types.MethodType(unsloth_save_pretrained_merged, original_model)
+
+            original_model.push_to_hub_gguf       = \
+                types.MethodType(unsloth_push_to_hub_gguf,       original_model)
+            
+            original_model.save_pretrained_gguf   = \
+                types.MethodType(unsloth_save_pretrained_gguf,   original_model)
         pass
     pass
     return
