@@ -100,11 +100,25 @@ def unsloth_save_model(
     safe_serialization   : bool = True,
     variant              : Optional[str] = None,
     save_peft_format     : bool = True,
+
+    # Push to hub
+    use_temp_dir         : Optional[bool] = None,
+    commit_message       : Optional[str] = None,
+    private              : Optional[bool] = None,
+    create_pr            : bool = False,
+    revision             : str = None,
+    commit_description   : str = None,
     tags                 : List[str] = None,
+
+    # Our functions
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.85,
-    **kwargs,
 ):
+    save_pretrained_settings = dict(locals())
+    for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
+        del save_pretrained_settings[deletion]
+    pass
+
     import gc
     import re
     import psutil
@@ -140,6 +154,7 @@ def unsloth_save_model(
     else:
         tags = ["unsloth",]
     pass
+    save_pretrained_settings["tags"] = tags
 
     if (save_method == "lora") and push_to_hub:
         if token is None:
@@ -151,21 +166,31 @@ def unsloth_save_model(
         if repo_id is None: repo_id = save_directory
 
         model.push_to_hub(
-            repo_id = repo_id,
-            max_shard_size = max_shard_size,
+            repo_id            = repo_id,
+            use_temp_dir       = use_temp_dir,
+            commit_message     = commit_message,
+            private            = private,
+            token              = token,
+            max_shard_size     = max_shard_size,
+            create_pr          = create_pr,
             safe_serialization = safe_serialization,
-            token = token,
-            tags = tags,
-            **kwargs,
+            revision           = revision,
+            commit_description = commit_description,
+            tags               = tags,
         )
         if tokenizer is not None:
             tokenizer.push_to_hub(
-                repo_id = repo_id,
-                max_shard_size = max_shard_size,
+                repo_id            = repo_id,
+                use_temp_dir       = use_temp_dir,
+                commit_message     = commit_message,
+                private            = private,
+                token              = token,
+                max_shard_size     = max_shard_size,
+                create_pr          = create_pr,
                 safe_serialization = safe_serialization,
-                token = token,
-                tags = tags,
-                **kwargs,
+                revision           = revision,
+                commit_description = commit_description,
+                tags               = tags,
             )
         pass
         return
@@ -178,32 +203,14 @@ def unsloth_save_model(
         # Do general saving?
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
-            tokenizer.save_pretrained(
-                save_directory = save_directory,
-                push_to_hub = push_to_hub,
-                token = token,
-                tags = tags,
-                **kwargs,
-            )
+            tokenizer.save_pretrained(**save_pretrained_settings)
             print(" Done.")
         pass
 
         print("Unsloth: Saving model...", end = "")
         if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
 
-        model.save_pretrained(
-            save_directory = save_directory,
-            is_main_process = is_main_process,
-            save_function = save_function,
-            push_to_hub = push_to_hub,
-            max_shard_size = max_shard_size,
-            safe_serialization = safe_serialization,
-            variant = variant,
-            token = token,
-            save_peft_format = save_peft_format,
-            tags = tags,
-            **kwargs,
-        )
+        model.save_pretrained(**save_pretrained_settings)
         print(" Done.")
         return
     pass
@@ -216,6 +223,7 @@ def unsloth_save_model(
     pass
     if repo_id is None:
         repo_id = save_directory
+        save_pretrained_settings["repo_id"] = repo_id
     pass
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
@@ -278,33 +286,14 @@ def unsloth_save_model(
 
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
-        tokenizer.save_pretrained(
-            save_directory = save_directory,
-            push_to_hub = push_to_hub,
-            token = token,
-            tags = tags,
-            repo_id = repo_id,
-            **kwargs,
-        )
+        tokenizer.save_pretrained(**save_pretrained_settings)
         print(" Done.")
     pass
 
     print("Unsloth: Saving model... This might take 10 minutes for Llama-7b...", end = "")
-    model.model.save_pretrained(
-        save_directory = save_directory,
-        is_main_process = is_main_process,
-        state_dict = state_dict,
-        save_function = save_function,
-        push_to_hub = push_to_hub,
-        max_shard_size = max_shard_size,
-        safe_serialization = safe_serialization,
-        variant = variant,
-        token = token,
-        save_peft_format = save_peft_format,
-        tags = tags,
-        repo_id = repo_id,
-        **kwargs,
-    )
+    save_pretrained_settings["state_dict"] = state_dict
+    
+    model.model.save_pretrained(**save_pretrained_settings)
     print(" Done.")
 
     for j, (key, value) in enumerate(state_dict.items()):
@@ -331,7 +320,7 @@ pass
 
 
 def save_to_gguf(
-    model_directory     : str = "finetuned_model",
+    model_directory     : str = "unsloth_finetuned_model",
     quantization_method : str = "not quantized",
 ):
     from transformers.models.llama.modeling_llama import logger
