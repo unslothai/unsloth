@@ -448,6 +448,7 @@ def unsloth_save_pretrained_merged(
     arguments = dict(locals())
     arguments["model"]     = self
     arguments["tokenizer"] = None
+    del arguments["self"]
     return unsloth_save_model(**arguments)
 pass
 
@@ -484,6 +485,7 @@ def unsloth_push_to_hub_merged(
     arguments["tokenizer"]      = None
     arguments["save_directory"] = repo_id
     arguments["push_to_hub"]    = True
+    del arguments["self"]
     return unsloth_save_model(**arguments)
 pass
 
