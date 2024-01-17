@@ -524,8 +524,9 @@ def unsloth_save_pretrained_gguf(
         {ALLOWED_QUANTS}
     """
     arguments = dict(locals())
-    arguments["model"]     = self
-    arguments["tokenizer"] = None
+    arguments["model"]       = self
+    arguments["tokenizer"]   = None
+    arguments["push_to_hub"] = False # We save ourselves
     del arguments["self"]
 
     save_directory = unsloth_save_model(**arguments)
@@ -634,9 +635,9 @@ def patch_saving_functions(model):
         model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
     else:
         model.push_to_hub_merged     = model.push_to_hub
-        model.save_pretrained_merged = model.save_pretrained_merged
+        model.save_pretrained_merged = model.save_pretrained
         model.push_to_hub_gguf       = model.push_to_hub
-        model.save_pretrained_gguf   = model.save_pretrained_merged
+        model.save_pretrained_gguf   = model.save_pretrained
     pass
 
     original_model = model
@@ -657,7 +658,7 @@ def patch_saving_functions(model):
 
             original_model.push_to_hub_gguf       = \
                 types.MethodType(unsloth_push_to_hub_gguf,       original_model)
-            
+
             original_model.save_pretrained_gguf   = \
                 types.MethodType(unsloth_save_pretrained_gguf,   original_model)
         pass
