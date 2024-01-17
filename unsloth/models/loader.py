@@ -105,7 +105,7 @@ class FastLanguageModel(FastLlamaModel):
             )
         pass
 
-        model = dispatch_model.from_pretrained(
+        model, tokenizer = dispatch_model.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
             dtype = dtype,
@@ -140,6 +140,6 @@ class FastLanguageModel(FastLlamaModel):
             # Now add PEFT adapters
             model = PeftModel.from_pretrained(model, old_model_name)
         pass
-        return model
+        return model, tokenizer
     pass
 pass
