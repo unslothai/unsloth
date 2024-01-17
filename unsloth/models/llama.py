@@ -51,7 +51,7 @@ from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
-from .save import patch_push_to_hub
+from ..save import patch_push_to_hub
 
 
 def original_apply_qkv(self, X):
