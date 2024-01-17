@@ -495,8 +495,8 @@ pass
 
 def unsloth_save_pretrained_gguf(
     self,
-    tokenizer,
     save_directory       : Union[str, os.PathLike],
+    tokenizer            = None,
     quantization_method  : str = "fast_quantized",
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
@@ -536,6 +536,9 @@ def unsloth_save_pretrained_gguf(
         "q5_k_s"  : "Uses Q5_K for all tensors",
         "q6_k"    : "Uses Q8_K for all tensors",
     """
+    if tokenizer is None:
+        raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
+
     arguments = dict(locals())
     arguments["model"]       = self
     arguments["tokenizer"]   = tokenizer
@@ -562,8 +565,8 @@ pass
 
 def unsloth_push_to_hub_gguf(
     self,
-    tokenizer,
     repo_id              : str,
+    tokenizer            = None,
     quantization_method  : str = "fast_quantized",
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = None,
@@ -603,6 +606,9 @@ def unsloth_push_to_hub_gguf(
         "q5_k_s"  : "Uses Q5_K for all tensors",
         "q6_k"    : "Uses Q8_K for all tensors",
     """
+    if tokenizer is None:
+        raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
+
     arguments = dict(locals())
     arguments["model"]          = self
     arguments["tokenizer"]      = tokenizer
