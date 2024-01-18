@@ -287,6 +287,7 @@ def unsloth_save_model(
                 logger.warning_once(f"We will save to RAM and not VRAM now.")
                 state_dict[name] = W.to("cpu", non_blocking = True)
                 max_ram = max(max_ram - W.nbytes, 0)
+                print(max_ram, psutil.virtual_memory().available)
             else:
                 # Save to Disk
                 logger.warning_once(f"We will save to Disk and not RAM now.")
