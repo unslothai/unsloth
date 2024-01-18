@@ -17,6 +17,7 @@ from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from typing import Optional, Callable, Union, List
 import torch
 import os
+import pickle
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 
@@ -81,6 +82,19 @@ def _merge_lora(layer, name):
     else:
         W = layer.weight
     return W
+pass
+
+
+def fast_save_pickle(shard, name):
+    # Use this if # CPUs is <= 2
+    print(f"Unsloth: Saving {name}...")
+    torch.save(
+        shard,
+        name,
+        pickle_module = pickle,
+        pickle_protocol = pickle.HIGHEST_PROTOCOL,
+    )
+    return
 pass
 
 
@@ -253,7 +267,32 @@ def unsloth_save_model(
         sharded_ram_usage = sharded_ram_usage
     pass
 
-    max_ram -= sharded_ram_usage
+    # Switch to our fast saving modules if it's a slow PC!
+    n_cpus = psutil.cpu_count(logical = False)
+    
+    if safe_serialization is None:
+        safe_serialization = True
+        save_pretrained_settings["safe_serialization"] = safe_serialization
+
+    elif safe_serialization and (n_cpus <= 2):
+        logger.warning_once(
+            f"Unsloth: You have {n_cpus} CPUs. Using `safe_serialization` is 10x slower.\n"\
+            f"We shall switch to Pytorch saving, which will take 3 minutes and not 30 minutes.\n"\
+            f"To force `safe_serialization`, set it to None instead.",
+        )
+        safe_serialization = False
+        save_function = fast_save_pickle
+        save_pretrained_settings["safe_serialization"] = safe_serialization
+        save_pretrained_settings["save_function"]      = save_function
+    pass
+
+    # Only safe_serialization uses more RAM
+    if safe_serialization:
+        max_ram -= sharded_ram_usage
+    else:
+        max_ram -= sharded_ram_usage*0.25 # Uses much less
+    pass
+
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(f"Unsloth: Will use up to "\
           f"{round(max_ram/1024/1024/1024, 2)} out of "\
@@ -401,22 +440,25 @@ def save_to_gguf(
     n_cpus = psutil.cpu_count()
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
     
+    final_location = f"./{model_directory}-unsloth.{first_conversion.upper()}.gguf"
+
     command = f"python llama.cpp/convert.py {model_directory} "\
-        f"--outfile {model_directory}-{first_conversion}-unsloth.gguf "\
+        f"--outfile {final_location} "\
         f"--outtype {first_conversion} --concurrency {n_cpus}"
+
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
         for line in sp.stdout:
             print(line.decode("utf-8"), flush = True, end = "")
     pass
 
-    final_location = f"./{model_directory}-{first_conversion}-unsloth.gguf"
     print(f"Unsloth: Conversion completed! Output location: {final_location}")
 
     if quantization_method != first_conversion:
+        old_location = final_location
         print(f"Unsloth: [2] Converting GGUF 16bit into {quantization_method}. This will take 20 minutes...")
-        final_location = f"./{model_directory}-{quantization_method}-unsloth.gguf"
+        final_location = f"./{model_directory}-unsloth.{quantization_method.upper()}.gguf"
 
-        command = f"./llama.cpp/quantize ./{model_directory}-{first_conversion}-unsloth.gguf "\
+        command = f"./llama.cpp/quantize {old_location} "\
             f"{final_location} {quantization_method} {n_cpus}"
         
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
