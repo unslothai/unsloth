@@ -642,13 +642,13 @@ def unsloth_save_pretrained_gguf(
     python_install = install_python_non_blocking(["gguf", "protobuf"])
     git_clone.wait()
     makefile  = install_llama_cpp_make_non_blocking()
-    save_directory = unsloth_save_model(**arguments)
+    new_save_directory = unsloth_save_model(**arguments)
     python_install.wait()
 
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
 
     # And save to HF
     if push_to_hub:
@@ -742,13 +742,13 @@ def unsloth_push_to_hub_gguf(
     python_install = install_python_non_blocking(["gguf", "protobuf"])
     git_clone.wait()
     makefile  = install_llama_cpp_make_non_blocking()
-    save_directory = unsloth_save_model(**arguments)
+    new_save_directory = unsloth_save_model(**arguments)
 
     for _ in range(3):
         gc.collect()
 
     python_install.wait()
-    file_location = save_to_gguf(save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
 
     # Save to hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")

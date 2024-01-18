@@ -107,6 +107,19 @@ colab_ampere = [
     "ninja",
     "flash-attn",
 ]
+colab_dev = [
+    "unsloth[huggingface_dev]",
+    "bitsandbytes",
+    "unsloth[cu121only]",
+]
+colab_ampere_dev = [
+    "unsloth[huggingface_dev]",
+    "bitsandbytes",
+    "unsloth[cu121only]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
 cu118_ampere = [
     "unsloth[huggingface]",
     "bitsandbytes",
