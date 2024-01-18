@@ -32,15 +32,25 @@ include-package-data = false
 exclude = ["images*"]
 
 [project.optional-dependencies]
+huggingface_dev = [
+    "transformers @ git+https://github.com/huggingface/transformers",
+    "datasets",
+    "sentencepiece",
+    "accelerate",
+    "trl>=0.7.9",
+    "peft",
+    "tqdm",
+    "psutil",
+]
 huggingface = [
     "transformers",
     "datasets",
     "sentencepiece",
     "accelerate",
-    "trl",
+    "trl>=0.7.9",
     "peft",
-    "packaging",
-    "ninja",
+    "tqdm",
+    "psutil",
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
@@ -93,30 +103,53 @@ colab = [
 ]
 colab_ampere = [
     "unsloth[cu121]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
+colab_dev = [
+    "unsloth[huggingface_dev]",
+    "bitsandbytes",
+    "unsloth[cu121only]",
+]
+colab_ampere_dev = [
+    "unsloth[huggingface_dev]",
+    "bitsandbytes",
+    "unsloth[cu121only]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 cu118_ampere = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118only]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 cu121_ampere = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121only]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 cu118_ampere_torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118only_torch211]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 cu121_ampere_torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121only_torch211]",
+    "packaging",
+    "ninja",
     "flash-attn",
 ]
 
