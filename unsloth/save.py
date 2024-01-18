@@ -636,9 +636,10 @@ def unsloth_save_pretrained_gguf(
     del arguments["quantization_method"]
 
     # Non blocking install GGUF first
-    install_llama_cpp_clone_non_blocking().wait()
-    makefile = install_llama_cpp_make_non_blocking()#.wait()
+    git_clone = install_llama_cpp_clone_non_blocking()
     python_install = install_python_non_blocking(["gguf", "protobuf"])
+    git_clone.wait()
+    makefile  = install_llama_cpp_make_non_blocking()
     save_directory = unsloth_save_model(**arguments)
     python_install.wait()
     file_location = save_to_gguf(save_directory, quantization_method, makefile)
@@ -724,9 +725,10 @@ def unsloth_push_to_hub_gguf(
     del arguments["quantization_method"]
 
     # Non blocking install GGUF first
-    install_llama_cpp_clone_non_blocking().wait()
-    makefile = install_llama_cpp_make_non_blocking()
+    git_clone = install_llama_cpp_clone_non_blocking()
     python_install = install_python_non_blocking(["gguf", "protobuf"])
+    git_clone.wait()
+    makefile  = install_llama_cpp_make_non_blocking()
     save_directory = unsloth_save_model(**arguments)
     python_install.wait()
     file_location = save_to_gguf(save_directory, quantization_method, makefile)
