@@ -308,7 +308,7 @@ def unsloth_save_model(
     # HF also uses a OrderedDict
     from collections import OrderedDict
     state_dict = OrderedDict()
-    state_dict["model.embed_tokens.weight"] = model.model.model.embed_tokens.weight
+    state_dict["model.embed_tokens.weight"] = model.model.model.embed_tokens.weight.data
 
     max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
 
@@ -344,7 +344,7 @@ def unsloth_save_model(
 
     # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
     for key, value in state_dict.items():
-        if hasattr(value, "data"): state_dict[key] = value.data
+        if hasattr(value, "data"): state_dict[key] = value = value.data
         if type(value) is not torch.Tensor:
             logger.warning_once(f"Unsloth: {key} is not a Tensor but a {type(value)}.")
         pass
@@ -405,7 +405,8 @@ pass
 
 def install_llama_cpp_make_non_blocking():
     env = { **os.environ, "LLAMA_CUBLAS": "1", }
-    full_command = ["make", "-j", "-C", "llama.cpp"]
+    n_jobs = max(int(psutil.cpu_count()*1.5), 1)
+    full_command = ["make", "-j", str(n_jobs), "-C", "llama.cpp"]
     run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
@@ -421,7 +422,7 @@ pass
 def install_llama_cpp_blocking():
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j",
+        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j {psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
@@ -474,7 +475,7 @@ def save_to_gguf(
     elif quantization_method == "f16":  first_conversion = "f16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
 
-    n_cpus = psutil.cpu_count()
+    n_cpus = psutil.cpu_count()*2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
     
     final_location = f"./{model_directory}-unsloth.{first_conversion.upper()}.gguf"
@@ -636,11 +637,11 @@ def unsloth_save_pretrained_gguf(
 
     # Non blocking install GGUF first
     install_llama_cpp_clone_non_blocking().wait()
-    makefile = install_llama_cpp_make_non_blocking().wait()
+    makefile = install_llama_cpp_make_non_blocking()#.wait()
     python_install = install_python_non_blocking(["gguf", "protobuf"])
     save_directory = unsloth_save_model(**arguments)
     python_install.wait()
-    file_location = save_to_gguf(save_directory, quantization_method, None)
+    file_location = save_to_gguf(save_directory, quantization_method, makefile)
 
     # And save to HF
     if push_to_hub:
