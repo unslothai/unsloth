@@ -18,6 +18,7 @@ from typing import Optional, Callable, Union, List
 import torch
 import os
 import pickle
+import gc
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 import subprocess
@@ -133,10 +134,7 @@ def unsloth_save_model(
     for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
         del save_pretrained_settings[deletion]
     pass
-
-    import gc
     import re
-    import psutil
 
     assert(maximum_memory_usage > 0 and maximum_memory_usage <= 0.95)
 
@@ -672,7 +670,7 @@ def unsloth_save_pretrained_gguf(
         else:
             uploaded_location = file_location
         pass
-        
+
         hf_api.upload_file(
             path_or_fileobj = file_location,
             path_in_repo    = uploaded_location,
