@@ -254,11 +254,10 @@ def unsloth_save_model(
     pass
 
     max_ram -= sharded_ram_usage
-    new_max_ram = int(max(0, max_ram) * maximum_memory_usage)
+    max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(f"Unsloth: Will use up to "\
-          f"{round(new_max_ram/1024/1024/1024, 2)} out of "\
-          f"{round(max_ram/1024/1024/1024, 2)} RAM for saving.")
-    max_ram = new_max_ram
+          f"{round(max_ram/1024/1024/1024, 2)} out of "\
+          f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving.")
 
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
@@ -287,7 +286,6 @@ def unsloth_save_model(
                 logger.warning_once(f"We will save to RAM and not VRAM now.")
                 state_dict[name] = W.to("cpu", non_blocking = True)
                 max_ram = max(max_ram - W.nbytes, 0)
-                print(max_ram, psutil.virtual_memory().available)
             else:
                 # Save to Disk
                 logger.warning_once(f"We will save to Disk and not RAM now.")
