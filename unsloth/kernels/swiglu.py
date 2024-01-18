@@ -25,10 +25,11 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
     mask = offsets < n_elements
 
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0)#.to(tl.float32)
 
     # f = e * sigmoid(e)
     f_row = e_row / (1 + tl.exp(-e_row))
+    f_row = f_row.to(g_row.dtype) # Exact copy from HF
     # h = f * g
     h_row = f_row * g_row
 
@@ -53,12 +54,13 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0).to(tl.float32)
-    e_row  = tl.load(e  + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row  = tl.load(g  + offsets, mask = mask, other = 0).to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask = mask, other = 0)#.to(tl.float32)
+    e_row  = tl.load(e  + offsets, mask = mask, other = 0)#.to(tl.float32)
+    g_row  = tl.load(g  + offsets, mask = mask, other = 0)#.to(tl.float32)
 
     # f = e * sigmoid(e)
-    se_row = 1 / (1 + tl.exp(-e_row))
+    se_row = 1 / (1 + tl.exp(-e_row.to(tl.float32)))
+    se_row = se_row.to(e_row.dtype) # Exact copy from HF
     # f = e * se
     f_row = e_row * se_row
     # h = f * g

@@ -65,8 +65,7 @@ try:
     libcuda_dirs()
 except:
     warnings.warn(
-        "CUDA is not linked properly.\n"\
-        "We shall run `ldconfig /usr/lib64-nvidia` to try to fix it."
+        "Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
     )
     os.system("ldconfig /usr/lib64-nvidia")
     importlib.reload(bnb)
