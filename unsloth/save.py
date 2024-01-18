@@ -330,7 +330,7 @@ def unsloth_save_model(
                 logger.warning_once(f"We will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
-                state_dict[name] = torch.load(filename, weights_only = True, map_location = "cpu", mmap = True)
+                state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True)
         pass
         for item in LLAMA_LAYERNORMS:
             state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight.data")
@@ -371,25 +371,25 @@ def unsloth_save_model(
 
     save_pretrained_settings["state_dict"] = None
 
-    for j, (key, value) in enumerate(state_dict.items()):
-        state_dict[key] = None
-        if j % 10 == 0:
-            torch.cuda.empty_cache()
-            gc.collect()
-        pass
-    pass
-    state_dict = None
-    del state_dict
-    torch.cuda.empty_cache()
-    gc.collect()
+    # for j, (key, value) in enumerate(state_dict.items()):
+    #     state_dict[key] = None
+    #     if j % 10 == 0:
+    #         torch.cuda.empty_cache()
+    #         gc.collect()
+    #     pass
+    # pass
+    # state_dict = None
+    # del state_dict
+    # torch.cuda.empty_cache()
+    # gc.collect()
 
     # Remove temporary location
     import shutil
     shutil.rmtree(temporary_location)
 
-    for _ in range(3):
-        torch.cuda.empty_cache()
-        gc.collect()
+    # for _ in range(3):
+    #     torch.cuda.empty_cache()
+    #     gc.collect()
     return save_directory
 pass
 
