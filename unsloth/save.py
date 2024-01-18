@@ -221,6 +221,8 @@ def unsloth_save_model(
             ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
             del save_pretrained_settings[deletion]
         pass
+        if hasattr(model, "add_model_tags"):
+            model.add_model_tags(["unsloth",])
 
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
@@ -299,9 +301,11 @@ def unsloth_save_model(
     # [TODO] _create_repo has errors due to **kwargs getting accepted
     save_pretrained_settings["state_dict"] = state_dict
     for deletion in \
-        ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description",):
+        ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
         del save_pretrained_settings[deletion]
     pass
+    if hasattr(model, "add_model_tags"):
+        model.add_model_tags(["unsloth",])
 
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
@@ -552,7 +556,7 @@ def unsloth_save_pretrained_gguf(
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
-        
+
         from huggingface_hub import create_repo
         create_repo(
             repo_id   = save_directory,
@@ -675,11 +679,13 @@ def patch_saving_functions(model):
     """
     arguments = dict(locals())
     del arguments["self"]
-    if arguments["tags"] is not None:
+    if "tags" in arguments and arguments["tags"] is not None:
         assert(isinstance(arguments["tags"], (list, tuple)))
         arguments["tags"] = list(arguments["tags"]) + ["unsloth",]
-    else:
+    elif "tags" in arguments:
         arguments["tags"] = ["unsloth",]
+    elif hasattr(self, "add_model_tags"):
+        self.add_model_tags(["unsloth",])
     try:
         return self._original_push_to_hub(**arguments)
     except:
@@ -689,6 +695,9 @@ def patch_saving_functions(model):
     '''
     exec(push_to_hub_text, globals())
     model.push_to_hub = types.MethodType(unsloth_push_to_hub, model)
+
+    if hasattr(model, "add_model_tags"):
+        model.add_model_tags(["unsloth",])
 
     if hasattr(model, "config"):
         # Counteract tokenizers
@@ -710,6 +719,9 @@ def patch_saving_functions(model):
         
         original_model._original_push_to_hub = original_model.push_to_hub
         original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+
+        if hasattr(original_model, "add_model_tags"):
+            original_model.add_model_tags(["unsloth",])
 
         if hasattr(original_model, "config"):
             # Counteract tokenizers
