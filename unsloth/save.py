@@ -371,14 +371,14 @@ def unsloth_save_model(
 
     save_pretrained_settings["state_dict"] = None
 
-    # for j, (key, value) in enumerate(state_dict.items()):
-    #     state_dict[key] = None
-    #     if j % 10 == 0:
-    #         torch.cuda.empty_cache()
-    #         gc.collect()
-    #     pass
-    # pass
-    # state_dict = None
+    for j, (key, value) in enumerate(state_dict.items()):
+        state_dict[key] = None
+        # if j % 10 == 0:
+        #     torch.cuda.empty_cache()
+        #     gc.collect()
+        # pass
+    pass
+    state_dict = None
     # del state_dict
     # torch.cuda.empty_cache()
     # gc.collect()
