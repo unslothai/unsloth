@@ -614,7 +614,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["quantization_method"]
 
     # Non blocking install GGUF first
-    run_installer = install_llama_cpp(non_blocking = True)
+    run_installer = None#install_llama_cpp(non_blocking = True)
     save_directory = unsloth_save_model(**arguments)
     file_location = save_to_gguf(save_directory, quantization_method, run_installer)
 
@@ -698,7 +698,7 @@ def unsloth_push_to_hub_gguf(
     del arguments["quantization_method"]
 
     # Non blocking install GGUF first
-    run_installer = install_llama_cpp(non_blocking = True)
+    run_installer = None#install_llama_cpp(non_blocking = True)
     save_directory = unsloth_save_model(**arguments)
     file_location = save_to_gguf(save_directory, quantization_method, run_installer)
 
