@@ -269,7 +269,7 @@ def unsloth_save_model(
 
     # Switch to our fast saving modules if it's a slow PC!
     n_cpus = psutil.cpu_count(logical = False)
-    
+
     if safe_serialization is None:
         safe_serialization = True
         save_pretrained_settings["safe_serialization"] = safe_serialization
@@ -329,8 +329,8 @@ def unsloth_save_model(
                 # Save to Disk
                 logger.warning_once(f"We will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
-                torch.save(W, filename)
-                state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True)
+                torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
+                state_dict[name] = torch.load(filename, weights_only = True, map_location = "cpu", mmap = True)
         pass
         for item in LLAMA_LAYERNORMS:
             state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight")
@@ -357,9 +357,9 @@ def unsloth_save_model(
     else:
         print()
 
-    print("Unsloth: Saving model... This might take 10 minutes for Llama-7b...", end = "")
+    print("Unsloth: Saving model... This might take 5 minutes for Llama-7b...")
     model.model.save_pretrained(**save_pretrained_settings)
-    print(" Done.")
+    print("Done.")
 
     save_pretrained_settings["state_dict"] = None
 
