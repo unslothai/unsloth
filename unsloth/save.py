@@ -386,9 +386,35 @@ def unsloth_save_model(
 pass
 
 
+def install_llama_cpp(non_blocking = False):
+    commands = [
+        "git clone https://github.com/ggerganov/llama.cpp",
+        "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j",
+        "pip install gguf protobuf",
+    ]
+    if not os.path.exists("llama.cpp"):
+        if non_blocking:
+            for command in commands:
+                with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+                    for line in sp.stdout:
+                        print(line.decode("utf-8"), flush = True, end = "")
+                pass
+            pass
+            return None
+        else:
+            full_command  = " && ".join(commands)
+            run_installer = subprocess.Popen(full_command)
+            return run_installer
+        pass
+    pass
+    return None
+pass
+
+
 def save_to_gguf(
     model_directory     : str = "unsloth_finetuned_model",
     quantization_method : str = "fast_quantized",
+    _run_installer = None, # Non blocking install of llama.cpp
 ):
     from transformers.models.llama.modeling_llama import logger
     import os
@@ -415,20 +441,11 @@ def save_to_gguf(
         f' "-____-"     In total, you will have to wait around 26 minutes.\n'
     print(print_info)
 
-    if not os.path.exists("llama.cpp"):
-        print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
-
-        commands = [
-            "git clone https://github.com/ggerganov/llama.cpp",
-            "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j",
-            "pip install gguf protobuf",
-        ]
-        for command in commands:
-            with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
-                for line in sp.stdout:
-                    print(line.decode("utf-8"), flush = True, end = "")
-            pass
-        pass
+    print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
+    if _run_installer is not None:
+        _run_installer.wait()
+    else:
+        install_llama_cpp(non_blocking = False)
     pass
 
     print("Unsloth: [1] Converting HF into GGUF format. This will take 3 minutes...")
@@ -597,8 +614,10 @@ def unsloth_save_pretrained_gguf(
     del arguments["self"]
     del arguments["quantization_method"]
 
+    # Non blocking install GGUF first
+    run_installer = install_llama_cpp(non_blocking = True)
     save_directory = unsloth_save_model(**arguments)
-    file_location = save_to_gguf(save_directory, quantization_method)
+    file_location = save_to_gguf(save_directory, quantization_method, run_installer)
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -679,8 +698,10 @@ def unsloth_push_to_hub_gguf(
     del arguments["repo_id"]
     del arguments["quantization_method"]
 
+    # Non blocking install GGUF first
+    run_installer = install_llama_cpp(non_blocking = True)
     save_directory = unsloth_save_model(**arguments)
-    file_location = save_to_gguf(save_directory, quantization_method)
+    file_location = save_to_gguf(save_directory, quantization_method, run_installer)
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
 
