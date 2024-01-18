@@ -93,8 +93,6 @@ def fast_save_pickle(shard, name):
     torch.save(
         shard,
         name,
-        pickle_module = pickle,
-        pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     return
 pass
@@ -628,11 +626,11 @@ def unsloth_save_pretrained_gguf(
 
     # Non blocking install GGUF first
     install_llama_cpp_clone_non_blocking().wait()
-    makefile = install_llama_cpp_make_non_blocking()
+    makefile = install_llama_cpp_make_non_blocking().wait()
     python_install = install_python_non_blocking(["gguf", "protobuf"])
     save_directory = unsloth_save_model(**arguments)
     python_install.wait()
-    file_location = save_to_gguf(save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(save_directory, quantization_method, None)
 
     # And save to HF
     if push_to_hub:
