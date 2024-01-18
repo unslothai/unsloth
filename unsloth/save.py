@@ -252,11 +252,11 @@ def unsloth_save_model(
     elif type(max_shard_size) is int:
         sharded_ram_usage = sharded_ram_usage
     pass
-    
+
     max_ram -= sharded_ram_usage
     new_max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(f"Unsloth: Will use up to "\
-          f"{round(new_max_ram/1024/1024/1024, 2)}/"\
+          f"{round(new_max_ram/1024/1024/1024, 2)} out of "\
           f"{round(max_ram/1024/1024/1024, 2)} RAM for saving.")
     max_ram = new_max_ram
 
