@@ -290,7 +290,7 @@ def unsloth_save_model(
     if safe_serialization:
         max_ram -= sharded_ram_usage
     else:
-        max_ram -= sharded_ram_usage*0.5 # Uses much less
+        max_ram -= sharded_ram_usage*0.25 # Uses much less
     pass
 
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
@@ -320,11 +320,11 @@ def unsloth_save_model(
             if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
                 # Save to GPU memory
                 state_dict[name] = W
-            elif (max_ram - W.nbytes) > 0:
-                # Save to CPU memory
-                logger.warning_once(f"We will save to RAM and not VRAM now.")
-                state_dict[name] = W.to("cpu", non_blocking = True)
-                max_ram = max(max_ram - W.nbytes, 0)
+            # elif (max_ram - W.nbytes) > 0:
+            #     # Save to CPU memory
+            #     logger.warning_once(f"We will save to RAM and not VRAM now.")
+            #     state_dict[name] = W.to("cpu", non_blocking = True)
+            #     max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
                 logger.warning_once(f"We will save to Disk and not RAM now.")
@@ -371,14 +371,14 @@ def unsloth_save_model(
 
     save_pretrained_settings["state_dict"] = None
 
-    for j, (key, value) in enumerate(state_dict.items()):
-        state_dict[key] = None
-        # if j % 10 == 0:
-        #     torch.cuda.empty_cache()
-        #     gc.collect()
-        # pass
-    pass
-    state_dict = None
+    # for j, (key, value) in enumerate(state_dict.items()):
+    #     state_dict[key] = None
+    #     if j % 10 == 0:
+    #         torch.cuda.empty_cache()
+    #         gc.collect()
+    #     pass
+    # pass
+    # state_dict = None
     # del state_dict
     # torch.cuda.empty_cache()
     # gc.collect()
@@ -387,9 +387,9 @@ def unsloth_save_model(
     import shutil
     shutil.rmtree(temporary_location)
 
-    for _ in range(10):
-        # torch.cuda.empty_cache()
-        gc.collect()
+    # for _ in range(3):
+    #     torch.cuda.empty_cache()
+    #     gc.collect()
     return save_directory
 pass
 
