@@ -395,7 +395,7 @@ def install_llama_cpp(non_blocking = False):
         "pip install gguf protobuf",
     ]
     if not os.path.exists("llama.cpp"):
-        if non_blocking:
+        if not non_blocking:
             for command in commands:
                 with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
                     for line in sp.stdout:
