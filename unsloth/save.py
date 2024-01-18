@@ -20,6 +20,8 @@ import os
 import pickle
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
+import subprocess
+import psutil
 
 __all__ = [
     "print_quantization_methods",
@@ -417,9 +419,6 @@ def save_to_gguf(
     _run_installer = None, # Non blocking install of llama.cpp
 ):
     from transformers.models.llama.modeling_llama import logger
-    import os
-    import subprocess
-    import psutil
 
     if   quantization_method == "not_quantized":  quantization_method = "f16"
     elif quantization_method == "fast_quantized": quantization_method = "q8_0"
