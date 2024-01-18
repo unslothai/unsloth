@@ -388,28 +388,41 @@ def unsloth_save_model(
 pass
 
 
-def install_llama_cpp(non_blocking = False):
+def install_llama_cpp_clone_non_blocking():
+    full_command = ["git", "clone", "https://github.com/ggerganov/llama.cpp"]
+    run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
+    return run_installer
+pass
+
+
+def install_llama_cpp_make_non_blocking():
+    env = { **os.environ, "LLAMA_CUBLAS": "1", }
+    full_command = ["make", "-j", "-C", "llama.cpp"]
+    run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
+    return run_installer
+pass
+
+
+def install_python_non_blocking(packages = []):
+    full_command = ["pip", "install"] + packages
+    run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
+    return run_installer
+pass
+
+
+def install_llama_cpp_blocking():
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
         "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j",
         "pip install gguf protobuf",
     ]
-    if not os.path.exists("llama.cpp"):
-        if not non_blocking:
-            for command in commands:
-                with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
-                    for line in sp.stdout:
-                        print(line.decode("utf-8"), flush = True, end = "")
-                pass
-            pass
-            return None
-        else:
-            full_command  = " && ".join(commands)
-            run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
-            return run_installer
+    if os.path.exists("llama.cpp"): return
+    for command in commands:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+            for line in sp.stdout:
+                print(line.decode("utf-8"), flush = True, end = "")
         pass
     pass
-    return None
 pass
 
 
@@ -444,7 +457,7 @@ def save_to_gguf(
     if _run_installer is not None:
         _run_installer.wait()
     else:
-        install_llama_cpp(non_blocking = False)
+        install_llama_cpp_blocking()
     pass
 
     print("Unsloth: [1] Converting HF into GGUF format. This will take 3 minutes...")
@@ -614,10 +627,14 @@ def unsloth_save_pretrained_gguf(
     del arguments["quantization_method"]
 
     # Non blocking install GGUF first
-    run_installer = None#install_llama_cpp(non_blocking = True)
+    install_llama_cpp_clone_non_blocking().wait()
+    makefile = install_llama_cpp_make_non_blocking()
+    python_install = install_python_non_blocking(["gguf", "protobuf"])
     save_directory = unsloth_save_model(**arguments)
-    file_location = save_to_gguf(save_directory, quantization_method, run_installer)
+    python_install.wait()
+    file_location = save_to_gguf(save_directory, quantization_method, makefile)
 
+    # And save to HF
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
 
@@ -698,10 +715,14 @@ def unsloth_push_to_hub_gguf(
     del arguments["quantization_method"]
 
     # Non blocking install GGUF first
-    run_installer = None#install_llama_cpp(non_blocking = True)
+    install_llama_cpp_clone_non_blocking().wait()
+    makefile = install_llama_cpp_make_non_blocking()
+    python_install = install_python_non_blocking(["gguf", "protobuf"])
     save_directory = unsloth_save_model(**arguments)
-    file_location = save_to_gguf(save_directory, quantization_method, run_installer)
+    python_install.wait()
+    file_location = save_to_gguf(save_directory, quantization_method, makefile)
 
+    # Save to hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
 
     from huggingface_hub import create_repo
