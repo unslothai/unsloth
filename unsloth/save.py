@@ -254,6 +254,7 @@ def unsloth_save_model(
     pass
     max_ram -= sharded_ram_usage
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
+    print(f"Unsloth: Will use up to {round(max_ram, 2)}/{round(maximum_memory_usage, 2)} RAM for saving.")
 
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
