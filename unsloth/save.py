@@ -405,7 +405,7 @@ def install_llama_cpp(non_blocking = False):
             return None
         else:
             full_command  = " && ".join(commands)
-            run_installer = subprocess.Popen(full_command)
+            run_installer = subprocess.Popen(full_command stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
             return run_installer
         pass
     pass
