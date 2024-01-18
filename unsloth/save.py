@@ -387,9 +387,9 @@ def unsloth_save_model(
     import shutil
     shutil.rmtree(temporary_location)
 
-    # for _ in range(3):
-    #     torch.cuda.empty_cache()
-    #     gc.collect()
+    for _ in range(10):
+        # torch.cuda.empty_cache()
+        gc.collect()
     return save_directory
 pass
 
