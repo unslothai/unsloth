@@ -111,7 +111,7 @@ def unsloth_save_model(
 
     # Our functions
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,
+    maximum_memory_usage : float = 0.9,
 ):
     save_pretrained_settings = dict(locals())
     for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
