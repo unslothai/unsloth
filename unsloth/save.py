@@ -666,9 +666,16 @@ def unsloth_save_pretrained_gguf(
 
         from huggingface_hub import HfApi
         hf_api = HfApi(token = token)
+
+        if "/" in file_location:
+            uploaded_location = file_location[file_location.rfind("/")+1:]
+        else:
+            uploaded_location = file_location
+        pass
+        
         hf_api.upload_file(
             path_or_fileobj = file_location,
-            path_in_repo    = "README.md",
+            path_in_repo    = uploaded_location,
             repo_id         = save_directory,
             repo_type       = "model",
         )
@@ -759,9 +766,16 @@ def unsloth_push_to_hub_gguf(
 
     from huggingface_hub import HfApi
     hf_api = HfApi(token = token)
+
+    if "/" in file_location:
+        uploaded_location = file_location[file_location.rfind("/")+1:]
+    else:
+        uploaded_location = file_location
+    pass
+
     hf_api.upload_file(
         path_or_fileobj = file_location,
-        path_in_repo    = "README.md",
+        path_in_repo    = uploaded_location,
         repo_id         = save_directory,
         repo_type       = "model",
     )
