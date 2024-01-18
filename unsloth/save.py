@@ -93,6 +93,8 @@ def fast_save_pickle(shard, name):
     torch.save(
         shard,
         name,
+        pickle_module = pickle,
+        pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     return
 pass
@@ -333,12 +335,20 @@ def unsloth_save_model(
                 state_dict[name] = torch.load(filename, weights_only = True, map_location = "cpu", mmap = True)
         pass
         for item in LLAMA_LAYERNORMS:
-            state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight")
+            state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight.data")
         pass
     pass
 
-    state_dict["model.norm.weight"] = model.model.model.norm.weight
-    state_dict["lm_head.weight"]    = model.model.lm_head.weight
+    state_dict["model.norm.weight"] = model.model.model.norm.weight.data
+    state_dict["lm_head.weight"]    = model.model.lm_head.weight.data
+
+    # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
+    for key, value in state_dict.items():
+        if hasattr(value, "data"): state_dict[key] = value.data
+        if type(value) is not torch.Tensor:
+            logger.warning_once(f"Unsloth: {key} is not a Tensor but a {type(value)}.")
+        pass
+    pass
 
     # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
