@@ -541,6 +541,8 @@ def unsloth_save_pretrained_merged(
     arguments["tokenizer"] = None
     del arguments["self"]
     unsloth_save_model(**arguments)
+    for _ in range(3):
+        gc.collect()
 pass
 
 
@@ -578,6 +580,8 @@ def unsloth_push_to_hub_merged(
     del arguments["self"]
     del arguments["repo_id"]
     unsloth_save_model(**arguments)
+    for _ in range(3):
+        gc.collect()
 pass
 
 
@@ -642,6 +646,10 @@ def unsloth_save_pretrained_gguf(
     makefile  = install_llama_cpp_make_non_blocking()
     save_directory = unsloth_save_model(**arguments)
     python_install.wait()
+
+    for _ in range(3):
+        gc.collect()
+
     file_location = save_to_gguf(save_directory, quantization_method, makefile)
 
     # And save to HF
@@ -730,6 +738,10 @@ def unsloth_push_to_hub_gguf(
     git_clone.wait()
     makefile  = install_llama_cpp_make_non_blocking()
     save_directory = unsloth_save_model(**arguments)
+
+    for _ in range(3):
+        gc.collect()
+
     python_install.wait()
     file_location = save_to_gguf(save_directory, quantization_method, makefile)
 
