@@ -33,7 +33,6 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface_dev = [
-    "transformers @ git+https://github.com/huggingface/transformers",
     "datasets",
     "sentencepiece",
     "accelerate",
