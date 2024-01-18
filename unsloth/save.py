@@ -242,7 +242,7 @@ def unsloth_save_model(
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
 
     # Determine max RAM usage minus sharding
-    max_ram = psutil.virtual_memory().total
+    max_ram = psutil.virtual_memory().available
     sharded_ram_usage = 5 * 1024 * 1024 * 1024
     if type(max_shard_size) is str:
         gb_found = re.match("([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
