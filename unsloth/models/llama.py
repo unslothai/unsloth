@@ -460,7 +460,7 @@ def LlamaModel_fast_forward(
             (batch_size, seq_length),
             inputs_embeds,
             past_key_values_length,
-            sliding_window = getattr(self.config, "sliding_window"),
+            sliding_window = getattr(self.config, "sliding_window", None),
         )
     pass
 
