@@ -161,11 +161,12 @@ pass
 
 
 def fast_rms_layernorm_inference(self, X):
+    old_dtype = X.dtype
     X = X.to(torch.float32)
     variance = X.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
     X *= variance.rsqrt_()
-    X = X.to(residual.dtype)
+    X = X.to(old_dtype)
     X *= self.weight
     return X
 pass
@@ -915,7 +916,7 @@ class FastLlamaModel:
                 new_alpha = lora_alpha / (r**0.5)
                 import peft
                 logger.warning_once(
-                    f"Unsloth: Your PEFT version of {peft.__version__} (0.7.2 needed) does not support use_rslora natively.\n"\
+                    f"Unsloth: Your PEFT version of {peft.__version__} (0.7.2 needed) does not support `use_rslora` natively.\n"\
                     f"But, we do it ourselves by setting `alpha = {new_alpha}.`"
                 )
                 lora_alpha = new_alpha
