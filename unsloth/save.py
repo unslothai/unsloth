@@ -94,7 +94,7 @@ def fast_save_pickle(shard, name):
     torch.save(
         shard,
         name,
-        pickle_module = pickle,
+        pickle_module   = pickle,
         pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     return
@@ -106,7 +106,7 @@ def unsloth_save_model(
     model,
     tokenizer,
     save_directory       : Union[str, os.PathLike],
-    save_method          : str = "lora", # ["lora", "merged_16bit", "merged_4bit"]
+    merge_method         : str = "lora", # ["lora", "16bit", "4bit"]
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     is_main_process      : bool = True,
@@ -131,7 +131,7 @@ def unsloth_save_model(
     maximum_memory_usage : float = 0.9,
 ):
     save_pretrained_settings = dict(locals())
-    for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
+    for deletion in ("model", "tokenizer", "merge_method", "temporary_location", "maximum_memory_usage"):
         del save_pretrained_settings[deletion]
     pass
     import re
@@ -144,8 +144,8 @@ def unsloth_save_model(
         gc.collect()
     pass
 
-    save_method = save_method.lower().replace(" ", "_")
-    if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
+    merge_method = merge_method.lower().replace(" ", "_")
+    if merge_method != "lora" and merge_method != "16bit" and merge_method != "4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"\
             '"lora"         ==> This is the fastest and easiet. Just saves LoRA modules.\n'\
@@ -154,7 +154,7 @@ def unsloth_save_model(
         )
     pass
 
-    if save_method == "merged_4bit":
+    if merge_method == "4bit":
         print("Unsloth: Merging 4bit and LoRA weights to 4bit...")
         print("This might take 5 minutes...")
         model = model.merge_and_unload()
@@ -169,7 +169,7 @@ def unsloth_save_model(
     pass
     save_pretrained_settings["tags"] = tags
 
-    if (save_method == "lora") and push_to_hub:
+    if (merge_method == "lora") and push_to_hub:
         if token is None:
             raise RuntimeError(
                 "Unsloth: Pushing to HF requires a token. Pass `token = 'hf_....'`\n"\
@@ -222,7 +222,7 @@ def unsloth_save_model(
         save_directory = new_save_directory
     pass
     
-    if (save_method == "merged_4bit") or (save_method == "lora") or (
+    if (merge_method == "4bit") or (merge_method == "lora") or (
         not hasattr(model, "model") or \
         not hasattr(model.model, "model") or \
         not hasattr(model.model.model, "layers")
@@ -246,7 +246,7 @@ def unsloth_save_model(
             print()
 
         print("Unsloth: Saving model...", end = "")
-        if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
+        if merge_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
 
         model.save_pretrained(**save_pretrained_settings)
         print(" Done.")
@@ -434,19 +434,19 @@ pass
 
 
 def save_to_gguf(
-    model_directory     : str = "unsloth_finetuned_model",
-    quantization_method : str = "fast_quantized",
+    model_directory : str = "unsloth_finetuned_model",
+    quantization    : str = "fast_quantized",
     _run_installer = None, # Non blocking install of llama.cpp
 ):
     from transformers.models.llama.modeling_llama import logger
 
-    if   quantization_method == "not_quantized":  quantization_method = "f16"
-    elif quantization_method == "fast_quantized": quantization_method = "q8_0"
-    elif quantization_method == "quantized":      quantization_method = "q4_k_m"
-    elif quantization_method is None:             quantization_method = "q8_0"
+    if   quantization == "not_quantized":  quantization = "f16"
+    elif quantization == "fast_quantized": quantization = "q8_0"
+    elif quantization == "quantized":      quantization = "q4_k_m"
+    elif quantization is None:             quantization = "q8_0"
 
-    if quantization_method not in ALLOWED_QUANTS.keys():
-        error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
+    if quantization not in ALLOWED_QUANTS.keys():
+        error = f"Unsloth: Quant method = [{quantization}] not supported. Choose from below:\n"
         for key, value in ALLOWED_QUANTS.items():
             error += f"[{key}] => {value}\n"
         raise RuntimeError(error)
@@ -456,7 +456,7 @@ def save_to_gguf(
         f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
         f"   \\\   /|    [0] Installing llama.cpp will take 3 minutes.\n"\
         f"O^O/ \_/ \\    [1] Converting HF to GUUF 16bits will take 3 minutes.\n"\
-        f"\        /    [2] Converting GGUF 16bits to {quantization_method} will take 20 minutes.\n"\
+        f"\        /    [2] Converting GGUF 16bits to {quantization} will take 20 minutes.\n"\
         f' "-____-"     In total, you will have to wait around 26 minutes.\n'
     print(print_info)
 
@@ -469,9 +469,9 @@ def save_to_gguf(
 
     print("Unsloth: [1] Converting HF into GGUF format. This will take 3 minutes...")
     first_conversion = "f16"
-    if   quantization_method == "f32":  first_conversion = "f32"
-    elif quantization_method == "f16":  first_conversion = "f16"
-    elif quantization_method == "q8_0": first_conversion = "q8_0"
+    if   quantization == "f32":  first_conversion = "f32"
+    elif quantization == "f16":  first_conversion = "f16"
+    elif quantization == "q8_0": first_conversion = "q8_0"
 
     n_cpus = psutil.cpu_count()*2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
@@ -489,13 +489,13 @@ def save_to_gguf(
 
     print(f"Unsloth: Conversion completed! Output location: {final_location}")
 
-    if quantization_method != first_conversion:
+    if quantization != first_conversion:
         old_location = final_location
-        print(f"Unsloth: [2] Converting GGUF 16bit into {quantization_method}. This will take 20 minutes...")
-        final_location = f"./{model_directory}-unsloth.{quantization_method.upper()}.gguf"
+        print(f"Unsloth: [2] Converting GGUF 16bit into {quantization}. This will take 20 minutes...")
+        final_location = f"./{model_directory}-unsloth.{quantization.upper()}.gguf"
 
         command = f"./llama.cpp/quantize {old_location} "\
-            f"{final_location} {quantization_method} {n_cpus}"
+            f"{final_location} {quantization} {n_cpus}"
         
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
@@ -511,7 +511,8 @@ pass
 def unsloth_save_pretrained_merged(
     self,
     save_directory       : Union[str, os.PathLike],
-    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    tokenizer            = None,
+    merge_method         : str = "16bit", # ["lora", "16bit", "4bit"]
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     is_main_process      : bool = True,
@@ -529,14 +530,20 @@ def unsloth_save_pretrained_merged(
         Same as .save_pretrained(...) except 4bit weights are auto
         converted to float16 with as few overhead as possible.
 
-        Choose for `save_method` to be either:
-        1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-        2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
-        3.         `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+        Choose for `merge_method` to be either:
+        1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+        2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+        3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
     """
+    if tokenizer is None:
+        logger.warning_once(
+            "Unsloth: You're not saving a tokenizer as well?\n"\
+            "You can do it separately via `tokenizer.save_pretrained(...)`"
+        )
+    pass
+
     arguments = dict(locals())
-    arguments["model"]     = self
-    arguments["tokenizer"] = None
+    arguments["model"] = self
     del arguments["self"]
     unsloth_save_model(**arguments)
     for _ in range(3):
@@ -547,7 +554,8 @@ pass
 def unsloth_push_to_hub_merged(
     self,
     repo_id              : str,
-    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    tokenizer            = None,
+    merge_method         : str = "16bit", # ["lora", "16bit", "4bit"]
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = None,
     private              : Optional[bool] = None,
@@ -565,14 +573,20 @@ def unsloth_push_to_hub_merged(
         Same as .push_to_hub(...) except 4bit weights are auto
         converted to float16 with as few overhead as possible.
 
-        Choose for `save_method` to be either:
-        1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-        2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
-        3.         `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+        Choose for `merge_method` to be either:
+        1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+        2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+        3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
     """
+    if tokenizer is None:
+        logger.warning_once(
+            "Unsloth: You're not saving a tokenizer as well?\n"\
+            "You can do it separately via `tokenizer.push_to_hub(...)`"
+        )
+    pass
+
     arguments = dict(locals())
     arguments["model"]          = self
-    arguments["tokenizer"]      = None
     arguments["save_directory"] = repo_id
     arguments["push_to_hub"]    = True
     del arguments["self"]
@@ -587,7 +601,7 @@ def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
-    quantization_method  : str = "fast_quantized",
+    quantization         : str = "fast_quantized",
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     is_main_process      : bool = True,
@@ -605,7 +619,7 @@ def unsloth_save_pretrained_gguf(
         Same as .save_pretrained(...) except 4bit weights are auto
         converted to float16 then converted to GGUF / llama.cpp format.
 
-        Choose for `quantization_method` to be:
+        Choose for `quantization` to be:
         "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
         "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
         "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
@@ -630,12 +644,12 @@ def unsloth_save_pretrained_gguf(
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
 
     arguments = dict(locals())
-    arguments["model"]       = self
-    arguments["tokenizer"]   = tokenizer
-    arguments["push_to_hub"] = False # We save ourselves
-    arguments["save_method"] = "merged_16bit" # Must be 16bit
+    arguments["model"]        = self
+    arguments["tokenizer"]    = tokenizer
+    arguments["push_to_hub"]  = False # We save ourselves
+    arguments["merge_method"] = "16bit" # Must be 16bit
     del arguments["self"]
-    del arguments["quantization_method"]
+    del arguments["quantization"]
 
     # Non blocking install GGUF first
     git_clone = install_llama_cpp_clone_non_blocking()
@@ -648,7 +662,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization, makefile)
 
     # And save to HF
     if push_to_hub:
@@ -685,7 +699,7 @@ def unsloth_push_to_hub_gguf(
     self,
     repo_id              : str,
     tokenizer            = None,
-    quantization_method  : str = "fast_quantized",
+    quantization         : str = "fast_quantized",
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = None,
     private              : Optional[bool] = None,
@@ -703,7 +717,7 @@ def unsloth_push_to_hub_gguf(
         Same as .push_to_hub(...) except 4bit weights are auto
         converted to float16 then converted to GGUF / llama.cpp format.
 
-        Choose for `quantization_method` to be:
+        Choose for `quantization` to be:
         "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
         "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
         "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
@@ -732,10 +746,10 @@ def unsloth_push_to_hub_gguf(
     arguments["tokenizer"]      = tokenizer
     arguments["save_directory"] = repo_id
     arguments["push_to_hub"]    = False # We save ourselves
-    arguments["save_method"]    = "merged_16bit" # Must be 16bit
+    arguments["merge_method"]   = "16bit" # Must be 16bit
     del arguments["self"]
     del arguments["repo_id"]
-    del arguments["quantization_method"]
+    del arguments["quantization"]
 
     # Non blocking install GGUF first
     git_clone = install_llama_cpp_clone_non_blocking()
@@ -748,7 +762,7 @@ def unsloth_push_to_hub_gguf(
         gc.collect()
 
     python_install.wait()
-    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization, makefile)
 
     # Save to hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
