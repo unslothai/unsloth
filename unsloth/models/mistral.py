@@ -131,7 +131,7 @@ def MistralAttention_fast_forward(
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        sw = getattr(self.config, "sliding_window")
+        sw = getattr(self.config, "sliding_window", None)
         sw = q_len if sw is None else sw
         window = (-1, -1) if (q_len <= sw) else (sw, sw)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
@@ -175,7 +175,7 @@ def MistralForCausalLM_fast_forward(
 
     if causal_mask is None:
         bsz, q_len = input_ids.shape
-        sliding_window = getattr(self.config, "sliding_window")
+        sliding_window = getattr(self.config, "sliding_window", None)
         if sliding_window is None or sliding_window <= 0:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
         elif q_len <= sliding_window:
