@@ -21,6 +21,7 @@ from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
 from platform import system as platform_system
 platform_system = platform_system()
+import math
 
 __version__ = "2024.1"
 
