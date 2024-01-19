@@ -242,7 +242,17 @@ def LoraLayer_update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init
         self.scaling[adapter_name] = lora_alpha / r
 
     if init_lora_weights == "loftq":
+        # We manually check for PEFT
+        if not hasattr(self, "loftq_init"):
+            import peft
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
+                "Please install PEFT 0.7.2 or higher.\n"\
+                "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+            )
+        pass
         self.loftq_init(adapter_name)
+        
     elif init_lora_weights:
         self.reset_lora_parameters(adapter_name, init_lora_weights)
 
