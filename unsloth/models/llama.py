@@ -853,11 +853,6 @@ class FastLlamaModel:
             )
         pass
 
-        import inspect
-        signature = str(inspect.signature(LoraConfig))
-        SUPPORTS_LOFTQ  = "loftq_config" in signature
-        SUPPORTS_RSLORA = "use_rslora"   in signature
-
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
@@ -883,15 +878,6 @@ class FastLlamaModel:
 
         if init_lora_weights == "loftq":
 
-            if not SUPPORTS_LOFTQ:
-                import peft
-                raise RuntimeError(
-                    f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
-                    "Please install PEFT 0.7.2 or higher.\n"\
-                    "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
-                )
-            pass
-
             if loftq_config is None:
                 from peft import LoftQConfig
                 logger.warning_once(
@@ -910,18 +896,6 @@ class FastLlamaModel:
         pass
 
         assert(type(use_rslora) is bool)
-        if use_rslora:
-            if not SUPPORTS_RSLORA:
-                # We do it ourselves!
-                new_alpha = lora_alpha / (r**0.5)
-                import peft
-                logger.warning_once(
-                    f"Unsloth: Your PEFT version of {peft.__version__} (0.7.2 needed) does not support `use_rslora` natively.\n"\
-                    f"But, we do it ourselves by setting `alpha = {new_alpha}.`"
-                )
-                lora_alpha = new_alpha
-            pass
-        pass
 
         transformers_set_seed(random_state)
 
@@ -947,7 +921,6 @@ class FastLlamaModel:
             **kwargs,
         )
         if not SUPPORTS_LOFTQ:  del arguments["loftq_config"]
-        if not SUPPORTS_RSLORA: del arguments["use_rslora"]
 
         lora_config = LoraConfig(**arguments)
 
