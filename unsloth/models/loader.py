@@ -63,14 +63,14 @@ pass
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/mistral-7b-bnb-4bit",
+        model_name     = "unsloth/mistral-7b-bnb-4bit",
         max_seq_length = 4096,
-        dtype = None,
-        load_in_4bit = True,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,
-        fix_tokenizer = True,
+        dtype          = None,
+        load_in_4bit   = True,
+        token          = None,
+        device_map     = "sequential",
+        rope_scaling   = None,
+        fix_tokenizer  = True,
         *args, **kwargs,
     ):
         old_model_name = model_name
@@ -106,14 +106,14 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         model, tokenizer = dispatch_model.from_pretrained(
-            model_name = model_name,
+            model_name     = model_name,
             max_seq_length = max_seq_length,
-            dtype = dtype,
-            load_in_4bit = load_in_4bit,
-            token = token,
-            device_map = device_map,
-            rope_scaling = rope_scaling,
-            fix_tokenizer = fix_tokenizer,
+            dtype          = dtype,
+            load_in_4bit   = load_in_4bit,
+            token          = token,
+            device_map     = device_map,
+            rope_scaling   = rope_scaling,
+            fix_tokenizer  = fix_tokenizer,
             *args, **kwargs,
         )
 

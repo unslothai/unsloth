@@ -256,14 +256,15 @@ class FastMistralModel(FastLlamaModel):
 
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/mistral-7b-bnb-4bit",
+        model_name     = "unsloth/mistral-7b-bnb-4bit",
         max_seq_length = 4096,
-        dtype = None,
-        load_in_4bit = True,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None, # Mistral does not support RoPE scaling
-        fix_tokenizer = True,
+        dtype          = None,
+        load_in_4bit   = True,
+        token          = None,
+        device_map     = "sequential",
+        rope_scaling   = None, # Mistral does not support RoPE scaling
+        fix_tokenizer  = True,
+        **kwargs,
     ): 
         if rope_scaling is not None:
             logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
@@ -305,6 +306,7 @@ class FastMistralModel(FastLlamaModel):
             quantization_config = bnb_config,
             token = token,
             # rope_scaling = rope_scaling,
+            **kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
