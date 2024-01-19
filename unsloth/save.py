@@ -555,7 +555,7 @@ def unsloth_push_to_hub_merged(
     self,
     repo_id              : str,
     tokenizer            = None,
-    save_method         : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = None,
     private              : Optional[bool] = None,
@@ -601,7 +601,7 @@ def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
-    quantization_method         : str = "fast_quantized",
+    quantization_method  : str = "fast_quantized",
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     is_main_process      : bool = True,
@@ -649,7 +649,7 @@ def unsloth_save_pretrained_gguf(
     arguments["push_to_hub"]  = False # We save ourselves
     arguments["save_method"] = "merged_16bit" # Must be 16bit
     del arguments["self"]
-    del arguments["quantization"]
+    del arguments["quantization_method"]
 
     # Non blocking install GGUF first
     git_clone = install_llama_cpp_clone_non_blocking()
@@ -699,7 +699,7 @@ def unsloth_push_to_hub_gguf(
     self,
     repo_id              : str,
     tokenizer            = None,
-    quantization_method         : str = "fast_quantized",
+    quantization_method  : str = "fast_quantized",
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = None,
     private              : Optional[bool] = None,
@@ -749,7 +749,7 @@ def unsloth_push_to_hub_gguf(
     arguments["save_method"]   = "merged_16bit" # Must be 16bit
     del arguments["self"]
     del arguments["repo_id"]
-    del arguments["quantization"]
+    del arguments["quantization_method"]
 
     # Non blocking install GGUF first
     git_clone = install_llama_cpp_clone_non_blocking()

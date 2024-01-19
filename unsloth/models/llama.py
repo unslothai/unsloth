@@ -912,14 +912,13 @@ class FastLlamaModel:
         assert(type(use_rslora) is bool)
         if use_rslora:
             if not SUPPORTS_RSLORA:
-                # We do it ourselves!
-                new_alpha = lora_alpha / (r**0.5)
+                # We manually check for PEFT
                 import peft
-                logger.warning_once(
-                    f"Unsloth: Your PEFT version of {peft.__version__} (0.7.2 needed) does not support `use_rslora` natively.\n"\
-                    f"But, we do it ourselves by setting `alpha = {new_alpha}.`"
+                raise RuntimeError(
+                    f"Unsloth: Your PEFT version of {peft.__version__} does not support `use_rslora`.\n"\
+                    "Please install PEFT 0.7.2 or higher.\n"\
+                    "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
                 )
-                lora_alpha = new_alpha
             pass
         pass
 
