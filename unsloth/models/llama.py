@@ -161,11 +161,12 @@ pass
 
 
 def fast_rms_layernorm_inference(self, X):
+    old_dtype = X.dtype
     X = X.to(torch.float32)
     variance = X.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
     X *= variance.rsqrt_()
-    X = X.to(residual.dtype)
+    X = X.to(old_dtype)
     X *= self.weight
     return X
 pass
@@ -660,14 +661,15 @@ class FastLlamaModel:
 
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/llama-2-7b-bnb-4bit",
+        model_name     = "unsloth/llama-2-7b-bnb-4bit",
         max_seq_length = 4096,
-        dtype = None,
-        load_in_4bit = True,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,
-        fix_tokenizer = True,
+        dtype          = None,
+        load_in_4bit   = True,
+        token          = None,
+        device_map     = "sequential",
+        rope_scaling   = None,
+        fix_tokenizer  = True,
+        **kwargs,
     ):
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
@@ -720,18 +722,19 @@ class FastLlamaModel:
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map = device_map,
-            torch_dtype = dtype,
-            quantization_config = bnb_config,
-            token = token,
-            rope_scaling = rope_scaling,
+            device_map              = device_map,
+            torch_dtype             = dtype,
+            quantization_config     = bnb_config,
+            token                   = token,
+            rope_scaling            = rope_scaling,
             max_position_embeddings = max_position_embeddings,
+            **kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             model_max_length = max_seq_length,
-            padding_side = "right",
-            token = token,
+            padding_side     = "right",
+            token            = token,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -755,12 +758,12 @@ class FastLlamaModel:
         # We check the tokenizer first for errors
         if fix_tokenizer:
             tokenizer = check_tokenizer(
-                model = model,
-                tokenizer = tokenizer,
-                model_name = model_name,
+                model            = model,
+                tokenizer        = tokenizer,
+                model_name       = model_name,
                 model_max_length = max_seq_length,
-                padding_side = "right",
-                token = token,
+                padding_side     = "right",
+                token            = token,
             )
         pass
         patch_saving_functions(tokenizer)
@@ -828,20 +831,20 @@ class FastLlamaModel:
     @staticmethod
     def get_peft_model(
         model,
-        r = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                          "gate_proj", "up_proj", "down_proj"],
-        lora_alpha = 16,
-        lora_dropout = 0,
-        bias = "none",
+        r                   = 16,
+        target_modules      = ["q_proj", "k_proj", "v_proj", "o_proj",
+                               "gate_proj", "up_proj", "down_proj"],
+        lora_alpha          = 16,
+        lora_dropout        = 0,
+        bias                = "none",
         layers_to_transform = None,
-        layers_pattern = None,
+        layers_pattern      = None,
         use_gradient_checkpointing = True,
-        random_state = 3407,
-        max_seq_length = 2048, # not used anymore
-        use_rslora = False,
-        init_lora_weights = True,
-        loftq_config = None,
+        random_state        = 3407,
+        max_seq_length      = 2048, # not used anymore
+        use_rslora          = False,
+        init_lora_weights   = True,
+        loftq_config        = None,
         **kwargs,
     ):
         if isinstance(model, PeftModelForCausalLM):
@@ -909,12 +912,14 @@ class FastLlamaModel:
         assert(type(use_rslora) is bool)
         if use_rslora:
             if not SUPPORTS_RSLORA:
+                # We do it ourselves!
+                new_alpha = lora_alpha / (r**0.5)
                 import peft
-                raise RuntimeError(
-                    f"Unsloth: Your PEFT version of {peft.__version__} does not support use_rslora.\n"\
-                    "Please install PEFT 0.7.2 or higher.\n"\
-                    "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+                logger.warning_once(
+                    f"Unsloth: Your PEFT version of {peft.__version__} (0.7.2 needed) does not support `use_rslora` natively.\n"\
+                    f"But, we do it ourselves by setting `alpha = {new_alpha}.`"
                 )
+                lora_alpha = new_alpha
             pass
         pass
 
