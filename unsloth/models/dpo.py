@@ -76,6 +76,7 @@ def NotebookTrainingTracker_write_line(self, values):
         self.inner_table = [list(values.keys()), list(values.values())]
     else:
         columns = self.inner_table[0]
+        print(columns)
         for key in values.keys():
             if key not in columns:
                 columns.append(key)
@@ -103,7 +104,7 @@ pass
 
 def PatchDPOTrainer():
     # Patch DPO notebook printing
-    NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line
+    # NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line
     from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
     DEFAULT_PROGRESS_CALLBACK.on_train_begin = NotebookProgressCallback_on_train_begin
     DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log
