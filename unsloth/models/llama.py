@@ -920,7 +920,6 @@ class FastLlamaModel:
             use_rslora          = use_rslora,
             **kwargs,
         )
-        if not SUPPORTS_LOFTQ:  del arguments["loftq_config"]
 
         lora_config = LoraConfig(**arguments)
 
