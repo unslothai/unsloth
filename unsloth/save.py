@@ -25,7 +25,7 @@ import subprocess
 import psutil
 
 __all__ = [
-    "print_quantizations",
+    "print_quantization_methods",
     "unsloth_save_model",
     "save_to_gguf",
     "patch_saving_functions",
@@ -64,7 +64,7 @@ ALLOWED_QUANTS = \
     "q6_k"    : "Uses Q8_K for all tensors",
 }
 
-def print_quantizations():
+def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
     pass
