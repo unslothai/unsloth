@@ -949,13 +949,29 @@ class FastLlamaModel:
         if not SUPPORTS_RSLORA: del arguments["use_rslora"]
 
         lora_config = LoraConfig(**arguments)
+        model = _get_peft_model(model, lora_config)
+
+        model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        return model
+    pass
+
+
+    @staticmethod
+    def patch_peft_model(
+        model
+        use_gradient_checkpointing = True,
+    ):
+        if not isinstance(model, PeftModelForCausalLM):
+            raise TypeError(
+                "Unsloth: Your model needs to call `.get_peft_model` first!"
+            )
+        pass
 
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             use_reentrant = True,
         )
-        model = _get_peft_model(model, lora_config)
 
         # Fix up config for transformers uploading PEFT
         name = model.peft_config["default"].base_model_name_or_path

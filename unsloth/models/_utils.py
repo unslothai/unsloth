@@ -74,9 +74,13 @@ def prepare_model_for_kbit_training(
             future Pytorch versions.
     """
 
-    # Freeze all parameters
-    for param in model.parameters():
-        param.requires_grad_(False)
+    # Freeze all parameters except LoRA
+    for name, param in model.named_parameters():
+        if ".lora_A." in name or ".lora_B." in name:
+            param.requires_grad_(True)
+        else:
+            param.requires_grad_(False)
+    pass
 
     if use_gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -252,7 +256,7 @@ def LoraLayer_update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init
             )
         pass
         self.loftq_init(adapter_name)
-        
+
     elif init_lora_weights:
         self.reset_lora_parameters(adapter_name, init_lora_weights)
 

@@ -366,7 +366,28 @@ def unsloth_save_model(
         print()
 
     print("Unsloth: Saving model... This might take 5 minutes for Llama-7b...")
+
+    # Since merged, edit quantization_config
+    old_config = model.config
+    new_config = model.config.to_dict()
+    if "quantization_config" in new_config:
+        del new_config["quantization_config"]
+    original_model = model
+    new_config = type(model.config).from_dict(new_config)
+    while hasattr(original_model, "model"):
+        original_model = original_model.model
+        original_model.config = new_config
+    model.config = new_config
+
+    # Save!
     model.model.save_pretrained(**save_pretrained_settings)
+
+    # Revert config back
+    original_model = model
+    while hasattr(original_model, "model"):
+        original_model = original_model.model
+        original_model.config = old_config
+    model.config = old_config
     print("Done.")
 
     save_pretrained_settings["state_dict"] = None
