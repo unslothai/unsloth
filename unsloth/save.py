@@ -544,8 +544,9 @@ def save_to_gguf(
         command = f"./llama.cpp/quantize {old_location} "\
             f"{final_location} {quantization_method} {n_cpus}"
         
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
-            for line in sp.stdout:
+        # quantize uses stderr
+        with subprocess.Popen(command, shell = True, stderr = subprocess.PIPE, bufsize = 1) as sp:
+            for line in sp.stderr:
                 print(line.decode("utf-8"), flush = True, end = "")
         pass
         print(f"Unsloth: Conversion completed! Output location: {final_location}")
