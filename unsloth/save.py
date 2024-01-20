@@ -446,7 +446,7 @@ def save_to_gguf(
     elif quantization_method is None:             quantization_method = "q8_0"
 
     if quantization_method not in ALLOWED_QUANTS.keys():
-        error = f"Unsloth: Quant method = [{quantization}] not supported. Choose from below:\n"
+        error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
         for key, value in ALLOWED_QUANTS.items():
             error += f"[{key}] => {value}\n"
         raise RuntimeError(error)
@@ -456,7 +456,7 @@ def save_to_gguf(
         f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
         f"   \\\   /|    [0] Installing llama.cpp will take 3 minutes.\n"\
         f"O^O/ \_/ \\    [1] Converting HF to GUUF 16bits will take 3 minutes.\n"\
-        f"\        /    [2] Converting GGUF 16bits to {quantization} will take 20 minutes.\n"\
+        f"\        /    [2] Converting GGUF 16bits to {quantization_method} will take 20 minutes.\n"\
         f' "-____-"     In total, you will have to wait around 26 minutes.\n'
     print(print_info)
 
@@ -491,11 +491,11 @@ def save_to_gguf(
 
     if quantization_method != first_conversion:
         old_location = final_location
-        print(f"Unsloth: [2] Converting GGUF 16bit into {quantization}. This will take 20 minutes...")
-        final_location = f"./{model_directory}-unsloth.{quantization.upper()}.gguf"
+        print(f"Unsloth: [2] Converting GGUF 16bit into {quantization_method}. This will take 20 minutes...")
+        final_location = f"./{model_directory}-unsloth.{quantization_method.upper()}.gguf"
 
         command = f"./llama.cpp/quantize {old_location} "\
-            f"{final_location} {quantization} {n_cpus}"
+            f"{final_location} {quantization_method} {n_cpus}"
         
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
@@ -619,7 +619,7 @@ def unsloth_save_pretrained_gguf(
         Same as .save_pretrained(...) except 4bit weights are auto
         converted to float16 then converted to GGUF / llama.cpp format.
 
-        Choose for `quantization` to be:
+        Choose for `quantization_method` to be:
         "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
         "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
         "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
@@ -662,7 +662,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
 
     # And save to HF
     if push_to_hub:
@@ -717,7 +717,7 @@ def unsloth_push_to_hub_gguf(
         Same as .push_to_hub(...) except 4bit weights are auto
         converted to float16 then converted to GGUF / llama.cpp format.
 
-        Choose for `quantization` to be:
+        Choose for `quantization_method` to be:
         "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
         "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
         "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
@@ -762,7 +762,7 @@ def unsloth_push_to_hub_gguf(
         gc.collect()
 
     python_install.wait()
-    file_location = save_to_gguf(new_save_directory, quantization, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
 
     # Save to hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
