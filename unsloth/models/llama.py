@@ -844,9 +844,11 @@ class FastLlamaModel:
         max_seq_length      = 2048, # not used anymore
         use_rslora          = False,
         init_lora_weights   = True,
-        loftq_config        = None,
+        loftq_config        = {},
         **kwargs,
     ):
+        transformers_set_seed(random_state)
+
         if isinstance(model, PeftModelForCausalLM):
             raise TypeError(
                 "Unsloth: Your model already has LoRA adapters. No need to run this again!"
@@ -892,7 +894,7 @@ class FastLlamaModel:
                 )
             pass
 
-            if loftq_config is None:
+            if loftq_config == {}:
                 from peft import LoftQConfig
                 logger.warning_once(
                     f"Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
@@ -922,8 +924,6 @@ class FastLlamaModel:
             pass
         pass
 
-        transformers_set_seed(random_state)
-
         accepted_modules = frozenset(("q_proj", "k_proj", "v_proj", "o_proj",
                                       "gate_proj", "up_proj", "down_proj",),)
         model.config.update({"unsloth_version" : __version__})
@@ -949,28 +949,53 @@ class FastLlamaModel:
         if not SUPPORTS_RSLORA: del arguments["use_rslora"]
 
         lora_config = LoraConfig(**arguments)
+        model = _get_peft_model(model, lora_config)
+
+        model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        return model
+    pass
+
+
+    @staticmethod
+    def patch_peft_model(
+        model,
+        use_gradient_checkpointing = True,
+    ):
+        if not isinstance(model, PeftModelForCausalLM):
+            raise TypeError(
+                "Unsloth: Your model needs to call `.get_peft_model` first!"
+            )
+        pass
 
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             use_reentrant = True,
         )
-        model = _get_peft_model(model, lora_config)
 
         # Fix up config for transformers uploading PEFT
-        name = model.peft_config["default"].base_model_name_or_path
-        if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-            name = name[:len(name) - len("-bnb-4bit")]
-            model.peft_config["default"].base_model_name_or_path = name
+        for active_adapter in model.peft_config.keys():
+            name = model.peft_config[active_adapter].base_model_name_or_path
+            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                name = name[:len(name) - len("-bnb-4bit")]
+                model.peft_config[active_adapter].base_model_name_or_path = name
+            pass
+            # Add revision to enable future fast inference paths
+            model.peft_config[active_adapter].revision = f"unsloth"
         pass
-        # Add revision to enable future fast inference paths
-        model.peft_config["default"].revision = f"unsloth"
 
         # Do patching
         n_mlp = 0
         n_qkv = 0
         n_o   = 0
         import types
+
+        active_adapter = model.active_adapters[0] if \
+            hasattr(model, "active_adapters") else model.active_adapter
+
+        # Get dropout and bias
+        lora_dropout = model.peft_config[active_adapter].lora_dropout
+        bias         = model.peft_config[active_adapter].bias
 
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):

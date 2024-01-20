@@ -71,6 +71,7 @@ class FastLanguageModel(FastLlamaModel):
         device_map     = "sequential",
         rope_scaling   = None,
         fix_tokenizer  = True,
+        use_gradient_checkpointing = True,
         *args, **kwargs,
     ):
         old_model_name = model_name
@@ -139,6 +140,8 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # Now add PEFT adapters
             model = PeftModel.from_pretrained(model, old_model_name)
+            # Patch it as well!
+            model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
         pass
         return model, tokenizer
     pass

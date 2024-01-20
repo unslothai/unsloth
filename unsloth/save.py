@@ -221,6 +221,17 @@ def unsloth_save_model(
         save_pretrained_settings["save_directory"] = new_save_directory
         save_directory = new_save_directory
     pass
+
+    # Tokenizer has different saving arguments
+    tokenizer_save_settings = \
+    {
+        "save_directory"  : save_pretrained_settings["save_directory"],
+        "legacy_format"   : None,
+        "filename_prefix" : None,
+        "push_to_hub"     : save_pretrained_settings["push_to_hub"],
+        "private"         : save_pretrained_settings["private"],
+        "token"           : save_pretrained_settings["token"],
+    }
     
     if (save_method == "merged_4bit") or (save_method == "lora") or (
         not hasattr(model, "model") or \
@@ -240,7 +251,7 @@ def unsloth_save_model(
 
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
-            tokenizer.save_pretrained(**save_pretrained_settings)
+            tokenizer.save_pretrained(**tokenizer_save_settings)
             print(" Done.")
         else:
             print()
@@ -360,13 +371,34 @@ def unsloth_save_model(
 
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
-        tokenizer.save_pretrained(**save_pretrained_settings)
+        tokenizer.save_pretrained(**tokenizer_save_settings)
         print(" Done.")
     else:
         print()
 
     print("Unsloth: Saving model... This might take 5 minutes for Llama-7b...")
+
+    # Since merged, edit quantization_config
+    old_config = model.config
+    new_config = model.config.to_dict()
+    if "quantization_config" in new_config:
+        del new_config["quantization_config"]
+    original_model = model
+    new_config = type(model.config).from_dict(new_config)
+    while hasattr(original_model, "model"):
+        original_model = original_model.model
+        original_model.config = new_config
+    model.config = new_config
+
+    # Save!
     model.model.save_pretrained(**save_pretrained_settings)
+
+    # Revert config back
+    original_model = model
+    while hasattr(original_model, "model"):
+        original_model = original_model.model
+        original_model.config = old_config
+    model.config = old_config
     print("Done.")
 
     save_pretrained_settings["state_dict"] = None
@@ -446,7 +478,7 @@ def save_to_gguf(
     elif quantization_method is None:             quantization_method = "q8_0"
 
     if quantization_method not in ALLOWED_QUANTS.keys():
-        error = f"Unsloth: Quant method = [{quantization}] not supported. Choose from below:\n"
+        error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
         for key, value in ALLOWED_QUANTS.items():
             error += f"[{key}] => {value}\n"
         raise RuntimeError(error)
@@ -456,7 +488,7 @@ def save_to_gguf(
         f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
         f"   \\\   /|    [0] Installing llama.cpp will take 3 minutes.\n"\
         f"O^O/ \_/ \\    [1] Converting HF to GUUF 16bits will take 3 minutes.\n"\
-        f"\        /    [2] Converting GGUF 16bits to {quantization} will take 20 minutes.\n"\
+        f"\        /    [2] Converting GGUF 16bits to {quantization_method} will take 20 minutes.\n"\
         f' "-____-"     In total, you will have to wait around 26 minutes.\n'
     print(print_info)
 
@@ -491,11 +523,11 @@ def save_to_gguf(
 
     if quantization_method != first_conversion:
         old_location = final_location
-        print(f"Unsloth: [2] Converting GGUF 16bit into {quantization}. This will take 20 minutes...")
-        final_location = f"./{model_directory}-unsloth.{quantization.upper()}.gguf"
+        print(f"Unsloth: [2] Converting GGUF 16bit into {quantization_method}. This will take 20 minutes...")
+        final_location = f"./{model_directory}-unsloth.{quantization_method.upper()}.gguf"
 
         command = f"./llama.cpp/quantize {old_location} "\
-            f"{final_location} {quantization} {n_cpus}"
+            f"{final_location} {quantization_method} {n_cpus}"
         
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
@@ -597,6 +629,65 @@ def unsloth_push_to_hub_merged(
 pass
 
 
+def upload_gguf_to_huggingface(save_directory, file_location, token, model_type):
+    print("Unsloth: Uploading GGUF to Huggingface Hub...")
+
+    # Check for username
+    if "/" not in save_directory:
+        from huggingface_hub import whoami
+        try: save_directory = f"{save_directory}/{whoami()['name']}"
+        except: pass
+    pass
+
+    from huggingface_hub import create_repo
+    create_repo(
+        repo_id   = save_directory,
+        token     = token,
+        repo_type = "model",
+        exist_ok  = True,
+    )
+
+    # Create model card
+    from huggingface_hub import ModelCard, ModelCardData
+    card_data = ModelCardData(
+        language = "en",
+        license  = "apache-2.0",
+        library  = "unsloth",
+        tags     = ["gguf", "unsloth", "text-generation-inference", "transformers",],
+    )
+
+    content = f"\n"\
+    f"---\n"\
+    f"{ card_data.to_yaml() }\n"\
+    f"---\n"\
+    f"\n"\
+    f"# My Model Card for {file_location}\n"\
+    f"\n"\
+    f"\nThis {model_type.title()} model was trained by [Unsloth](https://github.com/unslothai/unsloth) then saved to GGUF.\n"\
+    f"\n"
+    
+    card = ModelCard(content)
+    card.push_to_hub(save_directory, token = token)
+
+    # Now upload file
+    from huggingface_hub import HfApi
+    hf_api = HfApi(token = token)
+
+    if "/" in file_location:
+        uploaded_location = file_location[file_location.rfind("/")+1:]
+    else:
+        uploaded_location = file_location
+    pass
+
+    hf_api.upload_file(
+        path_or_fileobj = file_location,
+        path_in_repo    = uploaded_location,
+        repo_id         = save_directory,
+        repo_type       = "model",
+    )
+pass
+
+
 def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
@@ -619,7 +710,7 @@ def unsloth_save_pretrained_gguf(
         Same as .save_pretrained(...) except 4bit weights are auto
         converted to float16 then converted to GGUF / llama.cpp format.
 
-        Choose for `quantization` to be:
+        Choose for `quantization_method` to be:
         "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
         "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
         "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
@@ -662,36 +753,9 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization, makefile)
-
-    # And save to HF
-    if push_to_hub:
-        print("Unsloth: Uploading GGUF to Huggingface Hub...")
-
-        from huggingface_hub import create_repo
-        create_repo(
-            repo_id   = save_directory,
-            token     = token,
-            repo_type = "model",
-            exist_ok  = True,
-        )
-
-        from huggingface_hub import HfApi
-        hf_api = HfApi(token = token)
-
-        if "/" in file_location:
-            uploaded_location = file_location[file_location.rfind("/")+1:]
-        else:
-            uploaded_location = file_location
-        pass
-
-        hf_api.upload_file(
-            path_or_fileobj = file_location,
-            path_in_repo    = uploaded_location,
-            repo_id         = save_directory,
-            repo_type       = "model",
-        )
-    pass
+    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
+    model_type = self.config.model_type
+    if push_to_hub: upload_gguf_to_huggingface(new_save_directory, file_location, token, model_type)
 pass
 
 
@@ -717,7 +781,7 @@ def unsloth_push_to_hub_gguf(
         Same as .push_to_hub(...) except 4bit weights are auto
         converted to float16 then converted to GGUF / llama.cpp format.
 
-        Choose for `quantization` to be:
+        Choose for `quantization_method` to be:
         "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
         "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
         "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
@@ -762,35 +826,9 @@ def unsloth_push_to_hub_gguf(
         gc.collect()
 
     python_install.wait()
-    file_location = save_to_gguf(new_save_directory, quantization, makefile)
-
-    # Save to hub
-    print("Unsloth: Uploading GGUF to Huggingface Hub...")
-
-    from huggingface_hub import create_repo
-    create_repo(
-        repo_id   = save_directory,
-        private   = private,
-        token     = token,
-        repo_type = "model",
-        exist_ok  = True,
-    )
-
-    from huggingface_hub import HfApi
-    hf_api = HfApi(token = token)
-
-    if "/" in file_location:
-        uploaded_location = file_location[file_location.rfind("/")+1:]
-    else:
-        uploaded_location = file_location
-    pass
-
-    hf_api.upload_file(
-        path_or_fileobj = file_location,
-        path_in_repo    = uploaded_location,
-        repo_id         = save_directory,
-        repo_type       = "model",
-    )
+    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
+    model_type = self.config.model_type
+    upload_gguf_to_huggingface(new_save_directory, file_location, token, model_type)
 pass
 
 
