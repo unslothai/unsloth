@@ -208,6 +208,11 @@ def unsloth_save_model(
         return save_directory
     pass
 
+    # Update model tag
+    if push_to_hub:
+        upload_to_huggingface(model, save_directory, token, "finetuned", file_location = None)
+    pass
+
     # If push_to_hub, we must remove the .../ part of a repo
     if push_to_hub and "/" in save_directory:
 
@@ -369,11 +374,6 @@ def unsloth_save_model(
     pass
     if hasattr(model, "add_model_tags"):
         model.add_model_tags(["unsloth",])
-
-    # Update model tag
-    if push_to_hub:
-        upload_to_huggingface(model, save_directory, token, "finetuned", file_location = None)
-    pass
 
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
