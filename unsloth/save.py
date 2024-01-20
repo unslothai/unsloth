@@ -208,6 +208,15 @@ def unsloth_save_model(
         return save_directory
     pass
 
+    # Update model tag
+    username = ""
+    if push_to_hub:
+        username = upload_to_huggingface(
+            model, save_directory, token,
+            "finetuned", "trl", file_location = None,
+        )
+    pass
+
     # If push_to_hub, we must remove the .../ part of a repo
     if push_to_hub and "/" in save_directory:
 
@@ -331,6 +340,7 @@ def unsloth_save_model(
             if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
                 # Save to GPU memory
                 state_dict[name] = W
+            # [TODO] Saving to RAM seems to leak memory???
             # elif (max_ram - W.nbytes) > 0:
             #     # Save to CPU memory
             #     logger.warning_once(f"We will save to RAM and not VRAM now.")
@@ -401,27 +411,32 @@ def unsloth_save_model(
     model.config = old_config
     print("Done.")
 
+    # Print location
+    if push_to_hub:
+        print(f"Saved to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
+    pass
+
     save_pretrained_settings["state_dict"] = None
 
-    # for j, (key, value) in enumerate(state_dict.items()):
-    #     state_dict[key] = None
-    #     if j % 10 == 0:
-    #         torch.cuda.empty_cache()
-    #         gc.collect()
-    #     pass
-    # pass
-    # state_dict = None
-    # del state_dict
-    # torch.cuda.empty_cache()
-    # gc.collect()
+    for j, (key, value) in enumerate(state_dict.items()):
+        state_dict[key] = None
+        if j % 10 == 0:
+            torch.cuda.empty_cache()
+            gc.collect()
+        pass
+    pass
+    state_dict = None
+    del state_dict
+    torch.cuda.empty_cache()
+    gc.collect()
 
     # Remove temporary location
     import shutil
     shutil.rmtree(temporary_location)
 
-    # for _ in range(3):
-    #     torch.cuda.empty_cache()
-    #     gc.collect()
+    for _ in range(3):
+        torch.cuda.empty_cache()
+        gc.collect()
     return save_directory
 pass
 
@@ -629,14 +644,44 @@ def unsloth_push_to_hub_merged(
 pass
 
 
-def upload_gguf_to_huggingface(save_directory, file_location, token, model_type):
-    print("Unsloth: Uploading GGUF to Huggingface Hub...")
+MODEL_CARD = \
+"""---
+base_model: {base_model}
+tags:
+- text-generation-inference
+- transformers
+- unsloth
+- {model_type}
+- {extra}
+license: apache-2.0
+language:
+- en
+---
 
+# Uploaded {method} model
+
+- **Developed by:** {username}
+- **License:** apache-2.0
+- **Finetuned from model :** {base_model}
+
+This {model_type} model was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth) and Huggingface's TRL library.
+
+[<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
+"""
+
+
+def upload_to_huggingface(model, save_directory, token, method, extra = "", file_location = None):
     # Check for username
+    username = ""
     if "/" not in save_directory:
         from huggingface_hub import whoami
-        try: save_directory = f"{save_directory}/{whoami()['name']}"
-        except: pass
+        try: 
+            username = whoami()['name']
+            save_directory = f"{save_directory}/{username}"
+        except:
+            raise RuntimeError(f"Unsloth: {save_directory} is not a Huggingface directory.")
+    else:
+        username = save_directory.split("/")[0]
     pass
 
     from huggingface_hub import create_repo
@@ -648,43 +693,36 @@ def upload_gguf_to_huggingface(save_directory, file_location, token, model_type)
     )
 
     # Create model card
-    from huggingface_hub import ModelCard, ModelCardData
-    card_data = ModelCardData(
-        language = "en",
-        license  = "apache-2.0",
-        library  = "unsloth",
-        tags     = ["gguf", "unsloth", "text-generation-inference", "transformers",],
+    from huggingface_hub import ModelCard
+    content = MODEL_CARD.format(
+        username   = username,
+        base_model = model.config._name_or_path,
+        model_type = model.config.model_type,
+        method     = "",
+        extra      = extra,
     )
-
-    content = f"\n"\
-    f"---\n"\
-    f"{ card_data.to_yaml() }\n"\
-    f"---\n"\
-    f"\n"\
-    f"# My Model Card for {file_location}\n"\
-    f"\n"\
-    f"\nThis {model_type.title()} model was trained by [Unsloth](https://github.com/unslothai/unsloth) then saved to GGUF.\n"\
-    f"\n"
-    
     card = ModelCard(content)
     card.push_to_hub(save_directory, token = token)
 
-    # Now upload file
-    from huggingface_hub import HfApi
-    hf_api = HfApi(token = token)
+    if file_location is not None:
+        # Now upload file
+        from huggingface_hub import HfApi
+        hf_api = HfApi(token = token)
 
-    if "/" in file_location:
-        uploaded_location = file_location[file_location.rfind("/")+1:]
-    else:
-        uploaded_location = file_location
+        if "/" in file_location:
+            uploaded_location = file_location[file_location.rfind("/")+1:]
+        else:
+            uploaded_location = file_location
+        pass
+
+        hf_api.upload_file(
+            path_or_fileobj = file_location,
+            path_in_repo    = uploaded_location,
+            repo_id         = save_directory,
+            repo_type       = "model",
+        )
     pass
-
-    hf_api.upload_file(
-        path_or_fileobj = file_location,
-        path_in_repo    = uploaded_location,
-        repo_id         = save_directory,
-        repo_type       = "model",
-    )
+    return username
 pass
 
 
@@ -754,8 +792,15 @@ def unsloth_save_pretrained_gguf(
         gc.collect()
 
     file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
-    model_type = self.config.model_type
-    if push_to_hub: upload_gguf_to_huggingface(new_save_directory, file_location, token, model_type)
+
+    if push_to_hub:
+        print("Unsloth: Uploading GGUF to Huggingface Hub...")
+        username = upload_to_huggingface(
+            self, model, new_save_directory, token,
+            "GGUF converted", "gguf", file_location,
+        )
+        print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/')}")
+    pass
 pass
 
 
@@ -827,8 +872,13 @@ def unsloth_push_to_hub_gguf(
 
     python_install.wait()
     file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
-    model_type = self.config.model_type
-    upload_gguf_to_huggingface(new_save_directory, file_location, token, model_type)
+
+    print("Unsloth: Uploading GGUF to Huggingface Hub...")
+    username = upload_to_huggingface(
+        self, model, new_save_directory, token,
+        "GGUF converted", "gguf", file_location,
+    )
+    print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/')}")
 pass
 
 
