@@ -221,6 +221,14 @@ def unsloth_save_model(
         save_pretrained_settings["save_directory"] = new_save_directory
         save_directory = new_save_directory
     pass
+
+    # Tokenizer has different saving arguments
+    tokenizer_save_settings = {
+        "save_directory"  : save_pretrained_settings["save_directory"],
+        "legacy_format"   : None,
+        "filename_prefix" : None,
+        "push_to_hub"     : save_pretrained_settings["push_to_hub"],
+    }
     
     if (save_method == "merged_4bit") or (save_method == "lora") or (
         not hasattr(model, "model") or \
@@ -240,7 +248,7 @@ def unsloth_save_model(
 
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
-            tokenizer.save_pretrained(**save_pretrained_settings)
+            tokenizer.save_pretrained(**tokenizer_save_settings)
             print(" Done.")
         else:
             print()
@@ -360,7 +368,7 @@ def unsloth_save_model(
 
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
-        tokenizer.save_pretrained(**save_pretrained_settings)
+        tokenizer.save_pretrained(**tokenizer_save_settings)
         print(" Done.")
     else:
         print()
