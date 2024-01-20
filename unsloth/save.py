@@ -656,7 +656,7 @@ language:
 - **License:** apache-2.0
 - **Finetuned from model :** {base_model}
 
-This {model_type} model was trained 2x faster with 🦥[Unsloth](https://github.com/unslothai/unsloth) and 🤗Huggingface's TRL library.
+This {model_type} model was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth) and Huggingface's TRL library.
 
 [<img src="https://github.com/unslothai/unsloth/blob/main/images/unsloth%20made%20with%20love.png" width="140"/>](https://github.com/unslothai/unsloth)
 """
@@ -691,7 +691,7 @@ def upload_to_huggingface(model, save_directory, token, method, file_location = 
         base_model = model.config._name_or_path,
         model_type = model.config.model_type,
         method     = ""
-    ).encode("utf-8").decode("utf-8")
+    )
     card = ModelCard(content)
     card.push_to_hub(save_directory, token = token)
 
