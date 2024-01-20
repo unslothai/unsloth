@@ -223,11 +223,14 @@ def unsloth_save_model(
     pass
 
     # Tokenizer has different saving arguments
-    tokenizer_save_settings = {
+    tokenizer_save_settings = \
+    {
         "save_directory"  : save_pretrained_settings["save_directory"],
         "legacy_format"   : None,
         "filename_prefix" : None,
         "push_to_hub"     : save_pretrained_settings["push_to_hub"],
+        "private"         : save_pretrained_settings["private"],
+        "token"           : save_pretrained_settings["token"],
     }
     
     if (save_method == "merged_4bit") or (save_method == "lora") or (
