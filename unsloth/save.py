@@ -655,15 +655,17 @@ def upload_gguf_to_huggingface(save_directory, file_location, token, model_type)
         library  = "unsloth",
         tags     = ["gguf", "unsloth", "text-generation-inference", "transformers",],
     )
-    content = f"""
-    ---
-    { card_data.to_yaml() }
-    ---
 
-    # My Model Card for {file_location}
-
-    This {model_type.title()} model was trained by [Unsloth](https://github.com/unslothai/unsloth) then saved to GGUF.
-    """
+    content = f"\n"\
+    f"---\n"\
+    f"{ card_data.to_yaml() }\n"\
+    f"---\n"\
+    f"\n"\
+    f"# My Model Card for {file_location}\n"\
+    f"\n"\
+    f"\nThis {model_type.title()} model was trained by [Unsloth](https://github.com/unslothai/unsloth) then saved to GGUF.\n"\
+    f"\n"
+    
     card = ModelCard(content)
     card.push_to_hub(save_directory, token = token)
 
