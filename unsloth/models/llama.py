@@ -974,13 +974,15 @@ class FastLlamaModel:
         )
 
         # Fix up config for transformers uploading PEFT
-        name = model.peft_config["default"].base_model_name_or_path
-        if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-            name = name[:len(name) - len("-bnb-4bit")]
-            model.peft_config["default"].base_model_name_or_path = name
+        for active_adapter in model.peft_config.keys():
+            name = model.peft_config[active_adapter].base_model_name_or_path
+            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                name = name[:len(name) - len("-bnb-4bit")]
+                model.peft_config[active_adapter].base_model_name_or_path = name
+            pass
+            # Add revision to enable future fast inference paths
+            model.peft_config[active_adapter].revision = f"unsloth"
         pass
-        # Add revision to enable future fast inference paths
-        model.peft_config["default"].revision = f"unsloth"
 
         # Do patching
         n_mlp = 0
@@ -988,8 +990,12 @@ class FastLlamaModel:
         n_o   = 0
         import types
 
-        lora_dropout = 0
-        bias = "none"
+        active_adapter = model.active_adapters[0] if \
+            hasattr(model, "active_adapters") else model.active_adapter
+
+        # Get dropout and bias
+        lora_dropout = model.peft_config[active_adapter].lora_dropout
+        bias         = model.peft_config[active_adapter].bias
 
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
