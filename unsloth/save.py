@@ -370,6 +370,11 @@ def unsloth_save_model(
     if hasattr(model, "add_model_tags"):
         model.add_model_tags(["unsloth",])
 
+    # Update model tag
+    if push_to_hub:
+        upload_to_huggingface(model, save_directory, token, "finetuned", file_location = None)
+    pass
+
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
         tokenizer.save_pretrained(**tokenizer_save_settings)
