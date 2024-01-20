@@ -958,7 +958,7 @@ class FastLlamaModel:
 
     @staticmethod
     def patch_peft_model(
-        model
+        model,
         use_gradient_checkpointing = True,
     ):
         if not isinstance(model, PeftModelForCausalLM):
