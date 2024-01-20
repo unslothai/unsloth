@@ -674,6 +674,7 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 def upload_to_huggingface(model, save_directory, token, method, extra = "", file_location = None):
     # Check for username
     username = ""
+    save_directory = save_directory.lstrip("./")
     if "/" not in save_directory:
         from huggingface_hub import whoami
         try: 
@@ -797,10 +798,10 @@ def unsloth_save_pretrained_gguf(
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
-            self, new_save_directory, token,
+            self, save_directory, token,
             "GGUF converted", "gguf", file_location,
         )
-        print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/')}")
+        print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/.')}")
     pass
 pass
 
@@ -876,7 +877,7 @@ def unsloth_push_to_hub_gguf(
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
-        self, new_save_directory, token,
+        self, repo_id, token,
         "GGUF converted", "gguf", file_location,
     )
     print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/')}")
