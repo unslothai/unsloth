@@ -847,6 +847,8 @@ class FastLlamaModel:
         loftq_config        = None,
         **kwargs,
     ):
+        transformers_set_seed(random_state)
+
         if isinstance(model, PeftModelForCausalLM):
             raise TypeError(
                 "Unsloth: Your model already has LoRA adapters. No need to run this again!"
@@ -922,8 +924,6 @@ class FastLlamaModel:
             pass
         pass
 
-        transformers_set_seed(random_state)
-
         accepted_modules = frozenset(("q_proj", "k_proj", "v_proj", "o_proj",
                                       "gate_proj", "up_proj", "down_proj",),)
         model.config.update({"unsloth_version" : __version__})
@@ -987,6 +987,9 @@ class FastLlamaModel:
         n_qkv = 0
         n_o   = 0
         import types
+
+        lora_dropout = 0
+        bias = "none"
 
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
