@@ -514,7 +514,7 @@ def save_to_gguf(
         f"--outfile {final_location} "\
         f"--outtype {first_conversion} --concurrency {n_cpus}"
 
-    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1, check = True) as sp:
         for line in sp.stdout:
             print(line.decode("utf-8"), flush = True, end = "")
     pass
@@ -529,7 +529,7 @@ def save_to_gguf(
         command = f"./llama.cpp/quantize {old_location} "\
             f"{final_location} {quantization_method} {n_cpus}"
         
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1, check = True) as sp:
             for line in sp.stdout:
                 print(line.decode("utf-8"), flush = True, end = "")
         pass
@@ -629,13 +629,13 @@ def unsloth_push_to_hub_merged(
 pass
 
 
-def upload_gguf_to_huggingface(save_directory, file_location, token):
+def upload_gguf_to_huggingface(save_directory, file_location, token, model_type):
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
 
     # Check for username
     if "/" not in save_directory:
         from huggingface_hub import whoami
-        try: save_directory = f"{username}/{whoami()['name']}"
+        try: save_directory = f"{save_directory}/{whoami()['name']}"
         except: pass
     pass
 
@@ -649,7 +649,12 @@ def upload_gguf_to_huggingface(save_directory, file_location, token):
 
     # Create model card
     from huggingface_hub import ModelCard, ModelCardData
-    card_data = ModelCardData(language = "en", license = "apache", library = "unsloth")
+    card_data = ModelCardData(
+        language = "en",
+        license  = "apache-2.0",
+        library  = "unsloth",
+        tags     = ["gguf", "unsloth", "text-generation-inference", "transformers",],
+    )
     content = f"""
     ---
     { card_data.to_yaml() }
@@ -657,10 +662,10 @@ def upload_gguf_to_huggingface(save_directory, file_location, token):
 
     # My Model Card for {file_location}
 
-    This model was trained by [Unsloth](https://github.com/unslothai/unsloth) then saved to GGUF.
+    This {model_type.title()} model was trained by [Unsloth](https://github.com/unslothai/unsloth) then saved to GGUF.
     """
     card = ModelCard(content)
-    card.push_to_hub(save_directory)
+    card.push_to_hub(save_directory, token = token)
 
     # Now upload file
     from huggingface_hub import HfApi
@@ -747,7 +752,8 @@ def unsloth_save_pretrained_gguf(
         gc.collect()
 
     file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
-    if push_to_hub: upload_gguf_to_huggingface(new_save_directory, file_location, token)
+    model_type = self.config.model_type
+    if push_to_hub: upload_gguf_to_huggingface(new_save_directory, file_location, token, model_type)
 pass
 
 
@@ -819,7 +825,8 @@ def unsloth_push_to_hub_gguf(
 
     python_install.wait()
     file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
-    upload_gguf_to_huggingface(new_save_directory, file_location, token)
+    model_type = self.config.model_type
+    upload_gguf_to_huggingface(new_save_directory, file_location, token, model_type)
 pass
 
 

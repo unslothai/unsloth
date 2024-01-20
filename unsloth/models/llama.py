@@ -844,7 +844,7 @@ class FastLlamaModel:
         max_seq_length      = 2048, # not used anymore
         use_rslora          = False,
         init_lora_weights   = True,
-        loftq_config        = None,
+        loftq_config        = {},
         **kwargs,
     ):
         transformers_set_seed(random_state)
@@ -894,7 +894,7 @@ class FastLlamaModel:
                 )
             pass
 
-            if loftq_config is None:
+            if loftq_config is {}:
                 from peft import LoftQConfig
                 logger.warning_once(
                     f"Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
