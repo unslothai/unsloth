@@ -54,6 +54,11 @@ __all__ = [
 ]
 
 
+IGNORED_TOKENIZER_CHECKING = frozenset((
+    "CodeLlamaTokenizerFast",
+    "CodeLlamaTokenizer",
+))
+
 def prepare_model_for_kbit_training(
     model                      : Any,
     use_gradient_checkpointing : bool = True,
@@ -118,11 +123,6 @@ def patch_tokenizer(model, tokenizer):
     return model, tokenizer
 pass
 
-
-IGNORED_TOKENIZER_CHECKING = frozenset((
-    "CodeLlamaTokenizerFast",
-    "CodeLlamaTokenizer",
-))
 
 def check_tokenizer(
     model,
