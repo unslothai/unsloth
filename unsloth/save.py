@@ -796,7 +796,7 @@ def unsloth_save_pretrained_gguf(
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
-            self, model, new_save_directory, token,
+            self, new_save_directory, token,
             "GGUF converted", "gguf", file_location,
         )
         print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/')}")
@@ -875,7 +875,7 @@ def unsloth_push_to_hub_gguf(
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
-        self, model, new_save_directory, token,
+        self, new_save_directory, token,
         "GGUF converted", "gguf", file_location,
     )
     print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/')}")
