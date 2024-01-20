@@ -691,7 +691,7 @@ def upload_to_huggingface(model, save_directory, token, method, file_location = 
         base_model = model.config._name_or_path,
         model_type = model.config.model_type,
         method     = ""
-    ).encode("utf-8")
+    ).encode("utf-8").decode("utf-8")
     card = ModelCard(content)
     card.push_to_hub(save_directory, token = token)
 
