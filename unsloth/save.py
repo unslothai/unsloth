@@ -514,7 +514,7 @@ def save_to_gguf(
         f"--outfile {final_location} "\
         f"--outtype {first_conversion} --concurrency {n_cpus}"
 
-    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1, check = True) as sp:
+    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
         for line in sp.stdout:
             print(line.decode("utf-8"), flush = True, end = "")
     pass
@@ -529,7 +529,7 @@ def save_to_gguf(
         command = f"./llama.cpp/quantize {old_location} "\
             f"{final_location} {quantization_method} {n_cpus}"
         
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1, check = True) as sp:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
                 print(line.decode("utf-8"), flush = True, end = "")
         pass
