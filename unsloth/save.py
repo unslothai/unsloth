@@ -624,7 +624,7 @@ def upload_gguf_to_huggingface(save_directory, file_location, token):
     # Check for username
     if "/" not in save_directory:
         from huggingface_hub import whoami
-        try: save_directory = f"{username}/{whoami()["name"]}"
+        try: save_directory = f"{username}/{whoami()['name']}"
         except: pass
     pass
 
