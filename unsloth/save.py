@@ -618,6 +618,58 @@ def unsloth_push_to_hub_merged(
 pass
 
 
+def upload_gguf_to_huggingface(save_directory, file_location, token):
+    print("Unsloth: Uploading GGUF to Huggingface Hub...")
+
+    # Check for username
+    if "/" not in save_directory:
+        from huggingface_hub import whoami
+        try: save_directory = f"{username}/{whoami()["name"]}"
+        except: pass
+    pass
+
+    from huggingface_hub import create_repo
+    create_repo(
+        repo_id   = save_directory,
+        token     = token,
+        repo_type = "model",
+        exist_ok  = True,
+    )
+
+    # Create model card
+    from huggingface_hub import ModelCard, ModelCardData
+    card_data = ModelCardData(language = "en", license = "apache", library = "unsloth")
+    content = f"""
+    ---
+    { card_data.to_yaml() }
+    ---
+
+    # My Model Card for {file_location}
+
+    This model was trained by [Unsloth](https://github.com/unslothai/unsloth) then saved to GGUF.
+    """
+    card = ModelCard(content)
+    card.push_to_hub(save_directory)
+
+    # Now upload file
+    from huggingface_hub import HfApi
+    hf_api = HfApi(token = token)
+
+    if "/" in file_location:
+        uploaded_location = file_location[file_location.rfind("/")+1:]
+    else:
+        uploaded_location = file_location
+    pass
+
+    hf_api.upload_file(
+        path_or_fileobj = file_location,
+        path_in_repo    = uploaded_location,
+        repo_id         = save_directory,
+        repo_type       = "model",
+    )
+pass
+
+
 def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
@@ -684,35 +736,7 @@ def unsloth_save_pretrained_gguf(
         gc.collect()
 
     file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
-
-    # And save to HF
-    if push_to_hub:
-        print("Unsloth: Uploading GGUF to Huggingface Hub...")
-
-        from huggingface_hub import create_repo
-        create_repo(
-            repo_id   = save_directory,
-            token     = token,
-            repo_type = "model",
-            exist_ok  = True,
-        )
-
-        from huggingface_hub import HfApi
-        hf_api = HfApi(token = token)
-
-        if "/" in file_location:
-            uploaded_location = file_location[file_location.rfind("/")+1:]
-        else:
-            uploaded_location = file_location
-        pass
-
-        hf_api.upload_file(
-            path_or_fileobj = file_location,
-            path_in_repo    = uploaded_location,
-            repo_id         = save_directory,
-            repo_type       = "model",
-        )
-    pass
+    if push_to_hub: upload_gguf_to_huggingface(new_save_directory, file_location, token)
 pass
 
 
@@ -784,34 +808,7 @@ def unsloth_push_to_hub_gguf(
 
     python_install.wait()
     file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
-
-    # Save to hub
-    print("Unsloth: Uploading GGUF to Huggingface Hub...")
-
-    from huggingface_hub import create_repo
-    create_repo(
-        repo_id   = save_directory,
-        private   = private,
-        token     = token,
-        repo_type = "model",
-        exist_ok  = True,
-    )
-
-    from huggingface_hub import HfApi
-    hf_api = HfApi(token = token)
-
-    if "/" in file_location:
-        uploaded_location = file_location[file_location.rfind("/")+1:]
-    else:
-        uploaded_location = file_location
-    pass
-
-    hf_api.upload_file(
-        path_or_fileobj = file_location,
-        path_in_repo    = uploaded_location,
-        repo_id         = save_directory,
-        repo_type       = "model",
-    )
+    upload_gguf_to_huggingface(new_save_directory, file_location, token)
 pass
 
 
