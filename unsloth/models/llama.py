@@ -144,7 +144,7 @@ def LlamaAttention_fast_forward_inference(
     A = torch.matmul(A, Vnn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = self.o_proj(self, A)
+    A = self.o_proj(A)
     return A, (Kn, Vn)
 pass
 
@@ -304,7 +304,6 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-    print(hidden_states.size())
 
     if (past_key_value is not None and q_len == 1):
         # Self Attention
