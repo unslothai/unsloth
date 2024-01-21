@@ -327,6 +327,7 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     else:
+        print(hidden_states.shape)
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
