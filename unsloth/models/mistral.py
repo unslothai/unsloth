@@ -47,10 +47,9 @@ def MistralAttention_fast_forward(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
     bsz, q_len, _ = hidden_states.size()
-    Q, K, V = self.apply_qkv(self, hidden_states)
 
     # Check for inference
-    if use_cache and past_key_value is not None and q_len == 1:
+    if past_key_value is not None and q_len == 1:
         A, past_key_value = LlamaAttention_fast_forward_inference(
             self,
             hidden_states,
@@ -66,6 +65,7 @@ def MistralAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
+    Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)

@@ -144,7 +144,7 @@ def LlamaAttention_fast_forward_inference(
     A = torch.matmul(A, Vnn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = original_apply_o(self, A)
+    A = self.o_proj(A)
     return A, (Kn, Vn)
 pass
 
@@ -187,10 +187,9 @@ def LlamaAttention_fast_forward(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
     bsz, q_len, _ = hidden_states.size()
-    Q, K, V = self.apply_qkv(self, hidden_states)
 
     # Check for inference
-    if use_cache and past_key_value is not None and q_len == 1:
+    if past_key_value is not None and q_len == 1:
         A, past_key_value = LlamaAttention_fast_forward_inference(
             self,
             hidden_states,
@@ -206,6 +205,7 @@ def LlamaAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
+    Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -304,29 +304,7 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-
-    if (self.training):
-        # Self Attention
-        residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
-        )
-        hidden_states = residual + hidden_states
-
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-    else:
+    if (past_key_value is not None and q_len == 1):
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -347,6 +325,26 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_mlp_inference(self.mlp, hidden_states)
         hidden_states += residual
+    else:
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
     pass
 
     outputs = (hidden_states,)
@@ -445,7 +443,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
+    elif True:#self.training:
         attention_mask = None
         padding_mask = None
     else:
@@ -524,10 +522,11 @@ def LlamaModel_fast_forward(
             all_self_attns += (layer_outputs[1],)
     pass
 
-    if (self.training):
-        hidden_states = fast_rms_layernorm(self.norm, hidden_states)
-    else:
+    bsz, q_len, hd = hidden_states.size()
+    if (past_key_value is not None and q_len == 1):
         hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
+    else:
+        hidden_states = fast_rms_layernorm(self.norm, hidden_states)
     pass
 
     # add hidden states from the last decoder layer
