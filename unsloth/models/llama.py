@@ -144,7 +144,7 @@ def LlamaAttention_fast_forward_inference(
     A = torch.matmul(A, Vnn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = original_apply_o(self, A)
+    A = self.o_proj(self, A)
     return A, (Kn, Vn)
 pass
 
@@ -187,7 +187,6 @@ def LlamaAttention_fast_forward(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
     bsz, q_len, _ = hidden_states.size()
-    Q, K, V = self.apply_qkv(self, hidden_states)
 
     # Check for inference
     if use_cache and past_key_value is not None and q_len == 1:
@@ -206,6 +205,7 @@ def LlamaAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
+    Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -305,7 +305,7 @@ def LlamaDecoderLayer_fast_forward(
     """
     bsz, q_len, hd = hidden_states.size()
 
-    if (not self.training and bsz == 1):
+    if (not self.training and q_len == 1):
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -522,7 +522,7 @@ def LlamaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
     pass
-    
+
     bsz, q_len, hd = hidden_states.size()
     if (not self.training and q_len == 1):
         hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
