@@ -304,7 +304,6 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-    print(hidden_states.size())
     if (past_key_value is not None and q_len == 1):
         # Self Attention
         residual = hidden_states
