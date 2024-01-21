@@ -94,8 +94,9 @@ def fast_save_pickle(shard, name):
     torch.save(
         shard,
         name,
-        pickle_module   = pickle,
-        pickle_protocol = pickle.HIGHEST_PROTOCOL,
+        # HIGHEST_PROTOCOL seems to not work with Pytorch!
+        # pickle_module   = pickle,
+        # pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     return
 pass
