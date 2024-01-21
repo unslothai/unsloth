@@ -108,7 +108,7 @@ def LlamaAttention_fast_forward_inference(
     head_dim   = self.head_dim
     # assert(n_kv_heads * n_groups == n_heads)
 
-    Xn = hidden_states.view(1, self.hidden_size)
+    Xn = hidden_states.view(self.hidden_size)
     K1, V1 = past_key_value
 
     # LoRA or general matrix multiplication
@@ -167,7 +167,7 @@ def LlamaAttention_fast_forward_inference(
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
-    A = A.reshape(1, self.hidden_size)
+    A = A.reshape(self.hidden_size)
 
     # A = self.o_proj(A)
     o_proj = self.o_proj
@@ -186,7 +186,7 @@ pass
 
 torch_silu = torch.nn.functional.silu
 def fast_mlp_inference(self, X):
-    X = X.view(1, self.hidden_size)
+    X = X.view(self.hidden_size)
     dtype = X.dtype
     gate_proj = self.gate_proj
     up_proj   = self.up_proj
