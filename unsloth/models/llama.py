@@ -108,7 +108,7 @@ def LlamaAttention_fast_forward_inference(
     head_dim   = self.head_dim
     # assert(n_kv_heads * n_groups == n_heads)
 
-    Xn = hidden_states.view(n_heads, head_dim)
+    Xn = hidden_states.view(1, self.hidden_size)
     K1, V1 = past_key_value
 
     # LoRA or general matrix multiplication
