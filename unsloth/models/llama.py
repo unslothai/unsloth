@@ -105,6 +105,7 @@ def LlamaAttention_fast_forward_inference(
     Xn = hidden_states
     bsz, _, _ = hidden_states.size()
     K1, V1 = past_key_value
+    print(1)
 
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
