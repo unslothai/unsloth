@@ -305,29 +305,7 @@ def LlamaDecoderLayer_fast_forward(
     """
     bsz, q_len, hd = hidden_states.size()
 
-    if (self.training):
-        # Self Attention
-        residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
-        )
-        hidden_states = residual + hidden_states
-
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-    else:
-        print(hidden_states.shape)
+    if (not self.training and bsz == 1):
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -348,6 +326,26 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_mlp_inference(self.mlp, hidden_states)
         hidden_states += residual
+    else:
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
     pass
 
     outputs = (hidden_states,)
@@ -446,7 +444,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
+    elif True:#self.training:
         attention_mask = None
         padding_mask = None
     else:
@@ -524,11 +522,12 @@ def LlamaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
     pass
-
-    if (self.training):
-        hidden_states = fast_rms_layernorm(self.norm, hidden_states)
-    else:
+    
+    bsz, q_len, hd = hidden_states.size()
+    if (not self.training and q_len == 1):
         hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
+    else:
+        hidden_states = fast_rms_layernorm(self.norm, hidden_states)
     pass
 
     # add hidden states from the last decoder layer
