@@ -94,8 +94,9 @@ def fast_save_pickle(shard, name):
     torch.save(
         shard,
         name,
-        pickle_module   = pickle,
-        pickle_protocol = pickle.HIGHEST_PROTOCOL,
+        # HIGHEST_PROTOCOL seems to not work with Pytorch!
+        # pickle_module   = pickle,
+        # pickle_protocol = pickle.HIGHEST_PROTOCOL,
     )
     return
 pass
@@ -783,12 +784,27 @@ def unsloth_save_pretrained_gguf(
     del arguments["quantization_method"]
 
     # Non blocking install GGUF first
-    git_clone = install_llama_cpp_clone_non_blocking()
-    python_install = install_python_non_blocking(["gguf", "protobuf"])
-    git_clone.wait()
-    makefile  = install_llama_cpp_make_non_blocking()
-    new_save_directory = unsloth_save_model(**arguments)
-    python_install.wait()
+    if not os.path.exists("llama.cpp"):
+        git_clone = install_llama_cpp_clone_non_blocking()
+        python_install = install_python_non_blocking(["gguf", "protobuf"])
+        git_clone.wait()
+        makefile  = install_llama_cpp_make_non_blocking()
+        new_save_directory = unsloth_save_model(**arguments)
+        python_install.wait()
+    else:
+        try:
+            new_save_directory = unsloth_save_model(**arguments)
+            makefile = None
+        except:
+            # Retry by recloning llama.cpp
+            git_clone = install_llama_cpp_clone_non_blocking()
+            python_install = install_python_non_blocking(["gguf", "protobuf"])
+            git_clone.wait()
+            makefile  = install_llama_cpp_make_non_blocking()
+            new_save_directory = unsloth_save_model(**arguments)
+            python_install.wait()
+        pass
+    pass
 
     for _ in range(3):
         gc.collect()
@@ -801,7 +817,10 @@ def unsloth_save_pretrained_gguf(
             self, save_directory, token,
             "GGUF converted", "gguf", file_location,
         )
-        print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/.')}")
+        link = f"{username}/{new_save_directory.lstrip('/.')}" \
+            if username not in new_save_directory else \
+            new_save_directory.lstrip('/.')
+        print(f"Saved to https://huggingface.co/{link}")
     pass
 pass
 
@@ -863,16 +882,31 @@ def unsloth_push_to_hub_gguf(
     del arguments["quantization_method"]
 
     # Non blocking install GGUF first
-    git_clone = install_llama_cpp_clone_non_blocking()
-    python_install = install_python_non_blocking(["gguf", "protobuf"])
-    git_clone.wait()
-    makefile  = install_llama_cpp_make_non_blocking()
-    new_save_directory = unsloth_save_model(**arguments)
+    if not os.path.exists("llama.cpp"):
+        git_clone = install_llama_cpp_clone_non_blocking()
+        python_install = install_python_non_blocking(["gguf", "protobuf"])
+        git_clone.wait()
+        makefile  = install_llama_cpp_make_non_blocking()
+        new_save_directory = unsloth_save_model(**arguments)
+        python_install.wait()
+    else:
+        try:
+            new_save_directory = unsloth_save_model(**arguments)
+            makefile = None
+        except:
+            # Retry by recloning llama.cpp
+            git_clone = install_llama_cpp_clone_non_blocking()
+            python_install = install_python_non_blocking(["gguf", "protobuf"])
+            git_clone.wait()
+            makefile  = install_llama_cpp_make_non_blocking()
+            new_save_directory = unsloth_save_model(**arguments)
+            python_install.wait()
+        pass
+    pass
 
     for _ in range(3):
         gc.collect()
 
-    python_install.wait()
     file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -880,7 +914,10 @@ def unsloth_push_to_hub_gguf(
         self, repo_id, token,
         "GGUF converted", "gguf", file_location,
     )
-    print(f"Saved to https://huggingface.co/{username}/{new_save_directory.lstrip('/')}")
+    link = f"{username}/{new_save_directory.lstrip('/.')}" \
+        if username not in new_save_directory else \
+        new_save_directory.lstrip('/.')
+    print(f"Saved to https://huggingface.co/{link}")
 pass
 
 
