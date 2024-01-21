@@ -102,22 +102,46 @@ def LlamaAttention_fast_forward_inference(
         This means we can pass in a row of Q, but we need to
         remember K and V, which are called the KV cache.
     """
-    Xn = hidden_states
-    bsz, _, _ = hidden_states.size()
-    K1, V1 = past_key_value
-
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
-    assert(n_kv_heads * n_groups == n_heads)
+    # assert(n_kv_heads * n_groups == n_heads)
 
-    Qn = self.q_proj(Xn)
-    Kn = self.k_proj(Xn)
-    Vn = self.v_proj(Xn)
-    Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
-    Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
-    Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
+    Xn = hidden_states.view(n_heads, head_dim)
+    K1, V1 = past_key_value
+
+    # LoRA or general matrix multiplication
+    dtype = Xn.dtype
+    q_proj = self.q_proj
+    k_proj = self.k_proj
+    v_proj = self.v_proj
+    QW, QW_quant, QA, QB, QS = get_lora_parameters(q_proj)
+    KW, KW_quant, KA, KB, KS = get_lora_parameters(k_proj)
+    VW, VW_quant, VA, VB, VS = get_lora_parameters(v_proj)
+
+    Qn = fast_gemv(Xn, QW, QW_quant)
+    Kn = fast_gemv(Xn, KW, KW_quant)
+    Vn = fast_gemv(Xn, VW, VW_quant)
+    if QA is not None:
+        temp_lora = torch.matmul(Xn, QA.to(dtype).t())
+        Qn.addmv_(QB.to(dtype).t(), temp_lora, alpha = QS)
+    pass
+    if KA is not None:
+        temp_lora = torch.matmul(Xn, KA.to(dtype).t())
+        Kn.addmv_(KB.to(dtype).t(), temp_lora, alpha = KS)
+    pass
+    if VA is not None:
+        temp_lora = torch.matmul(Xn, VA.to(dtype).t())
+        Vn.addmv_(VB.to(dtype).t(), temp_lora, alpha = VS)
+    pass
+
+    # Qn = self.q_proj(Xn)
+    # Kn = self.k_proj(Xn)
+    # Vn = self.v_proj(Xn)
+    Qn = Qn.view(1, 1, n_heads,    head_dim).transpose(1, 2)
+    Kn = Kn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
+    Vn = Vn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
 
     kv_seq_len = K1.shape[-2] + 1
     cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
@@ -130,32 +154,72 @@ def LlamaAttention_fast_forward_inference(
     # Grouped query attention
     if n_groups != 1:
         _, _, cached_len, _ = Kn.shape
-        Knn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Vnn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
-        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
+        Knn = Kn[:, :, None, :, :].expand(1, n_kv_heads, n_groups, cached_len, head_dim)
+        Vnn = Vn[:, :, None, :, :].expand(1, n_kv_heads, n_groups, cached_len, head_dim)
+        Knn = Knn.reshape(1, n_heads, cached_len, head_dim)
+        Vnn = Vnn.reshape(1, n_heads, cached_len, head_dim)
     else:
         Knn, Vnn = Kn, Vn
 
     # Attention
     A = torch.matmul(Qn, Knn.transpose(2, 3))
     A *= 1.0 / (self.head_dim**0.5)
-    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(A.dtype)
-    A = torch.matmul(A, Vnn)
+    A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
+    A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
-    A = A.reshape(bsz, 1, self.hidden_size)
-    A = self.o_proj(A)
+    A = A.reshape(1, self.hidden_size)
+
+    # A = self.o_proj(A)
+    o_proj = self.o_proj
+    OW, OW_quant, OA, OB, OS = get_lora_parameters(o_proj)
+
+    On = fast_gemv(A, OW, OW_quant)
+    if OA is not None:
+        temp_lora = torch.matmul(A, OA.to(dtype).t())
+        On.addmv_(OB.to(dtype).t(), temp_lora, alpha = OS)
+    pass
+    A = On.reshape(1, 1, self.hidden_size)
+
     return A, (Kn, Vn)
 pass
 
 
 torch_silu = torch.nn.functional.silu
 def fast_mlp_inference(self, X):
-    gate = self.gate_proj(X)
-    up   = self.up_proj(X)
+    X = X.view(1, self.hidden_size)
+    dtype = X.dtype
+    gate_proj = self.gate_proj
+    up_proj   = self.up_proj
+    down_proj = self.down_proj
+
+    # gate = gate_proj(X)
+    # up   = up_proj(X)
+    gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(gate_proj)
+    upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(up_proj)
+    downW, downW_quant, downA, downB, downS = get_lora_parameters(down_proj)
+
+    gate = fast_gemv(X, gateW, gateW_quant)
+    up   = fast_gemv(X,   upW, upW_quant)
+    if gateA is not None:
+        temp_lora = torch.matmul(X, gateA.to(dtype).t())
+        gate.addmv_(gateB.to(dtype).t(), temp_lora, alpha = gateS)
+    pass
+    if upA is not None:
+        temp_lora = torch.matmul(X, upA.to(dtype).t())
+        up.addmv_(upB.to(dtype).t(), temp_lora, alpha = upS)
+    pass
+
     gate = torch_silu(gate, inplace = True)
     gate *= up
-    X = self.down_proj(gate)
+
+    # X = down_proj(gate)
+    down = fast_gemv(gate, downW, downW_quant)
+    if downA is not None:
+        temp_lora = torch.matmul(gate, downA.to(dtype).t())
+        down.addmv_(downB.to(dtype).t(), temp_lora, alpha = downS)
+    pass
+    X = down.view(1, 1, self.hidden_size)
+
     return X
 pass
 
@@ -1075,5 +1139,42 @@ class FastLlamaModel:
         pass
         internal_model.max_seq_length = max_seq_length
         return model
+    pass
+
+
+    @staticmethod
+    def for_inference(model):
+        if not hasattr(model, "_original_forward"):
+            model._original_forward = model.forward
+        pass
+        model.forward = torch.inference_mode(model._original_forward)
+
+        internal_model = model
+        internal_model.gradient_checkpointing = False
+        internal_model.training = False
+
+        while hasattr(internal_model, "model"):
+            internal_model = internal_model.model
+            internal_model.gradient_checkpointing = False
+            internal_model.training = False
+        pass
+    pass
+
+
+    @staticmethod
+    def for_training(model, use_gradient_checkpointing = True):
+        if hasattr(model, "_original_forward"):
+            model.forward = model._original_forward
+        pass
+
+        internal_model = model
+        internal_model.gradient_checkpointing = use_gradient_checkpointing
+        internal_model.training = True
+
+        while hasattr(internal_model, "model"):
+            internal_model = internal_model.model
+            internal_model.gradient_checkpointing = use_gradient_checkpointing
+            internal_model.training = True
+        pass
     pass
 pass
