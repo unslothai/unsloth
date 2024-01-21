@@ -306,6 +306,7 @@ def LlamaDecoderLayer_fast_forward(
     bsz, q_len, hd = hidden_states.size()
 
     if (not self.training and q_len == 1):
+        print(1)
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
