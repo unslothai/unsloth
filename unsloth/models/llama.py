@@ -68,6 +68,7 @@ def original_apply_o(self, X):
 pass
 
 
+from math import sqrt as math_sqrt
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
@@ -102,60 +103,104 @@ def LlamaAttention_fast_forward_inference(
         This means we can pass in a row of Q, but we need to
         remember K and V, which are called the KV cache.
     """
-    Xn = hidden_states
-    bsz, _, _ = hidden_states.size()
-    K1, V1 = past_key_value
-
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
-    assert(n_kv_heads * n_groups == n_heads)
+    # assert(n_kv_heads * n_groups == n_heads)
 
-    Qn = self.q_proj(Xn)
-    Kn = self.k_proj(Xn)
-    Vn = self.v_proj(Xn)
-    Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
-    Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
-    Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
+    Xn = hidden_states.view(self.hidden_size)
+    K1, V1 = past_key_value
+    seq_len = K1.shape[-2]
+    K1 = K1.view(n_kv_heads, seq_len, head_dim)
+    V1 = V1.view(n_kv_heads, seq_len, head_dim)
 
-    kv_seq_len = K1.shape[-2] + 1
-    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    # LoRA or general matrix multiplication
+    dtype = Xn.dtype
+    # Qn = self.q_proj(Xn)
+    # Kn = self.k_proj(Xn)
+    # Vn = self.v_proj(Xn)
+    Qn = fast_linear_forward(self.q_proj, Xn)
+    Kn = fast_linear_forward(self.k_proj, Xn)
+    Vn = fast_linear_forward(self.v_proj, Xn)
+
+    # Qn = Qn.view(1, 1, n_heads,    head_dim).transpose(1, 2)
+    # Kn = Kn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
+    # Vn = Vn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
+    Qn = Qn.view(n_heads,    1, head_dim)
+    Kn = Kn.view(n_kv_heads, 1, head_dim)
+    Vn = Vn.view(n_kv_heads, 1, head_dim)
+
+    # kv_seq_len = K1.shape[-2] + 1
+    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    cos = self.rotary_emb.cos_cached[seq_len]
+    sin = self.rotary_emb.sin_cached[seq_len]
+    h = head_dim // 2
+
+    RH_Q = torch.empty((n_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_Q[:, :, :h] = Qn[:, :, h:]; RH_Q[:, :, h:] = Qn[:, :, :h]; torch.neg(RH_Q[:, :, :h], out = RH_Q[:, :, :h]);
+    Qn *= cos; Qn.addcmul_(RH_Q, sin);
+
+    RH_K = RH_Q[:n_kv_heads, :, :] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_K[:, :, :h] = Kn[:, :, h:]; RH_K[:, :, h:] = Kn[:, :, :h]; torch.neg(RH_K[:, :, :h], out = RH_K[:, :, :h]);
+    Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    Kn = torch.cat([K1, Kn], dim = 2)
-    Vn = torch.cat([V1, Vn], dim = 2)
+    # Kn = torch.cat([K1, Kn], dim = 2)
+    # Vn = torch.cat([V1, Vn], dim = 2)
+    Kn = torch.cat([K1, Kn], dim = 1)
+    Vn = torch.cat([V1, Vn], dim = 1)
 
     # Grouped query attention
     if n_groups != 1:
-        _, _, cached_len, _ = Kn.shape
-        Knn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Vnn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
-        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
+        # _, _, cached_len, _ = Kn.shape
+        # Knn = Kn[:, :, None, :, :].expand(1, n_kv_heads, n_groups, cached_len, head_dim)
+        # Vnn = Vn[:, :, None, :, :].expand(1, n_kv_heads, n_groups, cached_len, head_dim)
+        # Knn = Knn.reshape(1, n_heads, cached_len, head_dim)
+        # Vnn = Vnn.reshape(1, n_heads, cached_len, head_dim)
+        new_seq_len = seq_len + 1
+        Knn = Kn[:, None, :, :].expand(n_kv_heads, n_groups, new_seq_len, head_dim)
+        Vnn = Vn[:, None, :, :].expand(n_kv_heads, n_groups, new_seq_len, head_dim)
+        Knn = Knn.reshape(n_heads, new_seq_len, head_dim)
+        Vnn = Vnn.reshape(n_heads, new_seq_len, head_dim)
     else:
         Knn, Vnn = Kn, Vn
 
     # Attention
-    A = torch.matmul(Qn, Knn.transpose(2, 3))
-    A *= 1.0 / (self.head_dim**0.5)
-    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(A.dtype)
-    A = torch.matmul(A, Vnn)
-    A = A.transpose(1, 2)
-    A = A.reshape(bsz, 1, self.hidden_size)
-    A = self.o_proj(A)
-    return A, (Kn, Vn)
+    # A = torch.matmul(Qn, Knn.transpose(2, 3))
+    A = torch.matmul(Qn, Knn.transpose(1, 2))
+    A *= 1.0 / math_sqrt(self.head_dim)
+    A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
+    A = torch.matmul(A, Vnn, out = Qn)
+    # A = A.transpose(1, 2)
+    A = A.view(self.hidden_size)
+
+    # A = self.o_proj(A)
+    A = fast_linear_forward(self.o_proj, A)
+    A = A.reshape(1, 1, self.hidden_size)
+
+    # return A, (Kn, Vn)
+    return A, (Kn.unsqueeze(0), Vn.unsqueeze(0))
 pass
 
 
 torch_silu = torch.nn.functional.silu
 def fast_mlp_inference(self, X):
-    gate = self.gate_proj(X)
-    up   = self.up_proj(X)
+    hidden_size = self.hidden_size
+    X = X.view(hidden_size)
+
+    # gate = self.gate_proj(X)
+    # up   = self.up_proj(X)
+    gate = fast_linear_forward(self.gate_proj, X)
+    up   = fast_linear_forward(self.  up_proj, X)
     gate = torch_silu(gate, inplace = True)
     gate *= up
-    X = self.down_proj(gate)
+
+    # X = self.down_proj(gate)
+    down = fast_linear_forward(self.down_proj, gate, out = up[:hidden_size])
+    X = down.view(1, 1, hidden_size)
+
     return X
 pass
 
@@ -676,10 +721,10 @@ class FastLlamaModel:
 
         statistics = \
            f"==((====))==  Unsloth: Fast Llama patching release {__version__}\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
-           f"O^O/ \_/ \\    CUDA capability = {gpu_stats.major}.{gpu_stats.minor}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
-           f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform_system}\n'
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
+           f"O^O/ \_/ \\     Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
+           f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
+           f' "-____-"     Apache 2 free license: http://github.com/unslothai/unsloth'
         logger.warning_once(statistics)
         FastLlamaModel.pre_patch()
 
@@ -731,7 +776,7 @@ class FastLlamaModel:
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            model_max_length = max_seq_length,
+            model_max_length = max_position_embeddings,
             padding_side     = "right",
             token            = token,
         )
@@ -760,7 +805,7 @@ class FastLlamaModel:
                 model            = model,
                 tokenizer        = tokenizer,
                 model_name       = model_name,
-                model_max_length = max_seq_length,
+                model_max_length = max_position_embeddings,
                 padding_side     = "right",
                 token            = token,
             )
@@ -1075,5 +1120,48 @@ class FastLlamaModel:
         pass
         internal_model.max_seq_length = max_seq_length
         return model
+    pass
+
+
+    @staticmethod
+    def for_inference(model):
+        if not hasattr(model, "_original_forward"):
+            model._original_forward = model.forward
+        pass
+        model.forward = torch.inference_mode(model._original_forward)
+
+        internal_model = model
+        internal_model.gradient_checkpointing = False
+        internal_model.training = False
+
+        while hasattr(internal_model, "model"):
+            internal_model = internal_model.model
+            internal_model.gradient_checkpointing = False
+            internal_model.training = False
+        pass
+    pass
+
+
+    @staticmethod
+    def for_training(model, use_gradient_checkpointing = True):
+        if hasattr(model, "_original_forward"):
+            model.forward = model._original_forward
+        pass
+
+        internal_model = model
+        internal_model.gradient_checkpointing = use_gradient_checkpointing
+        internal_model.training = True
+
+        # Delete all fast inference loras
+        for param in model.parameters():
+            if hasattr(param, "_fast_lora"):
+                del param._fast_lora
+        pass
+
+        while hasattr(internal_model, "model"):
+            internal_model = internal_model.model
+            internal_model.gradient_checkpointing = use_gradient_checkpointing
+            internal_model.training = True
+        pass
     pass
 pass

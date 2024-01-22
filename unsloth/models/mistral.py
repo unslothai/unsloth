@@ -132,7 +132,7 @@ def MistralAttention_fast_forward(
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
         sw = getattr(self.config, "sliding_window", None)
-        sw = q_len if sw is None else sw
+        sw = q_len if (sw is None or sw == "null") else sw
         window = (-1, -1) if (q_len <= sw) else (sw, sw)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
@@ -176,7 +176,7 @@ def MistralForCausalLM_fast_forward(
     if causal_mask is None:
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
-        if sliding_window is None or sliding_window <= 0:
+        if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
         elif q_len <= sliding_window:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
@@ -265,9 +265,11 @@ class FastMistralModel(FastLlamaModel):
         rope_scaling   = None, # Mistral does not support RoPE scaling
         fix_tokenizer  = True,
         **kwargs,
-    ): 
+    ):
+        # Mistral does NOT support RoPE Scaling!
         if rope_scaling is not None:
             logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
+        pass
 
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
@@ -275,10 +277,10 @@ class FastMistralModel(FastLlamaModel):
 
         statistics = \
            f"==((====))==  Unsloth: Fast Mistral patching release {__version__}\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
-           f"O^O/ \_/ \\    CUDA capability = {gpu_stats.major}.{gpu_stats.minor}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
-           f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform_system}\n'
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
+           f"O^O/ \_/ \\     Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
+           f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
+           f' "-____-"     Apache 2 free license: http://github.com/unslothai/unsloth'
         logger.warning_once(statistics)
         FastMistralModel.pre_patch()
 
@@ -290,6 +292,18 @@ class FastMistralModel(FastLlamaModel):
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
+        # Check max sequence length
+        model_config = AutoConfig.from_pretrained(model_name, token = token)
+        model_max_seq_length = model_config.max_position_embeddings
+
+        # Mistral does NOT support RoPE Scaling sadly so we have to error out.
+        if max_seq_length > model_max_seq_length:
+            raise RuntimeError(
+                "Unsloth: Unfortunately Mistral type models do not support RoPE scaling!\n"\
+                f"The maximum sequence length supported is {model_max_seq_length}.",
+            )
+        pass
+
         bnb_config = None
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
@@ -299,20 +313,21 @@ class FastMistralModel(FastLlamaModel):
                 bnb_4bit_compute_dtype    = dtype,
             )
 
+        max_position_embeddings = max(max_seq_length, model_max_seq_length)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map = device_map,
-            torch_dtype = dtype,
+            device_map          = device_map,
+            torch_dtype         = dtype,
             quantization_config = bnb_config,
-            token = token,
-            # rope_scaling = rope_scaling,
+            token               = token,
+            # rope_scaling      = rope_scaling,
             **kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            model_max_length = max_seq_length,
-            padding_side = "right",
-            token = token,
+            model_max_length = max_position_embeddings,
+            padding_side     = "right",
+            token            = token,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -337,12 +352,12 @@ class FastMistralModel(FastLlamaModel):
         # We check the tokenizer first for errors
         if fix_tokenizer:
             tokenizer = check_tokenizer(
-                model = model,
-                tokenizer = tokenizer,
-                model_name = model_name,
-                model_max_length = max_seq_length,
-                padding_side = "right",
-                token = token,
+                model            = model,
+                tokenizer        = tokenizer,
+                model_name       = model_name,
+                model_max_length = max_position_embeddings,
+                padding_side     = "right",
+                token            = token,
             )
         pass
         patch_saving_functions(tokenizer)
