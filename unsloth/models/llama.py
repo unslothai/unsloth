@@ -111,7 +111,7 @@ def LlamaAttention_fast_forward_inference(
 
     Xn = hidden_states.view(self.hidden_size)
     K1, V1 = past_key_value
-    seq_len = K1.shape[1]
+    seq_len = K1.shape[-2]
     K1 = K1.view(n_kv_heads, seq_len, head_dim)
     V1 = V1.view(n_kv_heads, seq_len, head_dim)
 
@@ -134,9 +134,8 @@ def LlamaAttention_fast_forward_inference(
     # kv_seq_len = K1.shape[-2] + 1
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    position_id = seq_len + 1
-    cos = self.rotary_emb.cos_cached[position_id]
-    sin = self.rotary_emb.sin_cached[position_id]
+    cos = self.rotary_emb.cos_cached[seq_len]
+    sin = self.rotary_emb.sin_cached[seq_len]
     h = head_dim // 2
 
     RH_Q = torch.empty((n_heads, 1, head_dim), dtype = dtype, device = "cuda")
