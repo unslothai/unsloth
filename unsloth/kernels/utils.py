@@ -177,7 +177,7 @@ def fast_gemv(X, W, quant_state, out = None, out_W = None):
 pass
 
 
-def fast_linear_forward(proj, X, temp_lora = None, out = None)
+def fast_linear_forward(proj, X, temp_lora = None, out = None):
     W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
     out = fast_gemv(X, W, W_quant, out = out)
     if lora_A is not None:
