@@ -159,10 +159,11 @@ def LlamaAttention_fast_forward_inference(
         # Vnn = Vn[:, :, None, :, :].expand(1, n_kv_heads, n_groups, cached_len, head_dim)
         # Knn = Knn.reshape(1, n_heads, cached_len, head_dim)
         # Vnn = Vnn.reshape(1, n_heads, cached_len, head_dim)
-        Knn = Kn[:, :, None, :, :].expand(n_kv_heads, n_groups, kv_seq_len, head_dim)
-        Vnn = Vn[:, :, None, :, :].expand(n_kv_heads, n_groups, kv_seq_len, head_dim)
-        Knn = Knn.reshape(n_heads, kv_seq_len, head_dim)
-        Vnn = Vnn.reshape(n_heads, kv_seq_len, head_dim)
+        new_seq_len = seq_len + 1
+        Knn = Kn[:, :, None, :].expand(n_kv_heads, n_groups, new_seq_len, head_dim)
+        Vnn = Vn[:, :, None, :].expand(n_kv_heads, n_groups, new_seq_len, head_dim)
+        Knn = Knn.reshape(n_heads, new_seq_len, head_dim)
+        Vnn = Vnn.reshape(n_heads, new_seq_len, head_dim)
     else:
         Knn, Vnn = Kn, Vn
 
