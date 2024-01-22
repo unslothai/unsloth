@@ -181,9 +181,16 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
     out = fast_gemv(X, W, W_quant, out = out)
     if lora_A is not None:
-        dtype = X.dtype
-        temp_lora = torch.matmul(X, lora_A.to(dtype).t(), out = temp_lora)
-        out.addmv_(lora_B.to(dtype), temp_lora, alpha = lora_S)
+
+        # Save LoRAs for inference to stop data movement costs
+        if not hasattr(lora_A, "_fast_lora"):
+            dtype = X.dtype
+            lora_A._fast_lora = lora_A.to(dtype).t()
+            lora_B._fast_lora = lora_B.to(dtype)
+        pass
+
+        temp_lora = torch.matmul(X, lora_A._fast_lora, out = temp_lora)
+        out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
     pass
     return out
 pass
