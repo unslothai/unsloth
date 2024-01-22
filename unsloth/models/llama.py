@@ -172,7 +172,7 @@ def fast_mlp_inference(self, X):
     gate *= up
 
     # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, X)
+    down = fast_linear_forward(self.down_proj, gate)
     X = down.view(1, 1, self.hidden_size)
 
     return X
