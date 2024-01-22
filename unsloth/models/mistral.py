@@ -277,10 +277,10 @@ class FastMistralModel(FastLlamaModel):
 
         statistics = \
            f"==((====))==  Unsloth: Fast Mistral patching release {__version__}\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. CUDA = {gpu_stats.major}.{gpu_stats.minor}.\n"\
-           f"O^O/ \_/ \\    Platform = {platform_system}. Pytorch: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}.\n"\
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
+           f"O^O/ \_/ \\     Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f' "-____-"     Apache 2 Free Open Source Software - github.com/unslothai/unsloth.'
+           f' "-____-"     Apache 2 licensed free software https://github.com/unslothai/unsloth.'
         logger.warning_once(statistics)
         FastMistralModel.pre_patch()
 
