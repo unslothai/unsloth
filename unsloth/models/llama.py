@@ -153,7 +153,7 @@ def LlamaAttention_fast_forward_inference(
 
     # A = self.o_proj(A)
     A = fast_linear_forward(self.o_proj, A)
-    A = On.reshape(1, 1, self.hidden_size)
+    A = A.reshape(1, 1, self.hidden_size)
 
     return A, (Kn, Vn)
 pass
