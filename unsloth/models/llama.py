@@ -144,8 +144,10 @@ def LlamaAttention_fast_forward_inference(
     Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    Kn = torch.cat([K1, Kn], dim = 2)
-    Vn = torch.cat([V1, Vn], dim = 2)
+    # Kn = torch.cat([K1, Kn], dim = 2)
+    # Vn = torch.cat([V1, Vn], dim = 2)
+    Kn = torch.cat([K1, Kn], dim = 1)
+    Vn = torch.cat([V1, Vn], dim = 1)
 
     # Grouped query attention
     if n_groups != 1:
