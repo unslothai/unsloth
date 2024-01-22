@@ -77,10 +77,14 @@ def _merge_lora(layer, name):
         W, quant_state, A, B, s = get_lora_parameters(layer)
         dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
         W = fast_dequantize(W, quant_state).to(torch.float32).t()
-        sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
-        W += sAB
-        if not torch.isfinite(W).all():
-            raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
+
+        if A is not None:
+            sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
+            W += sAB
+            if not torch.isfinite(W).all():
+                raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
+        pass
+        
         W = W.t().to(dtype)
     else:
         W = layer.weight
@@ -156,6 +160,7 @@ def unsloth_save_model(
     pass
 
     if save_method == "merged_4bit":
+
         print("Unsloth: Merging 4bit and LoRA weights to 4bit...")
         print("This might take 5 minutes...")
         model = model.merge_and_unload()

@@ -13,26 +13,8 @@
 # limitations under the License.
 
 import torch
-from .utils import fast_dequantize, QUANT_STATE
+from .utils import fast_dequantize, QUANT_STATE, get_lora_parameters
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
-
-
-def get_lora_parameters(proj):
-    # For DPO or disabled adapters
-    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
-    W = base_layer.weight
-
-    if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
-        return W, QUANT_STATE(W), None, None, None
-    pass
-
-    active_adapter = proj.active_adapters[0] if \
-        hasattr(proj, "active_adapters") else proj.active_adapter
-    A = proj.lora_A [active_adapter].weight
-    B = proj.lora_B [active_adapter].weight
-    s = proj.scaling[active_adapter]
-    return W, QUANT_STATE(W), A, B, s
-pass
 
 
 def matmul_lora(X, W, W_quant, A, B, s, out = None):

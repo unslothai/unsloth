@@ -134,8 +134,9 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         half = Q.shape[-1]//2
         RH_Q = torch.cat((-Q[..., half:], Q[..., :half]), dim = -1)
         Q *= cos
-        RH_Q *= sin
-        Q += RH_Q
+        Q.addcmul_(RH_Q, sin)
+        # RH_Q *= sin
+        # Q += RH_Q
         ctx.save_for_backward(cos, sin)
         return Q
     pass
@@ -147,8 +148,9 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         half = dY.shape[-1]//2
         RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim = -1)
         dY *= cos
-        RH_dY *= sin
-        dY += RH_dY
+        dY.addcmul_(RH_dY, sin)
+        # RH_dY *= sin
+        # dY += RH_dY
         return dY, None, None, None
     pass
 pass
