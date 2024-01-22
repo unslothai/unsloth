@@ -42,6 +42,12 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/tinyllama",
         "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
     ),
+    "unsloth/mistral-7b-instruct-v0.1-bnb-4bit" : (
+        "mistralai/Mistral-7B-Instruct-v0.1",
+    ),
+    "unsloth/mistral-7b-instruct-v0.2-bnb-4bit" : (
+        "mistralai/Mistral-7B-Instruct-v0.2",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
