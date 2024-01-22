@@ -111,6 +111,10 @@ def LlamaAttention_fast_forward_inference(
 
     Xn = hidden_states.view(self.hidden_size)
     K1, V1 = past_key_value
+    seq_len = K1.shape[1]
+    position_id = seq_len + 1
+    K1 = K1.view(n_kv_heads, position_id, head_dim)
+    V1 = V1.view(n_kv_heads, position_id, head_dim)
 
     # LoRA or general matrix multiplication
     dtype = Xn.dtype
@@ -128,13 +132,13 @@ def LlamaAttention_fast_forward_inference(
     Kn = Kn.view(n_kv_heads, 1, head_dim)
     Vn = Vn.view(n_kv_heads, 1, head_dim)
 
-    kv_seq_len = K1.shape[-2] + 1
-    cos = self.rotary_emb.cos_cached[kv_seq_len]
-    sin = self.rotary_emb.sin_cached[kv_seq_len]
-
+    # kv_seq_len = K1.shape[-2] + 1
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    cos = self.rotary_emb.cos_cached[position_id]
+    sin = self.rotary_emb.sin_cached[position_id]
     h = head_dim // 2
+
     RH_Q = torch.empty((n_heads, 1, head_dim), dtype = dtype, device = "cuda")
     RH_Q[:, :, :h] = Qn[:, :, h:]; RH_Q[:, :, h:] = Qn[:, :, :h]; torch.neg(RH_Q[:, :, :h], out = RH_Q[:, :, :h]);
     Qn *= cos; Qn.addcmul_(RH_Q, sin);
