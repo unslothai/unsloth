@@ -50,6 +50,7 @@ def _layer_norm_fwd_fused(
         a = tl.load(X + cols, mask=cols < N, other=0.).to(tl.float32)
         _mean += a
     mean = tl.sum(_mean, axis=0) / N
+    
     # Compute variance
     _var = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
     for off in range(0, N, BLOCK_SIZE):
@@ -59,9 +60,11 @@ def _layer_norm_fwd_fused(
         _var += x * x
     var = tl.sum(_var, axis=0) / N
     rstd = 1 / tl.sqrt(var + eps)
+    
     # Write mean / rstd
     tl.store(Mean + row, mean)
     tl.store(Rstd + row, rstd)
+    
     # Normalize and apply linear transformation
     for off in range(0, N, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)

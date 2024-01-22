@@ -785,7 +785,7 @@ class FastLlamaModel:
         layers = model.model.layers
 
         # Torch.compile fails on embedding matrix??
-        # Workaround randomnly fixes it for torch versions < 2.2
+        # Workaround randomly fixes it for torch versions < 2.2
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(model.model.embed_tokens.weight)
         model.config.update({"unsloth_version" : __version__})
 
