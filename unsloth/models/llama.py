@@ -113,7 +113,7 @@ def LlamaAttention_fast_forward_inference(
     K1, V1 = past_key_value
 
     # LoRA or general matrix multiplication
-    # dtype = Xn.dtype
+    dtype = Xn.dtype
     # Qn = self.q_proj(Xn)
     # Kn = self.k_proj(Xn)
     # Vn = self.v_proj(Xn)
@@ -121,13 +121,27 @@ def LlamaAttention_fast_forward_inference(
     Kn = fast_linear_forward(self.k_proj, Xn)
     Vn = fast_linear_forward(self.v_proj, Xn)
 
-    Qn = Qn.view(1, 1, n_heads,    head_dim).transpose(1, 2)
-    Kn = Kn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
-    Vn = Vn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
+    # Qn = Qn.view(1, 1, n_heads,    head_dim).transpose(1, 2)
+    # Kn = Kn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
+    # Vn = Vn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
+    Qn = Qn.view(n_heads,    1, head_dim)
+    Kn = Kn.view(n_kv_heads, 1, head_dim)
+    Vn = Vn.view(n_kv_heads, 1, head_dim)
 
     kv_seq_len = K1.shape[-2] + 1
-    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    cos = self.rotary_emb.cos_cached[kv_seq_len]
+    sin = self.rotary_emb.sin_cached[kv_seq_len]
+
+    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    h = head_dim // 2
+    RH_Q = torch.empty((n_heads, head_dim), dtype = dtype, device = "cuda")
+    RH_Q[:, :, :h] = Qn[:, :, h:]; RH_Q[:, :, h:] = Qn[:, :, :h]; torch.neg(RH_Q[:, :, :h], out = RH_Q[:, :, :h]);
+    Qn *= cos; Qn.addcmul_(RH_Q, sin);
+
+    RH_K = torch.empty((n_kv_heads, head_dim), dtype = dtype, device = "cuda")
+    RH_K[:, :, :h] = Qn[:, :, h:]; RH_K[:, :, h:] = Kn[:, :, :h]; torch.neg(RH_K[:, :, :h], out = RH_K[:, :, :h]);
+    Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
     Kn = torch.cat([K1, Kn], dim = 2)
@@ -149,7 +163,7 @@ def LlamaAttention_fast_forward_inference(
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
-    A = A.reshape(self.hidden_size)
+    A = A.view(self.hidden_size)
 
     # A = self.o_proj(A)
     A = fast_linear_forward(self.o_proj, A)
