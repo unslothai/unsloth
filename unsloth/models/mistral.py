@@ -132,7 +132,7 @@ def MistralAttention_fast_forward(
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
         sw = getattr(self.config, "sliding_window", None)
-        sw = q_len if sw is None else sw
+        sw = q_len if (sw is None or sw == "null") else sw
         window = (-1, -1) if (q_len <= sw) else (sw, sw)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
@@ -176,7 +176,7 @@ def MistralForCausalLM_fast_forward(
     if causal_mask is None:
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
-        if sliding_window is None or sliding_window <= 0:
+        if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
         elif q_len <= sliding_window:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
@@ -265,10 +265,7 @@ class FastMistralModel(FastLlamaModel):
         rope_scaling   = None, # Mistral does not support RoPE scaling
         fix_tokenizer  = True,
         **kwargs,
-    ): 
-        if rope_scaling is not None:
-            logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
-
+    ):
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
@@ -289,6 +286,21 @@ class FastMistralModel(FastLlamaModel):
             dtype = torch.float16
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
+        
+        # RoPE scaling
+        model_max_seq_length = \
+            AutoConfig.from_pretrained(model_name, token = token).max_position_embeddings
+
+        if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
+            rope_scaling = max_seq_length / model_max_seq_length
+            logger.warning_once(
+                f"Unsloth: {model_name} can only handle sequence lengths of at most "\
+                f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
+                f"{round(rope_scaling, 3)}, it can be magically be extended to "\
+                f"{max_seq_length}!"
+            )
+            rope_scaling = {"type": "linear", "factor": rope_scaling,}
+        pass
 
         bnb_config = None
         if load_in_4bit:
@@ -299,20 +311,24 @@ class FastMistralModel(FastLlamaModel):
                 bnb_4bit_compute_dtype    = dtype,
             )
 
+        # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
+        # RoPE Scaling's max_position_embeddings must be updated
+        max_position_embeddings = max(max_seq_length, model_max_seq_length)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map = device_map,
-            torch_dtype = dtype,
-            quantization_config = bnb_config,
-            token = token,
-            # rope_scaling = rope_scaling,
+            device_map              = device_map,
+            torch_dtype             = dtype,
+            quantization_config     = bnb_config,
+            token                   = token,
+            rope_scaling            = rope_scaling,
+            max_position_embeddings = max_position_embeddings,
             **kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            model_max_length = max_seq_length,
-            padding_side = "right",
-            token = token,
+            model_max_length = max_position_embeddings,
+            padding_side     = "right",
+            token            = token,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -340,7 +356,7 @@ class FastMistralModel(FastLlamaModel):
                 model = model,
                 tokenizer = tokenizer,
                 model_name = model_name,
-                model_max_length = max_seq_length,
+                model_max_length = max_position_embeddings,
                 padding_side = "right",
                 token = token,
             )

@@ -795,7 +795,7 @@ class FastLlamaModel:
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            model_max_length = max_seq_length,
+            model_max_length = max_position_embeddings,
             padding_side     = "right",
             token            = token,
         )
@@ -824,7 +824,7 @@ class FastLlamaModel:
                 model            = model,
                 tokenizer        = tokenizer,
                 model_name       = model_name,
-                model_max_length = max_seq_length,
+                model_max_length = max_position_embeddings,
                 padding_side     = "right",
                 token            = token,
             )
