@@ -68,6 +68,7 @@ def original_apply_o(self, X):
 pass
 
 
+from math import sqrt as math_sqrt
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
@@ -113,32 +114,13 @@ def LlamaAttention_fast_forward_inference(
 
     # LoRA or general matrix multiplication
     dtype = Xn.dtype
-    q_proj = self.q_proj
-    k_proj = self.k_proj
-    v_proj = self.v_proj
-    QW, QW_quant, QA, QB, QS = get_lora_parameters(q_proj)
-    KW, KW_quant, KA, KB, KS = get_lora_parameters(k_proj)
-    VW, VW_quant, VA, VB, VS = get_lora_parameters(v_proj)
-
-    Qn = fast_gemv(Xn, QW, QW_quant)
-    Kn = fast_gemv(Xn, KW, KW_quant)
-    Vn = fast_gemv(Xn, VW, VW_quant)
-    if QA is not None:
-        temp_lora = torch.matmul(Xn, QA.to(dtype).t())
-        Qn.addmv_(QB.to(dtype).t(), temp_lora, alpha = QS)
-    pass
-    if KA is not None:
-        temp_lora = torch.matmul(Xn, KA.to(dtype).t())
-        Kn.addmv_(KB.to(dtype).t(), temp_lora, alpha = KS)
-    pass
-    if VA is not None:
-        temp_lora = torch.matmul(Xn, VA.to(dtype).t())
-        Vn.addmv_(VB.to(dtype).t(), temp_lora, alpha = VS)
-    pass
-
     # Qn = self.q_proj(Xn)
     # Kn = self.k_proj(Xn)
     # Vn = self.v_proj(Xn)
+    Qn = fast_linear_forward(self.q_proj, Xn)
+    Kn = fast_linear_forward(self.k_proj, Xn)
+    Vn = fast_linear_forward(self.v_proj, Xn)
+
     Qn = Qn.view(1, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -163,21 +145,14 @@ def LlamaAttention_fast_forward_inference(
 
     # Attention
     A = torch.matmul(Qn, Knn.transpose(2, 3))
-    A *= 1.0 / (self.head_dim**0.5)
+    A *= 1.0 / math_sqrt(self.head_dim)
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(self.hidden_size)
 
     # A = self.o_proj(A)
-    o_proj = self.o_proj
-    OW, OW_quant, OA, OB, OS = get_lora_parameters(o_proj)
-
-    On = fast_gemv(A, OW, OW_quant)
-    if OA is not None:
-        temp_lora = torch.matmul(A, OA.to(dtype).t())
-        On.addmv_(OB.to(dtype).t(), temp_lora, alpha = OS)
-    pass
+    A = fast_linear_forward(self.o_proj, A)
     A = On.reshape(1, 1, self.hidden_size)
 
     return A, (Kn, Vn)
@@ -188,36 +163,16 @@ torch_silu = torch.nn.functional.silu
 def fast_mlp_inference(self, X):
     X = X.view(self.hidden_size)
     dtype = X.dtype
-    gate_proj = self.gate_proj
-    up_proj   = self.up_proj
-    down_proj = self.down_proj
 
-    # gate = gate_proj(X)
-    # up   = up_proj(X)
-    gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(gate_proj)
-    upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(up_proj)
-    downW, downW_quant, downA, downB, downS = get_lora_parameters(down_proj)
-
-    gate = fast_gemv(X, gateW, gateW_quant)
-    up   = fast_gemv(X,   upW, upW_quant)
-    if gateA is not None:
-        temp_lora = torch.matmul(X, gateA.to(dtype).t())
-        gate.addmv_(gateB.to(dtype).t(), temp_lora, alpha = gateS)
-    pass
-    if upA is not None:
-        temp_lora = torch.matmul(X, upA.to(dtype).t())
-        up.addmv_(upB.to(dtype).t(), temp_lora, alpha = upS)
-    pass
-
+    # gate = self.gate_proj(X)
+    # up   = self.up_proj(X)
+    gate = fast_linear_forward(self.gate_proj, X)
+    up   = fast_linear_forward(self.  up_proj, X)
     gate = torch_silu(gate, inplace = True)
     gate *= up
 
-    # X = down_proj(gate)
-    down = fast_gemv(gate, downW, downW_quant)
-    if downA is not None:
-        temp_lora = torch.matmul(gate, downA.to(dtype).t())
-        down.addmv_(downB.to(dtype).t(), temp_lora, alpha = downS)
-    pass
+    # X = self.down_proj(gate)
+    down = fast_linear_forward(self.down_proj, X)
     X = down.view(1, 1, self.hidden_size)
 
     return X
@@ -743,7 +698,7 @@ class FastLlamaModel:
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
            f"O^O/ \_/ \\     Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f' "-____-"     Apache 2 licensed free software https://github.com/unslothai/unsloth.'
+           f' "-____-"     License: Apache 2 free software - http://github.com/unslothai/unsloth'
         logger.warning_once(statistics)
         FastLlamaModel.pre_patch()
 

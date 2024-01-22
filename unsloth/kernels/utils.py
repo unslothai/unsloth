@@ -45,6 +45,24 @@ def QUANT_STATE(W):
 pass
 
 
+def get_lora_parameters(proj):
+    # For DPO or disabled adapters
+    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
+    W = base_layer.weight
+
+    if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+        return W, QUANT_STATE(W), None, None, None
+    pass
+
+    active_adapter = proj.active_adapters[0] if \
+        hasattr(proj, "active_adapters") else proj.active_adapter
+    A = proj.lora_A [active_adapter].weight
+    B = proj.lora_B [active_adapter].weight
+    s = proj.scaling[active_adapter]
+    return W, QUANT_STATE(W), A, B, s
+pass
+
+
 def fast_dequantize(W, quant_state = None, out = None):
     if quant_state is None: return W
     if type(quant_state) is not list:
@@ -155,5 +173,17 @@ def fast_gemv(X, W, quant_state, out = None, out_W = None):
     fx(m, n, k, get_ptr(X), ptr_W, ptr_absmax, ptr_stats, get_ptr(out),
         lda, ldb, ldc, blocksize)
 
+    return out
+pass
+
+
+def fast_linear_forward(proj, X, temp_lora = None, out = None)
+    W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
+    out = fast_gemv(X, W, W_quant, out = out)
+    if lora_A is not None:
+        dtype = X.dtype
+        temp_lora = torch.matmul(X, lora_A.to(dtype).t(), out = temp_lora)
+        out.addmv_(lora_B.to(dtype).t(), temp_lora, alpha = lora_S)
+    pass
     return out
 pass
