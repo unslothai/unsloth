@@ -11,18 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import torch
 
+import torch
 import triton
 import triton.language as tl
-
-try:
-    # This is https://github.com/NVIDIA/apex, NOT the apex on PyPi, so it
-    # should not be added to extras_require in setup.py.
-    import apex
-    HAS_APEX = True
-except ModuleNotFoundError:
-    HAS_APEX = False
 
 
 @triton.jit
