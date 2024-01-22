@@ -113,7 +113,7 @@ def LlamaAttention_fast_forward_inference(
     K1, V1 = past_key_value
 
     # LoRA or general matrix multiplication
-    dtype = Xn.dtype
+    # dtype = Xn.dtype
     # Qn = self.q_proj(Xn)
     # Kn = self.k_proj(Xn)
     # Vn = self.v_proj(Xn)
@@ -162,7 +162,6 @@ pass
 torch_silu = torch.nn.functional.silu
 def fast_mlp_inference(self, X):
     X = X.view(self.hidden_size)
-    dtype = X.dtype
 
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
