@@ -139,8 +139,8 @@ def LlamaAttention_fast_forward_inference(
     RH_Q[:, :, :h] = Qn[:, :, h:]; RH_Q[:, :, h:] = Qn[:, :, :h]; torch.neg(RH_Q[:, :, :h], out = RH_Q[:, :, :h]);
     Qn *= cos; Qn.addcmul_(RH_Q, sin);
 
-    RH_K = RH_Q[:n_kv_heads, :, :] # torch.empty((n_kv_heads, head_dim), dtype = dtype, device = "cuda")
-    RH_K[:, :, :h] = Qn[:, :, h:]; RH_K[:, :, h:] = Kn[:, :, :h]; torch.neg(RH_K[:, :, :h], out = RH_K[:, :, :h]);
+    RH_K = RH_Q[:n_kv_heads, :, :] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_K[:, :, :h] = Kn[:, :, h:]; RH_K[:, :, h:] = Kn[:, :, :h]; torch.neg(RH_K[:, :, :h], out = RH_K[:, :, :h]);
     Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
@@ -716,7 +716,7 @@ class FastLlamaModel:
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
            f"O^O/ \_/ \\     Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f' "-____-"     License: Apache 2 free software - http://github.com/unslothai/unsloth'
+           f' "-____-"     Apache 2 free license - http://github.com/unslothai/unsloth'
         logger.warning_once(statistics)
         FastLlamaModel.pre_patch()
 
