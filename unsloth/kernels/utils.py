@@ -183,7 +183,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     if lora_A is not None:
         dtype = X.dtype
         temp_lora = torch.matmul(X, lora_A.to(dtype).t(), out = temp_lora)
-        out.addmv_(lora_B.to(dtype).t(), temp_lora, alpha = lora_S)
+        out.addmv_(lora_B.to(dtype), temp_lora, alpha = lora_S)
     pass
     return out
 pass
