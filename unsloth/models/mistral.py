@@ -84,9 +84,10 @@ def MistralAttention_fast_forward(
     pass
 
     if past_key_value is not None:
-        # reuse k, v, self_attention
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+        q_len = K.shape[2]
+    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
