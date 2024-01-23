@@ -271,7 +271,6 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
-        q_len = K.shape[2]
     pass
     past_key_value = (K, V) if use_cache else None
 
@@ -285,13 +284,13 @@ def LlamaAttention_fast_forward(
 
         # Group query attention
         if n_groups != 1:
-            K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-            V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-            K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-            V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
+            V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
             if hidden_states.requires_grad:
-                K = K.reshape(bsz, q_len, n_heads, head_dim)
-                V = V.reshape(bsz, q_len, n_heads, head_dim)
+                K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
+                V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
         pass
@@ -306,10 +305,10 @@ def LlamaAttention_fast_forward(
     else:
         # Grouped query attention
         if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-            K = K.reshape(bsz, n_heads, q_len, head_dim)
-            V = V.reshape(bsz, n_heads, q_len, head_dim)
+            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
         pass
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
