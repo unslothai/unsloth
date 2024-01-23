@@ -232,7 +232,6 @@ def LlamaAttention_fast_forward(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
     bsz, q_len, _ = hidden_states.size()
-    print(hidden_states.size())
 
     # Check for inference
     if past_key_value is not None and q_len == 1 and bsz == 1:
