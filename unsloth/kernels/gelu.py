@@ -16,8 +16,48 @@ import triton
 import triton.language as tl
 import torch
 
+def gelu_forward_triton(x: torch.Tensor):
+    n_rows, n_cols = x.shape
+    y = torch.empty_like(x)
+
+    # Define the grid of blocks
+    # Here, we divide the number of rows by the block size to determine the number of blocks needed
+    BLOCK_SIZE = 1024
+    num_blocks = triton.cdiv(n_rows, BLOCK_SIZE)
+
+    # Launch the kernel with the grid configuration
+    _gelu_forward_kenel[(num_blocks,)](
+        output_ptr=y.data_ptr(),
+        input_ptr=x.data_ptr(),
+        n_elements=x.stride(0),
+        n_cols=n_cols,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+    return y
+
+
+def gelu_backward_triton(x: torch.Tensor, grad_output: torch.Tensor):
+    n_rows, n_cols = x.shape
+    grad_input = torch.empty_like(x)
+
+    # Define the grid of blocks
+    BLOCK_SIZE = 1024
+    num_blocks = triton.cdiv(n_rows, BLOCK_SIZE)
+
+    # Launch the kernel with the grid configuration
+    _gelu_backward_kernel[(num_blocks,)](
+        grad_input_ptr=grad_input.data_ptr(),
+        input_ptr=x.data_ptr(),
+        grad_output_ptr=grad_output.data_ptr(),
+        n_elements=x.stride(0),
+        n_cols=n_cols,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+    return grad_input
+
+
 @triton.jit 
-def gelu_forward_kenel(output_ptr: tl.pointer, input_ptr: tl.pointer, n_elements: tl.int32, n_cols: tl.int32, BLOCK_SIZE : tl.constexpr,): 
+def _gelu_forward_kenel(output_ptr: tl.pointer, input_ptr: tl.pointer, n_elements: tl.int32, n_cols: tl.int32, BLOCK_SIZE : tl.constexpr,): 
     '''
     Triton kernel for the forward pass of a GeLU function based off the equation 
     https://pytorch.org/docs/stable/generated/torch.nn.GELU.html
@@ -42,30 +82,36 @@ def gelu_forward_kenel(output_ptr: tl.pointer, input_ptr: tl.pointer, n_elements
 pass 
 
 
-@triton.jit 
-def gelu_backward_kernel(output_ptr: tl.pointer, input_ptr: tl.pointer, n_elements: tl.int32, n_cols: tl.int32, BLOCK_SIZE : tl.constexpr,): 
-    '''
-    Triton kernel for the backward pass of a GeLU function based off eq [13] 
-    https://arxiv.org/pdf/2305.12073.pdf
-
-    output_ptr : the pointer for the first memory adress of the output tensor
-    input_ptr : the pointer for the input of the first element of the first row of the input tensor.
-    n_elements : 
-    '''
+@triton.jit
+def _gelu_backward_kernel(grad_input_ptr: tl.pointer, input_ptr: tl.pointer, grad_output_ptr: tl.pointer, n_elements: tl.int32, n_cols: tl.int32, BLOCK_SIZE: tl.constexpr):
     row_idx = tl.program_id(0)
-    row_start_ptr = input_ptr + row_idx * n_elements
 
+    # Compute pointers to the start of the row for input, gradient output, and gradient input
+    row_start_input_ptr = input_ptr + row_idx * n_elements
+    row_start_grad_output_ptr = grad_output_ptr + row_idx * n_elements
+    row_start_grad_input_ptr = grad_input_ptr + row_idx * n_elements
+
+    # Iterate over the columns of the row
     col_offsets = tl.arange(0, BLOCK_SIZE)
-    input_ptrs = row_start_ptr + col_offsets
+    input_ptrs = row_start_input_ptr + col_offsets
+    grad_output_ptrs = row_start_grad_output_ptr + col_offsets
+    grad_input_ptrs = row_start_grad_input_ptr + col_offsets
+
+    # Mask to avoid out-of-bounds memory access
     mask = col_offsets < n_cols
-    row = tl.load(input_ptrs, mask=mask, other=0)
 
-    output_values = gelu_bwd_pass(x=row)
+    # Load input and gradient output values
+    x = tl.load(input_ptrs, mask=mask, other=0)
+    grad_output = tl.load(grad_output_ptrs, mask=mask, other=0)
 
-    output_row_start_ptr = output_ptr + row_idx * n_elements
-    output_ptrs = output_row_start_ptr + col_offsets
-    tl.store(output_ptrs, output_values, mask=mask)
+    # Compute the GELU backward operation using gelu_bwd_pass
+    dgelu_dx = gelu_bwd_pass(x)
+    grad_input = dgelu_dx * grad_output
+
+    # Store the computed gradient input
+    tl.store(grad_input_ptrs, grad_input, mask=mask)
 pass 
+
 
 
 @triton.jit
