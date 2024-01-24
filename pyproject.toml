@@ -98,10 +98,14 @@ colab_ampere = [
     "flash-attn",
 ]
 colab_torch211 = [
-    "unsloth[cu121_torch211]",
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121onlytorch211]",
 ]
 colab_ampere_torch211 = [
-    "unsloth[cu121_torch211]",
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121onlytorch211]",
     "packaging",
     "ninja",
     "flash-attn",
