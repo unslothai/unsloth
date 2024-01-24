@@ -3,7 +3,7 @@ import torch
 import triton
 
 from unsloth.kernels.layernorm import LayerNorm
-from tests.conftest import set_seed 
+from tests.conftest import set_seed, assert_all_close
 
 # Fixture for test matrices and associated parameters
 @set_seed()
@@ -30,9 +30,8 @@ def test_layer_norm_forward(test_data):
     pytorch_layer_norm.bias = torch.nn.Parameter(bias)
     pytorch_output = pytorch_layer_norm(x)
 
-    # Check if outputs are close
-    assert torch.allclose(triton_output, pytorch_output, rtol=1e-05, atol=1e-08), \
-           "Forward pass outputs differ between Triton and PyTorch."
+    # Check if outputs are close using assert_all_close
+    assert_all_close(triton_output, pytorch_output, rtol=1e-05, atol=1e-08)
 
 
 def test_layer_norm_backward(test_data):
@@ -51,6 +50,5 @@ def test_layer_norm_backward(test_data):
     pytorch_output.sum().backward()
     pytorch_grad = x.grad
 
-    # Check if gradients are close
-    assert torch.allclose(triton_grad, pytorch_grad, rtol=1e-05, atol=1e-08), \
-           "Backward pass gradients differ between Triton and PyTorch."
+    # Check if gradients are close using assert_all_close
+    assert_all_close(triton_grad, pytorch_grad, rtol=1e-05, atol=1e-08)
