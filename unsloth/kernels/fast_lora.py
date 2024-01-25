@@ -36,7 +36,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         if A is not None:
             # LoRA is enabled
             A, B = A.t(), B.t()
-            out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+            out += (X @ A) @ (s * B)
         pass
         
         return out.view(batch, seq_len, -1) if reshape else out
