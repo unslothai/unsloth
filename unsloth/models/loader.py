@@ -34,7 +34,7 @@ def _get_model_name(model_name, load_in_4bit = True):
         logger.warning_once(
             f"Unsloth: Your transformers version of {transformers_version} does not support native "\
             f"4bit loading.\nThe minimum required version is 4.37.\n"\
-            f'Try `pip install "git+https://github.com/huggingface/transformers.git"`\n'\
+            f'Try `pip install --upgrade "transformers>=4.37"`\n'\
             f"to obtain the latest transformers build, then restart this session.\n"\
             f"For now, we shall load `{model_name}` instead (still 4bit, just slower downloading)."
         )

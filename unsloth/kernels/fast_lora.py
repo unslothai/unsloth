@@ -141,7 +141,7 @@ class LoRA_MLP(torch.autograd.Function):
 
         # Gate projection LoRA weights
         d_gateA = X.t() @ (DW_dfg @ gateB.t())
-        d_gateB = (gateA.t() @ X.t() @ DW_dfg)
+        d_gateB = (gateA.t() @ X.t()) @ DW_dfg
         d_gateA *= gateS
         d_gateB *= gateS
 

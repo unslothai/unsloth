@@ -36,7 +36,7 @@ __INT_TO_FLOAT_MAPPER = \
     ),
     "unsloth/zephyr-sft-bnb-4bit"    : (
         "unsloth/zephyr-sft",
-        "alignment-handbook/zephyr-7b-sft-full",
+        "HuggingFaceH4/mistral-7b-sft-beta",
     ),
     "unsloth/tinyllama-bnb-4bit"     : (
         "unsloth/tinyllama",
