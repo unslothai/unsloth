@@ -1055,22 +1055,22 @@ class FastLlamaModel:
                 up_proj   = layer.mlp.  up_proj
                 down_proj = layer.mlp.down_proj
 
-                # if  hasattr(gate_proj, "lora_A") and \
-                #     hasattr(  up_proj, "lora_A") and \
-                #     hasattr(down_proj, "lora_A") and \
-                #     (gate_proj.base_layer if hasattr(gate_proj, "base_layer") else gate_proj).bias is None and \
-                #     (  up_proj.base_layer if hasattr(  up_proj, "base_layer") else   up_proj).bias is None and \
-                #     (down_proj.base_layer if hasattr(down_proj, "base_layer") else down_proj).bias is None:
+                if  hasattr(gate_proj, "lora_A") and \
+                    hasattr(  up_proj, "lora_A") and \
+                    hasattr(down_proj, "lora_A") and \
+                    (gate_proj.base_layer if hasattr(gate_proj, "base_layer") else gate_proj).bias is None and \
+                    (  up_proj.base_layer if hasattr(  up_proj, "base_layer") else   up_proj).bias is None and \
+                    (down_proj.base_layer if hasattr(down_proj, "base_layer") else down_proj).bias is None:
 
-                #     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                #     layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
-                #     n_mlp += 1
-                # else:
-                #     logger.warning_once(
-                #         "Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
-                #         "are not enabled or a bias term (like in Qwen) is used."
-                #     )
-                # pass
+                    # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
+                    layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                    n_mlp += 1
+                else:
+                    logger.warning_once(
+                        "Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
+                        "are not enabled or a bias term (like in Qwen) is used."
+                    )
+                pass
 
                 # QKV attention patching
                 q_proj = layer.self_attn.q_proj
