@@ -128,20 +128,20 @@ class LoRA_MLP(torch.autograd.Function):
         h, DW_f, DW_dfg = DW, e, g
 
         # Down projection LoRA weights
-        d_downA = (h.t() @ dY) @ downB.t()
-        d_downB = downA.t() @ (h.t() @ dY)
+        d_downA = h.t() @ (dY @ downB.t())
+        d_downB = (downA.t() @ h.t()) @ dY
         d_downA *= downS
         d_downB *= downS
 
         # Up projection LoRA weights
-        d_upA   = (X.t() @ DW_f) @ upB.t()
-        d_upB   = upA.t() @ (X.t() @ DW_f)
+        d_upA   = X.t() @ (DW_f @ upB.t())
+        d_upB   = (upA.t() @ X.t()) @ DW_f
         d_upA  *= upS
         d_upB  *= upS
 
         # Gate projection LoRA weights
-        d_gateA = (X.t() @ DW_dfg) @ gateB.t()
-        d_gateB = gateA.t() @ (X.t() @ DW_dfg)
+        d_gateA = X.t() @ (DW_dfg @ gateB.t())
+        d_gateB = (gateA.t() @ X.t()) @ DW_dfg
         d_gateA *= gateS
         d_gateB *= gateS
 
@@ -152,13 +152,13 @@ class LoRA_MLP(torch.autograd.Function):
         # (D @ W.T * f) @ (U.T + B.T @ A.T)
         dX = torch.matmul(DW_f, upW.t(), out = X)
         del upW
-        dX += DW_f @ upB.t() @ (upS * upA.t())
+        dX += DW_f @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
 
         # And add the derivative for the gate projection
         gateW = fast_dequantize(gateW.t(), gateW_quant)
         dX += DW_dfg @ gateW.t()
         del gateW
-        dX += DW_dfg @ gateB.t() @ (gateS * gateA.t())
+        dX += DW_dfg @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
 
         # gateW, gateW_quant, gateA, gateB, gateS,
         #  upW,    upW_quant,   upA,   upB,   upS,
