@@ -18,27 +18,28 @@ from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 
 
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
-    dtype = X.dtype
-    W = fast_dequantize(W.t(), W_quant)
+    with torch.cuda.amp.autocast(dtype = torch.float16):
+        dtype = X.dtype
+        W = fast_dequantize(W.t(), W_quant)
 
-    if X.dim() == 3:
-        batch, seq_len, d = X.shape
-        X = X.view(-1, X.shape[-1])
-        reshape = True
-    else:
-        reshape = False
-    pass
+        if X.dim() == 3:
+            batch, seq_len, d = X.shape
+            X = X.view(-1, X.shape[-1])
+            reshape = True
+        else:
+            reshape = False
+        pass
 
-    out = torch.matmul(X, W, out = out)
-    if W_quant is not None: del W
+        out = torch.matmul(X, W, out = out)
+        if W_quant is not None: del W
 
-    if A is not None:
-        # LoRA is enabled
-        A, B = A.t(), B.t()
-        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
-    pass
-    
-    return out.view(batch, seq_len, -1) if reshape else out
+        if A is not None:
+            # LoRA is enabled
+            A, B = A.t(), B.t()
+            out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+        pass
+        
+        return out.view(batch, seq_len, -1) if reshape else out
 pass
 
 
