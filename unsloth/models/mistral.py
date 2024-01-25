@@ -364,11 +364,13 @@ class FastMistralModel(FastLlamaModel):
         patch_saving_functions(tokenizer)
 
         # Fix up config for transformers uploading PEFT
-        name = model.config._name_or_path
-        if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-            name = name[:len(name) - len("-bnb-4bit")]
-            model.config.update({"_name_or_path" : name})
-        pass
+        # Not necessary anymore since we require transformers>=4.37
+        if False:
+            name = model.config._name_or_path
+            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                name = name[:len(name) - len("-bnb-4bit")]
+                model.config.update({"_name_or_path" : name})
+            pass
         
         # Log Unsloth version for future fastpaths for inference
         model.config.update({"unsloth_version" : __version__})

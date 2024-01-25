@@ -725,7 +725,7 @@ class FastLlamaModel:
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f' "-____-"     Apache 2 free license: http://github.com/unslothai/unsloth'
+           f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         logger.warning_once(statistics)
         FastLlamaModel.pre_patch()
 
@@ -814,10 +814,13 @@ class FastLlamaModel:
         patch_saving_functions(tokenizer)
 
         # Fix up config for transformers uploading PEFT
-        name = model.config._name_or_path
-        if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-            name = name[:len(name) - len("-bnb-4bit")]
-            model.config.update({"_name_or_path" : name})
+        # Not necessary anymore since we require transformers>=4.37!
+        if False:
+            name = model.config._name_or_path
+            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                name = name[:len(name) - len("-bnb-4bit")]
+                model.config.update({"_name_or_path" : name})
+            pass
         pass
 
         # Log Unsloth version for future fastpaths for inference
@@ -1020,11 +1023,13 @@ class FastLlamaModel:
 
         # Fix up config for transformers uploading PEFT
         for active_adapter in model.peft_config.keys():
-            name = model.peft_config[active_adapter].base_model_name_or_path
-            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-                name = name[:len(name) - len("-bnb-4bit")]
-                model.peft_config[active_adapter].base_model_name_or_path = name
-            pass
+            # Not necessary since we requires transformers >= 4.37
+            if False:
+                name = model.peft_config[active_adapter].base_model_name_or_path
+                if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                    name = name[:len(name) - len("-bnb-4bit")]
+                    model.peft_config[active_adapter].base_model_name_or_path = name
+                pass
             # Add revision to enable future fast inference paths
             model.peft_config[active_adapter].revision = f"unsloth"
         pass
