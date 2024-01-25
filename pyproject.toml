@@ -32,18 +32,8 @@ include-package-data = false
 exclude = ["images*"]
 
 [project.optional-dependencies]
-huggingfacedev = [
-    "transformers @ git+https://github.com/huggingface/transformers",
-    "datasets",
-    "sentencepiece",
-    "accelerate",
-    "trl>=0.7.9",
-    "peft",
-    "tqdm",
-    "psutil",
-]
 huggingface = [
-    "transformers",
+    "transformers>=4.37.0",
     "datasets",
     "sentencepiece",
     "accelerate",
@@ -107,15 +97,15 @@ colab_ampere = [
     "ninja",
     "flash-attn",
 ]
-colab_dev = [
-    "unsloth[huggingfacedev]",
+colab_torch211 = [
+    "unsloth[huggingface]",
     "bitsandbytes",
-    "unsloth[cu121only]",
+    "unsloth[cu121onlytorch211]",
 ]
-colab_ampere_dev = [
-    "unsloth[huggingfacedev]",
+colab_ampere_torch211 = [
+    "unsloth[huggingface]",
     "bitsandbytes",
-    "unsloth[cu121only]",
+    "unsloth[cu121onlytorch211]",
     "packaging",
     "ninja",
     "flash-attn",

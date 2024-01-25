@@ -30,7 +30,19 @@ major_version, minor_version = torch.cuda.get_device_capability()
 if major_version >= 8:
     try:
         from flash_attn import flash_attn_func
-        HAS_FLASH_ATTENTION = True
+        # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
+        try:
+            from flash_attn.flash_attn_interface import flash_attn_cuda
+            HAS_FLASH_ATTENTION = True
+        except:
+            logger.warning_once(
+                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
+                "A possible explanation is you have a new CUDA version which isn't\n"\
+                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
+                "We shall now use Xformers instead, which gets a 0.01% performance hit.\n"\
+                "We found this negligible impact by benchmarking on 1x A100."
+            )
+            HAS_FLASH_ATTENTION = False
     except:
         HAS_FLASH_ATTENTION = False
 else:

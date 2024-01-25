@@ -135,6 +135,17 @@ def unsloth_save_model(
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
+    if save_method == "merged_4bit":
+        raise RuntimeError(
+            "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"\
+            "to merge to GGUF or others later on. I suggest you to do this as a final step\n"\
+            "if you're planning to do multiple saves.\n"\
+            "If you are certain, change `save_method` to `merged_4bit_forced`."
+        )
+    elif save_method == "merged_4bit_forced":
+        save_method = "merged_4bit"
+    pass
+
     save_pretrained_settings = dict(locals())
     for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
         del save_pretrained_settings[deletion]
@@ -457,6 +468,8 @@ pass
 def install_llama_cpp_make_non_blocking():
     env = { **os.environ, "LLAMA_CUBLAS": "1", }
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
+    # Force make clean
+    os.system("make clean -C llama.cpp")
     full_command = ["make", "-j", str(n_jobs), "-C", "llama.cpp"]
     run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
@@ -487,8 +500,8 @@ pass
 
 
 def save_to_gguf(
-    model_directory : str = "unsloth_finetuned_model",
-    quantization_method    : str = "fast_quantized",
+    model_directory      : str = "unsloth_finetuned_model",
+    quantization_method  : str = "fast_quantized",
     _run_installer = None, # Non blocking install of llama.cpp
 ):
     from transformers.models.llama.modeling_llama import logger
@@ -566,7 +579,7 @@ def unsloth_save_pretrained_merged(
     self,
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
-    save_method         : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     is_main_process      : bool = True,
