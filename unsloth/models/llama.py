@@ -234,7 +234,7 @@ def LlamaAttention_fast_forward(
     bsz, q_len, _ = hidden_states.size()
 
     # Check for inference
-    if past_key_value is not None and q_len == 1:
+    if past_key_value is not None and q_len == 1 and bsz == 1:
         A, past_key_value = LlamaAttention_fast_forward_inference(
             self,
             hidden_states,
@@ -271,6 +271,7 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
@@ -283,13 +284,13 @@ def LlamaAttention_fast_forward(
 
         # Group query attention
         if n_groups != 1:
-            K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-            V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-            K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-            V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
+            V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
             if hidden_states.requires_grad:
-                K = K.reshape(bsz, q_len, n_heads, head_dim)
-                V = V.reshape(bsz, q_len, n_heads, head_dim)
+                K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
+                V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
         pass
@@ -304,10 +305,10 @@ def LlamaAttention_fast_forward(
     else:
         # Grouped query attention
         if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-            K = K.reshape(bsz, n_heads, q_len, head_dim)
-            V = V.reshape(bsz, n_heads, q_len, head_dim)
+            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
         pass
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
@@ -349,7 +350,7 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-    if (past_key_value is not None and q_len == 1):
+    if (past_key_value is not None and q_len == 1 and bsz == 1):
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -722,9 +723,9 @@ class FastLlamaModel:
         statistics = \
            f"==((====))==  Unsloth: Fast Llama patching release {__version__}\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
-           f"O^O/ \_/ \\     Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
+           f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f' "-____-"     Apache 2 free license: http://github.com/unslothai/unsloth'
+           f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         logger.warning_once(statistics)
         FastLlamaModel.pre_patch()
 
@@ -813,10 +814,13 @@ class FastLlamaModel:
         patch_saving_functions(tokenizer)
 
         # Fix up config for transformers uploading PEFT
-        name = model.config._name_or_path
-        if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-            name = name[:len(name) - len("-bnb-4bit")]
-            model.config.update({"_name_or_path" : name})
+        # Not necessary anymore since we require transformers>=4.37!
+        if False:
+            name = model.config._name_or_path
+            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                name = name[:len(name) - len("-bnb-4bit")]
+                model.config.update({"_name_or_path" : name})
+            pass
         pass
 
         # Log Unsloth version for future fastpaths for inference
@@ -1019,11 +1023,13 @@ class FastLlamaModel:
 
         # Fix up config for transformers uploading PEFT
         for active_adapter in model.peft_config.keys():
-            name = model.peft_config[active_adapter].base_model_name_or_path
-            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-                name = name[:len(name) - len("-bnb-4bit")]
-                model.peft_config[active_adapter].base_model_name_or_path = name
-            pass
+            # Not necessary since we requires transformers >= 4.37
+            if False:
+                name = model.peft_config[active_adapter].base_model_name_or_path
+                if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                    name = name[:len(name) - len("-bnb-4bit")]
+                    model.peft_config[active_adapter].base_model_name_or_path = name
+                pass
             # Add revision to enable future fast inference paths
             model.peft_config[active_adapter].revision = f"unsloth"
         pass
