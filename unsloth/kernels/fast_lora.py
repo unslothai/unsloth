@@ -123,11 +123,12 @@ class LoRA_MLP(torch.autograd.Function):
         dtype = X.dtype
 
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
-        se = torch.nn.functional.sigmoid(e)
+        se = 1 / (1 + torch.exp(-e.float()))
         f = torch.nn.functional.silu(e)
         h = f * g
         DW_f   = DW * f
-        DW_dfg = DW * g * se * (1.0 + e - f)
+        DW_dfg = DW.float() * g.float() * se * (1.0 + e.float() - f.float())
+        DW_dfg = DW_dfg.to(dtype)
         # f = e * se
         # h = f * g
         # df = se * (1 - f) + f
