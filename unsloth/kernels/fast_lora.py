@@ -162,15 +162,14 @@ class LoRA_MLP(torch.autograd.Function):
         # (D @ W.T * f) @ (U.T + B.T @ A.T)
         dX = torch.matmul(DW_f, upW.t(), out = X)
         del upW
-        new_dX = upS * (DW_f @ upB.to(dtype).t() @ (upA.to(dtype).t()))
+        dX += (DW_f @ upB.to(dtype).t() @ (upS * upA.to(dtype).t()))
 
         # And add the derivative for the gate projection
         gateW = fast_dequantize(gateW.t(), gateW_quant)
-        new_dX2 = DW_dfg @ gateW.t()
-        # dX += DW_dfg @ gateW.t()
+        # new_dX2 = DW_dfg @ gateW.t()
+        dX += DW_dfg @ gateW.t()
         del gateW
-        new_dX2 += gateS * (DW_dfg @ gateB.to(dtype).t() @ (gateA.to(dtype).t()))
-        dX += (new_dX + new_dX2)
+        dX += DW_dfg @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
 
         # gateW, gateW_quant, gateA, gateB, gateS,
         #  upW,    upW_quant,   upA,   upB,   upS,
