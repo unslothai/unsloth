@@ -90,8 +90,7 @@ class LoRA_MLP(torch.autograd.Function):
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
         g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
-        h = torch.nn.functional.silu(e, inplace = True)
-        h *= g
+        h = torch.nn.functional.silu(e) * g
         # h = swiglu_fg_kernel(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
@@ -123,16 +122,16 @@ class LoRA_MLP(torch.autograd.Function):
         g  = g .view(-1, g .shape[-1])
         dtype = X.dtype
 
-        # DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
-        # se = torch.nn.functional.sigmoid(e)
-        # f = e * se
-        # h = f * g
-        # df = se * (1 - f) + f
-        # DW_f   = DW * f
-        # DW_dfg = DW * df * g
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
-        DW, e, g = swiglu_DWf_DW_dfg_kernel(DW, e, g)
-        h, DW_f, DW_dfg = DW, e, g
+        se = torch.nn.functional.sigmoid(e)
+        f = e * se
+        h = f * g
+        df = se * (1 - f) + f
+        DW_f   = DW * f
+        DW_dfg = DW * df * g
+        # DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
+        # DW, e, g = swiglu_DWf_DW_dfg_kernel(DW, e, g)
+        # h, DW_f, DW_dfg = DW, e, g
 
         # Down projection LoRA weights
         d_downA = h.t() @ (dY @ downB.t())
