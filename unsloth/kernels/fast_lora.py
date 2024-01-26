@@ -90,8 +90,8 @@ class LoRA_MLP(torch.autograd.Function):
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
         g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
-        h = torch.nn.functional.silu(e) * g
-        # h = swiglu_fg_kernel(e, g)
+        # h = torch.nn.functional.silu(e) * g
+        h = swiglu_fg_kernel(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
         ctx.custom_saved_tensors = (
