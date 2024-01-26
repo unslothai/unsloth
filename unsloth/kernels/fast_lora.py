@@ -130,7 +130,6 @@ class LoRA_MLP(torch.autograd.Function):
         df = se * (1 - f) + f
         DW_f   = DW * f
         DW_dfg = DW * df * g
-        h, DW_f, DW_dfg = DW, e, g
         # DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
         # DW, e, g = swiglu_DWf_DW_dfg_kernel(DW, e, g)
         # h, DW_f, DW_dfg = DW, e, g
