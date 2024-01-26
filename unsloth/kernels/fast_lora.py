@@ -186,7 +186,7 @@ pass
 class LoRA_MLP_New(torch.autograd.Function):
     @classmethod
     @torch.cuda.amp.custom_fwd
-    def forward(ctx, X : torch.Tensor,
+    def forward(cls, ctx, X : torch.Tensor,
                 gateW, gateW_quant, gateA, gateB, gateS,
                   upW,   upW_quant, upA,   upB,   upS,
                 downW, downW_quant, downA, downB, downS):
@@ -216,7 +216,7 @@ class LoRA_MLP_New(torch.autograd.Function):
 
     @classmethod
     @torch.cuda.amp.custom_bwd
-    def backward(ctx, dY : torch.Tensor):
+    def backward(cls, ctx, dY : torch.Tensor):
         gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS, = \
             ctx.custom_saved_tensors
         gateA, gateB, upA, upB, downA, downB, \
