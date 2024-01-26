@@ -125,6 +125,7 @@ class LoRA_MLP(torch.autograd.Function):
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
         se = torch.nn.functional.sigmoid(e)
         f = torch.nn.functional.silu(e)
+        h = f * g
         DW_f   = DW * f
         DW_dfg = DW * se * g * (1 + f * (1 - se))
         # f = e * se
