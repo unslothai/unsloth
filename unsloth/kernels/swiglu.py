@@ -75,8 +75,8 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     # dh/dgate = sigmoid(gate)*up + gate*up*sigmoid'(gate)
     # dh/dgate = sigmoid(gate)*up + gate*up*[sigmoid(gate) * (1 - sigmoid(gate))]
     # dh/dgate = sigmoid(gate)*up * [1 + gate*(1 - sigmoid(gate))]
-    # DW_dfg_row = DW_row * se_row * g_row * (1.0 + e_row*(1.0 - se_row)) # 5 FMAs / mults
-    DW_dfg_row = DW_row * (se_row * g_row + h_row*(1.0 - se_row)) # 4 FMAs / mults
+    DW_dfg_row = DW_row * se_row * g_row * (1.0 + e_row*(1.0 - se_row)) # 5 FMAs / mults
+    # DW_dfg_row = DW_row * (se_row * g_row + h_row*(1.0 - se_row)) # 4 FMAs / mults
     # DW_dfg_row = DW_row * (se_row*(g_row - h_row) + h_row) BREAKS bad accuracy
 
     # Store derivatives in buffers
