@@ -127,7 +127,7 @@ class LoRA_MLP(torch.autograd.Function):
         f = torch.nn.functional.silu(e)
         h = f * g
         DW_f   = DW * f
-        DW_dfg = DW * se * g * (1 + e * (1 - se))
+        DW_dfg = DW * g * se * (1.0 + e - f)
         # f = e * se
         # h = f * g
         # df = se * (1 - f) + f
