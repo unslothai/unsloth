@@ -182,6 +182,95 @@ class LoRA_MLP(torch.autograd.Function):
     pass
 pass
 
+
+class LoRA_MLP_New(torch.autograd.Function):
+    @staticmethod
+    @torch.cuda.amp.custom_fwd
+    def forward(ctx, X : torch.Tensor,
+                gateW, gateW_quant, gateA, gateB, gateS,
+                  upW,   upW_quant, upA,   upB,   upS,
+                downW, downW_quant, downA, downB, downS):
+        dtype = X.dtype
+
+        e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
+        g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
+        f = torch.nn.functional.silu(e)
+        h = f * g
+        i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
+
+        ctx.custom_saved_tensors = (
+            gateW, gateW_quant, gateS,
+            upW, upW_quant, upS,
+            downW, downW_quant, downS,
+        )
+        ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
+                              X, e, g, f, h, i)
+        return i
+    pass
+
+    def _silu_backward(dy, X):
+        # https://github.com/pytorch/pytorch/blob/563b065f5a4b4055fa6b025c2514b566d5fd9439/aten/src/ATen/native/Activation.cpp#L483
+        sigm = 1 / (1 + torch.exp(-X.float()))
+        return (dy.float() * sigm * (1 + X.float() * (1 - sigm))).to(X.dtype)
+    pass
+
+    @staticmethod
+    @torch.cuda.amp.custom_bwd
+    def backward(ctx, dY : torch.Tensor):
+        gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS, = \
+            ctx.custom_saved_tensors
+        gateA, gateB, upA, upB, downA, downB, \
+            X, e, g, f, h, i = ctx.saved_tensors
+
+        gateA, gateB, upA, upB, downA, downB = \
+            gateA.t(), gateB.t(), upA.t(), upB.t(), downA.t(), downB.t()
+
+        batch, seq_len, hd = X.shape
+        dY = dY.view(-1, dY.shape[-1])
+        X  = X .view(-1, X .shape[-1])
+        e  = e .view(-1, e .shape[-1])
+        g  = g .view(-1, g .shape[-1])
+        f  = f .view(-1, f .shape[-1])
+        h  = h .view(-1, h .shape[-1])
+        i  = i .view(-1, i .shape[-1])
+        dtype = X.dtype
+
+        DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
+        df = DW * g  # 88us
+        dg = DW * f  # 88us
+        de = cls._silu_backward(df, e)  # 90us
+
+        dX  = matmul_lora(dg, upW.t(), upW_quant, upB, upA, upS)
+        dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
+
+        # Down projection LoRA weights
+        d_downA = h.t() @ (dY @ downB.t())
+        d_downB = (downA.t() @ h.t()) @ dY
+        d_downA *= downS
+        d_downB *= downS
+
+        # Up projection LoRA weights
+        d_upA   = X.t() @ (df @ upB.t())
+        d_upB   = (upA.t() @ X.t()) @ df
+        d_upA  *= upS
+        d_upB  *= upS
+
+        # Gate projection LoRA weights
+        d_gateA = X.t() @ (dg @ gateB.t())
+        d_gateB = (gateA.t() @ X.t()) @ dg
+        d_gateA *= gateS
+        d_gateB *= gateS
+
+        # gateW, gateW_quant, gateA, gateB, gateS,
+        #  upW,    upW_quant,   upA,   upB,   upS,
+        # downW, downW_quant, downA, downB, downS,
+        return dX.view(batch, seq_len, hd), \
+            None, None, d_gateA.t(), d_gateB.t(), None, \
+            None, None,   d_upA.t(),   d_upB.t(), None, \
+            None, None, d_downA.t(), d_downB.t(), None,
+    pass
+pass
+
 from transformers.models.llama.modeling_llama import logger
 def apply_lora_mlp(self, X):
     logger.warning_once("Hello!2")
@@ -193,7 +282,7 @@ def apply_lora_mlp(self, X):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(X,
+    out = LoRA_MLP_New.apply(X,
                          gateW, gateW_quant, gateA, gateB, gateS,
                          upW,     upW_quant, upA,   upB,   upS,
                          downW, downW_quant, downA, downB, downS)
