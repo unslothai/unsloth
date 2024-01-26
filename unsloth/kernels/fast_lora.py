@@ -178,7 +178,7 @@ pass
 
 from transformers.models.llama.modeling_llama import logger
 def apply_lora_mlp(self, X):
-    logger.warning_once("Hello!2")
+    logger.warning_once("Hello!3")
     # gate = self.gate_proj(X)
     # up   = self.  up_proj(X)
     # h = torch.nn.functional.silu(gate) * up
