@@ -178,8 +178,11 @@ pass
 
 
 def apply_lora_mlp(self, X):
-    down_proj = self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
-    return down_proj
+    gate = self.gate_proj(X)
+    up   = self.  up_proj(X)
+    h = torch.nn.functional.silu(gate) * up
+    down = self.down_proj(h)
+    return down
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
