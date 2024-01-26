@@ -236,11 +236,11 @@ class LoRA_MLP_New(torch.autograd.Function):
         dtype = X.dtype
 
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
-        df = DW * g  # 88us
-        dg = DW * f  # 88us
-        de = cls._silu_backward(df, e)  # 90us
+        df = DW * f  # 88us
+        dg = DW * g  # 88us
+        de = cls._silu_backward(dg, e)  # 90us
 
-        dX  = matmul_lora(dg, upW.t(), upW_quant, upB, upA, upS)
+        dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
 
         # Down projection LoRA weights
