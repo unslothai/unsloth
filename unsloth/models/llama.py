@@ -234,7 +234,7 @@ def LlamaAttention_fast_forward(
     bsz, q_len, _ = hidden_states.size()
 
     # Check for inference
-    if past_key_value is not None and q_len == 1 and bsz == 1:
+    if False: #past_key_value is not None and q_len == 1 and bsz == 1:
         A, past_key_value = LlamaAttention_fast_forward_inference(
             self,
             hidden_states,
@@ -350,7 +350,7 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-    if (past_key_value is not None and q_len == 1 and bsz == 1):
+    if False: #(past_key_value is not None and q_len == 1 and bsz == 1):
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
