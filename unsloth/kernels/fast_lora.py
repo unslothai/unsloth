@@ -139,19 +139,19 @@ class LoRA_MLP(torch.autograd.Function):
         # h, DW_f, DW_dfg = DW, e, g
 
         # Down projection LoRA weights
-        d_downA = h.t() @ dY @ downB.t()
+        d_downA = h.t() @ (dY @ downB.t())
         d_downB = (downA.t() @ h.t()) @ dY
         d_downA *= downS
         d_downB *= downS
 
         # Up projection LoRA weights
-        d_upA   = X.t() @ DW_f @ upB.t()
+        d_upA   = X.t() @ (DW_f @ upB.t())
         d_upB   = (upA.t() @ X.t()) @ DW_f
         d_upA  *= upS
         d_upB  *= upS
 
         # Gate projection LoRA weights
-        d_gateA = X.t() @ DW_dfg @ gateB.t()
+        d_gateA = X.t() @ (DW_dfg @ gateB.t())
         d_gateB = (gateA.t() @ X.t()) @ DW_dfg
         d_gateA *= gateS
         d_gateB *= gateS
