@@ -122,9 +122,8 @@ class LoRA_MLP(torch.autograd.Function):
         e  = e .view(-1, e .shape[-1])
         g  = g .view(-1, g .shape[-1])
         dtype = X.dtype
-
-        DW_f   = (dY @ W.T * f)
-        DW_dfg = (dY @ W.T * df * g)
+        
+        DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
         se = torch.nn.functional.sigmoid(e)
         f = e * se
         h = f * g
