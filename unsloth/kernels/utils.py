@@ -179,7 +179,10 @@ pass
 
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
     W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
-    out = fast_gemv(X, W, W_quant, out = out)
+    if W_quant is None:
+        out = torch.matmul(X, W.t())
+    else:
+        out = fast_gemv(X, W, W_quant, out = out)
     if lora_A is not None:
 
         # Save LoRAs for inference to stop data movement costs
