@@ -126,8 +126,8 @@ class LoRA_MLP(torch.autograd.Function):
         se = 1 / (1 + torch.exp(-e.float()))
         f = torch.nn.functional.silu(e)
         h = f * g
-        DW_f   = DW * f
-        DW_dfg = DW.float() * g.float() * se * (1.0 + e.float() - f.float())
+        DW_f   = (DW * f)
+        DW_dfg = (DW * g).float() * se * (1.0 + e.float() * (1.0 - se))
         DW_dfg = DW_dfg.to(dtype)
         # f = e * se
         # h = f * g
