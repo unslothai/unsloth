@@ -35,7 +35,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     if A is not None:
         # LoRA is enabled
         A, B = A.t(), B.t()
-        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+        out += s * (X @ A.to(dtype)) @ (B.to(dtype))
     pass
     
     return out.view(batch, seq_len, -1) if reshape else out
@@ -178,12 +178,12 @@ pass
 
 from transformers.models.llama.modeling_llama import logger
 def apply_lora_mlp(self, X):
-    logger.warning_once("Hello!")
-    gate = self.gate_proj(X)
-    up   = self.  up_proj(X)
-    h = torch.nn.functional.silu(gate) * up
-    down = self.down_proj(h)
-    return down
+    logger.warning_once("Hello!2")
+    # gate = self.gate_proj(X)
+    # up   = self.  up_proj(X)
+    # h = torch.nn.functional.silu(gate) * up
+    # down = self.down_proj(h)
+    # return down
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
