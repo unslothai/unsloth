@@ -351,7 +351,7 @@ def unsloth_save_model(
     # HF also uses a OrderedDict
     from collections import OrderedDict
     state_dict = OrderedDict()
-    state_dict["model.embed_tokens.weight"] = internal_model.embed_tokens.weight.data
+    state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data
 
     max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
 
