@@ -61,14 +61,23 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     # f = e * sigmoid(e)
     se_row = 1 / (1 + tl.exp(-e_row.to(tl.float32)))
     se_row = se_row.to(e_row.dtype) # Exact copy from HF
+
     # f = e * se
     f_row = e_row * se_row
     # h = f * g
     h_row = f_row * g_row
     # DW_f = DW * f
     DWf_row = DW_row * f_row
+    # [TODO] Weirdly the below actually loses precision???
     # DW_dfg = DW * (se*(g - h) + h)
-    DW_dfg_row = DW_row * (se_row*(g_row - h_row) + h_row)
+    # DW_dfg_row = DW_row * (se_row*(g_row - h_row) + h_row)
+
+    # dh/dgate = sigmoid(gate)*up + gate*up*sigmoid'(gate)
+    # dh/dgate = sigmoid(gate)*up + gate*up*[sigmoid(gate) * (1 - sigmoid(gate))]
+    # dh/dgate = sigmoid(gate)*up * [1 + gate*(1 - sigmoid(gate))]
+    # DW_dfg_row = DW_row * se_row * g_row * (1.0 + e_row*(1.0 - se_row)) # 5 FMAs / mults
+    DW_dfg_row = DW_row * (se_row * g_row + h_row*(1.0 - se_row)) # 4 FMAs / mults
+    # DW_dfg_row = DW_row * (se_row*(g_row - h_row) + h_row) BREAKS bad accuracy
 
     # Store derivatives in buffers
     tl.store(DW + offsets, h_row,      mask = mask)
