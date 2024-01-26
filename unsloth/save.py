@@ -258,11 +258,19 @@ def unsloth_save_model(
         "private"         : save_pretrained_settings["private"],
         "token"           : save_pretrained_settings["token"],
     }
-    
+
+    # Check if PEFT Model or not - if yes, 3 levels. If not 2 levels.
+    from peft import PeftModelForCausalLM
+    if isinstance(model, PeftModelForCausalLM):
+        internal_model = model.model
+    else:
+        internal_model = model
+    pass
+        
+    # Cannot be converted properly!
     if (save_method == "merged_4bit") or (save_method == "lora") or (
         not hasattr(model, "model") or \
-        not hasattr(model.model, "model") or \
-        not hasattr(model.model.model, "layers")
+        not hasattr(internal_model.model, "layers")
     ):
         # Do general saving
         
@@ -343,12 +351,12 @@ def unsloth_save_model(
     # HF also uses a OrderedDict
     from collections import OrderedDict
     state_dict = OrderedDict()
-    state_dict["model.embed_tokens.weight"] = model.model.model.embed_tokens.weight.data
+    state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data
 
     max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
 
     from tqdm import tqdm as ProgressBar
-    for j, layer in enumerate(ProgressBar(model.model.model.layers)):
+    for j, layer in enumerate(ProgressBar(internal_model.model.layers)):
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
@@ -375,8 +383,8 @@ def unsloth_save_model(
         pass
     pass
 
-    state_dict["model.norm.weight"] = model.model.model.norm.weight.data
-    state_dict["lm_head.weight"]    = model.model.lm_head.weight.data
+    state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
+    state_dict["lm_head.weight"]    = internal_model.lm_head.weight.data
 
     # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
     for key, value in state_dict.items():
@@ -418,7 +426,7 @@ def unsloth_save_model(
     model.config = new_config
 
     # Save!
-    model.model.save_pretrained(**save_pretrained_settings)
+    internal_model.save_pretrained(**save_pretrained_settings)
 
     # Revert config back
     original_model = model
