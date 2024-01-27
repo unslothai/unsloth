@@ -71,7 +71,7 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     # se = 1.0 / (1.0 + torch.exp(-e))
     se_row = 1.0 / (1.0 + tl.exp(-e_row))
     # f = (se * e).to(dtype)
-    f_row = se_row * e_roe
+    f_row = se_row * e_row
     f_row = f_row.to(DW_row.dtype)
     # h = f * g
     h_row  =  f_row * g_row
