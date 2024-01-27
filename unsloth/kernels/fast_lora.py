@@ -194,9 +194,8 @@ class LoRA_MLP_New(torch.autograd.Function):
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
         g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
-        # f = torch.nn.functional.silu(e)
-        # h = f * g
-        h = swiglu_fg_kernel(e, g)
+        f = torch.nn.functional.silu(e)
+        h = f * g
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
         ctx.custom_saved_tensors = (
@@ -209,6 +208,11 @@ class LoRA_MLP_New(torch.autograd.Function):
         return i
     pass
 
+    def _silu_backward(dy, X):
+        # https://github.com/pytorch/pytorch/blob/563b065f5a4b4055fa6b025c2514b566d5fd9439/aten/src/ATen/native/Activation.cpp#L483
+        sigm = 1 / (1 + torch.exp(-X.float()))
+        return (dy.float() * sigm * (1 + X.float() * (1 - sigm))).to(X.dtype)
+    pass
 
     @classmethod
     @torch.cuda.amp.custom_bwd
@@ -228,15 +232,13 @@ class LoRA_MLP_New(torch.autograd.Function):
         g  = g .view(-1, g .shape[-1])
         dtype = X.dtype
 
-        DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
-
-        e = e.float()
-        se = 1.0 / (1.0 + torch.exp(-e))
-        f = (se * e).to(dtype)
+        f = torch.nn.functional.silu(e)
         h = f * g
-        df = DW * f
-        dg = DW * g
-        de = (dg.float() * se * (1.0 + e * (1.0 - se))).to(dtype)
+        DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
+        df = DW * f  # 88us
+        dg = DW * g  # 88us
+        sigm = 1.0 / (1.0 + torch.exp(-e.float()))
+        de = (dg.float() * sigm * (1.0 + e.float() * (1.0 - sigm))).to(dtype)
 
         # Down projection LoRA weights
         d_downA = h.t() @ (dY @ downB.t())
@@ -256,19 +258,8 @@ class LoRA_MLP_New(torch.autograd.Function):
         d_gateA *= gateS
         d_gateB *= gateS
 
-
         dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
-
-        # upW = fast_dequantize(upW.t(), upW_quant)
-        # dX = torch.matmul(df, upW.t(), out = X)
-        # del upW
-        # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
-
-        # gateW = fast_dequantize(gateW.t(), gateW_quant)
-        # dX += de @ gateW.t()
-        # del gateW
-        # dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
 
         # gateW, gateW_quant, gateA, gateB, gateS,
         #  upW,    upW_quant,   upA,   upB,   upS,
