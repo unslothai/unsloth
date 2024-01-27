@@ -240,9 +240,6 @@ class LoRA_MLP_New(torch.autograd.Function):
         sigm = 1.0 / (1.0 + torch.exp(-e.float()))
         de = (dg.float() * sigm * (1.0 + e.float() * (1.0 - sigm))).to(dtype)
 
-        dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
-        dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
-
         # Down projection LoRA weights
         d_downA = h.t() @ (dY @ downB.t())
         d_downB = (downA.t() @ h.t()) @ dY
@@ -260,6 +257,20 @@ class LoRA_MLP_New(torch.autograd.Function):
         d_gateB = (gateA.t() @ X.t()) @ dg
         d_gateA *= gateS
         d_gateB *= gateS
+
+
+        dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
+        dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
+
+        upW = fast_dequantize(upW.t(), upW_quant)
+        dX = torch.matmul(df, upW.t(), out = X)
+        del upW
+        dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
+
+        gateW = fast_dequantize(gateW.t(), gateW_quant)
+        dX += de @ gateW.t()
+        del gateW
+        dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
 
         # gateW, gateW_quant, gateA, gateB, gateS,
         #  upW,    upW_quant,   upA,   upB,   upS,
