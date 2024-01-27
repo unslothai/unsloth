@@ -90,8 +90,9 @@ class LoRA_MLP(torch.autograd.Function):
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
         g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
-        h = torch.nn.functional.silu(e) * g
-        # h = swiglu_fg_kernel(e, g)
+        # f = torch.nn.functional.silu(e)
+        # h = f * g
+        h = swiglu_fg_kernel(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
         ctx.custom_saved_tensors = (
@@ -103,6 +104,7 @@ class LoRA_MLP(torch.autograd.Function):
                               X, e, g)
         return i
     pass
+
 
     @staticmethod
     @torch.cuda.amp.custom_bwd
@@ -123,113 +125,6 @@ class LoRA_MLP(torch.autograd.Function):
         dtype = X.dtype
 
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
-        se = 1 / (1 + torch.exp(-e.float()))
-        f = torch.nn.functional.silu(e)
-        h = f * g
-        DW_f   = (DW * f)
-        DW_dfg = (DW * g).float() * se * (1.0 + e.float() * (1.0 - se))
-        DW_dfg = DW_dfg.to(dtype)
-        # f = e * se
-        # h = f * g
-        # df = se * (1 - f) + f
-        # DW_f   = DW * f
-        # DW_dfg = DW * df * g
-        # DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
-        # DW, e, g = swiglu_DWf_DW_dfg_kernel(DW, e, g)
-        # h, DW_f, DW_dfg = DW, e, g
-
-        # Down projection LoRA weights
-        d_downA = h.t() @ (dY @ (downS * downB).t())
-        d_downB = ((downS * downA).t() @ h.t()) @ dY
-        # d_downA *= downS
-        # d_downB *= downS
-
-        # Up projection LoRA weights
-        d_upA   = X.t() @ (DW_f @ (upS * upB).t())
-        d_upB   = ((upS * upA).t() @ X.t()) @ DW_f
-        # d_upA  *= upS
-        # d_upB  *= upS
-
-        # Gate projection LoRA weights
-        d_gateA = X.t() @ (DW_dfg @ (gateS * gateB).t())
-        d_gateB = ((gateS * gateA).t() @ X.t()) @ DW_dfg
-        # d_gateA *= gateS
-        # d_gateB *= gateS
-
-        # Final derivatives to backpropagate backwards.
-        # See our blogpost for more details.
-        # (D @ W.T * f) @ U.T
-        upW = fast_dequantize(upW.t(), upW_quant)
-        # (D @ W.T * f) @ (U.T + B.T @ A.T)
-        dX = torch.matmul(DW_f, upW.t(), out = X)
-        del upW
-        dX += (DW_f @ upB.to(dtype).t() @ (upS * upA.to(dtype).t()))
-
-        # And add the derivative for the gate projection
-        gateW = fast_dequantize(gateW.t(), gateW_quant)
-        # new_dX2 = DW_dfg @ gateW.t()
-        dX += DW_dfg @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
-        dX += DW_dfg @ gateW.t()
-        del gateW
-
-        # gateW, gateW_quant, gateA, gateB, gateS,
-        #  upW,    upW_quant,   upA,   upB,   upS,
-        # downW, downW_quant, downA, downB, downS,
-        return dX.view(batch, seq_len, hd), \
-            None, None, d_gateA.t(), d_gateB.t(), None, \
-            None, None,   d_upA.t(),   d_upB.t(), None, \
-            None, None, d_downA.t(), d_downB.t(), None,
-    pass
-pass
-
-
-class LoRA_MLP_New(torch.autograd.Function):
-    @classmethod
-    @torch.cuda.amp.custom_fwd
-    def forward(cls, ctx, X : torch.Tensor,
-                gateW, gateW_quant, gateA, gateB, gateS,
-                  upW,   upW_quant, upA,   upB,   upS,
-                downW, downW_quant, downA, downB, downS):
-        dtype = X.dtype
-
-        e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
-        g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
-        # f = torch.nn.functional.silu(e)
-        # h = f * g
-        h = swiglu_fg_kernel(e, g)
-        i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
-
-        ctx.custom_saved_tensors = (
-            gateW, gateW_quant, gateS,
-            upW, upW_quant, upS,
-            downW, downW_quant, downS,
-        )
-        ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
-                              X, e, g)
-        return i
-    pass
-
-
-    @classmethod
-    @torch.cuda.amp.custom_bwd
-    def backward(cls, ctx, dY : torch.Tensor):
-        gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS, = \
-            ctx.custom_saved_tensors
-        gateA, gateB, upA, upB, downA, downB, \
-            X, e, g = ctx.saved_tensors
-
-        gateA, gateB, upA, upB, downA, downB = \
-            gateA.t(), gateB.t(), upA.t(), upB.t(), downA.t(), downB.t()
-
-        batch, seq_len, hd = X.shape
-        dY = dY.view(-1, dY.shape[-1])
-        X  = X .view(-1, X .shape[-1])
-        e  = e .view(-1, e .shape[-1])
-        g  = g .view(-1, g .shape[-1])
-        dtype = X.dtype
-
-        DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
-
         # e = e.float()
         # se = 1.0 / (1.0 + torch.exp(-e))
         # f = (se * e).to(dtype)
@@ -253,8 +148,8 @@ class LoRA_MLP_New(torch.autograd.Function):
         d_upB  *= upS
 
         # Gate projection LoRA weights
-        d_gateA = X.t() @ (de @ gateB.t())
-        d_gateB = (gateA.t() @ X.t()) @ de
+        d_gateA = X.t() @ (dg @ gateB.t())
+        d_gateB = (gateA.t() @ X.t()) @ dg
         d_gateA *= gateS
         d_gateB *= gateS
 
@@ -281,7 +176,7 @@ class LoRA_MLP_New(torch.autograd.Function):
     pass
 pass
 
-from transformers.models.llama.modeling_llama import logger
+
 def apply_lora_mlp(self, X):
     # gate = self.gate_proj(X)
     # up   = self.  up_proj(X)
@@ -291,7 +186,7 @@ def apply_lora_mlp(self, X):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP_New.apply(X,
+    out = LoRA_MLP.apply(X,
                          gateW, gateW_quant, gateA, gateB, gateS,
                          upW,     upW_quant, upA,   upB,   upS,
                          downW, downW_quant, downA, downB, downS)
