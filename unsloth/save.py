@@ -80,7 +80,8 @@ def _merge_lora(layer, name):
         if quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
             W = fast_dequantize(W, quant_state)
-        pass
+        else:
+            dtype = W.dtype
         W = W.to(torch.float32).t()
 
         if A is not None:
