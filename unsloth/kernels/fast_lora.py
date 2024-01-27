@@ -232,7 +232,7 @@ class LoRA_MLP_New(torch.autograd.Function):
 
         e = e.float()
         se = 1.0 / (1.0 + torch.exp(-e))
-        f = se * e
+        f = (se * e).to(dtype)
         h = f * g
         df = DW * f
         dg = DW * g
