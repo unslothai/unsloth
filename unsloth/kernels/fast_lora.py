@@ -204,7 +204,7 @@ class LoRA_MLP_New(torch.autograd.Function):
             downW, downW_quant, downS,
         )
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
-                              X, e, g, f, h, i)
+                              X, e, g)
         return i
     pass
 
@@ -220,7 +220,7 @@ class LoRA_MLP_New(torch.autograd.Function):
         gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS, = \
             ctx.custom_saved_tensors
         gateA, gateB, upA, upB, downA, downB, \
-            X, e, g, f, h, i = ctx.saved_tensors
+            X, e, g = ctx.saved_tensors
 
         gateA, gateB, upA, upB, downA, downB = \
             gateA.t(), gateB.t(), upA.t(), upB.t(), downA.t(), downB.t()
@@ -230,15 +230,15 @@ class LoRA_MLP_New(torch.autograd.Function):
         X  = X .view(-1, X .shape[-1])
         e  = e .view(-1, e .shape[-1])
         g  = g .view(-1, g .shape[-1])
-        f  = f .view(-1, f .shape[-1])
-        h  = h .view(-1, h .shape[-1])
-        i  = i .view(-1, i .shape[-1])
         dtype = X.dtype
 
+        f = torch.nn.functional.silu(e)
+        h = f * g
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
         df = DW * f  # 88us
         dg = DW * g  # 88us
-        de = cls._silu_backward(dg, e)  # 90us
+        sigm = 1.0 / (1.0 + torch.exp(-e.float()))
+        de = (dg.float() * sigm * (1.0 + e.float() * (1.0 - sigm))).to(dtype)
 
         dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
