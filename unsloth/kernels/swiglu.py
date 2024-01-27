@@ -28,7 +28,7 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
     g_row = tl.load(g + offsets, mask = mask, other = 0)#.to(tl.float32)
 
     # f = e * sigmoid(e)
-    f_row = e_row / (1 + tl.exp(-e_row))
+    f_row = e_row * tl.sigmoid(e_row) # e_row / (1 + tl.exp(-e_row))
     f_row = f_row.to(g_row.dtype) # Exact copy from HF
     # h = f * g
     h_row = f_row * g_row
@@ -69,7 +69,7 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
 
     # e = e.float()
     # se = 1.0 / (1.0 + torch.exp(-e))
-    se_row = 1.0 / (1.0 + tl.exp(-e_row))
+    se_row = tl.sigmoid(e_row) # 1.0 / (1.0 + tl.exp(-e_row))
     # f = (se * e).to(dtype)
     f_row = se_row * e_row
     f_row = f_row.to(DW_row.dtype)
