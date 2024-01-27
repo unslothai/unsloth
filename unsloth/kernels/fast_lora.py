@@ -90,6 +90,8 @@ class LoRA_MLP(torch.autograd.Function):
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
         g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
+        # f = torch.nn.functional.silu(e)
+        # h = f * g
         h = swiglu_fg_kernel(e, g)
         i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
 
@@ -102,6 +104,7 @@ class LoRA_MLP(torch.autograd.Function):
                               X, e, g)
         return i
     pass
+
 
     @staticmethod
     @torch.cuda.amp.custom_bwd
@@ -121,11 +124,16 @@ class LoRA_MLP(torch.autograd.Function):
         g  = g .view(-1, g .shape[-1])
         dtype = X.dtype
 
-        # DW_f   = (D @ W.T * f)
-        # DW_dfg = (D @ W.T * df * g)
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
+        # e = e.float()
+        # se = 1.0 / (1.0 + torch.exp(-e))
+        # f = (se * e).to(dtype)
+        # h = f * g
+        # df = DW * f
+        # dg = DW * g
+        # de = (dg.float() * se * (1.0 + e * (1.0 - se))).to(dtype)
         DW, e, g = swiglu_DWf_DW_dfg_kernel(DW, e, g)
-        h, DW_f, DW_dfg = DW, e, g
+        h, df, de = DW, e, g
 
         # Down projection LoRA weights
         d_downA = h.t() @ (dY @ downB.t())
@@ -134,31 +142,29 @@ class LoRA_MLP(torch.autograd.Function):
         d_downB *= downS
 
         # Up projection LoRA weights
-        d_upA   = X.t() @ (DW_f @ upB.t())
-        d_upB   = (upA.t() @ X.t()) @ DW_f
+        d_upA   = X.t() @ (df @ upB.t())
+        d_upB   = (upA.t() @ X.t()) @ df
         d_upA  *= upS
         d_upB  *= upS
 
         # Gate projection LoRA weights
-        d_gateA = X.t() @ (DW_dfg @ gateB.t())
-        d_gateB = (gateA.t() @ X.t()) @ DW_dfg
+        d_gateA = X.t() @ (de @ gateB.t())
+        d_gateB = (gateA.t() @ X.t()) @ de
         d_gateA *= gateS
         d_gateB *= gateS
 
-        # Final derivatives to backpropagate backwards.
-        # See our blogpost for more details.
-        # (D @ W.T * f) @ U.T
-        upW = fast_dequantize(upW.t(), upW_quant)
-        # (D @ W.T * f) @ (U.T + B.T @ A.T)
-        dX = torch.matmul(DW_f, upW.t(), out = X)
-        del upW
-        dX += DW_f @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
+        # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
+        # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
 
-        # And add the derivative for the gate projection
+        upW = fast_dequantize(upW.t(), upW_quant)
+        dX = torch.matmul(df, upW.t(), out = X)
+        del upW
+        dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
+
         gateW = fast_dequantize(gateW.t(), gateW_quant)
-        dX += DW_dfg @ gateW.t()
+        dX += de @ gateW.t()
         del gateW
-        dX += DW_dfg @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
+        dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
 
         # gateW, gateW_quant, gateA, gateB, gateS,
         #  upW,    upW_quant,   upA,   upB,   upS,
@@ -172,6 +178,11 @@ pass
 
 
 def apply_lora_mlp(self, X):
+    # gate = self.gate_proj(X)
+    # up   = self.  up_proj(X)
+    # h = torch.nn.functional.silu(gate) * up
+    # down = self.down_proj(h)
+    # return down
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
