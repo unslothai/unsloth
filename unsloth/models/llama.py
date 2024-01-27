@@ -635,7 +635,6 @@ def LlamaForCausalLM_fast_forward(
     logits = self.lm_head(hidden_states)
 
     loss = None
-    print("labels", labels)
     if labels is not None:
         shift_logits = logits
         if not hasattr(self, "extra_ignored_labels"):
