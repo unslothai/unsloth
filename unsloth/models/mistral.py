@@ -90,7 +90,7 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION):
+    if (attention_mask is None and not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -212,7 +212,6 @@ def MistralForCausalLM_fast_forward(
     logits = self.lm_head(hidden_states)
 
     loss = None
-    print("labels", labels)
     if labels is not None:
         shift_logits = logits
         if not hasattr(self, "extra_ignored_labels"):
