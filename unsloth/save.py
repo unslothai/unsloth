@@ -14,6 +14,7 @@
 
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import torch
 import os
@@ -72,11 +73,15 @@ pass
 
 
 def _merge_lora(layer, name):
-    if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit)):
+
+    if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         # Is LoRA so we need to merge!
         W, quant_state, A, B, s = get_lora_parameters(layer)
-        dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
-        W = fast_dequantize(W, quant_state).to(torch.float32).t()
+        if quant_state is not None:
+            dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
+            W = fast_dequantize(W, quant_state)
+        pass
+        W = W.to(torch.float32).t()
 
         if A is not None:
             sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
@@ -84,7 +89,6 @@ def _merge_lora(layer, name):
             if not torch.isfinite(W).all():
                 raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
         pass
-        
         W = W.t().to(dtype)
     else:
         W = layer.weight
