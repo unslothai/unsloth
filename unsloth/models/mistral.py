@@ -90,7 +90,7 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (attention_mask is None and not HAS_FLASH_ATTENTION):
+    if (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
