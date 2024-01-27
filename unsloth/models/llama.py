@@ -487,9 +487,10 @@ def LlamaModel_fast_forward(
         inputs_embeds = self.embed_tokens(input_ids)
 
     # Ignore attention_mask
+    print(attention_mask)
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
+    elif False:#self.training:
         attention_mask = None
         padding_mask = None
     else:
