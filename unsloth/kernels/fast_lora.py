@@ -259,8 +259,8 @@ class LoRA_MLP_New(torch.autograd.Function):
         d_gateB *= gateS
 
 
-        dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
-        dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
+        # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
+        # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
 
         upW = fast_dequantize(upW.t(), upW_quant)
         dX = torch.matmul(df, upW.t(), out = X)
