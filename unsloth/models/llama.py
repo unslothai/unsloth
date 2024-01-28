@@ -524,6 +524,7 @@ def LlamaModel_fast_forward(
         inputs_requires_grad = hidden_states.requires_grad
         if inputs_requires_grad: hidden_states.requires_grad_(False)
         hidden_states *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
+        print(1)
         if inputs_requires_grad: hidden_states.requires_grad_(True)
     pass
 
