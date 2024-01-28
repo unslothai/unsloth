@@ -520,6 +520,7 @@ def LlamaModel_fast_forward(
 
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
+    print(self._has_no_labels, attention_mask)
     if self._has_no_labels and attention_mask is not None:
         inputs_requires_grad = hidden_states.requires_grad
         if inputs_requires_grad: hidden_states.requires_grad_(False)
