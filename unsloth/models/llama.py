@@ -836,6 +836,9 @@ class FastLlamaModel:
         # Log Unsloth version for future fastpaths for inference
         model.config.update({"unsloth_version" : __version__})
 
+        # Add save modules
+        patch_saving_functions(model)
+
         return model, tokenizer
     pass
 
