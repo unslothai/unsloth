@@ -1,35 +1,31 @@
 import argparse
 import json
 import logging
+import os
 
 import torch
-from auto_gptq.nn_modules import qlinear
-
-# from unsloth.utils.profiling import (
-#     cuda_nvtx_range_context,
-#     cuda_profiler_wrapper,
-#     torch_profiler_context,
-# )
 from datasets import load_dataset
 from peft import LoraConfig
 from transformers import TrainingArguments
 from trl import SFTTrainer
 
 from unsloth import FastLanguageModel
+from unsloth.utils.logging import setup_logging
 from unsloth.utils.modeling import QuantizationMethod
+from unsloth.utils.profiling import (
+    cuda_nvtx_range_context,
+    cuda_profiler_wrapper,
+    torch_profiler_context,
+)
 
+setup_logging(level="DEBUG")
 logger = logging.getLogger(__file__)
-
-
-def setup_logger(level=logging.DEBUG):
-    logger.setLevel(level)
-    logger.addHandler(logging.StreamHandler())
 
 
 MODEL_MAP = {
     "MISTRAL": {
         "GPTQ": "TheBloke/Mistral-7B-v0.1-GPTQ",
-        "BNB": "unsloth/mistral-7b-bnb",
+        "BNB": "unsloth/mistral-7b-bnb-4bit",
     },
     "LLAMA": {
         "GPTQ": "TheBloke/Llama-2-7B-GPTQ",
@@ -60,13 +56,14 @@ def patch_tokenizer(model, tokenizer):
 def get_model_and_tokenizer(model_name, model_type, dtype, max_seq_length):
     model_id = (
         MODEL_MAP[model_name.upper()]["BNB"]
-        if "bnb" in model_name.lower()
+        if "bnb" in model_type.lower()
         else MODEL_MAP[model_name.upper()]["GPTQ"]
     )
-    logger.debug(f"Loading {model_id}")
+    logger.info(f"Loading {model_id}")
     if "gptq" in model_type.lower():
         if "hf" in model_type.lower():
-            print(f"Loading HF model {model_type}")
+            logger.info(f"Loading HF model {model_type}")
+
             from transformers import AutoModelForCausalLM, AutoTokenizer, GPTQConfig
 
             quantization_config = GPTQConfig(bits=4, disable_exllama=True)
@@ -84,8 +81,21 @@ def get_model_and_tokenizer(model_name, model_type, dtype, max_seq_length):
             # https://gist.github.com/SunMarc/dcdb499ac16d355a8f265aa497645996#file-finetune_llama_gptq-py
             model.config.pretraining_tp = 1
 
+            if "triton" in model_type.lower():
+                logger.info(
+                    "Patching HuggingFace GPTQ linears with autogptq triton qlinear"
+                )
+                from auto_gptq.nn_modules.qlinear.qlinear_cuda import (
+                    QuantLinear as QuantLinearCuda,
+                )
+
+                from unsloth.gptq.triton.layers import GPTQuantLinear
+
+                GPTQuantLinear.inject_to_model(
+                    model, target_module_type=QuantLinearCuda
+                )
         else:
-            print(f"Loading Unsloth model {model_type}")
+            logger.info(f"Loading Unsloth model {model_type}")
             model, tokenizer = FastLanguageModel.from_pretrained(
                 model_id,
                 dtype=dtype,
@@ -95,7 +105,7 @@ def get_model_and_tokenizer(model_name, model_type, dtype, max_seq_length):
                 load_in_4bit=False,
             )
     else:
-        print(f"Loading Unsloth model {model_type}")
+        logger.info(f"Loading Unsloth model {model_type}")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_id,
             dtype=dtype,
@@ -116,7 +126,7 @@ def prep_for_peft(
     use_gradient_checkpointing=True,
     use_reentrant=True,
 ):
-    logger.warning_once(f"Loading {model_type}")
+    logger.info(f"Loading {model_type}")
     if "hf" in model_type.lower():
         from peft import get_peft_model, prepare_model_for_kbit_training
 
@@ -171,20 +181,21 @@ def train_step(model, inputs):
     outputs.loss.backward()
 
 
-def run_profile(model, inputs, warmup_steps, profile_steps, dtype):
-    pass
-    # with torch_profiler_context(warmup=warmup_steps, active=profile_steps) as prof:
-    #     runner = cuda_profiler_wrapper(prof, warmup=warmup_steps, rep=profile_steps)(
-    #         train_step
-    #     )
+def run_profile(model, inputs, warmup_steps, profile_steps, dtype, outdir):
+    with torch_profiler_context(
+        warmup=warmup_steps, active=profile_steps, outdir=outdir
+    ) as prof:
+        runner = cuda_profiler_wrapper(prof, warmup=warmup_steps, rep=profile_steps)(
+            train_step
+        )
 
-    #     with cuda_nvtx_range_context():
-    #         with torch.cuda.amp.autocast(dtype=dtype):
-    #             runner(model, inputs)
+        with cuda_nvtx_range_context():
+            with torch.cuda.amp.autocast(dtype=dtype):
+                runner(model, inputs)
 
 
 def get_dataset(dataset_id, tokenizer):
-    print("Loading dataset {}".format(dataset_id))
+    logger.info("Loading dataset {}".format(dataset_id))
 
     if "alpaca" in dataset_id:
         PROMPT = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -234,9 +245,9 @@ def run_trainer(
     use_f16 = True if dtype == torch.float16 else False
 
     if use_f16:
-        logger.warning_once(f"Training in {torch.float16}")
+        logger.info(f"Training in {torch.float16}")
     else:
-        logger.warning_once(f"Training in {torch.bfloat16}")
+        logger.info(f"Training in {torch.bfloat16}")
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
@@ -266,6 +277,7 @@ def run_trainer(
 
     stats = trainer.train()
     print(stats.metrics)
+    print(f"Saving metrics to {out_dir}/stats.json")
     with open(f"{out_dir}/stats.json", "w") as f:
         json.dump(stats.metrics, f)
     return stats
@@ -290,6 +302,14 @@ if __name__ == "__main__":
             "hf-gptq-triton-patch",
             "unsloth-bnb",
         ],
+        help="""Model type
+        Reference HuggingFace implementations use either default auto-gptq quant linear layers which defaults to a `cuda` backend.
+        However, the auto_gptq layer automatically disables the cuda kernel when the layer is trainable and falls back to a pure torch
+        implementation (see https://github.com/AutoGPTQ/AutoGPTQ/blob/d2662b18bb91e1864b29e4e05862712382b8a076/auto_gptq/nn_modules/qlinear/qlinear_cuda.py#L40-L41)
+
+        To make comparisons we patch the default HuggingFace model with auto_gptq triton qlinear layers to compare with unsloth GPTQ triton implementation.
+        To use this patched model, select `hf-gptq-triton-patch`.
+        """,
     )
     parser.add_argument("--max_seq_length", type=int, default=2048)
     parser.add_argument(
@@ -312,7 +332,7 @@ if __name__ == "__main__":
         choices=["guanaco", "alpaca"],
     )
     args = parser.parse_args()
-    setup_logger(level=getattr(logging, args.log_level))
+
     args.dtype = getattr(torch, args.dtype)
     args.dataset_id = (
         "timdettmers/openassistant-guanaco"
@@ -330,12 +350,21 @@ if __name__ == "__main__":
         lora_config=lora_config,
         max_seq_length=args.max_seq_length,
     )
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
     if args.profile:
+        logger.info("Profiling model...")
         sample_data = torch.load(args.sample_data)
         run_profile(
-            model, sample_data, args.warmup_steps, args.profile_steps, args.dtype
+            model,
+            sample_data,
+            warmup_steps=args.warmup_steps,
+            profile_steps=args.profile_steps,
+            dtype=args.dtype,
+            outdir=args.output_dir,
         )
     else:
+        logger.info("Running training test...")
         dataset = get_dataset(args.dataset_id, tokenizer)
         run_trainer(
             model,

@@ -861,7 +861,7 @@ class FastLlamaModel:
             max_position_embeddings=max_position_embeddings,
         )
 
-        quantization_method = kwargs.pop("quantization_config", QuantizationMethod.BNB)
+        quantization_method = kwargs.pop("quantization_method", QuantizationMethod.BNB)
         if load_in_4bit:
             assert (
                 quantization_method == QuantizationMethod.BNB
