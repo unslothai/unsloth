@@ -486,9 +486,12 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    inputs_embeds.requires_grad_(False)
-    inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
-    inputs_embeds.requires_grad_(True)
+    # Fix up attention mask by setting elements to 0
+    inputs_requires_grad = inputs_embeds.requires_grad
+    if inputs_requires_grad: inputs_embeds.requires_grad_(False)
+    inputs_embeds[attention_mask == 0] = -torch.inf
+    if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+    #
 
     # Ignore attention_mask
     if attention_mask is None:
