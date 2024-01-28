@@ -483,7 +483,7 @@ def install_llama_cpp_make_non_blocking():
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
     os.system("make clean -C llama.cpp")
-    full_command = ["make", "-j", str(n_jobs), "-C", "llama.cpp"]
+    full_command = ["make", "all", "-j", str(n_jobs), "-C", "llama.cpp"]
     run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
@@ -499,7 +499,7 @@ pass
 def install_llama_cpp_blocking():
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j {psutil.cpu_count()*2}",
+        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j {psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
@@ -557,10 +557,19 @@ def save_to_gguf(
         install_llama_cpp_blocking()
     pass
 
-    print(f"Unsloth: [1] Converting HF into {first_conversion} GGUF format. This will take 3 minutes...")
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
+    else:
+        # Quantized models must have f16 as the default argument
+        if   first_conversion == "f32" : pass
+        elif first_conversion == "f16" : pass
+        elif first_conversion == "q8_0":
+            logger.warning_once("Unsloth: We must use f16 for quantization first.")
+            first_conversion = "f16"
+        pass
+    pass
+    print(f"Unsloth: [1] Converting HF into {first_conversion} GGUF format. This will take 3 minutes...")
 
     n_cpus = psutil.cpu_count()*2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
@@ -583,7 +592,7 @@ def save_to_gguf(
             "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
             "You must run this in the same folder as you're saving your model.\n"\
             "git clone https://github.com/ggerganov/llama.cpp\n"\
-            "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j\n"\
+            "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j\n"\
             "Once that's done, redo the quantization."
         )
     pass
@@ -610,7 +619,7 @@ def save_to_gguf(
                 "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
                 "You must run this in the same folder as you're saving your model.\n"\
                 "git clone https://github.com/ggerganov/llama.cpp\n"\
-                "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j\n"\
+                "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j\n"\
                 "Once that's done, redo the quantization."
             )
         pass
