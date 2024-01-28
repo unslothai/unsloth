@@ -576,6 +576,17 @@ def save_to_gguf(
             print(line.decode("utf-8"), flush = True, end = "")
     pass
 
+    # Check if quantization succeeded!
+    if not os.path.isfile(final_location):
+        raise RuntimeError(
+            "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
+            "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
+            "You must run this in the same folder as you're saving your model.\n"\
+            "git clone https://github.com/ggerganov/llama.cpp\n"\
+            "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j\n"\,
+            "Once that's done, redo the quantization."
+        )
+    pass
     print(f"Unsloth: Conversion completed! Output location: {final_location}")
 
     if quantization_method != first_conversion:
@@ -603,7 +614,7 @@ def save_to_gguf(
                 "Once that's done, redo the quantization."
             )
         pass
-        
+
         print(f"Unsloth: Conversion completed! Output location: {final_location}")
     pass
 
