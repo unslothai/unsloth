@@ -486,6 +486,10 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
+    inputs_embeds.requires_grad_(False)
+    inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
+    inputs_embeds.requires_grad_(True)
+
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
