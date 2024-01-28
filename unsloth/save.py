@@ -583,7 +583,7 @@ def save_to_gguf(
             "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
             "You must run this in the same folder as you're saving your model.\n"\
             "git clone https://github.com/ggerganov/llama.cpp\n"\
-            "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j\n"\,
+            "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j\n"\
             "Once that's done, redo the quantization."
         )
     pass
@@ -610,7 +610,7 @@ def save_to_gguf(
                 "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
                 "You must run this in the same folder as you're saving your model.\n"\
                 "git clone https://github.com/ggerganov/llama.cpp\n"\
-                "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j\n"\,
+                "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j\n"\
                 "Once that's done, redo the quantization."
             )
         pass
