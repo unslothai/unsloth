@@ -963,8 +963,6 @@ def patch_saving_functions(model):
     # First check if this has already been called, and revert it
     original_model = model
     while True:
-
-        print(0)
         if hasattr(original_model, "_original_push_to_hub"):
             original_model.push_to_hub = original_model._original_push_to_hub
             del original_model._original_push_to_hub
@@ -1010,27 +1008,28 @@ def patch_saving_functions(model):
 
     original_model = model
     while True:
-        if hasattr(original_model, "_original_push_to_hub"): continue
-        print(1)
-        original_model._original_push_to_hub = original_model.push_to_hub
-        original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+        
+        if not hasattr(original_model, "_original_push_to_hub"):
+            original_model._original_push_to_hub = original_model.push_to_hub
+            original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
 
-        if hasattr(original_model, "add_model_tags"):
-            original_model.add_model_tags(["unsloth",])
+            if hasattr(original_model, "add_model_tags"):
+                original_model.add_model_tags(["unsloth",])
 
-        if hasattr(original_model, "config"):
-            # Counteract tokenizers
-            original_model.push_to_hub_merged     = \
-                types.MethodType(unsloth_push_to_hub_merged,     original_model)
+            if hasattr(original_model, "config"):
+                # Counteract tokenizers
+                original_model.push_to_hub_merged     = \
+                    types.MethodType(unsloth_push_to_hub_merged,     original_model)
 
-            original_model.save_pretrained_merged = \
-                types.MethodType(unsloth_save_pretrained_merged, original_model)
+                original_model.save_pretrained_merged = \
+                    types.MethodType(unsloth_save_pretrained_merged, original_model)
 
-            original_model.push_to_hub_gguf       = \
-                types.MethodType(unsloth_push_to_hub_gguf,       original_model)
+                original_model.push_to_hub_gguf       = \
+                    types.MethodType(unsloth_push_to_hub_gguf,       original_model)
 
-            original_model.save_pretrained_gguf   = \
-                types.MethodType(unsloth_save_pretrained_gguf,   original_model)
+                original_model.save_pretrained_gguf   = \
+                    types.MethodType(unsloth_save_pretrained_gguf,   original_model)
+            pass
         pass
 
         if hasattr(original_model, "model"): original_model = original_model.model
