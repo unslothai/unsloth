@@ -1043,5 +1043,5 @@ def patch_saving_functions(model):
         model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
         model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
     pass
-    return
+    return model
 pass
