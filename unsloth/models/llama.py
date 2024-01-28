@@ -486,6 +486,15 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
+    # Fix up attention mask by setting elements to 0
+    # Specifically for DPO
+    if self._has_no_labels and attention_mask is not None:
+        inputs_requires_grad = inputs_embeds.requires_grad
+        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
+        inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
+        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+    pass
+
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
@@ -617,6 +626,7 @@ def LlamaForCausalLM_fast_forward(
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+    self.model._has_no_labels = labels is None
     outputs = self.model(
         input_ids=input_ids,
         causal_mask=causal_mask,
@@ -726,7 +736,7 @@ class FastLlamaModel:
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
-        logger.warning_once(statistics)
+        print(statistics)
         FastLlamaModel.pre_patch()
 
         if dtype is None:
@@ -825,6 +835,9 @@ class FastLlamaModel:
 
         # Log Unsloth version for future fastpaths for inference
         model.config.update({"unsloth_version" : __version__})
+
+        # Add save modules
+        patch_saving_functions(model)
 
         return model, tokenizer
     pass

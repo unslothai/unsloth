@@ -195,6 +195,7 @@ def MistralForCausalLM_fast_forward(
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+    self.model._has_no_labels = labels is None
     outputs = self.model(
         input_ids=input_ids,
         causal_mask=causal_mask,
@@ -282,7 +283,7 @@ class FastMistralModel(FastLlamaModel):
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f' "-____-"     Apache 2 free license: http://github.com/unslothai/unsloth'
-        logger.warning_once(statistics)
+        print(statistics)
         FastMistralModel.pre_patch()
 
         if dtype is None:
