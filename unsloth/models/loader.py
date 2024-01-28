@@ -143,6 +143,7 @@ class FastLanguageModel(FastLlamaModel):
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
         pass
+        patch_saving_functions(model)
         return model, tokenizer
     pass
 pass

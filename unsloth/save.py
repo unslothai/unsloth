@@ -960,6 +960,24 @@ def patch_saving_functions(model):
 
     if hasattr(model, "_original_push_to_hub"): return
 
+    # First check if this has already been called, and revert it
+    original_model = model
+    while True:
+
+        if hasattr(original_model, "_original_push_to_hub"):
+            original_model.push_to_hub = original_model._original_push_to_hub
+            del original_model._original_push_to_hub
+            if hasattr(original_model, "push_to_hub_merged"):     del original_model.push_to_hub_merged
+            if hasattr(original_model, "save_pretrained_merged"): del original_model.save_pretrained_merged
+            if hasattr(original_model, "push_to_hub_gguf"):       del original_model.push_to_hub_gguf
+            if hasattr(original_model, "save_pretrained_gguf"):   del original_model.save_pretrained_gguf
+        pass
+
+        if hasattr(original_model, "model"): original_model = original_model.model
+        else: break
+    pass
+
+    # And now re add our saving methods!
     original_push_to_hub = model.push_to_hub
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
@@ -988,27 +1006,9 @@ def patch_saving_functions(model):
     pass
     '''
     exec(push_to_hub_text, globals())
-    model.push_to_hub = types.MethodType(unsloth_push_to_hub, model)
-
-    if hasattr(model, "add_model_tags"):
-        model.add_model_tags(["unsloth",])
-
-    if hasattr(model, "config"):
-        # Counteract tokenizers
-        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
-        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
-        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
-        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
-    else:
-        model.push_to_hub_merged     = model.push_to_hub
-        model.save_pretrained_merged = model.save_pretrained
-        model.push_to_hub_gguf       = model.push_to_hub
-        model.save_pretrained_gguf   = model.save_pretrained
-    pass
 
     original_model = model
-    while hasattr(original_model, "model"):
-        original_model = original_model.model
+    while True:
         if hasattr(original_model, "_original_push_to_hub"): continue
         
         original_model._original_push_to_hub = original_model.push_to_hub
@@ -1031,6 +1031,9 @@ def patch_saving_functions(model):
             original_model.save_pretrained_gguf   = \
                 types.MethodType(unsloth_save_pretrained_gguf,   original_model)
         pass
+
+        if hasattr(original_model, "model"): original_model = original_model.model
+        else: break
     pass
     return
 pass
