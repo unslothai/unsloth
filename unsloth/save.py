@@ -278,7 +278,7 @@ def unsloth_save_model(
         not hasattr(internal_model.model, "layers")
     ):
         # Do general saving
-        
+        print(type(model))
         # Edit save_pretrained_settings
         # [TODO] _create_repo has errors due to **kwargs getting accepted
         for deletion in \
@@ -1008,7 +1008,7 @@ def patch_saving_functions(model):
 
     original_model = model
     while True:
-        
+
         if not hasattr(original_model, "_original_push_to_hub"):
             original_model._original_push_to_hub = original_model.push_to_hub
             original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
