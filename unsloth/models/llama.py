@@ -1211,24 +1211,8 @@ class FastLlamaModel:
                     hasattr(gate_proj, "lora_A")
                     and hasattr(up_proj, "lora_A")
                     and hasattr(down_proj, "lora_A")
-                    and (
-                        gate_proj.base_layer
-                        if hasattr(gate_proj, "base_layer")
-                        else gate_proj
-                    ).bias
-                    is None
-                    and (
-                        up_proj.base_layer
-                        if hasattr(up_proj, "base_layer")
-                        else up_proj
-                    ).bias
-                    is None
-                    and (
-                        down_proj.base_layer
-                        if hasattr(down_proj, "base_layer")
-                        else down_proj
-                    ).bias
-                    is None
+                ) and not any(
+                    [has_bias(gate_proj), has_bias(up_proj), has_bias(down_proj)]
                 ):
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
                     layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
@@ -1248,18 +1232,7 @@ class FastLlamaModel:
                     hasattr(q_proj, "lora_A")
                     and hasattr(k_proj, "lora_A")
                     and hasattr(v_proj, "lora_A")
-                    and (
-                        q_proj.base_layer if hasattr(q_proj, "base_layer") else q_proj
-                    ).bias
-                    is None
-                    and (
-                        k_proj.base_layer if hasattr(k_proj, "base_layer") else k_proj
-                    ).bias
-                    is None
-                    and (
-                        v_proj.base_layer if hasattr(v_proj, "base_layer") else v_proj
-                    ).bias
-                    is None
+                    and not any([has_bias(q_proj), has_bias(k_proj), has_bias(v_proj)])
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -1272,13 +1245,7 @@ class FastLlamaModel:
 
                 # O attention patching
                 o_proj = layer.self_attn.o_proj
-                if (
-                    hasattr(o_proj, "lora_A")
-                    and (
-                        o_proj.base_layer if hasattr(o_proj, "base_layer") else o_proj
-                    ).bias
-                    is None
-                ):
+                if hasattr(o_proj, "lora_A") and not has_bias(o_proj):
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
                 else:
