@@ -736,7 +736,7 @@ class FastLlamaModel:
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
-        logger.warning_once(statistics)
+        print(statistics)
         FastLlamaModel.pre_patch()
 
         if dtype is None:
