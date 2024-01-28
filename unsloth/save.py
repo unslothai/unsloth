@@ -515,6 +515,7 @@ pass
 def save_to_gguf(
     model_directory      : str = "unsloth_finetuned_model",
     quantization_method  : str = "fast_quantized",
+    first_conversion     : str = "f16",
     _run_installer = None, # Non blocking install of llama.cpp
 ):
     from transformers.models.llama.modeling_llama import logger
@@ -539,6 +540,16 @@ def save_to_gguf(
         f' "-____-"     In total, you will have to wait around 26 minutes.\n'
     print(print_info)
 
+    # Check first_conversion format
+    if   first_conversion == "f16" : pass
+    elif first_conversion == "f32" : pass
+    elif first_conversion == "q8_0": pass
+    else:
+        raise RuntimeError(
+            f"Unsloth: `first_conversion` can only be one of ['f16', 'f32', 'q8_0'] and not `{first_conversion}`."
+        )
+    pass
+
     print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
     if _run_installer is not None:
         _run_installer.wait()
@@ -546,8 +557,7 @@ def save_to_gguf(
         install_llama_cpp_blocking()
     pass
 
-    print("Unsloth: [1] Converting HF into GGUF format. This will take 3 minutes...")
-    first_conversion = "f16"
+    print(f"Unsloth: [1] Converting HF into {first_conversion} GGUF format. This will take 3 minutes...")
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
@@ -765,6 +775,7 @@ def unsloth_save_pretrained_gguf(
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
     quantization_method  : str = "fast_quantized",
+    first_conversion     : str = "f16",
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     is_main_process      : bool = True,
@@ -813,6 +824,7 @@ def unsloth_save_pretrained_gguf(
     arguments["save_method"] = "merged_16bit" # Must be 16bit
     del arguments["self"]
     del arguments["quantization_method"]
+    del arguments["first_conversion"]
 
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
@@ -840,7 +852,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization_method, first_conversion, makefile)
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -861,6 +873,7 @@ def unsloth_push_to_hub_gguf(
     repo_id              : str,
     tokenizer            = None,
     quantization_method  : str = "fast_quantized",
+    first_conversion     : str = "f16",
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = None,
     private              : Optional[bool] = None,
@@ -911,6 +924,7 @@ def unsloth_push_to_hub_gguf(
     del arguments["self"]
     del arguments["repo_id"]
     del arguments["quantization_method"]
+    del arguments["first_conversion"]
 
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
@@ -938,7 +952,7 @@ def unsloth_push_to_hub_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization_method, first_conversion, makefile)
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
