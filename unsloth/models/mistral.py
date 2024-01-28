@@ -195,6 +195,8 @@ def MistralForCausalLM_fast_forward(
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+    print(input_ids)
+    print(attention_mask)
     outputs = self.model(
         input_ids=input_ids,
         causal_mask=causal_mask,
