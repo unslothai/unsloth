@@ -486,13 +486,6 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # Fix up attention mask by setting elements to 0
-    inputs_requires_grad = inputs_embeds.requires_grad
-    if inputs_requires_grad: inputs_embeds.requires_grad_(False)
-    inputs_embeds[attention_mask == 0] = -torch.inf
-    if inputs_requires_grad: inputs_embeds.requires_grad_(True)
-    #
-
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
@@ -523,6 +516,15 @@ def LlamaModel_fast_forward(
                 "Unsloth: `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`"
             )
             use_cache = False
+    pass
+
+    # Fix up attention mask by setting elements to 0
+    # Specifically for DPO
+    if self._has_no_labels and attention_mask is not None:
+        inputs_requires_grad = hidden_states.requires_grad
+        if inputs_requires_grad: hidden_states.requires_grad_(False)
+        hidden_states *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
+        if inputs_requires_grad: hidden_states.requires_grad_(True)
     pass
 
     # decoder layers
@@ -624,6 +626,7 @@ def LlamaForCausalLM_fast_forward(
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+    self.model._has_no_labels = labels is None
     outputs = self.model(
         input_ids=input_ids,
         causal_mask=causal_mask,
