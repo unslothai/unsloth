@@ -964,6 +964,7 @@ def patch_saving_functions(model):
     original_model = model
     while True:
 
+        print(0)
         if hasattr(original_model, "_original_push_to_hub"):
             original_model.push_to_hub = original_model._original_push_to_hub
             del original_model._original_push_to_hub
@@ -1010,7 +1011,7 @@ def patch_saving_functions(model):
     original_model = model
     while True:
         if hasattr(original_model, "_original_push_to_hub"): continue
-        
+        print(1)
         original_model._original_push_to_hub = original_model.push_to_hub
         original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
 
