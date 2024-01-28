@@ -1029,25 +1029,19 @@ def patch_saving_functions(model):
 
             if hasattr(original_model, "add_model_tags"):
                 original_model.add_model_tags(["unsloth",])
-
-            if hasattr(original_model, "config"):
-                # Counteract tokenizers
-                original_model.push_to_hub_merged     = \
-                    types.MethodType(unsloth_push_to_hub_merged,     original_model)
-
-                original_model.save_pretrained_merged = \
-                    types.MethodType(unsloth_save_pretrained_merged, original_model)
-
-                original_model.push_to_hub_gguf       = \
-                    types.MethodType(unsloth_push_to_hub_gguf,       original_model)
-
-                original_model.save_pretrained_gguf   = \
-                    types.MethodType(unsloth_save_pretrained_gguf,   original_model)
-            pass
         pass
 
         if hasattr(original_model, "model"): original_model = original_model.model
         else: break
+    pass
+
+    # Add saving methods to top level model
+    if hasattr(model, "config"):
+        # Counteract tokenizers
+        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
+        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
+        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
+        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
     pass
     return
 pass
