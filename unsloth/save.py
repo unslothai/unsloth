@@ -278,7 +278,7 @@ def unsloth_save_model(
         not hasattr(internal_model.model, "layers")
     ):
         # Do general saving
-        
+        print(type(model))
         # Edit save_pretrained_settings
         # [TODO] _create_repo has errors due to **kwargs getting accepted
         for deletion in \
@@ -483,7 +483,7 @@ def install_llama_cpp_make_non_blocking():
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
     os.system("make clean -C llama.cpp")
-    full_command = ["make", "-j", str(n_jobs), "-C", "llama.cpp"]
+    full_command = ["make", "all", "-j", str(n_jobs), "-C", "llama.cpp"]
     run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
@@ -499,7 +499,7 @@ pass
 def install_llama_cpp_blocking():
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make -j {psutil.cpu_count()*2}",
+        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j {psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
@@ -515,6 +515,7 @@ pass
 def save_to_gguf(
     model_directory      : str = "unsloth_finetuned_model",
     quantization_method  : str = "fast_quantized",
+    first_conversion     : str = "f16",
     _run_installer = None, # Non blocking install of llama.cpp
 ):
     from transformers.models.llama.modeling_llama import logger
@@ -539,6 +540,16 @@ def save_to_gguf(
         f' "-____-"     In total, you will have to wait around 26 minutes.\n'
     print(print_info)
 
+    # Check first_conversion format
+    if   first_conversion == "f16" : pass
+    elif first_conversion == "f32" : pass
+    elif first_conversion == "q8_0": pass
+    else:
+        raise RuntimeError(
+            f"Unsloth: `first_conversion` can only be one of ['f16', 'f32', 'q8_0'] and not `{first_conversion}`."
+        )
+    pass
+
     print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
     if _run_installer is not None:
         _run_installer.wait()
@@ -546,11 +557,19 @@ def save_to_gguf(
         install_llama_cpp_blocking()
     pass
 
-    print("Unsloth: [1] Converting HF into GGUF format. This will take 3 minutes...")
-    first_conversion = "f16"
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
+    else:
+        # Quantized models must have f16 as the default argument
+        if   first_conversion == "f32" : pass
+        elif first_conversion == "f16" : pass
+        elif first_conversion == "q8_0":
+            logger.warning_once("Unsloth: We must use f16 for quantization first.")
+            first_conversion = "f16"
+        pass
+    pass
+    print(f"Unsloth: [1] Converting HF into {first_conversion} GGUF format. This will take 3 minutes...")
 
     n_cpus = psutil.cpu_count()*2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
@@ -566,6 +585,17 @@ def save_to_gguf(
             print(line.decode("utf-8"), flush = True, end = "")
     pass
 
+    # Check if quantization succeeded!
+    if not os.path.isfile(final_location):
+        raise RuntimeError(
+            "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
+            "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
+            "You must run this in the same folder as you're saving your model.\n"\
+            "git clone https://github.com/ggerganov/llama.cpp\n"\
+            "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j\n"\
+            "Once that's done, redo the quantization."
+        )
+    pass
     print(f"Unsloth: Conversion completed! Output location: {final_location}")
 
     if quantization_method != first_conversion:
@@ -581,6 +611,19 @@ def save_to_gguf(
             for line in sp.stderr:
                 print(line.decode("utf-8"), flush = True, end = "")
         pass
+
+        # Check if quantization succeeded!
+        if not os.path.isfile(final_location):
+            raise RuntimeError(
+                "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
+                "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
+                "You must run this in the same folder as you're saving your model.\n"\
+                "git clone https://github.com/ggerganov/llama.cpp\n"\
+                "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j\n"\
+                "Once that's done, redo the quantization."
+            )
+        pass
+
         print(f"Unsloth: Conversion completed! Output location: {final_location}")
     pass
 
@@ -765,6 +808,7 @@ def unsloth_save_pretrained_gguf(
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
     quantization_method  : str = "fast_quantized",
+    first_conversion     : str = "f16",
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     is_main_process      : bool = True,
@@ -813,6 +857,7 @@ def unsloth_save_pretrained_gguf(
     arguments["save_method"] = "merged_16bit" # Must be 16bit
     del arguments["self"]
     del arguments["quantization_method"]
+    del arguments["first_conversion"]
 
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
@@ -840,7 +885,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization_method, first_conversion, makefile)
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -861,6 +906,7 @@ def unsloth_push_to_hub_gguf(
     repo_id              : str,
     tokenizer            = None,
     quantization_method  : str = "fast_quantized",
+    first_conversion     : str = "f16",
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = None,
     private              : Optional[bool] = None,
@@ -911,6 +957,7 @@ def unsloth_push_to_hub_gguf(
     del arguments["self"]
     del arguments["repo_id"]
     del arguments["quantization_method"]
+    del arguments["first_conversion"]
 
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
@@ -938,7 +985,7 @@ def unsloth_push_to_hub_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, makefile)
+    file_location = save_to_gguf(new_save_directory, quantization_method, first_conversion, makefile)
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
@@ -960,6 +1007,23 @@ def patch_saving_functions(model):
 
     if hasattr(model, "_original_push_to_hub"): return
 
+    # First check if this has already been called, and revert it
+    original_model = model
+    while True:
+        if hasattr(original_model, "_original_push_to_hub"):
+            original_model.push_to_hub = original_model._original_push_to_hub
+            del original_model._original_push_to_hub
+            if hasattr(original_model, "push_to_hub_merged"):     del original_model.push_to_hub_merged
+            if hasattr(original_model, "save_pretrained_merged"): del original_model.save_pretrained_merged
+            if hasattr(original_model, "push_to_hub_gguf"):       del original_model.push_to_hub_gguf
+            if hasattr(original_model, "save_pretrained_gguf"):   del original_model.save_pretrained_gguf
+        pass
+
+        if hasattr(original_model, "model"): original_model = original_model.model
+        else: break
+    pass
+
+    # And now re add our saving methods!
     original_push_to_hub = model.push_to_hub
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
@@ -988,49 +1052,29 @@ def patch_saving_functions(model):
     pass
     '''
     exec(push_to_hub_text, globals())
-    model.push_to_hub = types.MethodType(unsloth_push_to_hub, model)
 
-    if hasattr(model, "add_model_tags"):
-        model.add_model_tags(["unsloth",])
+    original_model = model
+    while True:
 
+        if not hasattr(original_model, "_original_push_to_hub"):
+            original_model._original_push_to_hub = original_model.push_to_hub
+            original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+
+            if hasattr(original_model, "add_model_tags"):
+                original_model.add_model_tags(["unsloth",])
+        pass
+
+        if hasattr(original_model, "model"): original_model = original_model.model
+        else: break
+    pass
+
+    # Add saving methods to top level model
     if hasattr(model, "config"):
         # Counteract tokenizers
         model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
         model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
         model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
         model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
-    else:
-        model.push_to_hub_merged     = model.push_to_hub
-        model.save_pretrained_merged = model.save_pretrained
-        model.push_to_hub_gguf       = model.push_to_hub
-        model.save_pretrained_gguf   = model.save_pretrained
     pass
-
-    original_model = model
-    while hasattr(original_model, "model"):
-        original_model = original_model.model
-        if hasattr(original_model, "_original_push_to_hub"): continue
-        
-        original_model._original_push_to_hub = original_model.push_to_hub
-        original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
-
-        if hasattr(original_model, "add_model_tags"):
-            original_model.add_model_tags(["unsloth",])
-
-        if hasattr(original_model, "config"):
-            # Counteract tokenizers
-            original_model.push_to_hub_merged     = \
-                types.MethodType(unsloth_push_to_hub_merged,     original_model)
-
-            original_model.save_pretrained_merged = \
-                types.MethodType(unsloth_save_pretrained_merged, original_model)
-
-            original_model.push_to_hub_gguf       = \
-                types.MethodType(unsloth_push_to_hub_gguf,       original_model)
-
-            original_model.save_pretrained_gguf   = \
-                types.MethodType(unsloth_save_pretrained_gguf,   original_model)
-        pass
-    pass
-    return
+    return model
 pass
