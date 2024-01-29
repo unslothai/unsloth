@@ -23,6 +23,23 @@
 | [⭐Llama **free** Colab 2x faster](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing") | [⭐Mistral **free** Colab 2x faster](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [CodeLlama A100 Colab notebook](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [⭐Kaggle **free** Alpaca notebook](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp)
 | [Llama A100 Colab notebook](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Mistral A100 Colab notebook](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | 50+ more examples below! | [⭐Kaggle **free** Slim Orca notebook](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
 
+## ✨ Start finetuning for free now
+Use our free notebooks which we have already set up so you can easily finetune a model from scratch. No expertise & cost required!
+
+| Models | Free Live Demos |
+|--------------|--------------|
+| 🦙   **Llama 7b**       | [Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing") |
+| <img src="https://avatars.githubusercontent.com/u/132372032" height="16" /> **Mistral 7b**  | [Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)  |
+| <img src="https://codellama.dev/icons/white-transparentbg.png" height="16" /> **CodeLlama 34b**        | [Start on Colab](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) |
+| 🦙 **Llama 7b 2x T4**    | [Start on Kaggle](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
+
+| Models | Performance | VRAM use |
+|--------------|--------------|-----------------|
+| Llama 7b       | 2.2x faster           | 43% less           |
+| Mistral 7b  | 2.2x faster           | 62% less           |
+| CodeLlama 34b        | 1.9x faster           | 27% less           |
+| Llama 7b Kaggle 2x T4    | 5.5x faster           | 44% less           |
+
 * **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support. ⭐**Free!** DPO Zephyr, Mistral example! <a href="https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing"><img src="./images/Colab.png" height="20">  [More info](#DPO) on DPO
 * **NEW!** [TinyLlama 1.1b](https://github.com/jzhang38/TinyLlama) on 3T tokens! ⭐**Free!** example <a href="https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing"><img src="./images/Colab.png" height="20">
 * **NEW!** We're in 🤗 Huggingface's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
