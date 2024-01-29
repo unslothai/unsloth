@@ -187,9 +187,6 @@ pass
 
 torch_silu = torch.nn.functional.silu
 def fast_mlp_inference(self, X):
-    hidden_size = self.hidden_size
-    X = X.view(hidden_size)
-
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     gate = fast_linear_forward(self.gate_proj, X)
@@ -198,20 +195,17 @@ def fast_mlp_inference(self, X):
     gate *= up
 
     # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate, out = up[:hidden_size])
-    X = down.view(1, 1, hidden_size)
-
+    down = fast_linear_forward(self.down_proj, gate)
     return X
 pass
 
 
 def fast_rms_layernorm_inference(self, X):
-    old_dtype = X.dtype
-    X = X.to(torch.float32)
-    variance = X.square().mean(-1, keepdim = True)
+    XX = X.to(torch.float32)
+    variance = XX.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
-    X *= variance.rsqrt_()
-    X = X.to(old_dtype)
+    XX *= variance.rsqrt_()
+    X[:] = XX
     X *= self.weight
     return X
 pass
@@ -350,7 +344,7 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-    if False: #(past_key_value is not None and q_len == 1 and bsz == 1):
+    if (past_key_value is not None and q_len == 1):
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -486,10 +480,12 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
+    # Check for inference via the attention_mask
+    for_inference = (attention_mask is not None) and (attention_mask.shape[1] != seq_length)
+
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
-    if self._has_no_labels and attention_mask is not None and \
-        attention_mask.shape[1] == seq_length:
+    if self._has_no_labels and not for_inference:
         # Careful for inference the attention_mask is size (1, kv_seq_len)
         # Whilst the input_embeds is size (1, 1, 4096)
         inputs_requires_grad = inputs_embeds.requires_grad
@@ -501,7 +497,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
+    elif False:
         attention_mask = None
         padding_mask = None
     else:
