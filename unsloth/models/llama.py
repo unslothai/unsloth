@@ -196,16 +196,17 @@ def fast_mlp_inference(self, X):
 
     # X = self.down_proj(gate)
     down = fast_linear_forward(self.down_proj, gate)
-    return X
+    return down
 pass
 
 
 def fast_rms_layernorm_inference(self, X):
+    old_dtype = X.dtype
     XX = X.to(torch.float32)
     variance = XX.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
-    X[:] = XX
+    X = XX.to(old_dtype) # Must preserve due to residual
     X *= self.weight
     return X
 pass
@@ -637,7 +638,12 @@ def LlamaForCausalLM_fast_forward(
     )
 
     hidden_states = outputs[0]
-    logits = self.lm_head(hidden_states)
+    if hidden_states.shape[0] == 1:
+        logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+        logits = logits.unsqueeze(0).unsqueeze(0)
+    else:
+        logits = self.lm_head(hidden_states)
+    pass
 
     loss = None
     if labels is not None:
