@@ -210,6 +210,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
             temp_lora = torch.mv(lora_A.to(dtype), out.ravel(), out = temp_lora)
             out.addmv_(lora_B.to(dtype).t(), temp_lora, alpha = lora_S)
         else:
+            print(X.shape)
             temp_lora = torch.matmul(out, lora_A.to(dtype).t(), out = temp_lora)
             out.addmm_(lora_B.to(dtype).t(), temp_lora, alpha = lora_S)
         pass
