@@ -15,7 +15,9 @@ python test_unsloth.py --model_name llama --model_type unsloth-bnb --dtype float
 
 ```
 
-Also see convenience scripts (`run_training.sh` or `run_profile.sh`).
+The above will run the Huggingface `SFTTrainer` for 20 steps and print the resulting training metrics to `stdout`.
+
+### Script args
 
 #### Model names:
 
@@ -44,22 +46,33 @@ Also see convenience scripts (`run_training.sh` or `run_profile.sh`).
 - unsloth-bnb
   - Fast LoRA implementation with fused bitsandbytes quantization and LoRA adapters for custom autograd.
 
+#### Additional
+
+Run
+
+```python
+python test_unsloth.py --help
+```
+
+for additional script options.
+
 **NOTE**: If profiling huggingface default models, need to change the following lines for backward profiling hooks to work
-https://github.com/huggingface/peft/blob/bfc102c0c095dc9094cdd3523b729583bfad4688/src/peft/tuners/lora/gptq.py#L70
-Original
+see [here](https://github.com/huggingface/peft/blob/bfc102c0c095dc9094cdd3523b729583bfad4688/src/peft/tuners/lora/gptq.py#L70)
+
+_Original_
 
 ```python
     result += output
     return result
 ```
 
-New
+_New_
 
 ```python
     return result + output
 ```
 
-Also need to patch https://github.com/huggingface/peft/blob/bfc102c0c095dc9094cdd3523b729583bfad4688/src/peft/tuners/lora/layer.py#L320 to
+Also need to patch the following [lines](https://github.com/huggingface/peft/blob/bfc102c0c095dc9094cdd3523b729583bfad4688/src/peft/tuners/lora/layer.py#L320) to
 
 ```python
 def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:

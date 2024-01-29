@@ -18,7 +18,7 @@ from unsloth.utils.profiling import (
     torch_profiler_context,
 )
 
-setup_logging(level="DEBUG")
+setup_logging(level="INFO")
 logger = logging.getLogger(__file__)
 
 
