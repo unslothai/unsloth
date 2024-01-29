@@ -80,7 +80,7 @@ _New_
     return result + output
 ```
 
-Also need to patch the following [lines](https://github.com/huggingface/peft/blob/bfc102c0c095dc9094cdd3523b729583bfad4688/src/peft/tuners/lora/layer.py#L320) to
+Also need to patch the following [lines](https://github.com/huggingface/peft/blob/bfc102c0c095dc9094cdd3523b729583bfad4688/src/peft/tuners/lora/layer.py#L320)
 
 ```python
 def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
