@@ -1,21 +1,31 @@
-## Benchmarking and Profiling
+## Profiling
 
-Script for running simple benchmarking and profiling of `unsloth` models and default `HuggingFace` peft training.
+Script for running simple profiling of `unsloth` models and default `HuggingFace` peft training.
 
-Benchmarking consists of running the `SFTTrainer` for small (defaults to 20) number of training steps and printing the resulting metrics.
+Operates in 2 modes:
 
-Profiling consists of running a sample batch of data through a given model with either the torch.profiler or cudaProfilerAPI.
+- Default: Runs `SFTTrainer` for small number of training steps and prints resulting metrics. Good sanity check of training time and loss.
 
-- Each forward / backward pass of each module of the model are appropriately marked (using `torch.profiler.record_function` or `torch.cuda.nvtx`), which should show up in `torch.profiler` or `nsys` traces
+- Profiling: Consists of running a sample batch of data through a given model instrumented with `torch.profiler` and also `cudaProfilerAPI` for `nsys` analysis.
+
+  - Every forward / backward pass of every module of the model are appropriately marked (using `torch.profiler.record_function` or `torch.cuda.nvtx`), which helps when viewing in `torch.profiler` and `nsys` traces.
 
 ### Usage
+
+Below command will run the Huggingface `SFTTrainer` for 20 steps and print the resulting training metrics to `stdout`
 
 ```
 python test_unsloth.py --model_name llama --model_type unsloth-bnb --dtype float16 --dataset guanaco --output_dir ./results
 
 ```
 
-The above will run the Huggingface `SFTTrainer` for 20 steps and print the resulting training metrics to `stdout`.
+Alternatively, the following will run the profiler using `torch.profiler`:
+
+```
+python test_unsloth.py --model_name llama --model_type unsloth-bnb --dtype float16 --profile --output_dir ./results
+```
+
+Submitting the above command to `nsys` will also work.
 
 ### Script args
 
@@ -48,13 +58,11 @@ The above will run the Huggingface `SFTTrainer` for 20 steps and print the resul
 
 #### Additional
 
-Run
+For additional options:
 
 ```python
 python test_unsloth.py --help
 ```
-
-for additional script options.
 
 **NOTE**: If profiling huggingface default models, need to change the following lines for backward profiling hooks to work
 see [here](https://github.com/huggingface/peft/blob/bfc102c0c095dc9094cdd3523b729583bfad4688/src/peft/tuners/lora/gptq.py#L70)
