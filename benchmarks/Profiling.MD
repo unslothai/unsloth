@@ -15,14 +15,14 @@ Operates in 2 modes:
 Below command will run the Huggingface `SFTTrainer` for 20 steps and print the resulting training metrics to `stdout`
 
 ```
-python test_unsloth.py --model_name llama --model_type unsloth-bnb --dtype float16 --dataset guanaco --output_dir ./results
+python benchmark.py --model_name llama --model_type unsloth-bnb --dtype float16 --dataset guanaco --output_dir ./results
 
 ```
 
 Alternatively, the following will run the profiler using `torch.profiler`:
 
 ```
-python test_unsloth.py --model_name llama --model_type unsloth-bnb --dtype float16 --profile --output_dir ./results
+python benchmark.py --model_name llama --model_type unsloth-bnb --dtype float16 --profile --output_dir ./results
 ```
 
 Submitting the above command to `nsys` will also work.
@@ -61,7 +61,7 @@ Submitting the above command to `nsys` will also work.
 For additional options:
 
 ```python
-python test_unsloth.py --help
+python benchmark.py --help
 ```
 
 **NOTE**: If profiling huggingface default models, need to change the following lines for backward profiling hooks to work
