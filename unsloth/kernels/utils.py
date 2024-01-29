@@ -191,9 +191,11 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
 
+    bsz = X.shape[0]
+
     if W_quant is None:
         out = torch.matmul(X, W.t())
-    elif X.shape[0] <= 4:
+    elif bsz <= 4:
         # Only batches of 4 are faster with Gemv
         out = fast_gemv(X, W, W_quant, out = out)
     else:
@@ -204,8 +206,13 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     # Add in LoRA weights
     if lora_A is not None:
         dtype = X.dtype
-        temp_lora = torch.matmul(X, lora_A.to(dtype).t(), out = temp_lora)
-        out.addmv_(lora_B.to(dtype).t(), temp_lora, alpha = lora_S)
+        if bsz == 1:
+            temp_lora = torch.mv(lora_A.to(dtype), X.ravel(), out = temp_lora)
+            out.addmv_(lora_B.to(dtype).t(), temp_lora, alpha = lora_S)
+        else:
+            temp_lora = torch.matmul(X, lora_A.to(dtype).t(), out = temp_lora)
+            out.addmm_(lora_B.to(dtype).t(), temp_lora, alpha = lora_S)
+        pass
     pass
 
     return out
