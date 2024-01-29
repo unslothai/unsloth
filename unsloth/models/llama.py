@@ -480,12 +480,9 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # Check for inference via the attention_mask
-    for_inference = (attention_mask is not None) and (attention_mask.shape[1] != seq_length)
-
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
-    if self._has_no_labels and not for_inference:
+    if self._has_no_labels and (attention_mask is not None) and (past_key_values is None):
         # Careful for inference the attention_mask is size (1, kv_seq_len)
         # Whilst the input_embeds is size (1, 1, 4096)
         inputs_requires_grad = inputs_embeds.requires_grad
@@ -577,7 +574,7 @@ def LlamaModel_fast_forward(
     pass
 
     bsz, q_len, hd = hidden_states.size()
-    if (past_key_value is not None and q_len == 1):
+    if (past_key_values is not None and q_len == 1):
         hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states)
