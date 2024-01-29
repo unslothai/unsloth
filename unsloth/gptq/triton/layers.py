@@ -18,6 +18,7 @@ For testing only -- replaces HuggingFace default GPTQ QLinear layer (`cuda / tor
 """
 
 
+# Adapted from https://github.com/AutoGPTQ/AutoGPTQ/blob/main/auto_gptq/nn_modules/qlinear/__init__.py
 class GPTQuantLinear(nn.Linear):
     def __init__(self, quant_linear_module, trainable=True):
         if hasattr(quant_linear_module, "base_layer"):

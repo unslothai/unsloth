@@ -13,6 +13,10 @@ logger = getLogger(__name__)
 
 @dataclass
 class GPTQuantState:
+    """
+    Stores params for GPTQ linear layer quantization
+    """
+
     infeatures: int
     outfeatures: int
 
@@ -24,7 +28,7 @@ class GPTQuantState:
     scales: torch.Tensor
     g_idx: torch.Tensor
 
-    # cuda_kernel params
+    # cuda_kernel params (not used currently)
     kernel_switch_threshold: int
     autogptq_cuda_available: bool = False
     autogptq_cuda: bool = False
@@ -108,6 +112,10 @@ def apply_lora_mlp(self, X):
 
 
 class QuantLinearFunction(torch.autograd.Function):
+    """
+    Similar to bitsandbytes implementation except uses fused triton quantized matmul kernels for GPTQ quant / dequant
+    """
+
     @staticmethod
     @custom_fwd
     def forward(ctx, input, qweight, scales, qzeros, g_idx, bits, maxq):
@@ -187,6 +195,9 @@ def matmul_gptq_triton(
 
 class LoRA_MLP(torch.autograd.Function):
     """
+    
+    Implementation of LoRA MLP per unsloth.kernels.fast_lora.py except with triton GPTQ fused quant/dequant matmul kernels
+    
     ### LoRA weights
     G = G + Ag @ Bg
     U = U + Au @ Bu
@@ -375,6 +386,8 @@ class LoRA_MLP(torch.autograd.Function):
 
 class LoRA_QKV(torch.autograd.Function):
     """
+    Implementation of LoRA QKV per unsloth.kernels.fast_lora.py except with triton GPTQ fused quant/dequant matmul kernels
+    
     ### LoRA weights
     Wq = Wq + Aq @ Bq
     Wk = Wk + Ak @ Bk
@@ -572,6 +585,8 @@ def apply_lora_qkv(self, X):
 
 class LoRA_W(torch.autograd.Function):
     """
+    Implementation of LoRA W per unsloth.kernels.fast_lora.py except with triton GPTQ fused quant/dequant matmul kernels
+
     ### LoRA weights
     Wq = Wq + Aq @ Bq
     Wk = Wk + Ak @ Bk

@@ -13,6 +13,8 @@ from .tuner import (
 
 logger = getLogger(__name__)
 
+# Adapted from https://github.com/AutoGPTQ/AutoGPTQ/blob/main/auto_gptq/nn_modules/triton_utils/kernels.py
+
 
 @custom_autotune(**CUSTOM_MATMUL_AUTOTUNE_CONFIGS)
 @triton.jit
