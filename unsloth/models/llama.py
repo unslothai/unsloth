@@ -345,7 +345,7 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-    if (past_key_value is not None and q_len == 1):
+    if False:#(past_key_value is not None and q_len == 1):
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -575,7 +575,7 @@ def LlamaModel_fast_forward(
     pass
 
     bsz, q_len, hd = hidden_states.size()
-    if (past_key_values is not None and q_len == 1):
+    if False:#(past_key_values is not None and q_len == 1):
         hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states)
@@ -638,12 +638,12 @@ def LlamaForCausalLM_fast_forward(
     )
 
     hidden_states = outputs[0]
-    bsz, q_len, hd = hidden_states.shape
-    if bsz == 1 and q_len == 1:
-        logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
-        logits = logits.unsqueeze(0).unsqueeze(0)
-    else:
-        logits = self.lm_head(hidden_states)
+    # bsz, q_len, hd = hidden_states.shape
+    # if bsz == 1 and q_len == 1:
+    #     logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+    #     logits = logits.unsqueeze(0).unsqueeze(0)
+    # else:
+    logits = self.lm_head(hidden_states)
     pass
 
     loss = None
