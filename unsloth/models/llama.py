@@ -69,7 +69,7 @@ pass
 
 
 from math import sqrt as math_sqrt
-def LlamaAttention_fast_forward_inference(
+def _LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
@@ -185,6 +185,87 @@ def LlamaAttention_fast_forward_inference(
 pass
 
 
+def LlamaAttention_fast_forward_inference(
+    self,
+    hidden_states:  torch.Tensor,
+    past_key_value: Optional[Tuple[torch.Tensor]],
+    position_ids,
+):
+    """
+        https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
+        Fast inference using KV cache.
+        QK^T can be computed in 4 chunks
+
+        [Q, q] @ [K, k].T where q, k are the new tokens.
+        [QK^T, Qk^T]
+        [qK^T, qk^T]
+
+        Since the attention mask wipes Qk^T, we just get
+        [QK^T,    0]
+        [qK^T, qk^T]
+
+        Since softmax is row-wise, we get
+        softmax([QK^T,    0])
+        softmax([qK^T, qk^T])
+
+        We then multiply by   [V]
+                              [v]
+        softmax([QK^T,    0]) [softmax(QK^T)V] *
+        softmax([qK^T, qk^T]) [softmax([qK^T, qk^T]) @ [V, v]]
+
+        But notice * [softmax(QK^T)V] is just the last attention.
+        We just need to compute the last final row.
+
+        This means we can pass in a row of Q, but we need to
+        remember K and V, which are called the KV cache.
+    """
+    Xn = hidden_states
+    bsz, _, _ = hidden_states.size()
+    K1, V1 = past_key_value
+
+    n_heads    = self.num_heads
+    n_groups   = self.num_key_value_groups
+    n_kv_heads = self.num_key_value_heads
+    head_dim   = self.head_dim
+    assert(n_kv_heads * n_groups == n_heads)
+
+    Qn = self.q_proj(Xn)
+    Kn = self.k_proj(Xn)
+    Vn = self.v_proj(Xn)
+    Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
+    Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
+    Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
+
+    kv_seq_len = K1.shape[-2] + 1
+    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    
+    # New KV cache
+    Kn = torch.cat([K1, Kn], dim = 2)
+    Vn = torch.cat([V1, Vn], dim = 2)
+
+    # Grouped query attention
+    if n_groups != 1:
+        _, _, cached_len, _ = Kn.shape
+        Knn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Vnn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
+        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
+    else:
+        Knn, Vnn = Kn, Vn
+
+    # Attention
+    A = torch.matmul(Qn, Knn.transpose(2, 3))
+    A *= 1.0 / (self.head_dim**0.5)
+    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(A.dtype)
+    A = torch.matmul(A, Vnn)
+    A = A.transpose(1, 2)
+    A = A.reshape(bsz, 1, self.hidden_size)
+    A = original_apply_o(self, A)
+    return A, (Kn, Vn)
+pass
+
+
 torch_silu = torch.nn.functional.silu
 def fast_mlp_inference(self, X):
     # gate = self.gate_proj(X)
@@ -229,7 +310,7 @@ def LlamaAttention_fast_forward(
     bsz, q_len, _ = hidden_states.size()
 
     # Check for inference
-    if False: #past_key_value is not None and q_len == 1 and bsz == 1:
+    if past_key_value is not None and q_len == 1 and bsz == 1:
         A, past_key_value = LlamaAttention_fast_forward_inference(
             self,
             hidden_states,
