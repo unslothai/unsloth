@@ -49,7 +49,7 @@ def MistralAttention_fast_forward(
     bsz, q_len, _ = hidden_states.size()
 
     # Check for inference
-    if True:
+    if past_key_value is not None and q_len == 1:
         A, past_key_value = LlamaAttention_fast_forward_inference(
             self,
             hidden_states,
