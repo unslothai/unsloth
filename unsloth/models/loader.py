@@ -71,7 +71,7 @@ class FastLanguageModel(FastLlamaModel):
         device_map     = "sequential",
         rope_scaling   = None,
         fix_tokenizer  = True,
-        use_gradient_checkpointing = False,
+        use_gradient_checkpointing = True,
         *args, **kwargs,
     ):
         old_model_name = model_name
