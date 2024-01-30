@@ -119,9 +119,7 @@ def fast_gemv(X, W, quant_state, out = None):
     # For fast X @ W where seq_len == 1
     # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
     bsz, q_len, hd = X.shape
-    device = X.device
     assert(q_len == 1)
-    assert(device == W.device)
 
     if type(quant_state) is not list:
         # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -144,7 +142,7 @@ def fast_gemv(X, W, quant_state, out = None):
     bout = shape[0]
 
     if out is None:
-        out = torch.empty((bsz, 1, bout,), dtype = dtype, device = device)
+        out = torch.empty((bsz, 1, bout,), dtype = dtype, device = "cuda")
     else:
         assert(out.shape == (bsz, 1, bout,))
     pass
@@ -162,7 +160,7 @@ def fast_gemv(X, W, quant_state, out = None):
     ldb = ctypes.c_int32(ldb)
     ldc = ctypes.c_int32(ldc)
 
-    df = torch.empty(absmax.shape, dtype = torch.float32, device = device)
+    df = torch.empty(absmax.shape, dtype = torch.float32, device = "cuda")
     cdequantize_blockwise_fp32(
         get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
         ctypes.c_int(blocksize2), ctypes.c_int(df.numel()),
