@@ -49,7 +49,7 @@ def MistralAttention_fast_forward(
     bsz, q_len, _ = hidden_states.size()
 
     # Check for inference
-    if past_key_value is not None and q_len == 1 and bsz == 1:
+    if past_key_value is not None:
         A, past_key_value = LlamaAttention_fast_forward_inference(
             self,
             hidden_states,
@@ -210,7 +210,13 @@ def MistralForCausalLM_fast_forward(
     )
 
     hidden_states = outputs[0]
-    logits = self.lm_head(hidden_states)
+    bsz, q_len, hd = hidden_states.shape
+    if bsz == 1 and q_len == 1:
+        logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+        logits = logits.unsqueeze(0).unsqueeze(0)
+    else:
+        logits = self.lm_head(hidden_states)
+    pass
 
     loss = None
     if labels is not None:
