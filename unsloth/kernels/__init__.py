@@ -22,4 +22,4 @@ from .fast_lora import (
 	apply_lora_qkv,
 	apply_lora_o,
 )
-from .utils import fast_dequantize, QUANT_STATE, fast_linear_forward
+from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward
