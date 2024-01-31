@@ -232,9 +232,9 @@ def LlamaAttention_fast_forward_inference(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
-    Qn = self.q_proj(Xn)
-    Kn = self.k_proj(Xn)
-    Vn = self.v_proj(Xn)
+    Qn = fast_linear_forward(self.q_proj, Xn)
+    Kn = fast_linear_forward(self.k_proj, Xn)
+    Vn = fast_linear_forward(self.v_proj, Xn)
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -261,10 +261,10 @@ def LlamaAttention_fast_forward_inference(
     A = torch.matmul(Qn, Knn.transpose(2, 3))
     A *= 1.0 / math_sqrt(self.head_dim)
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    A = torch.matmul(A, Vnn)
+    A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = self.o_proj(A)
+    A = fast_linear_forward(self.o_proj, A)
     return A, (Kn, Vn)
 pass
 
@@ -432,7 +432,7 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-    if False:#past_key_value is not None:
+    if past_key_value is not None:
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
