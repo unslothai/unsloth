@@ -68,7 +68,6 @@ __INT_TO_FLOAT_MAPPER = \
         "01-ai/Yi-6B",
     ),
     "unsloth/solar-10.7b-bnb-4bit" : (
-        "unsloth/solar-10.7b",
         "upstage/SOLAR-10.7B-v1.0",
     ),
 }
