@@ -574,6 +574,7 @@ def LlamaModel_fast_forward(
     pass
 
     # Ignore attention_mask
+    print(attention_mask)
     if attention_mask is None:
         padding_mask = None
     elif False:
