@@ -6,33 +6,59 @@
     <img alt="unsloth logo" src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png" height="120" style="max-width: 100%;">
   </picture>
 </p>
-<p align="center">
-  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="./images/Free version button.png" height="50"></a>
-  <a href="https://discord.gg/u54VK8m8tk"><img src="./images/Discord button.png" height="50"></a>
-  <a href="https://ko-fi.com/unsloth"><img src="./images/Kofi button.png" height="50"></a>
+ <p align="center">
+  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Free%20version%20button.png" height="50"></a>
+  <a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="50"></a>
+  <a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Kofi button.png" height="50"></a>
 </p>
+  <h3 align="center">Finetune Mistral, Llama 2-5x faster with 50% less memory!</h2>
+   
+![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
-<h2 align="center">
-    Finetune Mistral, Llama 2-5x faster with 50% less memory!
-</h2>
 <br>
 
-| Llama 7b                    | Mistral 7b                  | CodeLlama 34b           | Llama 7b Kaggle 2x T4  |
-|-----------------------------|-----------------------------|-------------------------|------------------------|
-| **2.2x faster 43% less VRAM**     | **2.2x faster 62% less VRAM**     | **1.9x faster 27% less VRAM**  | **5.5x faster 44% less VRAM** |
-| [⭐Llama **free** Colab 2x faster](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing") | [⭐Mistral **free** Colab 2x faster](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing) | [CodeLlama A100 Colab notebook](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing) | [⭐Kaggle **free** Alpaca notebook](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp)
-| [Llama A100 Colab notebook](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | [Mistral A100 Colab notebook](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | 50+ more examples below! | [⭐Kaggle **free** Slim Orca notebook](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) |
-
 ## ✨ Start finetuning for free now
-Use our free notebooks which we have already set up so you can easily finetune a model from scratch. No expertise & cost required!
+Use our free notebooks which we have already set up so you can easily finetune a model from scratch. No expertise & cost required!<br>All have **DPO support** included.
 
 | Models | Free Live Demos |
 |--------------|--------------|
-| 🦙   **Llama 7b**       | [Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing") |
+| 🦙   **Llama 7b**       | [Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) |
 | <img src="https://avatars.githubusercontent.com/u/132372032" height="16" /> **Mistral 7b**  | [Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)  |
+| **TinyLlama 1.1b**    | [Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing") |
 | <img src="https://codellama.dev/icons/white-transparentbg.png" height="16" /> **CodeLlama 34b**        | [Start on Colab](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) |
 | 🦙 **Llama 7b 2x T4**    | [Start on Kaggle](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |
 
+## 🦥 Unsloth.ai News
+- 📣 [DPO](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) support is now included. [More info](#DPO) on DPO.
+- 📣 [TinyLlama 1.1b](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing) on 3T tokens now works.
+- 📣 We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth).
+- 📣 Now supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
+- 📣 Download 4 bit models 4x faster from 🤗Hugging Face! Eg: `unsloth/mistral-7b-bnb-4bit`
+- 📣 Want a UI for finetuning? Try [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory) and use `--use_unsloth`
+
+## ⭐ Key Features
+* All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
+* **0% loss in accuracy** - no approximation methods - all exact.
+* No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
+* Works on **Linux** and **Windows** via WSL.
+* Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
+* Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
+
+<img src="./images/unsloth made with love.png" height="60" />
+If you trained a model with 🦥Unsloth, we made a cool sticker if you want to use it!
+
+## 🔗 Links and Resources
+| Type                            | Links                               |
+| ------------------------------- | --------------------------------------- |
+| 💼 **Documentation**              | 🤗Hugging Face's [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)|
+| 💾 **Installation**               | [TTS/README.md](https://github.com/coqui-ai/TTS/tree/dev#installation)|
+| <img src="https://avatars.githubusercontent.com/u/1965106" height="16" /> **Discord**               |  Join our [Discord](https://discord.gg/u54VK8m8tk)!|
+| 📌 **Road Map**                   | [Main Development Plans](https://github.com/coqui-ai/TTS/issues/378)
+| 🚀 **Released Models**            | [TTS Releases](https://github.com/coqui-ai/TTS/releases) and [Experimental Models](https://github.com/coqui-ai/TTS/wiki/Experimental-Released-Models)|
+| 📰 **Papers**                    | [TTS Papers](https://github.com/erogol/TTS-papers)|
+
+## 🥇 Performance benchmarking
+Check out much faster and less memory Unsloth uses compared to the industry standard!
 | Models | Performance | VRAM use |
 |--------------|--------------|-----------------|
 | Llama 7b       | 2.2x faster           | 43% less           |
@@ -40,32 +66,17 @@ Use our free notebooks which we have already set up so you can easily finetune a
 | CodeLlama 34b        | 1.9x faster           | 27% less           |
 | Llama 7b Kaggle 2x T4    | 5.5x faster           | 44% less           |
 
-* **NEW!** [DPO](https://arxiv.org/abs/2305.18290) support. ⭐**Free!** DPO Zephyr, Mistral example! <a href="https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing"><img src="./images/Colab.png" height="20">  [More info](#DPO) on DPO
-* **NEW!** [TinyLlama 1.1b](https://github.com/jzhang38/TinyLlama) on 3T tokens! ⭐**Free!** example <a href="https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing"><img src="./images/Colab.png" height="20">
-* **NEW!** We're in 🤗 Huggingface's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
-* Supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
-* All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
-* **0% loss in accuracy** - no approximation methods - all exact.
-* No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
-* Works on **Linux** and **Windows** via WSL.
-* **NEW!** Download 4 bit models 4x faster from 🤗 Huggingface! Eg: `unsloth/mistral-7b-bnb-4bit`
-* Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
-* **NEW!** Want a UI for finetuning? Try [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory) and use `--use_unsloth`!
-* Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
+This benchmarking table was conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
 
-| 1 A100 40GB  | 🤗 Hugging Face | Flash Attention | 🦥 Unsloth Open Source | [🦥 Unsloth Pro](https://unsloth.ai/pricing) |
+| 1 A100 40GB  | 🤗Hugging Face | Flash Attention | 🦥Unsloth Open Source | [🦥Unsloth Pro](https://unsloth.ai/pricing) |
 |--------------|--------------|-----------------|---------------------|-----------------|
 | Alpaca       | 1x           | 1.04x           | 1.98x               | **15.64x**      |
 | LAION Chip2  | 1x           | 0.92x           | 1.61x               | **20.73x**      |
 | OASST        | 1x           | 1.19x           | 2.17x               | **14.83x**      |
 | Slim Orca    | 1x           | 1.18x           | 2.22x               | **14.82x**      |
 
-Join our [Discord](https://discord.gg/nsS4V5Z6ge)!
 
-<img src="./images/unsloth made with love.png" width="200" />
-If you trained a model with 🦥 Unsloth, we made a cool sticker if you want to use it!
-
-# Installation Instructions - Conda
+## Installation Instructions - Conda
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1.
 ```bash
 conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
@@ -73,7 +84,7 @@ conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
 pip install "unsloth[conda] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
-# Installation Instructions - Pip
+## Installation Instructions - Pip
 Do **NOT** use this if you have Anaconda. You must use the Conda install method, or else stuff will BREAK.
 
 1. Find your CUDA version via
@@ -108,10 +119,10 @@ pip install "unsloth[cu121_ampere_torch211] @ git+https://github.com/unslothai/u
 pip install --upgrade pip
 ```
 
-# Documentation
+## Documentation
 We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
 
-We're in 🤗 Huggingface's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
+We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 
 ```python
 from unsloth import FastLanguageModel
@@ -177,7 +188,7 @@ trainer.train()
 ```
 
 <a name="DPO"></a>
-# DPO (Direct Preference Optimization) Support
+## DPO (Direct Preference Optimization) Support
 DPO, PPO, Reward Modelling all seem to work as per 3rd party independent testing from [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory). We have a preliminary Google Colab notebook for reproducing Zephyr on Tesla T4 here: [notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
 
 We're in 🤗 Huggingface's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
@@ -236,12 +247,12 @@ dpo_trainer.train()
 ```
 
 
-# Future Milestones and limitations
-1. Support Mixtral.
-2. Supports all Mistral, Llama type models, but some are unoptimized (Qwen with biases)
-3. Dropout, bias in LoRA matrices are supported, just not optimized.
+## Future Milestones and limitations
+- Support Mixtral.
+- Supports all Mistral, Llama type models, but some are unoptimized (Qwen with biases)
+- Dropout, bias in LoRA matrices are supported, just not optimized.
 
-# Performance comparisons on 1 Tesla T4 GPU:
+## Performance comparisons on 1 Tesla T4 GPU:
 **Time taken for 1 epoch**
 
 One Tesla T4 on Google Colab
@@ -263,7 +274,7 @@ One Tesla T4 on Google Colab
 | Unsloth Pro | 1 T4 | 6.4GB | 6.4GB | 6.4GB | 6.4GB |
 | Unsloth Max | 1 T4 | 11.4GB | 12.4GB | 11.9GB | 14.4GB |
 
-# Performance comparisons on 2 Tesla T4 GPUs via DDP:
+## Performance comparisons on 2 Tesla T4 GPUs via DDP:
 **Time taken for 1 epoch**
 
 Two Tesla T4s on Kaggle
@@ -285,7 +296,7 @@ Two Tesla T4s on Kaggle
 
 * Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
 
-# Llama-Factory 3rd party benchmarking
+## Llama-Factory 3rd party benchmarking
 
 | Method | Bits | TGS | GRAM | Speed |
 | --- | --- | --- | --- | --- |
@@ -297,10 +308,10 @@ Two Tesla T4s on Kaggle
 
 [Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table. TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
 
-# How did we make it faster?
+## How did we make it faster?
 Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unsloth.ai/blog/mistral-benchmark) for more info!
 
-# Troubleshooting
+## Troubleshooting
 1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
 ```bash
 !ldconfig /usr/lib64-nvidia
@@ -310,7 +321,7 @@ Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unslo
 3. If it doesn't install - maybe try updating `pip`.
 
 
-# Full benchmarking tables
+## Full benchmarking tables
 Click  "Code" for a fully reproducible example.
 "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
 | 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
@@ -449,7 +460,7 @@ Click  "Code" for a fully reproducible example.
 | memory MB| OOM  | OOM  | 7594 | 8881 | | |
 | % saved | OOM  | OOM  |       |       |  | |
 
-# Credits
+## Credits
 1. [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
 2. [152334H](https://github.com/152334H) for experimental DPO support
 3. [atgctg](https://github.com/atgctg) for syntax highlighting
