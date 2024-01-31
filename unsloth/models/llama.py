@@ -354,7 +354,7 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if False:#(not HAS_FLASH_ATTENTION):
+    if (not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -582,7 +582,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif False:
+    elif self.training:
         attention_mask = None
         padding_mask = None
     else:
@@ -661,7 +661,7 @@ def LlamaModel_fast_forward(
     pass
 
     bsz, q_len, hd = hidden_states.size()
-    if False:#past_key_values is not None:
+    if past_key_values is not None:
         hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states)
@@ -725,7 +725,7 @@ def LlamaForCausalLM_fast_forward(
 
     hidden_states = outputs[0]
     bsz, q_len, hd = hidden_states.shape
-    if False:#bsz == 1 and q_len == 1:
+    if bsz == 1 and q_len == 1:
         logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
         logits = logits.unsqueeze(0).unsqueeze(0)
     else:
@@ -877,7 +877,7 @@ class FastLlamaModel:
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             model_max_length = max_position_embeddings,
-            padding_side     = "left",
+            padding_side     = "right",
             token            = token,
         )
 
@@ -906,7 +906,7 @@ class FastLlamaModel:
                 tokenizer        = tokenizer,
                 model_name       = model_name,
                 model_max_length = max_position_embeddings,
-                padding_side     = "left",
+                padding_side     = "right",
                 token            = token,
             )
         pass
