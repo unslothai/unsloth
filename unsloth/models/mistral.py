@@ -214,7 +214,7 @@ def MistralForCausalLM_fast_forward(
 
     hidden_states = outputs[0]
     bsz, q_len, hd = hidden_states.shape
-    if False:#bsz == 1 and q_len == 1:
+    if bsz == 1 and q_len == 1:
         logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
         logits = logits.unsqueeze(0).unsqueeze(0)
     else:
