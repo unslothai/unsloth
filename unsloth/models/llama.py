@@ -351,7 +351,7 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION):
+    if False:#(not HAS_FLASH_ATTENTION):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -574,7 +574,6 @@ def LlamaModel_fast_forward(
     pass
 
     # Ignore attention_mask
-    print(attention_mask)
     if attention_mask is None:
         padding_mask = None
     elif False:
