@@ -259,12 +259,12 @@ def LlamaAttention_fast_forward_inference(
 
     # Attention
     A = torch.matmul(Qn, Knn.transpose(2, 3))
-    A *= 1.0 / (self.head_dim**0.5)
-    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(A.dtype)
+    A *= 1.0 / math_sqrt(self.head_dim)
+    A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = original_apply_o(self, A)
+    A = self.o_proj(A)
     return A, (Kn, Vn)
 pass
 
@@ -382,7 +382,6 @@ def LlamaAttention_fast_forward(
         V = V.transpose(1, 2)
         A = flash_attn_func(Q, K, V, causal = True)
     else:
-        print(attention_mask)
         # Grouped query attention
         if n_groups != 1:
             K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
@@ -433,7 +432,7 @@ def LlamaDecoderLayer_fast_forward(
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
     bsz, q_len, hd = hidden_states.size()
-    if past_key_value is not None:
+    if False:#past_key_value is not None:
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -587,10 +586,10 @@ def LlamaModel_fast_forward(
         attention_mask = None
         padding_mask = None
     else:
-        if 0 in attention_mask:
-            padding_mask = attention_mask
-        else:
-            padding_mask = None
+        # if 0 in attention_mask:
+        #     padding_mask = attention_mask
+        # else:
+        padding_mask = None
 
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
@@ -662,7 +661,7 @@ def LlamaModel_fast_forward(
     pass
 
     bsz, q_len, hd = hidden_states.size()
-    if past_key_values is not None:
+    if False:#past_key_values is not None:
         hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states)
@@ -726,7 +725,7 @@ def LlamaForCausalLM_fast_forward(
 
     hidden_states = outputs[0]
     bsz, q_len, hd = hidden_states.shape
-    if bsz == 1 and q_len == 1:
+    if False:#bsz == 1 and q_len == 1:
         logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
         logits = logits.unsqueeze(0).unsqueeze(0)
     else:
@@ -878,7 +877,7 @@ class FastLlamaModel:
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             model_max_length = max_position_embeddings,
-            padding_side     = "right",
+            padding_side     = "left",
             token            = token,
         )
 
@@ -907,7 +906,7 @@ class FastLlamaModel:
                 tokenizer        = tokenizer,
                 model_name       = model_name,
                 model_max_length = max_position_embeddings,
-                padding_side     = "right",
+                padding_side     = "left",
                 token            = token,
             )
         pass
