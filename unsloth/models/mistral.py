@@ -46,8 +46,6 @@ def MistralAttention_fast_forward(
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
-    bsz, q_len, _ = hidden_states.size()
-
     # Check for inference
     if past_key_value is not None:
         A, past_key_value = LlamaAttention_fast_forward_inference(
@@ -58,6 +56,8 @@ def MistralAttention_fast_forward(
         )
         return A, None, past_key_value
     pass
+
+    bsz, q_len, _ = hidden_states.size()
 
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
