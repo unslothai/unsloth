@@ -259,20 +259,19 @@ def LlamaAttention_fast_forward_inference(
     Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    print(K1.shape, V1.shape)
-    print(Kn.shape, Vn.shape)
     Kn = torch.cat([K1, Kn], dim = 2)
     Vn = torch.cat([V1, Vn], dim = 2)
-    print(Kn.shape, Vn.shape)
-    # if not hasattr(self, "paged_attention"):
-    #     self.paged_attention = torch.empty((2048, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
-    #     self.paged_attention_K = self.paged_attention[0]
-    #     self.paged_attention_V = self.paged_attention[1]
-    #     self.paged_attention_K[:,:,:seq_len,:] = K1
-    #     self.paged_attention_V[:,:,:seq_len,:] = V1
-    # pass
-    # Kn = self.paged_attention_K[:,:,seq_len,:] = Kn
-    # Vn = self.paged_attention_V[:,:,seq_len,:] = Vn
+    if not hasattr(self, "paged_attention"):
+        self.paged_attention = torch.empty((2048, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
+        self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
+    pass
+    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    Kn = self.paged_attention_K.permute(1, 2, 0, 3)
+    Vn = self.paged_attention_V.permute(1, 2, 0, 3)
 
     # Grouped query attention
     if n_groups != 1:
