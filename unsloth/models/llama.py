@@ -285,7 +285,7 @@ def fast_mlp_inference(self, X):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
-    mlp_size = model.config.intermediate_size
+    mlp_size = self.config.intermediate_size
     # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
 
     gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
