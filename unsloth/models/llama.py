@@ -268,8 +268,8 @@ def LlamaAttention_fast_forward_inference(
         self.paged_attention_K[:,:,:kv_seq_len,:] = K1
         self.paged_attention_V[:,:,:kv_seq_len,:] = V1
     pass
-    Kn = self.paged_attention_K[:,:,seq_len,:] = K1
-    Vn = self.paged_attention_V[:,:,seq_len,:] = V1
+    Kn = self.paged_attention_K[:,:,seq_len,:] = Kn
+    Vn = self.paged_attention_V[:,:,seq_len,:] = Vn
 
     # Grouped query attention
     if n_groups != 1:
