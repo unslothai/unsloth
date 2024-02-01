@@ -239,9 +239,21 @@ def LlamaAttention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    kv_seq_len = K1.shape[-2] + 1
-    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    seq_len = K1.shape[-2]
+    kv_seq_len = seq_len + 1
+    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    cos = self.rotary_emb.cos_cached[seq_len]
+    sin = self.rotary_emb.sin_cached[seq_len]
+    h = head_dim // 2
+
+    RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
+    Qn *= cos; Qn.addcmul_(RH_Q, sin);
+
+    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_K[:,:,:,:h] = Kn[:,:,:,h:]; RH_K[:,:,:,h:] = Kn[:,:,:,:h]; torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h]);
+    Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
     Kn = torch.cat([K1, Kn], dim = 2)
@@ -657,7 +669,7 @@ def LlamaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
     pass
-    
+
     if past_key_values is not None:
         hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
     else:
