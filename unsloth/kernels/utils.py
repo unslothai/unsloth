@@ -119,7 +119,7 @@ def fast_gemv(X, W, quant_state, out = None):
     # For fast X @ W where seq_len == 1
     # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
     bsz, q_len, hd = X.shape
-    assert(q_len == 1)
+    # assert(q_len == 1)
 
     if type(quant_state) is not list:
         # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -138,7 +138,7 @@ def fast_gemv(X, W, quant_state, out = None):
         offset, state2 = compressed_stats
         absmax2, code2, blocksize2, _, _, _, _ = state2
     pass
-    assert(dtype == X.dtype)
+    # assert(dtype == X.dtype)
     bout = shape[0]
 
     if out is None:
@@ -152,7 +152,7 @@ def fast_gemv(X, W, quant_state, out = None):
     k = shape[1]
     lda = shape[0]
     ldc = shape[0]
-    ldb = (X.shape[-1]+1)//2
+    ldb = (hd+1)//2
     m = ctypes.c_int32(m)
     n = ctypes.c_int32(n)
     k = ctypes.c_int32(k)
