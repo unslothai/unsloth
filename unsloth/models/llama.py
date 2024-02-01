@@ -261,10 +261,10 @@ def LlamaAttention_fast_forward_inference(
     # New KV cache
     # Kn = torch.cat([K1, Kn], dim = 2)
     # Vn = torch.cat([V1, Vn], dim = 2)
-    if not hasattr(self, "paged_attention_K"):
-        paged_attention = torch.empty((2, bsz, n_kv_heads, 2048, head_dim), dtype = dtype, device = "cuda")
-        self.paged_attention_K = paged_attention[0]
-        self.paged_attention_V = paged_attention[1]
+    if not hasattr(self, "paged_attention"):
+        self.paged_attention = torch.empty((2, bsz, n_kv_heads, 2048, head_dim), dtype = dtype, device = "cuda")
+        self.paged_attention_K = self.paged_attention[0]
+        self.paged_attention_V = self.paged_attention[1]
         self.paged_attention_K[:,:,:kv_seq_len,:] = K1
         self.paged_attention_V[:,:,:kv_seq_len,:] = V1
     pass
@@ -346,6 +346,10 @@ def LlamaAttention_fast_forward(
             position_ids,
         )
         return A, None, past_key_value
+    elif hasattr(self, "paged_attention_K"):
+        del self.paged_attention_K
+        del self.paged_attention_V
+        del self.paged_attention
     pass
 
     bsz, q_len, _ = hidden_states.size()
