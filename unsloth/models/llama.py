@@ -677,9 +677,15 @@ def LlamaModel_fast_forward(
     )
 pass
 
+import torch._dynamo.config
+import torch._inductor.config
+torch._inductor.config.coordinate_descent_tuning = True
+torch._inductor.config.triton.unique_kernel_names = True
+torch._inductor.config.fx_graph_cache = True # Experimental feature to reduce compilation times, will be on by default in future
+
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.compile
+@torch.compile(mode = "reduce-overhead", fullgraph = True)
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
