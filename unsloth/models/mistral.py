@@ -62,6 +62,8 @@ def MistralAttention_fast_forward(
         del self.temp_QA
         del self.temp_KV
         del self.RH_Q
+        del self.attention
+        del self.scalar
     pass
 
     bsz, q_len, _ = hidden_states.size()
