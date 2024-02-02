@@ -137,7 +137,7 @@ def LlamaAttention_fast_forward_inference(
         self.paged_attention.resize_((self.paged_attention.shape[0]+128, 2, bsz, n_kv_heads, head_dim))
         self.paged_attention_K = self.paged_attention[:,0]
         self.paged_attention_V = self.paged_attention[:,1]
-        self.attention.resize_((self.attention.shape[0]+128, n_heads, 1, 128))
+        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[0]+128))
     pass
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
