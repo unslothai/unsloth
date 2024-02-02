@@ -463,7 +463,7 @@ def LlamaDecoderLayer_fast_forward(
             del self.post_attention_layernorm.temp_buffer2
             del self.mlp.temp_buffer
         pass
-        
+
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -706,7 +706,7 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.compile
+@torch.inference_mode
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
