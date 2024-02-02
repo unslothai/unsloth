@@ -55,6 +55,10 @@ def MistralAttention_fast_forward(
             position_ids,
         )
         return A, None, past_key_value
+    elif hasattr(self, "paged_attention"):
+        del self.paged_attention_K
+        del self.paged_attention_V
+        del self.paged_attention
     pass
 
     bsz, q_len, _ = hidden_states.size()
