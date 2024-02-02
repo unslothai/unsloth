@@ -46,16 +46,8 @@ def MistralAttention_fast_forward(
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
-    # Check for inference
-    if past_key_value is not None:
-        A, past_key_value = LlamaAttention_fast_forward_inference(
-            self,
-            hidden_states,
-            past_key_value,
-            position_ids,
-        )
-        return A, None, past_key_value
-    elif hasattr(self, "paged_attention"):
+    # Clear inference
+    if hasattr(self, "paged_attention"):
         del self.paged_attention_K
         del self.paged_attention_V
         del self.paged_attention
