@@ -699,7 +699,7 @@ def LlamaModel_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states,
             past_key_values[idx],
-            position_ids,
+            None,
         )
         hidden_states += residual
 
