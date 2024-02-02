@@ -72,6 +72,8 @@ pass
 
 
 from math import sqrt as math_sqrt
+KV_CACHE_INCREMENT = 128 # KV Cache update size
+
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
@@ -123,7 +125,7 @@ def LlamaAttention_fast_forward_inference(
     # Prefill phase
     # if not hasattr(self, "paged_attention"):
     if do_prefill:
-        self.paged_attention = torch.empty((128+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
+        self.paged_attention = torch.empty((KV_CACHE_INCREMENT+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
         self.paged_attention_K = self.paged_attention[:,0]
         self.paged_attention_V = self.paged_attention[:,1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
@@ -131,13 +133,13 @@ def LlamaAttention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
-        self.attention = torch.empty((bsz, n_heads, 1, 128), dtype = dtype, device = "cuda")
+        self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT), dtype = dtype, device = "cuda")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
     elif kv_seq_len >= self.paged_attention.shape[0]:
-        self.paged_attention.resize_((self.paged_attention.shape[0]+128, 2, bsz, n_kv_heads, head_dim))
+        self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
         self.paged_attention_K = self.paged_attention[:,0]
         self.paged_attention_V = self.paged_attention[:,1]
-        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[0]+128))
+        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
     pass
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
