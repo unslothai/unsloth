@@ -72,122 +72,7 @@ pass
 
 
 from math import sqrt as math_sqrt
-def _LlamaAttention_fast_forward_inference(
-    self,
-    hidden_states:  torch.Tensor,
-    past_key_value: Optional[Tuple[torch.Tensor]],
-    position_ids,
-):
-    """
-        https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
-        Fast inference using KV cache.
-        QK^T can be computed in 4 chunks
-
-        [Q, q] @ [K, k].T where q, k are the new tokens.
-        [QK^T, Qk^T]
-        [qK^T, qk^T]
-
-        Since the attention mask wipes Qk^T, we just get
-        [QK^T,    0]
-        [qK^T, qk^T]
-
-        Since softmax is row-wise, we get
-        softmax([QK^T,    0])
-        softmax([qK^T, qk^T])
-
-        We then multiply by   [V]
-                              [v]
-        softmax([QK^T,    0]) [softmax(QK^T)V] *
-        softmax([qK^T, qk^T]) [softmax([qK^T, qk^T]) @ [V, v]]
-
-        But notice * [softmax(QK^T)V] is just the last attention.
-        We just need to compute the last final row.
-
-        This means we can pass in a row of Q, but we need to
-        remember K and V, which are called the KV cache.
-    """
-    n_heads    = self.num_heads
-    n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
-    head_dim   = self.head_dim
-    # assert(n_kv_heads * n_groups == n_heads)
-
-    Xn = hidden_states.view(self.hidden_size)
-    K1, V1 = past_key_value
-    seq_len = K1.shape[-2]
-    K1 = K1.view(n_kv_heads, seq_len, head_dim)
-    V1 = V1.view(n_kv_heads, seq_len, head_dim)
-
-    # LoRA or general matrix multiplication
-    dtype = Xn.dtype
-    # Qn = self.q_proj(Xn)
-    # Kn = self.k_proj(Xn)
-    # Vn = self.v_proj(Xn)
-    Qn = fast_linear_forward(self.q_proj, Xn)
-    Kn = fast_linear_forward(self.k_proj, Xn)
-    Vn = fast_linear_forward(self.v_proj, Xn)
-
-    # Qn = Qn.view(1, 1, n_heads,    head_dim).transpose(1, 2)
-    # Kn = Kn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
-    # Vn = Vn.view(1, 1, n_kv_heads, head_dim).transpose(1, 2)
-    Qn = Qn.view(n_heads,    1, head_dim)
-    Kn = Kn.view(n_kv_heads, 1, head_dim)
-    Vn = Vn.view(n_kv_heads, 1, head_dim)
-
-    # kv_seq_len = K1.shape[-2] + 1
-    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos = self.rotary_emb.cos_cached[seq_len]
-    sin = self.rotary_emb.sin_cached[seq_len]
-    h = head_dim // 2
-
-    RH_Q = torch.empty((n_heads, 1, head_dim), dtype = dtype, device = "cuda")
-    RH_Q[:, :, :h] = Qn[:, :, h:]; RH_Q[:, :, h:] = Qn[:, :, :h]; torch.neg(RH_Q[:, :, :h], out = RH_Q[:, :, :h]);
-    Qn *= cos; Qn.addcmul_(RH_Q, sin);
-
-    RH_K = RH_Q[:n_kv_heads, :, :] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
-    RH_K[:, :, :h] = Kn[:, :, h:]; RH_K[:, :, h:] = Kn[:, :, :h]; torch.neg(RH_K[:, :, :h], out = RH_K[:, :, :h]);
-    Kn *= cos; Kn.addcmul_(RH_K, sin);
-    
-    # New KV cache
-    # Kn = torch.cat([K1, Kn], dim = 2)
-    # Vn = torch.cat([V1, Vn], dim = 2)
-    Kn = torch.cat([K1, Kn], dim = 1)
-    Vn = torch.cat([V1, Vn], dim = 1)
-
-    # Grouped query attention
-    if n_groups != 1:
-        # _, _, cached_len, _ = Kn.shape
-        # Knn = Kn[:, :, None, :, :].expand(1, n_kv_heads, n_groups, cached_len, head_dim)
-        # Vnn = Vn[:, :, None, :, :].expand(1, n_kv_heads, n_groups, cached_len, head_dim)
-        # Knn = Knn.reshape(1, n_heads, cached_len, head_dim)
-        # Vnn = Vnn.reshape(1, n_heads, cached_len, head_dim)
-        new_seq_len = seq_len + 1
-        Knn = Kn[:, None, :, :].expand(n_kv_heads, n_groups, new_seq_len, head_dim)
-        Vnn = Vn[:, None, :, :].expand(n_kv_heads, n_groups, new_seq_len, head_dim)
-        Knn = Knn.reshape(n_heads, new_seq_len, head_dim)
-        Vnn = Vnn.reshape(n_heads, new_seq_len, head_dim)
-    else:
-        Knn, Vnn = Kn, Vn
-
-    # Attention
-    # A = torch.matmul(Qn, Knn.transpose(2, 3))
-    A = torch.matmul(Qn, Knn.transpose(1, 2))
-    A *= 1.0 / math_sqrt(self.head_dim)
-    A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    A = torch.matmul(A, Vnn, out = Qn)
-    # A = A.transpose(1, 2)
-    A = A.view(self.hidden_size)
-
-    # A = self.o_proj(A)
-    A = fast_linear_forward(self.o_proj, A)
-    A = A.reshape(1, 1, self.hidden_size)
-
-    # return A, (Kn, Vn)
-    return A, (Kn.unsqueeze(0), Vn.unsqueeze(0))
-pass
-
-
+@torch.compile
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
@@ -236,7 +121,7 @@ def LlamaAttention_fast_forward_inference(
     kv_seq_len = seq_len + 1
 
     if not hasattr(self, "paged_attention"):
-        self.paged_attention = torch.empty((2048, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
+        self.paged_attention = torch.empty((2048+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
         self.paged_attention_K = self.paged_attention[:,0]
         self.paged_attention_V = self.paged_attention[:,1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
@@ -299,6 +184,7 @@ def LlamaAttention_fast_forward_inference(
 pass
 
 
+@torch.compile
 def fast_mlp_inference(self, X):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
@@ -316,7 +202,7 @@ def fast_mlp_inference(self, X):
     return down
 pass
 
-
+@torch.compile
 def fast_rms_layernorm_inference(self, X):
     old_dtype = X.dtype
     XX = X.to(torch.float32)
