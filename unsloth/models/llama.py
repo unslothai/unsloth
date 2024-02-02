@@ -752,7 +752,6 @@ def LlamaForCausalLM_fast_forward(
 
     if past_key_value is not None and \
         hasattr(self.model.layers[0].self_attn, "paged_attention"):
-        print(1)
         outputs = LlamaModel_fast_forward_inference(
             self.model,
             input_ids,

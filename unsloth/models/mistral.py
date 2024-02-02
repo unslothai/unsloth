@@ -200,18 +200,28 @@ def MistralForCausalLM_fast_forward(
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
-    outputs = self.model(
-        input_ids=input_ids,
-        causal_mask=causal_mask,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_values=past_key_values,
-        inputs_embeds=inputs_embeds,
-        use_cache=use_cache,
-        output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
-        return_dict=return_dict,
-    )
+
+    if past_key_value is not None and \
+        hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        outputs = LlamaModel_fast_forward_inference(
+            self.model,
+            input_ids,
+            past_key_values,
+        )
+    else:
+        outputs = self.model(
+            input_ids=input_ids,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+    pass
 
     hidden_states = outputs[0]
     bsz, q_len, hd = hidden_states.shape
