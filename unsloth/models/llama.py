@@ -683,7 +683,7 @@ torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.compile(mode = "reduce-overhead", fullgraph = True)
+@torch.compile(mode = "reduce-overhead")
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
