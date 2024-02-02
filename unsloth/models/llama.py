@@ -232,12 +232,21 @@ def LlamaAttention_fast_forward_inference(
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
     # assert(n_kv_heads * n_groups == n_heads)
-    temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
-    temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
 
-    Qn = fast_linear_forward(self.q_proj, Xn, out = temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn, out = temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn, out = temp_KV[1])
+    if not hasattr(self, "paged_attention"):
+        self.paged_attention = torch.zeros((2048, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
+        self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
+        self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
+        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    pass
+
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -250,7 +259,7 @@ def LlamaAttention_fast_forward_inference(
     sin = self.rotary_emb.sin_cached[seq_len]
     h = head_dim // 2
 
-    RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_Q = self.RH_Q
     RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
     Qn *= cos; Qn.addcmul_(RH_Q, sin);
 
@@ -259,19 +268,12 @@ def LlamaAttention_fast_forward_inference(
     Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    Kn = torch.cat([K1, Kn], dim = 2)
-    Vn = torch.cat([V1, Vn], dim = 2)
-    # if not hasattr(self, "paged_attention"):
-    #     self.paged_attention = torch.zeros((2048, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
-    #     self.paged_attention_K = self.paged_attention[:,0]
-    #     self.paged_attention_V = self.paged_attention[:,1]
-    #     self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
-    #     self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-    # pass
-    # self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
-    # self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
-    # Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
-    # Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+    # Kn = torch.cat([K1, Kn], dim = 2)
+    # Vn = torch.cat([V1, Vn], dim = 2)
+    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Grouped query attention
     if n_groups != 1:
@@ -285,12 +287,13 @@ def LlamaAttention_fast_forward_inference(
 
     # Attention
     A = torch.matmul(Qn, Knn.transpose(2, 3))
+    print(A.shape)
     A *= 1.0 / math_sqrt(self.head_dim)
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = fast_linear_forward(self.o_proj, A, out = temp_QA[1])
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1])
     return A, (Kn, Vn)
 pass
 
@@ -352,6 +355,9 @@ def LlamaAttention_fast_forward(
         del self.paged_attention_K
         del self.paged_attention_V
         del self.paged_attention
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
     pass
 
     bsz, q_len, _ = hidden_states.size()
@@ -578,7 +584,7 @@ def LlamaModel_fast_forward(
     pass
 
     # We already handle KV cache position_ids ourselves.
-    if (past_key_values_length != 0):
+    if False:#(past_key_values_length != 0):
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
