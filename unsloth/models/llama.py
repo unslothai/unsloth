@@ -232,6 +232,8 @@ def LlamaAttention_fast_forward_inference(
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
     # assert(n_kv_heads * n_groups == n_heads)
+    seq_len = K1.shape[-2]
+    kv_seq_len = seq_len + 1
 
     if not hasattr(self, "paged_attention"):
         self.paged_attention = torch.zeros((2048, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
@@ -251,8 +253,6 @@ def LlamaAttention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    seq_len = K1.shape[-2]
-    kv_seq_len = seq_len + 1
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
     cos = self.rotary_emb.cos_cached[seq_len]
