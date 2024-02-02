@@ -204,12 +204,12 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     # Add in LoRA weights
     if lora_A is not None:
         dtype = X.dtype
-        if not hasattr(lora_A, "_fast_lora_A"):
-            lora_A._fast_lora_A = lora_A.to(dtype)
-            lora_A._fast_lora_B = lora_B.to(dtype)
+        if not hasattr(lora_A, "_fast_lora"):
+            lora_A._fast_lora = lora_A.to(dtype)
+            lora_B._fast_lora = lora_B.to(dtype)
         pass
-        lora_A = lora_A._fast_lora_A
-        lora_B = lora_A._fast_lora_B
+        lora_A = lora_A._fast_lora
+        lora_B = lora_B._fast_lora
 
         out_dim = out.shape[2]
         if bsz == 1:
