@@ -750,7 +750,7 @@ def LlamaForCausalLM_fast_forward(
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
 
-    if past_key_value is not None and \
+    if past_key_values is not None and \
         hasattr(self.model.layers[0].self_attn, "paged_attention"):
         outputs = LlamaModel_fast_forward_inference(
             self.model,
