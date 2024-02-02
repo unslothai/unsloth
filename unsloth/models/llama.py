@@ -142,6 +142,7 @@ def LlamaAttention_fast_forward_inference(
         self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
     pass
 
+    print(1)
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
     Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
