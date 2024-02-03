@@ -51,6 +51,9 @@ def MistralAttention_fast_forward(
         del self.paged_attention_K
         del self.paged_attention_V
         del self.paged_attention
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
         del self.attention
     pass
 
