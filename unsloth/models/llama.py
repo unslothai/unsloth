@@ -316,12 +316,21 @@ def LlamaAttention_fast_forward(
             K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
             V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
         pass
+
+        attn_weights = torch.matmul(Q, K.transpose(2, 3)) / math_sqrt(self.head_dim)
+        attn_weights = attn_weights + attention_mask
+
+        # upcast attention to fp32
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(Q.dtype)
+        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        A = torch.matmul(attn_weights, V)
+
         # Must be contiguous or else results are False!
         # https://github.com/pytorch/pytorch/issues/112577
-        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+        # Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+        # # Needs (batch_size, n_heads, seq_len, head_dim)
+        # # is_casual and attention_mask must not be both set!
+        # A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
