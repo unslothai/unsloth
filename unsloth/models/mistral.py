@@ -137,6 +137,7 @@ def MistralAttention_fast_forward(
         window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
+        print("0", end = "")
         # Grouped query attention
         # if n_groups != 1:
         K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
