@@ -282,7 +282,6 @@ def LlamaAttention_fast_forward(
 
     # Attention module
     if (not HAS_FLASH_ATTENTION and attention_mask is None):
-        print(1)
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -310,7 +309,6 @@ def LlamaAttention_fast_forward(
         V = V.transpose(1, 2)
         A = flash_attn_func(Q, K, V, causal = True)
     else:
-        print(2)
         # Grouped query attention
         if n_groups != 1:
             K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
@@ -803,7 +801,7 @@ class FastLlamaModel:
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
-        FastLlamaModel.pre_patch()
+        # FastLlamaModel.pre_patch()
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
