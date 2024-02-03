@@ -142,9 +142,12 @@ def LlamaAttention_fast_forward_inference(
     #     self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
     # pass
 
-    Qn = fast_linear_forward(self.q_proj, Xn)#, out = self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn)#, out = self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn)#, out = self.temp_KV[1])
+    Qn = self.q_proj(Xn)
+    Kn = self.k_proj(Xn)
+    Vn = self.v_proj(Xn)
+    # Qn = fast_linear_forward(self.q_proj, Xn)#, out = self.temp_QA[0])
+    # Kn = fast_linear_forward(self.k_proj, Xn)#, out = self.temp_KV[0])
+    # Vn = fast_linear_forward(self.v_proj, Xn)#, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -188,25 +191,26 @@ def LlamaAttention_fast_forward_inference(
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = fast_linear_forward(self.o_proj, A)#, out = self.temp_QA[1])
+    A = self.o_proj(A)
+    # A = fast_linear_forward(self.o_proj, A)#, out = self.temp_QA[1])
     return A, (Kn, Vn)
 pass
 
 
 def fast_mlp_inference(self, X):
-    # gate = self.gate_proj(X)
-    # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     mlp_size = self.config.intermediate_size
     temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
 
-    gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
-    up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
+    gate = self.gate_proj(X)
+    up   = self.up_proj(X)
+    # gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
+    # up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
     gate = torch.nn.functional.silu(gate, inplace = True)
     gate *= up
 
-    # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
+    X = self.down_proj(gate)
+    # down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
     return down
 pass
 
@@ -364,7 +368,7 @@ def LlamaDecoderLayer_fast_forward(
 
         # Self Attention
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             self.self_attn,
             hidden_states,
@@ -376,7 +380,7 @@ def LlamaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_mlp_inference(self.mlp, hidden_states)
         hidden_states += residual
     else:
@@ -620,7 +624,7 @@ def LlamaModel_fast_forward_inference(
     for idx, decoder_layer in enumerate(self.layers):
         # Self Attention
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(decoder_layer.input_layernorm, hidden_states)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states,
@@ -631,13 +635,13 @@ def LlamaModel_fast_forward_inference(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm(decoder_layer.post_attention_layernorm, hidden_states)
         hidden_states = fast_mlp_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
+    hidden_states = fast_rms_layernorm(self.norm, hidden_states)
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
