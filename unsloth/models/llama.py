@@ -125,54 +125,51 @@ def LlamaAttention_fast_forward_inference(
     # Prefill phase
     # if not hasattr(self, "paged_attention"):
     if do_prefill:
-    #     self.paged_attention = torch.empty((KV_CACHE_INCREMENT+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
-    #     self.paged_attention_K = self.paged_attention[:,0]
-    #     self.paged_attention_V = self.paged_attention[:,1]
-    #     self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
-    #     self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-    #     self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
-    #     self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
-    #     self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
-    #     self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT), dtype = dtype, device = "cuda")
+        self.paged_attention = torch.empty((KV_CACHE_INCREMENT+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
+        self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
+        self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
+        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
+        self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT), dtype = dtype, device = "cuda")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
-    # elif kv_seq_len >= self.paged_attention.shape[0]:
-    #     self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
-    #     self.paged_attention_K = self.paged_attention[:,0]
-    #     self.paged_attention_V = self.paged_attention[:,1]
-    #     self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
-    # pass
-
-    Qn = self.q_proj(Xn)
-    Kn = self.k_proj(Xn)
-    Vn = self.v_proj(Xn)
-    # Qn = fast_linear_forward(self.q_proj, Xn)#, out = self.temp_QA[0])
-    # Kn = fast_linear_forward(self.k_proj, Xn)#, out = self.temp_KV[0])
-    # Vn = fast_linear_forward(self.v_proj, Xn)#, out = self.temp_KV[1])
+    elif kv_seq_len >= self.paged_attention.shape[0]:
+        self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
+    pass
+    
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    # cos = self.rotary_emb.cos_cached[seq_len]
-    # sin = self.rotary_emb.sin_cached[seq_len]
-    # h = head_dim // 2
+    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    cos = self.rotary_emb.cos_cached[seq_len]
+    sin = self.rotary_emb.sin_cached[seq_len]
+    h = head_dim // 2
 
-    # RH_Q = self.RH_Q
-    # RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
-    # Qn *= cos; Qn.addcmul_(RH_Q, sin);
+    RH_Q = self.RH_Q
+    RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
+    Qn *= cos; Qn.addcmul_(RH_Q, sin);
 
-    # RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
-    # RH_K[:,:,:,:h] = Kn[:,:,:,h:]; RH_K[:,:,:,h:] = Kn[:,:,:,:h]; torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h]);
-    # Kn *= cos; Kn.addcmul_(RH_K, sin);
+    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_K[:,:,:,:h] = Kn[:,:,:,h:]; RH_K[:,:,:,h:] = Kn[:,:,:,:h]; torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h]);
+    Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    Kn = torch.cat([K1, Kn], dim = 2)
-    Vn = torch.cat([V1, Vn], dim = 2)
-    # self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
-    # self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
-    # Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
-    # Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+    # Kn = torch.cat([K1, Kn], dim = 2)
+    # Vn = torch.cat([V1, Vn], dim = 2)
+    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Grouped query attention
     if n_groups != 1:
@@ -185,32 +182,31 @@ def LlamaAttention_fast_forward_inference(
         Knn, Vnn = Kn, Vn
 
     # Attention
-    A = torch.matmul(Qn, Knn.transpose(2, 3))#, out = self.attention[:,:,:,:kv_seq_len])
+    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:kv_seq_len])
     A *= self.scalar
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = self.o_proj(A)
-    # A = fast_linear_forward(self.o_proj, A)#, out = self.temp_QA[1])
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1])
     return A, (Kn, Vn)
 pass
 
 
 def fast_mlp_inference(self, X):
+    # gate = self.gate_proj(X)
+    # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     mlp_size = self.config.intermediate_size
     temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
 
-    gate = self.gate_proj(X)
-    up   = self.up_proj(X)
-    # gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
-    # up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
+    gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
+    up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
     gate = torch.nn.functional.silu(gate, inplace = True)
     gate *= up
 
-    down = self.down_proj(gate)
-    # down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
+    # X = self.down_proj(gate)
+    down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
     return down
 pass
 
@@ -368,7 +364,7 @@ def LlamaDecoderLayer_fast_forward(
 
         # Self Attention
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             self.self_attn,
             hidden_states,
@@ -380,7 +376,7 @@ def LlamaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_mlp_inference(self.mlp, hidden_states)
         hidden_states += residual
     else:
@@ -624,7 +620,7 @@ def LlamaModel_fast_forward_inference(
     for idx, decoder_layer in enumerate(self.layers):
         # Self Attention
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(decoder_layer.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states,
@@ -635,13 +631,13 @@ def LlamaModel_fast_forward_inference(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(decoder_layer.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
         hidden_states = fast_mlp_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm(self.norm, hidden_states)
+    hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
