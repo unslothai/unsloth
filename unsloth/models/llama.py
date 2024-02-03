@@ -514,7 +514,6 @@ def LlamaModel_fast_forward(
         # if 0 in attention_mask:
         #     padding_mask = attention_mask
         # else:
-        print(attention_mask)
         padding_mask = None
 
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
@@ -529,11 +528,12 @@ def LlamaModel_fast_forward(
     hidden_states = inputs_embeds
 
     if past_key_values is None and self.gradient_checkpointing and self.training:
-        if use_cache:
-            logger.warning_once(
-                "Unsloth: `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`"
-            )
-            use_cache = False
+        use_cache = False
+        # if use_cache:
+        #     logger.warning_once(
+        #         "Unsloth: `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`"
+        #     )
+        #     use_cache = False
     pass
 
     # decoder layers
