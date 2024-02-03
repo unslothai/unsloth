@@ -90,7 +90,7 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION):
+    if (not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -128,7 +128,7 @@ def MistralAttention_fast_forward(
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif HAS_FLASH_ATTENTION:
+    elif (HAS_FLASH_ATTENTION and attention_mask is None):
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
