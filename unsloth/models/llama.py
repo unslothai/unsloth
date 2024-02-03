@@ -209,7 +209,7 @@ def fast_mlp_inference(self, X):
     gate = torch.nn.functional.silu(gate, inplace = True)
     gate *= up
 
-    X = self.down_proj(gate)
+    down = self.down_proj(gate)
     # down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
     return down
 pass
