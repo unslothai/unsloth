@@ -10,15 +10,24 @@
 <a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="50"></a>
 <a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Kofi button.png" height="50"></a>
 
-  
-### 🦥Unsloth is an open-source library for easy & fast fine-tuning.
+<p align="center">
+  <!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
+  <img alt="GitHub commit activity" src="https://img.shields.io/github/commit-activity/m/"/>
+  <img alt="Github Last Commit" src="https://img.shields.io/github/last-commit/"/>
+  <img alt="Github Contributors" src="https://img.shields.io/github/contributors/"/>
+  <img alt="GitHub closed issues" src="https://img.shields.io/github/issues-closed/"/>
+  <img alt="Discord" src="https://img.shields.io/discord/?label=discord"/>
+</p>
 
+### Finetune Mistral, Llama 2-5x faster with 50% less memory!
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
 </div>
 
-## ✨ Start fine-tuning for free now
-Use our free notebooks which we have already set up so you can easily finetune a model from scratch. No expertise & cost required!<br>All have **DPO support** included.
+## ✨ Start Finetuning for Free Now
+- Use our free notebooks which we have already set up so you can easily finetune a model from scratch.
+- No expertise & cost required!
+- All have **DPO support** included.
     
 | Models | Free Live Demos | Performance | VRAM use |
 |--------------|--------------|--------------|--------------|
@@ -41,6 +50,7 @@ Use our free notebooks which we have already set up so you can easily finetune a
 | ------------------------------- | --------------------------------------- |
 | 📰 **Documentation**              | 🤗Hugging Face's [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)|
 | 💾 **Installation**               | [TTS/README.md](https://github.com/coqui-ai/TTS/tree/dev#installation)|
+| <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  Join our [Discord](https://discord.gg/u54VK8m8tk)!|
 | <img height="13" src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/653714c174fc6c8bbea73caf_636e0a69f118df70ad7828d4_icon_clyde_blurple_RGB.svg" />&nbsp; **Discord**              |  Join our [Discord](https://discord.gg/u54VK8m8tk)!|
 | 📌 **Road Map**                   | [Main Development Plans](https://github.com/coqui-ai/TTS/issues/378)
 | 📌 **Benchmarking**                   | [Main Development Plans](https://github.com/coqui-ai/TTS/issues/378)
@@ -78,8 +88,6 @@ This benchmarking table was conducted by [🤗Hugging Face](https://huggingface.
 <br>
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
-
-<br>
 
 ## Installation Instructions - Conda
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1.
@@ -301,18 +309,6 @@ Two Tesla T4s on Kaggle
 
 * Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
 
-## Llama-Factory 3rd party benchmarking
-
-| Method | Bits | TGS | GRAM | Speed |
-| --- | --- | --- | --- | --- |
-| HF | 16 | 2392 | 18GB | 100% |
-| HF+FA2 | 16 | 2954 | 17GB | 123% |
-| Unsloth+FA2 | 16 | 4007 | 16GB | **168%** |
-| HF | 4 | 2415 | 9GB | 101% |
-| Unsloth+FA2 | 4 | 3726 | 7GB | **160%** |
-
-[Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table. TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
-
 ## How did we make it faster?
 Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unsloth.ai/blog/mistral-benchmark) for more info!
 
@@ -326,9 +322,11 @@ Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unslo
 3. If it doesn't install - maybe try updating `pip`.
 
 
-## Full benchmarking tables
-Click  "Code" for a fully reproducible example.
-"Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
+## Benchmarking tables
+- Click  "Code" for a fully reproducible example.
+- "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
+- For the full list of benchmarking tables, go to our website.
+  
 | 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
 |--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
 | Alpaca       | 1x          | 1.04x       | 1.98x           | 2.48x        | 5.32x         | **15.64x**      |
@@ -337,31 +335,16 @@ Click  "Code" for a fully reproducible example.
 | memory MB| 18235 | 15365 | 9631 | 8525 | | |
 | % saved| | 15.74 | 47.18 | 53.25 | | | |
 
+### Llama-Factory 3rd party benchmarking
+- [Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table. TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
 
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| LAION Chip2  | 1x          | 0.92x       | 1.61x           | 1.84x        | 7.05x         | **20.73x**      |
-| code |[Code](https://colab.research.google.com/drive/1gjL1TaKwc_xv2TcxJC8QWEWBG1msh3g2?usp=sharing) |    [Code](https://colab.research.google.com/drive/15vlPjMr8xDj5BFhGdqunGaOQSMqXPEXU?usp=sharing) |    [Code](https://colab.research.google.com/drive/1zPwvf-BmHyHlPMBxDsY8zS0BnQ-KKbCc?usp=sharing) |    [Code](https://colab.research.google.com/drive/1X2uHy-arRsZxqWHvKHwwW102JaMwChD2?usp=sharing) | | |
-| seconds| 581  | 631  | 361 | 315 | 82  | 28  |
-| memory MB| 7763  | 8047  | 7763 | 6441 | | |
-| % saved| | -3.66 | 0.00  | 17.03 | | | |
-
-
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| OASST        | 1x          | 1.19x       | 2.17x           | 2.66x        | 5.04x         | **14.83x**      |
-| code |[Code](https://colab.research.google.com/drive/10NzDreFbuWELGUuBv0MOoC7y3MBewaNx?usp=sharing) |    [Code](https://colab.research.google.com/drive/1TwdkJ1sHsuEH-kgeCPqSFeCpOnCfz6Ou?usp=sharing) |    [Code](https://colab.research.google.com/drive/1AkwjUkOF0XeRBMT_S8Uhh74kitEsZHla?usp=sharing) |    [Code](https://colab.research.google.com/drive/1roMkp2UjbeK2t3DkNz50cRs1MT92RPFT?usp=sharing) | | |
-| seconds| 1852 | 1558 | 852 | 696 | 367 | 125 |
-| memory MB| 26431 | 16565 | 12267| 11223| | |
-| % saved| | 37.33 | 53.59 | 57.54 | | |
-
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| Slim Orca    | 1x          | 1.18x       | 2.22x           | 2.64x        | 5.04x         | **14.82x**      |
-| code |[Code](https://colab.research.google.com/drive/1UNo1xsMl8YH7xnWnIVjDFnCAPfc0RGgu?usp=sharing) |    [Code](https://colab.research.google.com/drive/1zbphER-SKhbSWGjHTfnBLPFyTgIVvaeH?usp=sharing) |    [Code](https://colab.research.google.com/drive/156si33585iv4Uh-VILFglUmIMrNCNuc2?usp=sharing) |    [Code](https://colab.research.google.com/drive/1_mhZy7dfl9jEnJRuJBZJ5y3OwW06jgQA?usp=sharing) | | |
-| seconds| 1824 | 1545 | 821 | 691 | 362 | 123 |
-| memory MB| 24557 | 15681 | 10595| 9007 | | |
-| % saved| | 36.14 | 56.86 | 63.32 | | |
+| Method | Bits | TGS | GRAM | Speed |
+| --- | --- | --- | --- | --- |
+| HF | 16 | 2392 | 18GB | 100% |
+| HF+FA2 | 16 | 2954 | 17GB | 123% |
+| Unsloth+FA2 | 16 | 4007 | 16GB | **168%** |
+| HF | 4 | 2415 | 9GB | 101% |
+| Unsloth+FA2 | 4 | 3726 | 7GB | **160%** |
 
 ### Mistral 7b
 | 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
@@ -391,30 +374,6 @@ Click  "Code" for a fully reproducible example.
 | memory MB       | 7199        | 7059        | 6459            | 5443         |               |             |
 | % saved        |         | 1.94        | 10.28           | 24.39        |               | |
 
-| 1 T4 16GB  | Hugging Face | Flash Attention | Unsloth Open    | Unsloth Pro Equal | Unsloth Pro   | Unsloth Max |
-|--------------|-------------|-----------------|-----------------|---------------|---------------|-------------|
-| LAION Chip2  | 1x          | 0.99x           | 1.80x           | 1.75x         | 4.15x         | **11.75x**      |
-| code | [Code](https://colab.research.google.com/drive/1EtdStADehE4FVJnU2Cu6O8p9jDYdqG2L?usp=sharing) |    [Code](https://colab.research.google.com/drive/1Ik4jO68odUiQIJ_szZ3xok5fk58WpA5Q?usp=sharing) |    [Code](https://colab.research.google.com/drive/1E2nR4V3bXIWBQIUE7uR39lYPr3UikzqH?usp=sharing) |    [Code](https://colab.research.google.com/drive/13jbj8D8FOt9KyXwZt9Yf2MsYkD8CyCVR?usp=sharing) | | |
-| seconds  | 952         | 955         | 529             | 543          | 229           | 81          | 
-| memory MB  | 6037        | 6033        | 5797            | 4855         |               | |
-| % saved   |         | 0.07        | 3.98            | 19.58        |               | |
-
-| 1 T4 16GB  | Hugging Face | Flash Attention | Unsloth Open    | Unsloth Pro Equal | Unsloth Pro   | Unsloth Max |
-|--------------|-------------|-----------------|-----------------|---------------|---------------|-------------|
-| OASST        | 1x          | 1.19x           | 1.95x           | 1.86x         | 2.58x         | **7.3x**        |
-| code | [Code](https://colab.research.google.com/drive/1aXzGgEM3yYB6SWy_XR81nQFWME40ksSy?usp=sharing) |    [Code](https://colab.research.google.com/drive/1-5MdIOp0cM0scC-CdRZhh8OYhnGHqct4?usp=sharing) |    [Code](https://colab.research.google.com/drive/1n-fgduZhRUsSjgpqNtVkXA3rSfE7iBdg?usp=sharing) |    [Code](https://colab.research.google.com/drive/1z_GlHr2M_bB4lQrPhdWC7dseZv23cBIy?usp=sharing) | | |
-| seconds        | 2640        | 2222        | 1355            | 1421         | 1024          | 362         |
-| memory MB        | 14827       | 10391       | 8413            | 7031         |               | |
-| % saved         |         | 29.92       | 43.26           | 52.58        |               | |
-
-| 1 T4 16GB  | Hugging Face | Flash Attention | Unsloth Open    | Unsloth Pro Equal | Unsloth Pro   | Unsloth Max |
-|--------------|-------------|-----------------|-----------------|---------------|---------------|-------------|
-| Slim Orca    | 1x          | 1.21x           | 1.77x           | 1.85x         | 2.71x         | **7.67x**       |
-| code | [Code](https://colab.research.google.com/drive/15yLlJx9IE84kzx7ikky45pRcarPyUtEs?usp=sharing) |    [Code](https://colab.research.google.com/drive/16IShIBmjKULWy87I-xURpj4nztTkAF13?usp=sharing) |    [Code](https://colab.research.google.com/drive/1CJG3XLg_OQpCz71eB7Uqx7wuK_n2b-a8?usp=sharing) |    [Code](https://colab.research.google.com/drive/1UmwuWHtlrC6MAfl9mX7A_TRfo5iSHDa-?usp=sharing) | | |
-| seconds    | 2735        | 2262        | 1545            | 1478         | 1009          | 356         |
-| memory MB    | 13933       | 10489       | 7661            | 6563         |               | |
-| % saved    |         | 24.72       | 45.02           | 52.90        |               | |
-
 ### 2 Tesla T4s via DDP
 
  | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
@@ -424,46 +383,6 @@ Click  "Code" for a fully reproducible example.
 | seconds       | 9882     | 9946        | 1996            | 2227         | 1357          | 480         |
 | memory MB| 9176 | 9128 | 6904 | 6782 |  | |
 | % saved |     | 0.52 | 24.76 | 26.09 |  | | |
-
- | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|----------|-------------|-----------------|--------------|---------------|-------------|
-| LAION Chip2  | 1x       | 1.12x       | 5.28x           | 4.21x        | 10.01x        | **28.32x**      |
-| code | [Code](https://www.kaggle.com/danielhanchen/hf-original-laion-t4-ddp) |    [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-laion-t4-ddp) |    [Code](https://www.kaggle.com/danielhanchen/unsloth-laion-t4-ddp) | | |
-| seconds  | 5418     | 4854        | 1027            | 1286         | 541           | 191         |
-| memory MB| 7316 | 7316 | 5732 | 5934 |  | |
-| % saved |     | 0.00 | 21.65 | 18.89 |  | |
-
- | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|----------|-------------|-----------------|--------------|---------------|-------------|
-| OASST (bsz=1)        | 1x       | 1.14x       | 5.56x           | 5.09x        | 5.64x         | **15.97x**      |
-| code | [Code](https://www.kaggle.com/danielhanchen/hf-original-oasst-bsz1-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-oasst-bsz1-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/unsloth-oasst-bsz1-t4-ddp) | | | |
-| seconds        | 4503 | 3955 | 811 | 885 | 798 | 282 |
-| memory MB | 11896 | 11628 | 6616 | 7105 |  | |
-| % saved |     | 2.25 | 44.38 | 40.27 |  | |
-
- | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|----------|-------------|-----------------|--------------|---------------|-------------|
-| Slim Orca (bsz=1)    | 1x       | 0.97x       | 5.54x           | 4.68x        | 6.88x         | **19.46x**       |
-| code | [Code](https://www.kaggle.com/danielhanchen/hf-original-slimorca-bsz1-t4-ddp) |    [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-slimorca-bsz1-t4-ddp) |    [Code](https://www.kaggle.com/danielhanchen/unsloth-slimorca-bsz1-t4-ddp) | | |
-| seconds | 4042 | 4158 | 729 | 863 | 588 | 208 |
-| memory MB| 11010 | 11042 | 6492 | 7410 |  | |
-| % saved |     | -0.29| 41.04 | 32.70 |  | | |
-
- | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|----------|-------------|-----------------|--------------|---------------|-------------|
-| OASST (bsz=2)        | OOM ❌      | OOM ❌       |  ✓          | ✓         | ✓         | ✓ |
-| code | [Code](https://www.kaggle.com/danielhanchen/hf-original-oasst-t4-ddp) |    [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-oasst-t4-ddp) |    [Code](https://www.kaggle.com/danielhanchen/unsloth-oasst-t4-ddp) | | | |
-| seconds        | OOM      | OOM         | 2719            | 3391         | 2794          | 987         |
-| memory MB| OOM  | OOM  | 8134 | 9600 |  | |
-| % saved | OOM  | OOM  |       |       |  | |
-
- | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|----------|-------------|-----------------|--------------|---------------|-------------|
-| Slim Orca (bsz=2)    | OOM ❌       | OOM ❌       |  ✓          | ✓        | ✓         |✓ |
-| code  | [Code](https://www.kaggle.com/danielhanchen/hf-original-slimorca-t4-ddp) |     [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-slimorca-t4-ddp) |     [Code](https://www.kaggle.com/danielhanchen/unsloth-slimorca-t4-ddp) | | |
-| seconds    | OOM      | OOM         | 2990            | 3444         | 2351          | 831         |
-| memory MB| OOM  | OOM  | 7594 | 8881 | | |
-| % saved | OOM  | OOM  |       |       |  | |
 
 ## Credits
 1. [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
