@@ -160,7 +160,7 @@ def LlamaAttention_fast_forward_inference(
     sin = self.rotary_emb.sin_cached[seq_len]
     h = head_dim // 2
 
-    RH_Q = self.RH_Q
+    # RH_Q = self.RH_Q
     RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
     Qn *= cos; Qn.addcmul_(RH_Q, sin);
 
