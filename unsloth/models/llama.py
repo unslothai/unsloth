@@ -680,7 +680,7 @@ def LlamaModel_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states,
             past_key_values[idx],
-            dp_prefill = False,
+            do_prefill = False,
             temp_QA = temp_QA,
             temp_KV = temp_KV,
             RH_Q = RH_Q,
