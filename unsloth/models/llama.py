@@ -221,7 +221,7 @@ pass
 def fast_rms_layernorm_inference(self, X, temp1 = None, temp2 = None):
     old_dtype = X.dtype
 
-    if XX is None:
+    if temp1 is None:
         bsz, _, hd = X.shape
         temp1 = torch.empty((2, bsz, 1, hd), dtype = torch.float32, device = "cuda")
         temp2 = torch.empty((bsz, 1, hd), dtype = old_dtype, device = "cuda")
@@ -680,9 +680,9 @@ def LlamaModel_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states,
             past_key_values[idx],
-            temp_QA = temp_QA,
-            temp_KV = temp_KV,
-            RH_Q = RH_Q,
+            temp_QA,
+            temp_KV,
+            RH_Q,
         )
         hidden_states += residual
 
