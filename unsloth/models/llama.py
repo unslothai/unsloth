@@ -309,7 +309,6 @@ def LlamaAttention_fast_forward(
         V = V.transpose(1, 2)
         A = flash_attn_func(Q, K, V, causal = True)
     else:
-        print("0", end = "")
         # Grouped query attention
         if n_groups != 1:
             K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
@@ -515,6 +514,7 @@ def LlamaModel_fast_forward(
         # if 0 in attention_mask:
         #     padding_mask = attention_mask
         # else:
+        print(attention_mask)
         padding_mask = None
 
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
@@ -1208,11 +1208,6 @@ class FastLlamaModel:
 
     @staticmethod
     def for_inference(model):
-        if not hasattr(model, "_original_forward"):
-            model._original_forward = model.forward
-        pass
-        model.forward = torch.inference_mode(model._original_forward)
-
         internal_model = model
         internal_model.gradient_checkpointing = False
         internal_model.training = False
@@ -1227,10 +1222,6 @@ class FastLlamaModel:
 
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
-        if hasattr(model, "_original_forward"):
-            model.forward = model._original_forward
-        pass
-
         internal_model = model
         internal_model.gradient_checkpointing = use_gradient_checkpointing
         internal_model.training = True

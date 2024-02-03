@@ -128,7 +128,7 @@ def MistralAttention_fast_forward(
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif (HAS_FLASH_ATTENTION and attention_mask is None):
+    elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
@@ -137,7 +137,6 @@ def MistralAttention_fast_forward(
         window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
-        print("0", end = "")
         # Grouped query attention
         # if n_groups != 1:
         K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
@@ -178,7 +177,7 @@ def MistralForCausalLM_fast_forward(
     *args, **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-    if causal_mask is None:
+    if causal_mask is None and past_key_values is None:
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
         if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
