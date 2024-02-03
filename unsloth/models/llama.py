@@ -367,7 +367,7 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    if past_key_value is not None:
+    if False:#past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
 
         # Self Attention
@@ -480,7 +480,7 @@ def LlamaModel_fast_forward(
     pass
 
     # We already handle KV cache position_ids ourselves.
-    if False:#(past_key_values_length != 0):
+    if (past_key_values_length != 0):
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
@@ -685,7 +685,7 @@ def LlamaForCausalLM_fast_forward(
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
 
-    if past_key_values is not None and \
+    if False:#past_key_values is not None and \
         hasattr(self.model.layers[0].self_attn, "paged_attention"):
         outputs = LlamaModel_fast_forward_inference(
             self.model,
@@ -709,7 +709,7 @@ def LlamaForCausalLM_fast_forward(
 
     hidden_states = outputs[0]
     bsz, q_len, hd = hidden_states.shape
-    if bsz == 1 and q_len == 1:
+    if False:#bsz == 1 and q_len == 1:
         logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
         logits = logits.unsqueeze(0).unsqueeze(0)
     else:
