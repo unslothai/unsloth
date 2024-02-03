@@ -767,7 +767,7 @@ class FastLlamaModel:
 
     @staticmethod
     def pre_patch():
-        LlamaAttention      .forward = LlamaAttention_fast_forward
+        # LlamaAttention      .forward = LlamaAttention_fast_forward
         LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
         LlamaFlashAttention2.forward = LlamaAttention_fast_forward
         LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
@@ -801,7 +801,7 @@ class FastLlamaModel:
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
-        # FastLlamaModel.pre_patch()
+        FastLlamaModel.pre_patch()
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
