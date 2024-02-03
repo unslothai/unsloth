@@ -686,7 +686,7 @@ def LlamaForCausalLM_fast_forward(
     self.model._has_no_labels = labels is None
 
     if False:#past_key_values is not None and \
-        hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        #hasattr(self.model.layers[0].self_attn, "paged_attention"):
         outputs = LlamaModel_fast_forward_inference(
             self.model,
             input_ids,
