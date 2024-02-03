@@ -471,7 +471,7 @@ def LlamaModel_fast_forward(
     pass
 
     # We already handle KV cache position_ids ourselves.
-    if False:#(past_key_values_length != 0):
+    if (past_key_values_length != 0):
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
