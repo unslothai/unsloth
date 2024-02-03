@@ -358,7 +358,7 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    if False:#past_key_value is not None:
+    if past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
 
         # Self Attention
@@ -471,7 +471,7 @@ def LlamaModel_fast_forward(
     pass
 
     # We already handle KV cache position_ids ourselves.
-    if (past_key_values_length != 0):
+    if False:#(past_key_values_length != 0):
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
