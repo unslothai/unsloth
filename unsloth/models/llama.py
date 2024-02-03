@@ -321,8 +321,8 @@ def LlamaAttention_fast_forward(
         attn_weights = attn_weights + attention_mask
 
         # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(Q.dtype)
-        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(Q.dtype)
+        attn_weights = torch.nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         A = torch.matmul(attn_weights, V)
 
         # Must be contiguous or else results are False!
