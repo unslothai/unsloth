@@ -282,6 +282,7 @@ def LlamaAttention_fast_forward(
 
     # Attention module
     if (not HAS_FLASH_ATTENTION and attention_mask is None):
+        print(1)
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -309,7 +310,7 @@ def LlamaAttention_fast_forward(
         V = V.transpose(1, 2)
         A = flash_attn_func(Q, K, V, causal = True)
     else:
-        print(attention_mask)
+        print(2)
         # Grouped query attention
         if n_groups != 1:
             K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
