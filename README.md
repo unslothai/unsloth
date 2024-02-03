@@ -1,40 +1,51 @@
+<div align="center">
 
-<p align="center">
-  <picture>
+  <br><picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20white%20text.png">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png">
     <img alt="unsloth logo" src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png" height="120" style="max-width: 100%;">
   </picture>
-</p>
- <p align="center">
-  <a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Free%20version%20button.png" height="50"></a>
-  <a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="50"></a>
-  <a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Kofi button.png" height="50"></a>
-</p>
-  <h3 align="center">Finetune Mistral, Llama 2-5x faster with 50% less memory!</h2>
-   
+  
+<a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Free%20version%20button.png" height="50"></a>
+<a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="50"></a>
+<a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Kofi button.png" height="50"></a>
+
+  
+### 🦥Unsloth is an open-source library for easy & fast fine-tuning.
+
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
-<br>
+</div>
 
-## ✨ Start finetuning for free now
+## ✨ Start fine-tuning for free now
 Use our free notebooks which we have already set up so you can easily finetune a model from scratch. No expertise & cost required!<br>All have **DPO support** included.
     
 | Models | Free Live Demos | Performance | VRAM use |
 |--------------|--------------|--------------|--------------|
-| **Llama 7b**       | ▶️[Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | 2.2x faster           | 43% less           |
-| **Mistral 7b**  | ▶️[Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)  | 2.2x faster           | 62% less    |
-| **TinyLlama 1.1b**    | ▶️[Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing") | 3.9x faster           | 74% less           |
-| **CodeLlama 34b**        | ▶️[Start on Colab](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | 1.9x faster           | 27% less           |
-| **Llama 7b 2x T4**    | ▶️[Start on Kaggle](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |  5.5x faster           | 44% less           |
+| **Llama 7b**       | [▶️Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing) | 2.2x faster           | 43% less           |
+| **Mistral 7b**  | [▶️Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)  | 2.2x faster           | 62% less    |
+| **TinyLlama 1.1b**    | [▶️Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing") | 3.9x faster           | 74% less           |
+| **CodeLlama 34b**        | [▶️Start on Colab](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) | 1.9x faster           | 27% less           |
+| **Llama 7b 2x T4**    | [▶️Start on Kaggle](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) |  5.5x faster           | 44% less           |
 
-## 🦥 Unsloth.ai News
+## 🦥Unsloth.ai News
 - 📣 [DPO](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) support is now included. [More info](#DPO) on DPO.
 - 📣 [TinyLlama 1.1b](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing) on 3T tokens now works.
 - 📣 We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth).
 - 📣 Now supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
 - 📣 Download 4 bit models 4x faster from 🤗Hugging Face! Eg: `unsloth/mistral-7b-bnb-4bit`
 - 📣 Want a UI for finetuning? Try [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory) and use `--use_unsloth`
+
+## 🔗 Links and Resources
+| Type                            | Links                               |
+| ------------------------------- | --------------------------------------- |
+| 📰 **Documentation**              | 🤗Hugging Face's [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)|
+| 💾 **Installation**               | [TTS/README.md](https://github.com/coqui-ai/TTS/tree/dev#installation)|
+| <img height="13" src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/653714c174fc6c8bbea73caf_636e0a69f118df70ad7828d4_icon_clyde_blurple_RGB.svg" />&nbsp; **Discord**              |  Join our [Discord](https://discord.gg/u54VK8m8tk)!|
+| 📌 **Road Map**                   | [Main Development Plans](https://github.com/coqui-ai/TTS/issues/378)
+| 📌 **Benchmarking**                   | [Main Development Plans](https://github.com/coqui-ai/TTS/issues/378)
+| 🌐 **Released Models**            | [Unsloth Releases](https://huggingface.co/unsloth)|
+| ✍️ **Blog**                    | [Read our Blogs](https://github.com/erogol/TTS-papers)|
 
 ## ⭐ Key Features
 * All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
@@ -45,15 +56,6 @@ Use our free notebooks which we have already set up so you can easily finetune a
 * Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
 * If you trained a model with 🦥Unsloth, we made a cool sticker if you want to use it! <br><br> <img src="./images/unsloth made with love.png" height="60" />
 
-## 🔗 Links and Resources
-| Type                            | Links                               |
-| ------------------------------- | --------------------------------------- |
-| 📰 **Documentation**              | 🤗Hugging Face's [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)|
-| 💾 **Installation**               | [TTS/README.md](https://github.com/coqui-ai/TTS/tree/dev#installation)|
-| <img height="13" src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/653714c174fc6c8bbea73caf_636e0a69f118df70ad7828d4_icon_clyde_blurple_RGB.svg" />&nbsp; **Discord**              |  Join our [Discord](https://discord.gg/u54VK8m8tk)!|
-| 📌 **Road Map**                   | [Main Development Plans](https://github.com/coqui-ai/TTS/issues/378)
-| 🌐 **Released Models**            | [Unsloth Releases](https://huggingface.co/unsloth)|
-| ✍️ **Blog**                    | [Read our Blogs](https://github.com/erogol/TTS-papers)|
 
 ## 🥇 Performance benchmarking
 Check out much faster and less memory Unsloth uses compared to the industry standard!
