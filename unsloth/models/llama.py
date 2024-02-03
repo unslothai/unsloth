@@ -78,8 +78,10 @@ def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
-    position_ids,
     do_prefill = False,
+    temp_QA = None,
+    temp_KV = None,
+    RH_Q = None,
 ):
     """
         https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
@@ -130,9 +132,6 @@ def LlamaAttention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:,1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
-        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
-        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT), dtype = dtype, device = "cuda")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
     elif kv_seq_len >= self.paged_attention.shape[0]:
@@ -141,7 +140,13 @@ def LlamaAttention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:,1]
         self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
     pass
-    
+
+    if temp_QA is None:
+        temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
+        temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
+        RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    pass
+
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
     Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
@@ -193,12 +198,14 @@ def LlamaAttention_fast_forward_inference(
 pass
 
 
-def fast_mlp_inference(self, X):
+def fast_mlp_inference(self, X, temp = None):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
-    mlp_size = self.config.intermediate_size
-    temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
+    if temp is None:
+        mlp_size = self.config.intermediate_size
+        temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
+    pass
 
     gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
     up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
@@ -211,13 +218,26 @@ def fast_mlp_inference(self, X):
 pass
 
 
-def fast_rms_layernorm_inference(self, X):
+def fast_rms_layernorm_inference(self, X, temp1 = None, temp2 = None):
     old_dtype = X.dtype
-    XX = X.to(torch.float32)
-    variance = XX.square().mean(-1, keepdim = True)
+
+    if XX is None:
+        bsz, _, hd = X.shape
+        temp1 = torch.empty((2, bsz, 1, hd), dtype = torch.float32, device = "cuda")
+        temp2 = torch.empty((bsz, 1, hd), dtype = old_dtype, device = "cuda")
+    pass
+
+    XX  = temp1[0]
+    XX2 = temp1[1]
+
+    # XX = X.to(torch.float32)
+    XX[:] = X
+    # variance = XX.square().mean(-1, keepdim = True)
+    variance = torch.square(XX, out = XX2).mean(-1, keepdim = True)
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
-    X = XX.to(old_dtype) # Must preserve due to residual
+    # X = XX.to(old_dtype) # Must preserve due to residual
+    temp2[:] = XX; X = temp2
     X *= self.weight
     return X
 pass
@@ -242,11 +262,7 @@ def LlamaAttention_fast_forward(
         del self.paged_attention_K
         del self.paged_attention_V
         del self.paged_attention
-        del self.temp_QA
-        del self.temp_KV
-        del self.RH_Q
         del self.attention
-        del self.scalar
     pass
 
     bsz, q_len, _ = hidden_states.size()
@@ -369,7 +385,6 @@ def LlamaDecoderLayer_fast_forward(
             self.self_attn,
             hidden_states,
             past_key_value,
-            position_ids,
             do_prefill = do_prefill,
         )
         hidden_states += residual
@@ -428,6 +443,16 @@ def LlamaModel_fast_forward(
     return_dict:          Optional[bool] = None,
     *args, **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
+    
+    # Clear inference
+    if hasattr(self, "temp_QA"):
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
+        del self.mlp_temp
+        del self.layernorm1
+        del self.layernorm2
+    pass
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     assert(output_attentions is False)
@@ -613,31 +638,77 @@ def LlamaModel_fast_forward_inference(
 ):
     # Fix out of bounds tokenization
     input_ids = input_ids[:,:self.max_seq_length]
-
     hidden_states = self.embed_tokens(input_ids)
+    bsz, q_len, hd = hidden_states.shape
+    dtype = hidden_states.dtype
+
+    first_attention = self.layers[0].self_attn
+    n_heads    = first_attention.num_heads
+    n_groups   = first_attention.num_key_value_groups
+    n_kv_heads = first_attention.num_key_value_heads
+    head_dim   = first_attention.head_dim
+    mlp_size = self.config.intermediate_size
+
+    # Temporary matrices
+    if not hasattr(self, "temp_QA"):
+        self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
+        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
+        self.mlp_temp = torch.empty((2, bsz, 1, mlp_size), dtype = dtype, device = "cuda")
+        self.layernorm1 = torch.empty((2, bsz, 1, hd), dtype = torch.float32, device = "cuda")
+        self.layernorm2 = torch.empty((bsz, 1, hd), dtype = dtype, device = "cuda")
+    pass
+    temp_QA  = self.temp_QA
+    temp_KV  = self.temp_KV
+    RH_Q     = self.RH_Q
+    mlp_temp = self.mlp_temp
+    layernorm1 = self.layernorm1
+    layernorm2 = self.layernorm2
+    #
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
         # Self Attention
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_inference(
+            decoder_layer.input_layernorm,
+            hidden_states,
+            layernorm1,
+            layernorm2,
+        )
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states,
             past_key_values[idx],
-            None,
+            temp_QA = temp_QA,
+            temp_KV = temp_KV,
+            RH_Q = RH_Q,
         )
         hidden_states += residual
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
-        hidden_states = fast_mlp_inference(decoder_layer.mlp, hidden_states)
+        hidden_states = fast_rms_layernorm_inference(
+            decoder_layer.post_attention_layernorm,
+            hidden_states,
+            layernorm1,
+            layernorm2,
+        )
+        hidden_states = fast_mlp_inference(
+            decoder_layer.mlp,
+            hidden_states,
+            mlp_temp,
+        )
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
+    hidden_states = fast_rms_layernorm_inference(
+        self.norm,
+        hidden_states,
+        layernorm1,
+        layernorm2,
+    )
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
