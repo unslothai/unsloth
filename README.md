@@ -20,6 +20,15 @@
 - Use our free Colab notebooks which we have already set up so you can easily finetune a model from scratch.
 - No expertise & cost required!
 - All have **DPO support** included.
+
+| Models          | Free Live Demos                                                                                                          | Performance | VRAM use |
+|-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
+| **Llama 7b**       | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
+| **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
+| **TinyLlama 1.1b** | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing")              | 3.9x faster | 74% less |
+| **CodeLlama 34b**  | [▶️ Start on Colab](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing)              | 1.9x faster | 27% less |
+| **Llama 7b 2x T4** | [▶️ Start on Kaggle](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) | 5.5x faster | 44% less |
+
     
 | Models | Free Live Demos | Performance | VRAM use |
 |--------------|--------------|--------------|--------------|
@@ -375,7 +384,6 @@ Two Tesla T4s on Kaggle
 | memory MB| 9176 | 9128 | 6904 | 6782 |  | |
 | % saved |     | 0.52 | 24.76 | 26.09 |  | | |
 
-<br>
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 <br>
@@ -385,4 +393,4 @@ Two Tesla T4s on Kaggle
 2. [152334H](https://github.com/152334H) for experimental DPO support
 3. [atgctg](https://github.com/atgctg) for syntax highlighting
    
-<a href="https://unsloth.ai"><img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth end.png" height="200"></a>
+<a href="https://unsloth.ai"><img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth end.png"></a>
