@@ -6,26 +6,18 @@
     <img alt="unsloth logo" src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png" height="120" style="max-width: 100%;">
   </picture>
   
-<a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Free%20version%20button.png" height="50"></a>
+<a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/start free finetune button.png" height="50"></a>
 <a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="50"></a>
 <a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Kofi button.png" height="50"></a>
 
-<p align="center">
-  <!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-  <img alt="GitHub commit activity" src="https://img.shields.io/github/commit-activity/m/"/>
-  <img alt="Github Last Commit" src="https://img.shields.io/github/last-commit/"/>
-  <img alt="Github Contributors" src="https://img.shields.io/github/contributors/"/>
-  <img alt="GitHub closed issues" src="https://img.shields.io/github/issues-closed/"/>
-  <img alt="Discord" src="https://img.shields.io/discord/?label=discord"/>
-</p>
-
 ### Finetune Mistral, Llama 2-5x faster with 50% less memory!
+
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
 </div>
 
 ## ✨ Start Finetuning for Free Now
-- Use our free notebooks which we have already set up so you can easily finetune a model from scratch.
+- Use our free Colab notebooks which we have already set up so you can easily finetune a model from scratch.
 - No expertise & cost required!
 - All have **DPO support** included.
     
@@ -50,10 +42,10 @@
 | ------------------------------- | --------------------------------------- |
 | 📰 **Documentation**              | 🤗Hugging Face's [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)|
 | 💾 **Installation**               | [TTS/README.md](https://github.com/coqui-ai/TTS/tree/dev#installation)|
-| <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  Join our [Discord](https://discord.gg/u54VK8m8tk)!|
-| <img height="13" src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/653714c174fc6c8bbea73caf_636e0a69f118df70ad7828d4_icon_clyde_blurple_RGB.svg" />&nbsp; **Discord**              |  Join our [Discord](https://discord.gg/u54VK8m8tk)!|
+| <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  Follow us on [X](https://twitter.com/unslothai)|
+| <img height="13" src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/653714c174fc6c8bbea73caf_636e0a69f118df70ad7828d4_icon_clyde_blurple_RGB.svg" />&nbsp; **Discord**              |  Join our [Discord](https://discord.gg/u54VK8m8tk)|
 | 📌 **Road Map**                   | [Main Development Plans](https://github.com/coqui-ai/TTS/issues/378)
-| 📌 **Benchmarking**                   | [Main Development Plans](https://github.com/coqui-ai/TTS/issues/378)
+| 🥇 **Benchmarking**                   | [Performance Tables](https://github.com/coqui-ai/TTS/issues/378)
 | 🌐 **Released Models**            | [Unsloth Releases](https://huggingface.co/unsloth)|
 | ✍️ **Blog**                    | [Read our Blogs](https://github.com/erogol/TTS-papers)|
 
@@ -67,8 +59,10 @@
 * If you trained a model with 🦥Unsloth, we made a cool sticker if you want to use it! <br><br> <img src="./images/unsloth made with love.png" height="60" />
 
 
-## 🥇 Performance benchmarking
-Check out much faster and less memory Unsloth uses compared to the industry standard!
+## 🥇 Performance Benchmarking
+- Check out much faster and less memory Unsloth uses compared to the industry standard!
+- For the full list of **reproducable** benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
+ 
 | Models | Performance | VRAM use |
 |--------------|--------------|-----------------|
 | Llama 7b       | 2.2x faster           | 43% less           |
@@ -260,10 +254,10 @@ dpo_trainer.train()
 ```
 
 
-## Future Milestones and limitations
-- Support Mixtral.
-- Supports all Mistral, Llama type models, but some are unoptimized (Qwen with biases)
-- Dropout, bias in LoRA matrices are supported, just not optimized.
+## 📌 Unsloth.ai Roadmap
+- [ ] Support Mixtral.
+- [x] Support all Mistral, Llama type models, but some are unoptimized (Qwen with biases)
+- [ ] Dropout, bias in LoRA matrices are supported, just not optimized.
 
 ## Performance comparisons on 1 Tesla T4 GPU:
 **Time taken for 1 epoch**
@@ -309,9 +303,6 @@ Two Tesla T4s on Kaggle
 
 * Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
 
-## How did we make it faster?
-Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unsloth.ai/blog/mistral-benchmark) for more info!
-
 ## Troubleshooting
 1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
 ```bash
@@ -322,10 +313,10 @@ Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unslo
 3. If it doesn't install - maybe try updating `pip`.
 
 
-## Benchmarking tables
+## 🥇 Benchmarking Tables
 - Click  "Code" for a fully reproducible example.
 - "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
-- For the full list of benchmarking tables, go to our website.
+- For the full list of benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
   
 | 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
 |--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
@@ -384,8 +375,14 @@ Manual autograd, Triton kernels etc. See our [Benchmark Breakdown](https://unslo
 | memory MB| 9176 | 9128 | 6904 | 6782 |  | |
 | % saved |     | 0.52 | 24.76 | 26.09 |  | | |
 
+<br>
+
+![](https://i.ibb.co/sJ7RhGG/image-41.png)
+<br>
+
 ## Credits
 1. [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
 2. [152334H](https://github.com/152334H) for experimental DPO support
 3. [atgctg](https://github.com/atgctg) for syntax highlighting
-<img src="./images/unsloth loading page render.png" width="300" />
+   
+<a href="https://unsloth.ai"><img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth end.png" height="200"></a>
