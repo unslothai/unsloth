@@ -21,10 +21,14 @@ from .utils import calculate_settings
 @triton.heuristics({"BACKWARD_PASS": lambda args: args["BACKWARD_PASS"],})
 @triton.jit
 def _rope_embedding(
-    Q,     Q_row_stride,
-    cos, cos_row_stride,
-    sin, sin_row_stride,
-    seqlen, head_dim,
+    Q,
+    Q_row_stride,
+    cos,
+    cos_row_stride,
+    sin, 
+    sin_row_stride,
+    seqlen, 
+    head_dim,
     BACKWARD_PASS: tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
 ):
@@ -62,9 +66,10 @@ pass
 
 class Fast_RoPE_Embedding(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, cos, sin):
+    def forward(ctx, Q, cos, sin, partial_rotary_factor: float = 1.):
         cos, sin = cos.squeeze(), sin.squeeze()
         batch, seq_len, n_heads, head_dim = Q.shape
+        head_dim = head_dim * partial_rotary_factor #Copy of https://github.com/huggingface/transformers/blob/main/src/transformers/models/phi/modeling_phi.py
         Q = Q.view(batch*seq_len, n_heads*head_dim)
         n_rows, n_cols = Q.shape
         assert(seq_len <= cos.shape[0])
@@ -89,11 +94,13 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
     pass
 
     @staticmethod
-    def backward(ctx, dY):
+    def backward(ctx, dY, partial_rotary_factor: float = 1.):
         batch, seq_len, n_heads, head_dim = dY.shape
         dY = dY.reshape(batch*seq_len, n_heads*head_dim)
         # Must be reshape not view
         n_rows, n_cols = dY.shape
+
+        head_dim = head_dim * partial_rotary_factor #Copy of https://github.com/huggingface/transformers/blob/main/src/transformers/models/phi/modeling_phi.py
 
         cos = ctx.cos
         sin = ctx.sin
@@ -122,13 +129,14 @@ pass
 
 class Slow_RoPE_Embedding(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, Q, cos, sin, position_ids):
+    def forward(ctx, Q, cos, sin, position_ids, partial_rope_factor: float = 1.):
         if position_ids is not None:
             # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
             cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
             sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
             cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
             sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
+
 
         # Q * cos + rotate_half(Q) * sin
         half = Q.shape[-1]//2
@@ -141,7 +149,7 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
     pass
 
     @staticmethod
-    def backward(ctx, dY):
+    def backward(ctx, dY, partial_rope_factor: int = 1.):
         cos, sin = ctx.saved_tensors
         # Q * cos + rotate_half.T(Q) * sin
         half = dY.shape[-1]//2
