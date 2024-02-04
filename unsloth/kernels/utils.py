@@ -204,15 +204,21 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     # Add in LoRA weights
     if lora_A is not None:
         out_dim = out.shape[2]
+
+        if not hasattr(lora_A, "_fast_lora"):
+            lora_A._fast_lora = lora_A.to(dtype)
+            lora_B._fast_lora = lora_B.to(dtype)
+        pass
+
         dtype = X.dtype
         if bsz == 1:
             out = out.view(out_dim)
-            temp_lora = torch.mv(lora_A.to(dtype), X.ravel(), out = temp_lora)
-            out.addmv_(lora_B.to(dtype), temp_lora, alpha = lora_S)
+            temp_lora = torch.mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
+            out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
-            temp_lora = torch.mm(X.view(bsz, in_dim), lora_A.to(dtype).t(), out = temp_lora)
-            out.addmm_(temp_lora, lora_B.to(dtype).t(), alpha = lora_S)
+            temp_lora = torch.mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
+            out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
         pass
         out = out.view(bsz, 1, out_dim)
     pass
