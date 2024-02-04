@@ -46,18 +46,18 @@ def MistralAttention_fast_forward(
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
-    bsz, q_len, _ = hidden_states.size()
-
-    # Check for inference
-    if past_key_value is not None:
-        A, past_key_value = LlamaAttention_fast_forward_inference(
-            self,
-            hidden_states,
-            past_key_value,
-            position_ids,
-        )
-        return A, None, past_key_value
+    # Clear inference
+    if hasattr(self, "paged_attention"):
+        del self.paged_attention_K
+        del self.paged_attention_V
+        del self.paged_attention
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
+        del self.attention
     pass
+
+    bsz, q_len, _ = hidden_states.size()
 
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
@@ -90,7 +90,7 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION):
+    if (not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -128,7 +128,7 @@ def MistralAttention_fast_forward(
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif HAS_FLASH_ATTENTION:
+    elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
@@ -144,11 +144,14 @@ def MistralAttention_fast_forward(
         K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
         V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
         # pass
+        # Must be contiguous or else results are False!
+        # https://github.com/pytorch/pytorch/issues/112577
+        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
         A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2)
+        A = A.transpose(1, 2).contiguous()
     pass
     
     attn_output = A.reshape(bsz, q_len, self.hidden_size)
@@ -174,7 +177,7 @@ def MistralForCausalLM_fast_forward(
     *args, **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-    if causal_mask is None:
+    if causal_mask is None and past_key_values is None:
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
         if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
@@ -196,18 +199,28 @@ def MistralForCausalLM_fast_forward(
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
-    outputs = self.model(
-        input_ids=input_ids,
-        causal_mask=causal_mask,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_values=past_key_values,
-        inputs_embeds=inputs_embeds,
-        use_cache=use_cache,
-        output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
-        return_dict=return_dict,
-    )
+
+    if past_key_values is not None and \
+        hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        outputs = LlamaModel_fast_forward_inference(
+            self.model,
+            input_ids,
+            past_key_values,
+        )
+    else:
+        outputs = self.model(
+            input_ids=input_ids,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+    pass
 
     hidden_states = outputs[0]
     bsz, q_len, hd = hidden_states.shape
