@@ -744,7 +744,6 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
 
-
 def upload_to_huggingface(model, save_directory, token, method, extra = "", file_location = None):
     # Check for username
     username = ""
@@ -797,6 +796,19 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             repo_id         = save_directory,
             repo_type       = "model",
         )
+
+        # We also upload a config.json file
+        import json
+        with open("_temporary_unsloth_config.json", "w") as file:
+            json.dump({"model_type" : model.config.model_type}, file, indent = 4)
+        pass
+        hf_api.upload_file(
+            path_or_fileobj = "_temporary_unsloth_config.json",
+            path_in_repo    = "config.json",
+            repo_id         = save_directory,
+            repo_type       = "model",
+        )
+        os.remove("_temporary_unsloth_config.json")
     pass
     return username
 pass
