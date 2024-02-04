@@ -119,7 +119,7 @@ def fast_gemv(X, W, quant_state, out = None):
     # For fast X @ W where seq_len == 1
     # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
     bsz, q_len, hd = X.shape
-    assert(q_len == 1)
+    # assert(q_len == 1)
 
     if type(quant_state) is not list:
         # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -138,7 +138,7 @@ def fast_gemv(X, W, quant_state, out = None):
         offset, state2 = compressed_stats
         absmax2, code2, blocksize2, _, _, _, _ = state2
     pass
-    assert(dtype == X.dtype)
+    # assert(dtype == X.dtype)
     bout = shape[0]
 
     if out is None:
@@ -152,7 +152,7 @@ def fast_gemv(X, W, quant_state, out = None):
     k = shape[1]
     lda = shape[0]
     ldc = shape[0]
-    ldb = (X.shape[-1]+1)//2
+    ldb = (hd+1)//2
     m = ctypes.c_int32(m)
     n = ctypes.c_int32(n)
     k = ctypes.c_int32(k)
@@ -192,9 +192,9 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     bsz, _, in_dim = X.shape
 
     if W_quant is None:
-        out = torch.matmul(X, W.t())
-    elif bsz <= 4:
-        # Only batches of 4 are faster with Gemv
+        out = torch.matmul(X, W.t(), out = out)
+    elif bsz <= 2:
+        # Only batches of 2 are faster with Gemv
         out = fast_gemv(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant)
@@ -205,14 +205,20 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     if lora_A is not None:
         out_dim = out.shape[2]
         dtype = X.dtype
+
+        if not hasattr(lora_A, "_fast_lora"):
+            lora_A._fast_lora = lora_A.to(dtype)
+            lora_B._fast_lora = lora_B.to(dtype)
+        pass
+
         if bsz == 1:
             out = out.view(out_dim)
-            temp_lora = torch.mv(lora_A.to(dtype), X.ravel(), out = temp_lora)
-            out.addmv_(lora_B.to(dtype), temp_lora, alpha = lora_S)
+            temp_lora = torch.mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
+            out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
-            temp_lora = torch.mm(X.view(bsz, in_dim), lora_A.to(dtype).t(), out = temp_lora)
-            out.addmm_(temp_lora, lora_B.to(dtype).t(), alpha = lora_S)
+            temp_lora = torch.mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
+            out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
         pass
         out = out.view(bsz, 1, out_dim)
     pass
