@@ -6,9 +6,9 @@
     <img alt="unsloth logo" src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png" height="110" style="max-width: 100%;">
   </picture></a>
   
-<a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/start free finetune button.png" height="46"></a>
-<a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="46"></a>
-<a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Kofi button.png" height="46"></a>
+<a href="https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing"><img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/start free finetune button.png" height="48"></a>
+<a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="48"></a>
+<a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/buy me a coffee button.png" height="48"></a>
 
 ### Finetune Mistral, Llama 2-5x faster with 50% less memory!
 
@@ -16,8 +16,8 @@
 
 </div>
 
-## ✨ Start Finetuning for Free Now
-- Use our free Colab notebooks which we have already set up so you can easily finetune a model from scratch.
+## ✨ Finetune with our Free UI Now
+- Use our free UI notebooks which we have already set up so you can easily finetune a model from scratch.
 - No expertise & cost required!
 - All have **DPO support** included.
 
