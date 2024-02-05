@@ -72,9 +72,9 @@ def print_quantization_methods():
 pass
 
 
-def _merge_lora(layer, name, max_vram):
 
-    out_of_memory = False
+def _merge_lora(layer, name):
+
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         # Is LoRA so we need to merge!
         W, quant_state, A, B, s = get_lora_parameters(layer)
@@ -83,36 +83,18 @@ def _merge_lora(layer, name, max_vram):
             W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
-
-        # First check if memory has been exceeded
-        # If yes, move over to CPU to do computation.
-        nbytes = W.numel() * 4 # float32 4 bytes
-        if (torch.cuda.memory_allocated() + nbytes) >= max_vram:
-            W = W.to("cpu", non_blocking = True, copy = True)
-            out_of_memory = True
-        pass
         W = W.to(torch.float32).t()
 
         if A is not None:
-            if out_of_memory:
-                A = A.to("cpu", non_blocking = True, copy = True)
-                B = B.to("cpu", non_blocking = True, copy = True)
-            pass
-            # W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
             sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
             W += sAB
-            # if not torch.isfinite(W).all():
-            maximum_element = torch.max(W.min().abs(), W.max())
-            if not torch.isfinite(maximum_element).item():
-                raise ValueError(
-                    f"Unsloth: Merge failed.\n{name} has some elements = infinity.\n"\
-                    f"For example the element {maximum_element.item()}"
-                )
+            if not torch.isfinite(W).all():
+                raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
         pass
         W = W.t().to(dtype)
     else:
         W = layer.weight
-    return W, out_of_memory
+    return W
 pass
 
 
@@ -383,24 +365,23 @@ def unsloth_save_model(
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
-            W, out_of_memory = _merge_lora(proj, name, max_vram)
+            W = _merge_lora(proj, name)
 
-            if not out_of_memory:
+            if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
                 # Save to GPU memory
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???
-            elif (max_ram - W.nbytes) > 0:
-                # Save to CPU memory
-                logger.warning_once(f"We will save to RAM and not VRAM now.")
-                state_dict[name] = W.to("cpu", non_blocking = True, copy = True)
-                max_ram = max(max_ram - W.nbytes, 0)
+            # elif (max_ram - W.nbytes) > 0:
+            #     # Save to CPU memory
+            #     logger.warning_once(f"We will save to RAM and not VRAM now.")
+            #     state_dict[name] = W.to("cpu", non_blocking = True)
+            #     max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
                 logger.warning_once(f"We will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
                 state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True)
-                del W
         pass
         for item in LLAMA_LAYERNORMS:
             state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight.data")
