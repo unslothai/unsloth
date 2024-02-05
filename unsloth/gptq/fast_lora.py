@@ -41,15 +41,14 @@ class GPTQuantState:
 
 
 def unpack_gptqstate(qstate):
-    qweight, scales, qzeros, wf, g_idx, bits = (
+    qweight, scales, qzeros, g_idx, bits = (
         qstate.qweight,
         qstate.scales,
         qstate.qzeros,
-        qstate.wf,
         qstate.g_idx,
         qstate.bits,
     )
-    return qweight, scales, qzeros, wf, g_idx, bits
+    return qweight, scales, qzeros, g_idx, bits
 
 
 def extract_gptq_state(qmodule):
@@ -187,7 +186,6 @@ class LoRA_MLP(torch.autograd.Function):
         gate_qweight,
         gate_scales,
         gate_qzeros,
-        gate_wf,
         gate_g_idx,
         gate_bits,
         gateA,
@@ -196,7 +194,6 @@ class LoRA_MLP(torch.autograd.Function):
         up_qweight,
         up_scales,
         up_qzeros,
-        up_wf,
         up_g_idx,
         up_bits,
         upA,
@@ -205,7 +202,6 @@ class LoRA_MLP(torch.autograd.Function):
         down_qweight,
         down_scales,
         down_qzeros,
-        down_wf,
         down_g_idx,
         down_bits,
         downA,
@@ -216,17 +212,17 @@ class LoRA_MLP(torch.autograd.Function):
 
         # Separate dequant248 from matmul
         gateW = dequant248(
-            gate_qweight, gate_scales, gate_qzeros, gate_wf, gate_g_idx, gate_bits
+            gate_qweight, gate_scales, gate_qzeros, gate_g_idx, gate_bits
         )
         e = matmul_lora(X, gateW, gateA, gateB, gateS)
-        upW = dequant248(up_qweight, up_scales, up_qzeros, up_wf, up_g_idx, up_bits)
+        upW = dequant248(up_qweight, up_scales, up_qzeros, up_g_idx, up_bits)
         g = matmul_lora(X, upW, upA, upB, upS)
         # f = torch.nn.functional.silu(e)
         # h = f * g
         h = swiglu_fg_kernel(e, g)
 
         downW = dequant248(
-            down_qweight, down_scales, down_qzeros, down_wf, down_g_idx, down_bits
+            down_qweight, down_scales, down_qzeros, down_g_idx, down_bits
         )
         i = matmul_lora(h, downW, downA, downB, downS)
 
@@ -234,21 +230,18 @@ class LoRA_MLP(torch.autograd.Function):
             gate_qweight,
             gate_scales,
             gate_qzeros,
-            gate_wf,
             gate_g_idx,
             gate_bits,
             gateS,
             up_qweight,
             up_scales,
             up_qzeros,
-            up_wf,
             up_g_idx,
             up_bits,
             upS,
             down_qweight,
             down_scales,
             down_qzeros,
-            down_wf,
             down_g_idx,
             down_bits,
             downS,
@@ -263,21 +256,18 @@ class LoRA_MLP(torch.autograd.Function):
             gate_qweight,
             gate_scales,
             gate_qzeros,
-            gate_wf,
             gate_g_idx,
             gate_bits,
             gateS,
             up_qweight,
             up_scales,
             up_qzeros,
-            up_wf,
             up_g_idx,
             up_bits,
             upS,
             down_qweight,
             down_scales,
             down_qzeros,
-            down_wf,
             down_g_idx,
             down_bits,
             downS,
@@ -301,7 +291,7 @@ class LoRA_MLP(torch.autograd.Function):
         dtype = X.dtype
 
         downW = dequant248(
-            down_qweight, down_scales, down_qzeros, down_wf, down_g_idx, down_bits
+            down_qweight, down_scales, down_qzeros, down_g_idx, down_bits
         )
         DW = matmul_lora(dY, downW.t(), downB, downA, downS)
         # e = e.float()
@@ -334,29 +324,28 @@ class LoRA_MLP(torch.autograd.Function):
 
         # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
-        upW = dequant248(up_qweight, up_scales, up_qzeros, up_wf, up_g_idx, up_bits)
+        upW = dequant248(up_qweight, up_scales, up_qzeros, up_g_idx, up_bits)
         dX = torch.matmul(df, upW.t())  # , out=X)
         del upW
         dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
 
         gateW = dequant248(
-            gate_qweight, gate_scales, gate_qzeros, gate_wf, gate_g_idx, gate_bits
+            gate_qweight, gate_scales, gate_qzeros, gate_g_idx, gate_bits
         )
         dX += de @ gateW.t()
         del gateW
         dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
 
-        # gateW, gateW_quant, gateA, gateB, gateS,
+        # qweight, scales, qzeros, g_idx, bits
         #  upW,    upW_quant,   upA,   upB,   upS,
         # downW, downW_quant, downA, downB, downS,
         return (
             dX.view(batch, seq_len, hd),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            None,  # qweight
+            None,  # scales
+            None,  # qzeros
+            None,  # g_idx
+            None,  # bits
             d_gateA.t(),
             d_gateB.t(),
             None,
@@ -365,11 +354,9 @@ class LoRA_MLP(torch.autograd.Function):
             None,
             None,
             None,
-            None,
             d_upA.t(),
             d_upB.t(),
-            None,
-            None,
+            None,  # dS
             None,
             None,
             None,
@@ -442,7 +429,6 @@ class LoRA_QKV(torch.autograd.Function):
         Q_qweight,
         Q_scales,
         Q_qzeros,
-        Q_wf,
         Q_g_idx,
         Q_bits,
         QA,
@@ -451,7 +437,6 @@ class LoRA_QKV(torch.autograd.Function):
         K_qweight,
         K_scales,
         K_qzeros,
-        K_wf,
         K_g_idx,
         K_bits,
         KA,
@@ -460,7 +445,6 @@ class LoRA_QKV(torch.autograd.Function):
         V_qweight,
         V_scales,
         V_qzeros,
-        V_wf,
         V_g_idx,
         V_bits,
         VA,
@@ -469,9 +453,9 @@ class LoRA_QKV(torch.autograd.Function):
     ):
         dtype = X.dtype
 
-        QW = dequant248(Q_qweight, Q_scales, Q_qzeros, Q_wf, Q_g_idx, Q_bits)
-        KW = dequant248(K_qweight, K_scales, K_qzeros, K_wf, K_g_idx, K_bits)
-        VW = dequant248(V_qweight, V_scales, V_qzeros, V_wf, V_g_idx, V_bits)
+        QW = dequant248(Q_qweight, Q_scales, Q_qzeros, Q_g_idx, Q_bits)
+        KW = dequant248(K_qweight, K_scales, K_qzeros, K_g_idx, K_bits)
+        VW = dequant248(V_qweight, V_scales, V_qzeros, V_g_idx, V_bits)
         Q = matmul_lora(X, QW, QA, QB, QS)
         K = matmul_lora(X, KW, KA, KB, KS)
         V = matmul_lora(X, VW, VA, VB, VS)
@@ -480,21 +464,18 @@ class LoRA_QKV(torch.autograd.Function):
             Q_qweight,
             Q_scales,
             Q_qzeros,
-            Q_wf,
             Q_g_idx,
             Q_bits,
             QS,
             K_qweight,
             K_scales,
             K_qzeros,
-            K_wf,
             K_g_idx,
             K_bits,
             KS,
             V_qweight,
             V_scales,
             V_qzeros,
-            V_wf,
             V_g_idx,
             V_bits,
             VS,
@@ -517,21 +498,18 @@ class LoRA_QKV(torch.autograd.Function):
             Q_qweight,
             Q_scales,
             Q_qzeros,
-            Q_wf,
             Q_g_idx,
             Q_bits,
             QS,
             K_qweight,
             K_scales,
             K_qzeros,
-            K_wf,
             K_g_idx,
             K_bits,
             KS,
             V_qweight,
             V_scales,
             V_qzeros,
-            V_wf,
             V_g_idx,
             V_bits,
             VS,
@@ -578,19 +556,19 @@ class LoRA_QKV(torch.autograd.Function):
 
         # Combine derivatives to find dX
         # dQ
-        QW = dequant248(Q_qweight, Q_scales, Q_qzeros, Q_wf, Q_g_idx, Q_bits)
+        QW = dequant248(Q_qweight, Q_scales, Q_qzeros, Q_g_idx, Q_bits)
         dX = torch.matmul(dQ, QW.t())  # , out=X)
         del QW
         dX += dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t())
 
         # dK
-        KW = dequant248(K_qweight, K_scales, K_qzeros, K_wf, K_g_idx, K_bits)
+        KW = dequant248(K_qweight, K_scales, K_qzeros, K_g_idx, K_bits)
         dX += dK @ KW.t()
         del KW
         dX += dK @ KB.to(dtype).t() @ (KS * KA.to(dtype).t())
 
         # dV
-        VW = dequant248(V_qweight, V_scales, V_qzeros, V_wf, V_g_idx, V_bits)
+        VW = dequant248(V_qweight, V_scales, V_qzeros, V_g_idx, V_bits)
         dX += dV @ VW.t()
         del VW
         dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
@@ -605,7 +583,6 @@ class LoRA_QKV(torch.autograd.Function):
             None,
             None,
             None,
-            None,
             d_QA.t(),
             d_QB.t(),
             None,  # d_QS.t(),
@@ -614,11 +591,9 @@ class LoRA_QKV(torch.autograd.Function):
             None,
             None,
             None,
-            None,
             d_KA.t(),
             d_KB.t(),
             None,  # d_KS.t(),
-            None,
             None,
             None,
             None,
@@ -688,21 +663,19 @@ class LoRA_W(torch.autograd.Function):
         O_qweight,
         O_scales,
         O_qzeros,
-        O_wf,
         O_g_idx,
         O_bits,
         A,
         B,
         S,
     ):
-        W = dequant248(O_qweight, O_scales, O_qzeros, O_wf, O_g_idx, O_bits)
+        W = dequant248(O_qweight, O_scales, O_qzeros, O_g_idx, O_bits)
         XW = matmul_lora(X, W, A, B, S)
         del W
         ctx.custom_saved_tensors = (
             O_qweight,
             O_scales,
             O_qzeros,
-            O_wf,
             O_g_idx,
             O_bits,
             S,
@@ -713,9 +686,7 @@ class LoRA_W(torch.autograd.Function):
     @staticmethod
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY: torch.Tensor):
-        O_qweight, O_scales, O_qzeros, O_wf, O_g_idx, O_bits, S = (
-            ctx.custom_saved_tensors
-        )
+        O_qweight, O_scales, O_qzeros, O_g_idx, O_bits, S = ctx.custom_saved_tensors
         A, B, X = ctx.saved_tensors
 
         A, B = A.t(), B.t()
@@ -733,7 +704,7 @@ class LoRA_W(torch.autograd.Function):
         d_B *= S
 
         # Get derivative for dX
-        W = dequant248(O_qweight, O_scales, O_qzeros, O_wf, O_g_idx, O_bits)
+        W = dequant248(O_qweight, O_scales, O_qzeros, O_g_idx, O_bits)
         dX = dY @ W.t()
         del W
         dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
@@ -741,7 +712,6 @@ class LoRA_W(torch.autograd.Function):
         # O_qweight, O_scales, O_qzeros, O_wf, O_g_idx, O_bits, A, B, S
         return (
             dX.view(batch, seq_len, hd),
-            None,
             None,
             None,
             None,
@@ -757,5 +727,3 @@ def apply_lora_o(self, X):
     Oqstate, OA, OB, OS = get_lora_parameters(self.o_proj)
     O = LoRA_W.apply(X, *unpack_gptqstate(Oqstate), OA, OB, OS)
     return O
-
-
