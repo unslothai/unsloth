@@ -902,6 +902,7 @@ def unsloth_save_pretrained_gguf(
         makefile  = install_llama_cpp_make_non_blocking()
         new_save_directory = unsloth_save_model(**arguments)
         python_install.wait()
+        makefile.wait()
     else:
         try:
             new_save_directory = unsloth_save_model(**arguments)
@@ -914,6 +915,7 @@ def unsloth_save_pretrained_gguf(
             makefile  = install_llama_cpp_make_non_blocking()
             new_save_directory = unsloth_save_model(**arguments)
             python_install.wait()
+            makefile.wait()
         pass
     pass
 
