@@ -21,7 +21,7 @@
 - **No expertise & cost required!** Just upload your data set, load it and you're done!
 - All have **DPO support** included.
 
-| Models          |    &nbsp; &nbsp; &nbsp;  Free Live Demos  &nbsp; &nbsp;                                                                                                    | Performance | VRAM use |
+| Models          |    Free User Interface                                                                                             | Performance | VRAM use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
 | **Llama 7b**       | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
 | **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
