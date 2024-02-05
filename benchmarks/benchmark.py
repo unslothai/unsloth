@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import json
 import logging
 import os
@@ -271,8 +272,10 @@ def run_trainer(
             output_dir=out_dir,
         ),
     )
-    batch = next(iter(trainer.get_train_dataloader()))
-    for _ in range(warmup_steps):
+    batches = itertools.islice(trainer.get_train_dataloader(), max_steps)
+
+    # Warmup triton cache
+    for batch in batches:
         _ = model(**batch)
 
     stats = trainer.train()

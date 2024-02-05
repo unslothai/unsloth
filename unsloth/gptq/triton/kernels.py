@@ -4,13 +4,6 @@ from logging import getLogger
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
-
-from .tuner import (
-    CUSTOM_MATMUL_AUTOTUNE_CONFIGS,
-    CUSTOM_MATMUL_TRANSPOSE_AUTOTUNE_CONFIGS,
-    custom_autotune,
-)
 
 logger = getLogger(__name__)
 
@@ -47,6 +40,7 @@ def make_dequant_configs(block_sizes, num_warps):
     configs = []
     for bs, ws in itertools.product(block_sizes, num_warps):
         configs.append(triton.Config({"X_BLOCK": bs}, num_warps=ws))
+    return configs
 
 
 DEFAULT_DEQUANT_CONFIGS = make_dequant_configs([128, 256, 512, 1024], [4, 8])
@@ -65,7 +59,7 @@ def dequant_kernel_248(
     bits: tl.constexpr,
     outfeatures: tl.constexpr,
     num_groups: tl.constexpr,
-    X_BLOCK: tl.constexpr,
+    X_BLOCK: tl.constexpr = 1024,
 ):
     # Block indexing
     xoffset = tl.program_id(0) * X_BLOCK
@@ -120,7 +114,13 @@ def dequant_kernel_248(
     tl.store(out_ptr + (x_index), weights, mask=xmask)
 
 
-def dequant248(qweight, scales, qzeros, g_idx, bits, maxq=None, X_BLOCK=1024):
+def dequant248(qweight, scales, qzeros, g_idx, bits, maxq=None):
+    """Launcher for triton dequant kernel
+    Only valid for bits = 2, 4, 8
+
+    """
+
+    assert bits in [2, 4, 8], "Only 2, 4, 8-bit GPTQ quantization is supported"
     num_groups = scales.shape[0]
     outfeatures = scales.shape[1]
     infeatures = g_idx.shape[0]
