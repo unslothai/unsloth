@@ -94,13 +94,13 @@ def _merge_lora(layer, name, max_vram):
         W = W.to(torch.float32).t()
 
         if A is not None:
-            # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
-            # W += sAB
             if out_of_memory:
                 A = A.to("cpu", non_blocking = True, copy = True)
                 B = B.to("cpu", non_blocking = True, copy = True)
             pass
-            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            # W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
+            W += sAB
             # if not torch.isfinite(W).all():
             maximum_element = torch.max(W.min().abs(), W.max())
             if not torch.isfinite(maximum_element).item():
