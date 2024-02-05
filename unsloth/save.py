@@ -379,7 +379,7 @@ def unsloth_save_model(
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
-            W, out_of_memory = _merge_lora(proj, name)
+            W, out_of_memory = _merge_lora(proj, name, max_vram)
 
             if not out_of_memory:
                 # Save to GPU memory
