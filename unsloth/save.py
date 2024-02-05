@@ -72,8 +72,9 @@ def print_quantization_methods():
 pass
 
 
-def _merge_lora(layer, name):
+def _merge_lora(layer, name, max_vram):
 
+    out_of_memory = False
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         # Is LoRA so we need to merge!
         W, quant_state, A, B, s = get_lora_parameters(layer)
@@ -82,18 +83,32 @@ def _merge_lora(layer, name):
             W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
+
+        # First check if memory has been exceeded
+        # If yes, move over to CPU to do computation.
+        nbytes = W.numel() * 4 # float32 4 bytes
+        if (torch.cuda.memory_allocated() + nbytes) >= max_vram:
+            W = W.to("cpu", non_blocking = True)
+            out_of_memory = True
+        pass
         W = W.to(torch.float32).t()
 
         if A is not None:
-            sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
-            W += sAB
-            if not torch.isfinite(W).all():
+            # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
+            # W += sAB
+            if out_of_memory:
+                A = A.to("cpu", non_blocking = True)
+                B = B.to("cpu", non_blocking = True)
+            pass
+            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            # if not torch.isfinite(W).all():
+            if not torch.isfinite(torch.max(W.min().abs(), W.max())).item():
                 raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
         pass
         W = W.t().to(dtype)
     else:
         W = layer.weight
-    return W
+    return W, out_of_memory
 pass
 
 
@@ -364,9 +379,9 @@ def unsloth_save_model(
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
-            W = _merge_lora(proj, name)
+            W, out_of_memory = _merge_lora(proj, name)
 
-            if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
+            if not out_of_memory:
                 # Save to GPU memory
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???
@@ -381,6 +396,7 @@ def unsloth_save_model(
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
                 state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True)
+                del W
         pass
         for item in LLAMA_LAYERNORMS:
             state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight.data")
@@ -579,9 +595,11 @@ def save_to_gguf(
         f"--outfile {final_location} "\
         f"--outtype {first_conversion} --concurrency {n_cpus}"
 
-    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
         for line in sp.stdout:
             print(line.decode("utf-8"), flush = True, end = "")
+        if sp.returncode is not None and sp.returncode != 0:
+            raise subprocess.CalledProcessError(sp.returncode, sp.args)
     pass
 
     # Check if quantization succeeded!
@@ -609,6 +627,8 @@ def save_to_gguf(
         with subprocess.Popen(command, shell = True, stderr = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stderr:
                 print(line.decode("utf-8"), flush = True, end = "")
+            if sp.returncode is not None and sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, sp.args)
         pass
 
         # Check if quantization succeeded!
