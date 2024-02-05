@@ -102,8 +102,12 @@ def _merge_lora(layer, name, max_vram):
             pass
             W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
             # if not torch.isfinite(W).all():
-            if not torch.isfinite(torch.max(W.min().abs(), W.max())).item():
-                raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
+            maximum_element = torch.max(W.min().abs(), W.max())
+            if not torch.isfinite(maximum_element).item():
+                raise ValueError(
+                    f"Unsloth: Merge failed.\n{name} has some elements = infinity.\n"\
+                    f"For example the element {maximum_element.item()}"
+                )
         pass
         W = W.t().to(dtype)
     else:
