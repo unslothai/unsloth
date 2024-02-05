@@ -1,6 +1,6 @@
 <div align="center">
 
-  <br><a href="https://unsloth.ai"><picture>
+  <a href="https://unsloth.ai"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20white%20text.png">
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png">
     <img alt="unsloth logo" src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/unsloth%20logo%20black%20text.png" height="110" style="max-width: 100%;">
@@ -16,9 +16,9 @@
 
 </div>
 
-## ✨ Finetune with our Free UI Now
-- Use our free UI notebooks which we have already set up so you can easily finetune a model from scratch.
-- No expertise & cost required!
+## ✨ Finetune with our Free UI
+- Use our free UI notebooks which we have set up so you can **easily** finetune a model from scratch.
+- **No expertise & cost required!** Just upload your data set, load it and you're done!
 - All have **DPO support** included.
 
 | Models          |    &nbsp; &nbsp; &nbsp;  Free Live Demos  &nbsp; &nbsp;                                                                                                    | Performance | VRAM use |
@@ -48,13 +48,13 @@
 | ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
 
 ## ⭐ Key Features
-* All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
-* **0% loss in accuracy** - no approximation methods - all exact.
-* No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
-* Works on **Linux** and **Windows** via WSL.
-* Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
-* Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
-* If you trained a model with 🦥Unsloth, we made a cool sticker if you want to use it! <br> <img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/made with unsloth.png" height="60" />
+- All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
+- **0% loss in accuracy** - no approximation methods - all exact.
+- No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
+- Works on **Linux** and **Windows** via WSL.
+- Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
+- Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
+- If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/made with unsloth.png" height="50" align="center" />
 
 
 ## 🥇 Performance Benchmarking
@@ -75,8 +75,6 @@
 | Mistral 7b | Alpaca | 1x | 1.07x | 1.56x | -13.7% |
 | Tiny Llama 1.1b | Alpaca | 1x | 2.06x | 3.87x | -73.8% |
 | DPO with Zephyr | Ultra Chat | 1x | 1.09x | 1.55x | -18.6% |
-
-<br>
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
