@@ -132,7 +132,7 @@ def MistralAttention_fast_forward(
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        sw = getattr(self.config, "sliding_window", None)
+        sw = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
         sw = kv_seq_len if (sw is None or sw == "null") else sw
         window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)

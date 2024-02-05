@@ -87,10 +87,10 @@ def _merge_lora(layer, name, max_vram):
         # First check if memory has been exceeded
         # If yes, move over to CPU to do computation.
         nbytes = W.numel() * 4 # float32 4 bytes
-        if (torch.cuda.memory_allocated() + nbytes) >= max_vram:
-            W = W.to("cpu", non_blocking = True)
-            out_of_memory = True
-        pass
+        # if (torch.cuda.memory_allocated() + nbytes) >= max_vram:
+        #     W = W.to("cpu", non_blocking = True)
+        #     out_of_memory = True
+        # pass
         W = W.to(torch.float32).t()
 
         if A is not None:
