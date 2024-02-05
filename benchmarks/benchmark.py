@@ -284,7 +284,9 @@ def run_trainer(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
     parser.add_argument(
         "--model_name",
         type=str,
@@ -313,23 +315,43 @@ if __name__ == "__main__":
     )
     parser.add_argument("--max_seq_length", type=int, default=2048)
     parser.add_argument(
-        "--dtype", type=str, default="float16", choices=["float16", "bfloat16"]
+        "--dtype",
+        type=str,
+        default="float16",
+        choices=["float16", "bfloat16"],
+        help="dtype to load model",
     )
-    parser.add_argument("--r", type=int, default=16)
-    parser.add_argument("--lora_alpha", type=int, default=16)
+    parser.add_argument("--r", type=int, default=16, help="lora r")
+    parser.add_argument("--lora_alpha", type=int, default=16, help="lora alpha")
     # parser.add_argument("--use_gradient_checkpointing", action="store_true")
-    parser.add_argument("--sample_data", type=str, default="./sample_batch.pt")
-    parser.add_argument("--log_level", type=str, default="DEBUG")
-    parser.add_argument("--warmup_steps", type=int, default=5)
-    parser.add_argument("--profile_steps", type=int, default=5)
-    parser.add_argument("--profile", action="store_true")
-    parser.add_argument("--train_steps", type=int, default=20)
-    parser.add_argument("--output_dir", type=str, default="trainer_out")
+    parser.add_argument(
+        "--sample_data",
+        type=str,
+        default="./sample_batch.pt",
+        help="path to sample data",
+    )
+    parser.add_argument("--log_level", type=str, default="DEBUG", help="log level")
+    parser.add_argument(
+        "--warmup_steps", type=int, default=5, help="warmup steps -- for profiling"
+    )
+    parser.add_argument(
+        "--profile_steps", type=int, default=5, help="profile steps -- for profiling"
+    )
+    parser.add_argument(
+        "--profile", action="store_true", help="run profiling instead of trainer"
+    )
+    parser.add_argument(
+        "--train_steps", type=int, default=20, help="train steps -- for training"
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default="trainer_out", help="output dir"
+    )
     parser.add_argument(
         "--dataset_id",
         type=str,
         default="guanaco",
         choices=["guanaco", "alpaca"],
+        help="dataset to run trainer with",
     )
     args = parser.parse_args()
 

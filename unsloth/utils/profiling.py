@@ -1,8 +1,10 @@
 import logging
+import os
 from contextlib import contextmanager
 from functools import partial
 
 import torch
+import torch.utils.benchmark as benchmark
 
 from unsloth.utils.logging import setup_logging
 
@@ -77,6 +79,8 @@ def torch_profiler_context(
     active=5,
     outdir="./",
 ):
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
     with torch.profiler.profile(
         activities=[
             torch.profiler.ProfilerActivity.CPU,
@@ -88,3 +92,80 @@ def torch_profiler_context(
         on_trace_ready=partial(trace_handler, outdir=outdir),
     ) as prof:
         yield prof
+
+
+def benchmark_forward(
+    fn,
+    *inputs,
+    repeats="auto",
+    desc="",
+    verbose=True,
+    amp=False,
+    amp_dtype=torch.float16,
+    **kwinputs,
+):
+    """Use Pytorch Benchmark on the forward pass of an arbitrary function."""
+    if verbose:
+        print(desc, "- Forward pass")
+
+    def amp_wrapper(*inputs, **kwinputs):
+        with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp):
+            fn(*inputs, **kwinputs)
+
+    t = benchmark.Timer(
+        stmt="fn_amp(*inputs, **kwinputs)",
+        globals={"fn_amp": amp_wrapper, "inputs": inputs, "kwinputs": kwinputs},
+        num_threads=torch.get_num_threads(),
+    )
+    if repeats == "auto":
+        m = t.blocked_autorange()
+    else:
+        m = t.timeit(repeats)
+    if verbose:
+        print(m)
+    return t, m
+
+
+def benchmark_backward(
+    fn,
+    *inputs,
+    grad=None,
+    repeats="auto",
+    desc="",
+    verbose=True,
+    amp=False,
+    amp_dtype=torch.float16,
+    **kwinputs,
+):
+    """Use Pytorch Benchmark on the backward pass of an arbitrary function."""
+    if verbose:
+        print(desc, "- Backward pass")
+    with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp):
+        y = fn(*inputs, **kwinputs)
+        if type(y) is tuple:
+            y = y[0]
+    if grad is None:
+        grad = torch.randn_like(y)
+    else:
+        if grad.shape != y.shape:
+            raise RuntimeError("Grad shape does not match output shape")
+
+    def f(*inputs, y, grad):
+        # Set .grad to None to avoid extra operation of gradient accumulation
+        for x in inputs:
+            if isinstance(x, torch.Tensor):
+                x.grad = None
+        y.backward(grad, retain_graph=True)
+
+    t = benchmark.Timer(
+        stmt="f(*inputs, y=y, grad=grad)",
+        globals={"f": f, "inputs": inputs, "y": y, "grad": grad},
+        num_threads=torch.get_num_threads(),
+    )
+    if repeats == "auto":
+        m = t.blocked_autorange()
+    else:
+        m = t.timeit(repeats)
+    if verbose:
+        print(m)
+    return t, m

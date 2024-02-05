@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 from torch.cuda.amp import custom_bwd, custom_fwd
 
-from unsloth.gptq.triton.kernels import quant_matmul_248, transpose_quant_matmul_248
+from unsloth.gptq.triton.kernels import dequant248
 from unsloth.kernels.fast_lora import swiglu_DWf_DW_dfg_kernel, swiglu_fg_kernel
 
 logger = getLogger(__name__)
@@ -40,6 +40,18 @@ class GPTQuantState:
     trainable: bool = True
 
 
+def unpack_gptqstate(qstate):
+    qweight, scales, qzeros, wf, g_idx, bits = (
+        qstate.qweight,
+        qstate.scales,
+        qstate.qzeros,
+        qstate.wf,
+        qstate.g_idx,
+        qstate.bits,
+    )
+    return qweight, scales, qzeros, wf, g_idx, bits
+
+
 def extract_gptq_state(qmodule):
     if hasattr(qmodule, "base_layer"):
         qmodule = qmodule.base_layer
@@ -56,15 +68,17 @@ def extract_gptq_state(qmodule):
         bits=qmodule.bits,
         group_size=qmodule.group_size,
         maxq=qmodule.maxq,
-        qweight=qmodule.qweight,
-        qzeros=qmodule.qzeros,
-        scales=qmodule.scales,
-        g_idx=qmodule.g_idx,
+        qweight=qmodule.qweight.cuda(),
+        qzeros=qmodule.qzeros.cuda(),
+        scales=qmodule.scales.cuda(),
+        g_idx=qmodule.g_idx.cuda(),
         bias=check_bias(qmodule),
-        wf=qmodule.wf if hasattr(qmodule, "wf") else None,
-        kernel_switch_threshold=qmodule.kernel_switch_threshold
-        if hasattr(qmodule, "kernel_switch_threshold")
-        else None,
+        wf=qmodule.wf.cuda() if hasattr(qmodule, "wf") else None,
+        kernel_switch_threshold=(
+            qmodule.kernel_switch_threshold
+            if hasattr(qmodule, "kernel_switch_threshold")
+            else None
+        ),
         autogptq_cuda_available=qmodule.autogptq_cuda_available,
         # use_cuda_fp16=qmodule.use_cuda_fp16,
     )
@@ -89,115 +103,45 @@ def get_lora_parameters(proj):
     return qstate, A, B, s
 
 
-def apply_lora_mlp(self, X):
-    gateGPTQState, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
-    upGPTQState, upA, upB, upS = get_lora_parameters(self.up_proj)
-    downGPTQState, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
-        X,
-        gateGPTQState,
-        gateA,
-        gateB,
-        gateS,
-        upGPTQState,
-        upA,
-        upB,
-        upS,
-        downGPTQState,
-        downA,
-        downB,
-        downS,
-    )
+def matmul_lora_canonicalized(X, W, A, B, s):
+    """
+    X: rank-2 tensor (batch, seq_len) x (din)
+    W: rank-2 tensor (din, dout)
+    out: rank-2 tensor (batch, seq_len) x (dout)
+    din = X.shape[1]
+    dout = W.shape[1]
+    """
+
+    out = torch.matmul(X, W)
+
+    A, B = A.t(), B.t()
+    out += (X @ A) @ (s * B)
+
     return out
 
 
-class QuantLinearFunction(torch.autograd.Function):
-    """
-    Similar to bitsandbytes implementation except uses fused triton quantized matmul kernels for GPTQ quant / dequant
-    """
+def matmul_lora(X, W, A, B, s, out=None):
+    dtype = X.dtype
 
-    @staticmethod
-    @custom_fwd
-    def forward(ctx, input, qweight, scales, qzeros, g_idx, bits, maxq):
-        output = quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq)
-        ctx.save_for_backward(qweight, scales, qzeros, g_idx)
-        ctx.bits, ctx.maxq = bits, maxq
-        return output
-
-    @staticmethod
-    @custom_bwd
-    def backward(ctx, grad_output):
-        qweight, scales, qzeros, g_idx = ctx.saved_tensors
-        bits, maxq = ctx.bits, ctx.maxq
-        grad_input = None
-
-        if ctx.needs_input_grad[0]:
-            grad_input = transpose_quant_matmul_248(
-                grad_output, qweight, scales, qzeros, g_idx, bits, maxq
-            )
-        return grad_input, None, None, None, None, None, None
-
-
-def matmul_gptq_triton(
-    x: torch.Tensor,
-    qstate: GPTQuantState,
-    A: torch.Tensor = None,
-    B: torch.Tensor = None,
-    s: torch.Tensor = None,
-    out=None,
-    transpose=False,
-):
-    dtype = x.dtype
-
-    # matmul kernels expect x to be 2-D
-
-    if not transpose:
-        out_shape = x.shape[:-1] + (qstate.outfeatures,)
-
-        out = quant_matmul_248(
-            x.reshape(-1, x.shape[-1]),
-            qstate.qweight,
-            qstate.scales,
-            qstate.qzeros,
-            qstate.g_idx,
-            qstate.bits,
-            qstate.maxq,
-        )
-        out = out.to(dtype).reshape(out_shape)
-
-        if A is not None:
-            # LoRA is enabled
-            A, B = A.t(), B.t()
-            out += (x @ A.to(dtype)) @ (s * B.to(dtype))
+    if X.dim() == 3:
+        batch, seq_len, d = X.shape
+        X = X.view(-1, X.shape[-1])
+        reshape = True
     else:
-        out_shape = x.shape[:-1] + (qstate.infeatures,)
+        reshape = False
 
-        out = transpose_quant_matmul_248(
-            x.reshape(-1, x.shape[-1]),
-            qstate.qweight,
-            qstate.scales,
-            qstate.qzeros,
-            qstate.g_idx,
-            qstate.bits,
-            qstate.maxq,
-        )
-        out = out.to(dtype).reshape(out_shape)
-        if A is not None:
-            out += (x @ B.t().to(dtype)) @ (s * A.t().to(dtype))
-    # assert (
-    #     qstate.bias is None
-    # ), "unsloth backprop does not support bias in quantized linear modules"
+    out = torch.matmul(X, W, out=out)
 
-    # out = out + qstate.bias if qstate.bias is not None else out
+    if A is not None:
+        # LoRA is enabled
+        A, B = A.t(), B.t()
+        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
 
-    return out
+    return out.view(batch, seq_len, -1) if reshape else out
 
 
 class LoRA_MLP(torch.autograd.Function):
     """
-    
-    Implementation of LoRA MLP per unsloth.kernels.fast_lora.py except with triton GPTQ fused quant/dequant matmul kernels
-    
     ### LoRA weights
     G = G + Ag @ Bg
     U = U + Au @ Bu
@@ -240,32 +184,73 @@ class LoRA_MLP(torch.autograd.Function):
     def forward(
         ctx,
         X: torch.Tensor,
-        gateGPTQState: GPTQuantState,
+        gate_qweight,
+        gate_scales,
+        gate_qzeros,
+        gate_wf,
+        gate_g_idx,
+        gate_bits,
         gateA,
         gateB,
         gateS,
-        upGPTQState,
+        up_qweight,
+        up_scales,
+        up_qzeros,
+        up_wf,
+        up_g_idx,
+        up_bits,
         upA,
         upB,
         upS,
-        downGPTQState,
+        down_qweight,
+        down_scales,
+        down_qzeros,
+        down_wf,
+        down_g_idx,
+        down_bits,
         downA,
         downB,
         downS,
     ):
         dtype = X.dtype
 
-        e = matmul_gptq_triton(X, gateGPTQState, gateA, gateB, gateS)
-        g = matmul_gptq_triton(X, upGPTQState, upA, upB, upS)
+        # Separate dequant248 from matmul
+        gateW = dequant248(
+            gate_qweight, gate_scales, gate_qzeros, gate_wf, gate_g_idx, gate_bits
+        )
+        e = matmul_lora(X, gateW, gateA, gateB, gateS)
+        upW = dequant248(up_qweight, up_scales, up_qzeros, up_wf, up_g_idx, up_bits)
+        g = matmul_lora(X, upW, upA, upB, upS)
+        # f = torch.nn.functional.silu(e)
+        # h = f * g
         h = swiglu_fg_kernel(e, g)
-        i = matmul_gptq_triton(h, downGPTQState, downA, downB, downS)
+
+        downW = dequant248(
+            down_qweight, down_scales, down_qzeros, down_wf, down_g_idx, down_bits
+        )
+        i = matmul_lora(h, downW, downA, downB, downS)
 
         ctx.custom_saved_tensors = (
-            gateGPTQState,
+            gate_qweight,
+            gate_scales,
+            gate_qzeros,
+            gate_wf,
+            gate_g_idx,
+            gate_bits,
             gateS,
-            upGPTQState,
+            up_qweight,
+            up_scales,
+            up_qzeros,
+            up_wf,
+            up_g_idx,
+            up_bits,
             upS,
-            downGPTQState,
+            down_qweight,
+            down_scales,
+            down_qzeros,
+            down_wf,
+            down_g_idx,
+            down_bits,
             downS,
         )
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g)
@@ -275,11 +260,26 @@ class LoRA_MLP(torch.autograd.Function):
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY: torch.Tensor):
         (
-            gateGPTQState,
+            gate_qweight,
+            gate_scales,
+            gate_qzeros,
+            gate_wf,
+            gate_g_idx,
+            gate_bits,
             gateS,
-            upGPTQState,
+            up_qweight,
+            up_scales,
+            up_qzeros,
+            up_wf,
+            up_g_idx,
+            up_bits,
             upS,
-            downGPTQState,
+            down_qweight,
+            down_scales,
+            down_qzeros,
+            down_wf,
+            down_g_idx,
+            down_bits,
             downS,
         ) = ctx.custom_saved_tensors
         gateA, gateB, upA, upB, downA, downB, X, e, g = ctx.saved_tensors
@@ -300,94 +300,111 @@ class LoRA_MLP(torch.autograd.Function):
         g = g.view(-1, g.shape[-1])
         dtype = X.dtype
 
-        # DW_f   = (D @ W.T * f)
-        # DW_dfg = (D @ W.T * df * g)
-        # print(f"dY Shape: {dY.shape}")
-        DW = matmul_gptq_triton(dY, downGPTQState, downA, downB, downS, transpose=True)
-        # print(f"DW shape: {DW.shape}")
-        # print(f"DW dtype: {DW.dtype}")
-        # print(f"e dtype: {e.dtype}")
-        # print(f"g dtype: {g.dtype}")
-
+        downW = dequant248(
+            down_qweight, down_scales, down_qzeros, down_wf, down_g_idx, down_bits
+        )
+        DW = matmul_lora(dY, downW.t(), downB, downA, downS)
+        # e = e.float()
+        # se = 1.0 / (1.0 + torch.exp(-e))
+        # f = (se * e).to(dtype)
+        # h = f * g
+        # df = DW * f
+        # dg = DW * g
+        # de = (dg.float() * se * (1.0 + e * (1.0 - se))).to(dtype)
         DW, e, g = swiglu_DWf_DW_dfg_kernel(DW, e, g)
-        h, DW_f, DW_dfg = DW, e, g
+        h, df, de = DW, e, g
 
         # Down projection LoRA weights
-        # print(f"h dtype: {h.dtype}")
-        # print(f"dY dtype: {dY.dtype}")
-        # print(f"downB dtype: {downB.dtype}")
-
         d_downA = h.t() @ (dY @ downB.t())
         d_downB = (downA.t() @ h.t()) @ dY
         d_downA *= downS
         d_downB *= downS
 
         # Up projection LoRA weights
-        d_upA = X.t() @ (DW_f @ upB.t())
-        d_upB = (upA.t() @ X.t()) @ DW_f
+        d_upA = X.t() @ (df @ upB.t())
+        d_upB = (upA.t() @ X.t()) @ df
         d_upA *= upS
         d_upB *= upS
 
         # Gate projection LoRA weights
-        d_gateA = X.t() @ (DW_dfg @ gateB.t())
-        d_gateB = gateA.t() @ X.t() @ DW_dfg
+        d_gateA = X.t() @ (de @ gateB.t())
+        d_gateB = (gateA.t() @ X.t()) @ de
         d_gateA *= gateS
         d_gateB *= gateS
 
-        # Final derivatives to backpropagate backwards.
-        # See our blogpost for more details.
-        # (D @ W.T * f) @ U.T
-        # upW = fast_dequantize(upW.t(), upW_quant)
-        # (D @ W.T * f) @ (U.T + B.T @ A.T)
-        # dX = torch.matmul(DW_f, upW.t(), out=X)
-        # print(f"DW_f shape: {DW_f.shape}")
+        # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
+        # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
+        upW = dequant248(up_qweight, up_scales, up_qzeros, up_wf, up_g_idx, up_bits)
+        dX = torch.matmul(df, upW.t())  # , out=X)
+        del upW
+        dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
 
-        dX = matmul_gptq_triton(DW_f, upGPTQState, transpose=True)
-        # del upW
-        dX += DW_f @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
-
-        # And add the derivative for the gate projection
-        # gateW = fast_dequantize(gateW.t(), gateW_quant)
-        # dX += DW_dfg @ gateW.t()
-        # print(f"DW_dfg shape: {DW_dfg.shape}")
-
-        dX += matmul_gptq_triton(DW_dfg, gateGPTQState, transpose=True)
-        dX += DW_dfg @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
-
-        # #  X: torch.Tensor,
-        # gateGPTQState: GPTQuantState,
-        # gateA,
-        # gateB,
-        # gateS,
-        # upGPTQState,
-        # upA,
-        # upB,
-        # upS,
-        # downGPTQState,
-        # downA,
-        # downB,
-        # downS,
-        return (
-            dX.view(batch, seq_len, hd),  # X
-            None,  # gateGPTQState
-            d_gateA.t(),  # gateA
-            d_gateB.t(),  # gateB
-            None,  # gateS
-            None,  # upGTPQState
-            d_upA.t(),  # upA
-            d_upB.t(),  # upB
-            None,  # upS
-            None,  # downGPTQState
-            d_downA.t(),  # downA
-            d_downB.t(),  # downB
-            None,  # downS
+        gateW = dequant248(
+            gate_qweight, gate_scales, gate_qzeros, gate_wf, gate_g_idx, gate_bits
         )
+        dX += de @ gateW.t()
+        del gateW
+        dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
+
+        # gateW, gateW_quant, gateA, gateB, gateS,
+        #  upW,    upW_quant,   upA,   upB,   upS,
+        # downW, downW_quant, downA, downB, downS,
+        return (
+            dX.view(batch, seq_len, hd),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            d_gateA.t(),
+            d_gateB.t(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            d_upA.t(),
+            d_upB.t(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            d_downA.t(),
+            d_downB.t(),
+            None,
+        )
+
+
+def apply_lora_mlp(self, X):
+    gateQstate, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
+    upQState, upA, upB, upS = get_lora_parameters(self.up_proj)
+    downQState, downA, downB, downS = get_lora_parameters(self.down_proj)
+    out = LoRA_MLP.apply(
+        X,
+        *unpack_gptqstate(gateQstate),
+        gateA,
+        gateB,
+        gateS,
+        *unpack_gptqstate(upQState),
+        upA,
+        upB,
+        upS,
+        *unpack_gptqstate(downQState),
+        downA,
+        downB,
+        downS,
+    )
+    return out
 
 
 class LoRA_QKV(torch.autograd.Function):
     """
-    Implementation of LoRA QKV per unsloth.kernels.fast_lora.py except with triton GPTQ fused quant/dequant matmul kernels
-    
     ### LoRA weights
     Wq = Wq + Aq @ Bq
     Wk = Wk + Ak @ Bk
@@ -422,31 +439,64 @@ class LoRA_QKV(torch.autograd.Function):
     def forward(
         ctx,
         X: torch.Tensor,
-        QueryGPTQState: GPTQuantState,
+        Q_qweight,
+        Q_scales,
+        Q_qzeros,
+        Q_wf,
+        Q_g_idx,
+        Q_bits,
         QA,
         QB,
         QS,
-        KeyGPTQState: GPTQuantState,
+        K_qweight,
+        K_scales,
+        K_qzeros,
+        K_wf,
+        K_g_idx,
+        K_bits,
         KA,
         KB,
         KS,
-        ValueGPTQState: GPTQuantState,
+        V_qweight,
+        V_scales,
+        V_qzeros,
+        V_wf,
+        V_g_idx,
+        V_bits,
         VA,
         VB,
         VS,
     ):
         dtype = X.dtype
 
-        Q = matmul_gptq_triton(X, QueryGPTQState, QA, QB, QS)
-        K = matmul_gptq_triton(X, KeyGPTQState, KA, KB, KS)
-        V = matmul_gptq_triton(X, ValueGPTQState, VA, VB, VS)
+        QW = dequant248(Q_qweight, Q_scales, Q_qzeros, Q_wf, Q_g_idx, Q_bits)
+        KW = dequant248(K_qweight, K_scales, K_qzeros, K_wf, K_g_idx, K_bits)
+        VW = dequant248(V_qweight, V_scales, V_qzeros, V_wf, V_g_idx, V_bits)
+        Q = matmul_lora(X, QW, QA, QB, QS)
+        K = matmul_lora(X, KW, KA, KB, KS)
+        V = matmul_lora(X, VW, VA, VB, VS)
 
         ctx.custom_saved_tensors = (
-            QueryGPTQState,
+            Q_qweight,
+            Q_scales,
+            Q_qzeros,
+            Q_wf,
+            Q_g_idx,
+            Q_bits,
             QS,
-            KeyGPTQState,
+            K_qweight,
+            K_scales,
+            K_qzeros,
+            K_wf,
+            K_g_idx,
+            K_bits,
             KS,
-            ValueGPTQState,
+            V_qweight,
+            V_scales,
+            V_qzeros,
+            V_wf,
+            V_g_idx,
+            V_bits,
             VS,
         )
         ctx.save_for_backward(
@@ -464,11 +514,26 @@ class LoRA_QKV(torch.autograd.Function):
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dQ, dK, dV):
         (
-            QueryGPTQState,
+            Q_qweight,
+            Q_scales,
+            Q_qzeros,
+            Q_wf,
+            Q_g_idx,
+            Q_bits,
             QS,
-            KeyGPTQState,
+            K_qweight,
+            K_scales,
+            K_qzeros,
+            K_wf,
+            K_g_idx,
+            K_bits,
             KS,
-            ValueGPTQState,
+            V_qweight,
+            V_scales,
+            V_qzeros,
+            V_wf,
+            V_g_idx,
+            V_bits,
             VS,
         ) = ctx.custom_saved_tensors
         (
@@ -513,69 +578,73 @@ class LoRA_QKV(torch.autograd.Function):
 
         # Combine derivatives to find dX
         # dQ
-        # QW = fast_dequantize(QW.t(), QW_quant)
-        # dX = torch.matmul(dQ, QW.t())  # , out=X)
-        dX = matmul_gptq_triton(dQ, QueryGPTQState, transpose=True)
+        QW = dequant248(Q_qweight, Q_scales, Q_qzeros, Q_wf, Q_g_idx, Q_bits)
+        dX = torch.matmul(dQ, QW.t())  # , out=X)
+        del QW
         dX += dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t())
 
         # dK
-        dX += matmul_gptq_triton(dK, KeyGPTQState, transpose=True)
+        KW = dequant248(K_qweight, K_scales, K_qzeros, K_wf, K_g_idx, K_bits)
+        dX += dK @ KW.t()
+        del KW
         dX += dK @ KB.to(dtype).t() @ (KS * KA.to(dtype).t())
 
         # dV
-        dX += matmul_gptq_triton(dV, ValueGPTQState, transpose=True)
+        VW = dequant248(V_qweight, V_scales, V_qzeros, V_wf, V_g_idx, V_bits)
+        dX += dV @ VW.t()
+        del VW
         dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
 
-        # QW, QW_quant, QA, QB, QS,
-        # KW, KW_quant, KA, KB, KS,
-        # VW, VW_quant, VA, VB, VS,
-
-        # # X: torch.Tensor,
-        # QueryGPTQState: GPTQuantState,
-        # QA,
-        # QB,
-        # QS,
-        # KeyGPTQState: GPTQuantState,
-        # KA,
-        # KB,
-        # KS,
-        # ValueGPTQState: GPTQuantState,
-        # VA,
-        # VB,
-        # VS,
+        # Q_qweight, Q_scales, Q_qzeros, Q_wf, Q_g_idx, Q_bits, QA, QB, QS,
+        # K_qweight, K_scales, K_qzeros, K_wf, K_g_idx, K_bits, KA, KB, KS,
+        # V_qweight, V_scales, V_qzeros, V_wf, V_g_idx, V_bits, VA, VB, VS,
         return (
-            dX.view(batch, seq_len, hd),  # dX
-            None,  # QueryGPTQState
+            dX.view(batch, seq_len, hd),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             d_QA.t(),
             d_QB.t(),
-            None,  # QS
-            None,  # KeyGPTQState
+            None,  # d_QS.t(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             d_KA.t(),
             d_KB.t(),
-            None,  # KS
-            None,  # ValueGPTQState
+            None,  # d_KS.t(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
             d_VA.t(),
             d_VB.t(),
-            None,  # VS
+            None,
         )
 
 
 def apply_lora_qkv(self, X):
-    QueryGPTQState, QA, QB, QS = get_lora_parameters(self.q_proj)
-    KeyGPTQState, KA, KB, KS = get_lora_parameters(self.k_proj)
-    ValueGPTQState, VA, VB, VS = get_lora_parameters(self.v_proj)
-
+    Qqstate, QA, QB, QS = get_lora_parameters(self.q_proj)
+    Kqstate, KA, KB, KS = get_lora_parameters(self.k_proj)
+    Vqstate, VA, VB, VS = get_lora_parameters(self.v_proj)
     Q, K, V = LoRA_QKV.apply(
         X,
-        QueryGPTQState,
+        *unpack_gptqstate(Qqstate),
         QA,
         QB,
         QS,
-        KeyGPTQState,
+        *unpack_gptqstate(Kqstate),
         KA,
         KB,
         KS,
-        ValueGPTQState,
+        *unpack_gptqstate(Vqstate),
         VA,
         VB,
         VS,
@@ -585,8 +654,6 @@ def apply_lora_qkv(self, X):
 
 class LoRA_W(torch.autograd.Function):
     """
-    Implementation of LoRA W per unsloth.kernels.fast_lora.py except with triton GPTQ fused quant/dequant matmul kernels
-
     ### LoRA weights
     Wq = Wq + Aq @ Bq
     Wk = Wk + Ak @ Bk
@@ -615,11 +682,29 @@ class LoRA_W(torch.autograd.Function):
 
     @staticmethod
     @torch.cuda.amp.custom_fwd
-    def forward(ctx, X: torch.Tensor, qstate: GPTQuantState, A, B, S):
-        dtype = X.dtype
-        XW = matmul_gptq_triton(X, qstate, A, B, S)
+    def forward(
+        ctx,
+        X: torch.Tensor,
+        O_qweight,
+        O_scales,
+        O_qzeros,
+        O_wf,
+        O_g_idx,
+        O_bits,
+        A,
+        B,
+        S,
+    ):
+        W = dequant248(O_qweight, O_scales, O_qzeros, O_wf, O_g_idx, O_bits)
+        XW = matmul_lora(X, W, A, B, S)
+        del W
         ctx.custom_saved_tensors = (
-            qstate,
+            O_qweight,
+            O_scales,
+            O_qzeros,
+            O_wf,
+            O_g_idx,
+            O_bits,
             S,
         )
         ctx.save_for_backward(A, B, X)
@@ -628,7 +713,9 @@ class LoRA_W(torch.autograd.Function):
     @staticmethod
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY: torch.Tensor):
-        qstate, S = ctx.custom_saved_tensors
+        O_qweight, O_scales, O_qzeros, O_wf, O_g_idx, O_bits, S = (
+            ctx.custom_saved_tensors
+        )
         A, B, X = ctx.saved_tensors
 
         A, B = A.t(), B.t()
@@ -646,16 +733,29 @@ class LoRA_W(torch.autograd.Function):
         d_B *= S
 
         # Get derivative for dX
-        # W = fast_dequantize(W.t(), W_quant)
-        # dX = dY @ W.t()
-        dX = matmul_gptq_triton(dY, qstate, transpose=True)
+        W = dequant248(O_qweight, O_scales, O_qzeros, O_wf, O_g_idx, O_bits)
+        dX = dY @ W.t()
+        del W
         dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
 
-        # W, W_quant, A, B, S
-        return dX.view(batch, seq_len, hd), None, d_A.t(), d_B.t(), None
+        # O_qweight, O_scales, O_qzeros, O_wf, O_g_idx, O_bits, A, B, S
+        return (
+            dX.view(batch, seq_len, hd),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            d_A.t(),
+            d_B.t(),
+            None,
+        )
 
 
 def apply_lora_o(self, X):
-    OGPTQState, OA, OB, OS = get_lora_parameters(self.o_proj)
-    O = LoRA_W.apply(X, OGPTQState, OA, OB, OS)
+    Oqstate, OA, OB, OS = get_lora_parameters(self.o_proj)
+    O = LoRA_W.apply(X, *unpack_gptqstate(Oqstate), OA, OB, OS)
     return O
+
+
