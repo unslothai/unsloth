@@ -87,18 +87,18 @@ def _merge_lora(layer, name, max_vram):
         # First check if memory has been exceeded
         # If yes, move over to CPU to do computation.
         nbytes = W.numel() * 4 # float32 4 bytes
-        # if (torch.cuda.memory_allocated() + nbytes) >= max_vram:
-        #     W = W.to("cpu", non_blocking = True)
-        #     out_of_memory = True
-        # pass
+        if (torch.cuda.memory_allocated() + nbytes) >= max_vram:
+            W = W.to("cpu", non_blocking = True, copy = True)
+            out_of_memory = True
+        pass
         W = W.to(torch.float32).t()
 
         if A is not None:
             # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
             # W += sAB
             if out_of_memory:
-                A = A.to("cpu", non_blocking = True)
-                B = B.to("cpu", non_blocking = True)
+                A = A.to("cpu", non_blocking = True, copy = True)
+                B = B.to("cpu", non_blocking = True, copy = True)
             pass
             W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
             # if not torch.isfinite(W).all():
@@ -389,11 +389,11 @@ def unsloth_save_model(
                 # Save to GPU memory
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???
-            # elif (max_ram - W.nbytes) > 0:
-            #     # Save to CPU memory
-            #     logger.warning_once(f"We will save to RAM and not VRAM now.")
-            #     state_dict[name] = W.to("cpu", non_blocking = True)
-            #     max_ram = max(max_ram - W.nbytes, 0)
+            elif (max_ram - W.nbytes) > 0:
+                # Save to CPU memory
+                logger.warning_once(f"We will save to RAM and not VRAM now.")
+                state_dict[name] = W.to("cpu", non_blocking = True, copy = True)
+                max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
                 logger.warning_once(f"We will save to Disk and not RAM now.")
