@@ -15,11 +15,13 @@
 import torch
 from typing import Optional, Tuple, List, Union
 from torch.nn.functional import scaled_dot_product_attention
-from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
+)
+from transformers.modeling_attn_mask_utils import (
+    _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from ..kernels import *
 from ._utils import *
@@ -46,16 +48,13 @@ except:
     LlamaFlashAttention2 = LlamaAttention
 pass
 
-from peft import PeftModelForCausalLM
-import gc
-import peft
-import bitsandbytes as bnb
-import numpy as np
-import types
-
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
+from peft import PeftModelForCausalLM
+from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+from ..save import patch_saving_functions
 
 
 def original_apply_qkv(self, X):
@@ -72,11 +71,15 @@ def original_apply_o(self, X):
 pass
 
 
+from math import sqrt as math_sqrt
+KV_CACHE_INCREMENT = 128 # KV Cache update size
+
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
     position_ids,
+    do_prefill = False,
 ):
     """
         https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
@@ -107,32 +110,66 @@ def LlamaAttention_fast_forward_inference(
         remember K and V, which are called the KV cache.
     """
     Xn = hidden_states
-    bsz, _, _ = hidden_states.size()
+    bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
-
-    Wq = self.q_proj.weight
-    Wk = self.k_proj.weight
-    Wv = self.v_proj.weight
-    Wo = self.o_proj.weight
+    dtype = Xn.dtype
 
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
-    assert(n_kv_heads * n_groups == n_heads)
+    # assert(n_kv_heads * n_groups == n_heads)
+    seq_len = K1.shape[-2]
+    kv_seq_len = seq_len + 1
 
-    Qn, Kn, Vn = original_apply_qkv(self, Xn)
+    # Prefill phase
+    # if not hasattr(self, "paged_attention"):
+    if do_prefill:
+        self.paged_attention = torch.empty((KV_CACHE_INCREMENT+seq_len+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda")
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
+        self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
+        self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
+        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
+        self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda")
+        self.scalar = 1.0 / math_sqrt(self.head_dim)
+    elif kv_seq_len >= self.paged_attention.shape[0]:
+        self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
+    pass
+
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    kv_seq_len = K1.shape[-2] + 1
-    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    cos = self.rotary_emb.cos_cached[seq_len]
+    sin = self.rotary_emb.sin_cached[seq_len]
+    h = head_dim // 2
+
+    RH_Q = self.RH_Q
+    RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
+    Qn *= cos; Qn.addcmul_(RH_Q, sin);
+
+    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_K[:,:,:,:h] = Kn[:,:,:,h:]; RH_K[:,:,:,h:] = Kn[:,:,:,:h]; torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h]);
+    Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    Kn = torch.cat([K1, Kn], dim = 2)
-    Vn = torch.cat([V1, Vn], dim = 2)
+    # Kn = torch.cat([K1, Kn], dim = 2)
+    # Vn = torch.cat([V1, Vn], dim = 2)
+    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Grouped query attention
     if n_groups != 1:
@@ -145,14 +182,44 @@ def LlamaAttention_fast_forward_inference(
         Knn, Vnn = Kn, Vn
 
     # Attention
-    A = torch.matmul(Qn, Knn.transpose(2, 3))
-    A *= 1.0 / (self.head_dim**0.5)
-    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(A.dtype)
-    A = torch.matmul(A, Vnn)
+    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:kv_seq_len])
+    A *= self.scalar
+    A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
+    A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = original_apply_o(self, A)
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1])
     return A, (Kn, Vn)
+pass
+
+
+def fast_mlp_inference(self, X):
+    # gate = self.gate_proj(X)
+    # up   = self.up_proj(X)
+    bsz, _, hd = X.shape
+    mlp_size = self.config.intermediate_size
+    temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
+
+    gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
+    up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
+    gate = torch.nn.functional.silu(gate, inplace = True)
+    gate *= up
+
+    # X = self.down_proj(gate)
+    down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
+    return down
+pass
+
+
+def fast_rms_layernorm_inference(self, X):
+    old_dtype = X.dtype
+    XX = X.to(torch.float32)
+    variance = XX.square().mean(-1, keepdim = True)
+    variance += self.variance_epsilon
+    XX *= variance.rsqrt_()
+    X = XX.to(old_dtype) # Must preserve due to residual
+    X *= self.weight
+    return X
 pass
 
 
@@ -170,19 +237,18 @@ def LlamaAttention_fast_forward(
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
-    bsz, q_len, _ = hidden_states.size()
-    Q, K, V = self.apply_qkv(self, hidden_states)
-
-    # Check for inference
-    if use_cache and past_key_value is not None and q_len == 1:
-        A, past_key_value = LlamaAttention_fast_forward_inference(
-            self,
-            hidden_states,
-            past_key_value,
-            position_ids,
-        )
-        return A, None, past_key_value
+    # Clear inference
+    if hasattr(self, "paged_attention"):
+        del self.paged_attention_K
+        del self.paged_attention_V
+        del self.paged_attention
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
+        del self.attention
     pass
+
+    bsz, q_len, _ = hidden_states.size()
 
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
@@ -190,6 +256,7 @@ def LlamaAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
+    Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -210,10 +277,11 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION):
+    if (not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -222,20 +290,20 @@ def LlamaAttention_fast_forward(
 
         # Group query attention
         if n_groups != 1:
-            K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-            V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-            K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-            V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+            K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
+            V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
             if hidden_states.requires_grad:
-                K = K.reshape(bsz, q_len, n_heads, head_dim)
-                V = V.reshape(bsz, q_len, n_heads, head_dim)
+                K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
+                V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
             else:
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
         pass
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif HAS_FLASH_ATTENTION:
+    elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
@@ -243,16 +311,19 @@ def LlamaAttention_fast_forward(
     else:
         # Grouped query attention
         if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-            K = K.reshape(bsz, n_heads, q_len, head_dim)
-            V = V.reshape(bsz, n_heads, q_len, head_dim)
+            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
         pass
+        # Must be contiguous or else results are False!
+        # https://github.com/pytorch/pytorch/issues/112577
+        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
         A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2)
+        A = A.transpose(1, 2).contiguous()
     pass
     attn_output = A.reshape(bsz, q_len, self.hidden_size)
     attn_output = self.apply_o(self, attn_output)
@@ -287,28 +358,47 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    residual = hidden_states
+    if past_key_value is not None:
+        do_prefill = not hasattr(self.self_attn, "paged_attention")
 
-    hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        # Self Attention
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
+        hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
+            self.self_attn,
+            hidden_states,
+            past_key_value,
+            position_ids,
+            do_prefill = do_prefill,
+        )
+        hidden_states += residual
 
-    # Self Attention
-    hidden_states, self_attn_weights, present_key_value = self.self_attn(
-        hidden_states=hidden_states,
-        causal_mask=causal_mask,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_value=past_key_value,
-        output_attentions=output_attentions,
-        use_cache=use_cache,
-        padding_mask=padding_mask,
-    )
-    hidden_states = residual + hidden_states
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_mlp_inference(self.mlp, hidden_states)
+        hidden_states += residual
+    else:
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
+        )
+        hidden_states = residual + hidden_states
 
-    # Fully Connected
-    residual = hidden_states
-    hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-    hidden_states = self.mlp(hidden_states)
-    hidden_states = residual + hidden_states
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+    pass
 
     outputs = (hidden_states,)
 
@@ -378,9 +468,10 @@ def LlamaModel_fast_forward(
     if past_key_values is not None:
         past_key_values_length = past_key_values[0][0].shape[2]
         seq_length_with_past = seq_length_with_past + past_key_values_length
+    pass
 
     # We already handle KV cache position_ids ourselves.
-    if (past_key_values_length != 0):
+    if False:#(past_key_values_length != 0):
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
@@ -391,42 +482,58 @@ def LlamaModel_fast_forward(
         position_ids = position_ids.view(-1, seq_length).to(torch.int32)#.long()
     else:
         position_ids = None
+    pass
 
     if position_ids is not None:
         if position_ids.shape[0] != batch_size:
             position_ids = position_ids.repeat((batch_size, 1))
+    pass
 
     # embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
+    # Fix up attention mask by setting elements to 0
+    # Specifically for DPO
+    if self._has_no_labels and (attention_mask is not None) and (past_key_values is None):
+        # Careful for inference the attention_mask is size (1, kv_seq_len)
+        # Whilst the input_embeds is size (1, 1, 4096)
+        inputs_requires_grad = inputs_embeds.requires_grad
+        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
+        inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
+        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+    pass
+
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
+    elif self.training:
+        attention_mask = None
+        padding_mask = None
     else:
-        if 0 in attention_mask:
-            padding_mask = attention_mask
-        else:
-            padding_mask = None
+        # if 0 in attention_mask:
+        #     padding_mask = attention_mask
+        # else:
+        padding_mask = None
 
-        attention_mask = _prepare_4d_causal_attention_mask(
+        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
             (batch_size, seq_length),
             inputs_embeds,
             past_key_values_length,
-            sliding_window = None if not hasattr(self.config, "sliding_window") else \
-                self.config.sliding_window,
+            sliding_window = getattr(self.config, "sliding_window", None),
         )
     pass
 
     hidden_states = inputs_embeds
 
-    if self.gradient_checkpointing and self.training:
-        if use_cache:
-            logger.warning_once(
-                "Unsloth: `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`"
-            )
-            use_cache = False
+    if past_key_values is None and self.gradient_checkpointing and self.training:
+        use_cache = False
+        # if use_cache:
+        #     logger.warning_once(
+        #         "Unsloth: `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`"
+        #     )
+        #     use_cache = False
     pass
 
     # decoder layers
@@ -478,7 +585,7 @@ def LlamaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
     pass
-
+    
     hidden_states = fast_rms_layernorm(self.norm, hidden_states)
 
     # add hidden states from the last decoder layer
@@ -493,6 +600,50 @@ def LlamaModel_fast_forward(
         past_key_values=next_cache,
         hidden_states=all_hidden_states,
         attentions=all_self_attns,
+    )
+pass
+
+
+# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
+@torch.inference_mode
+def LlamaModel_fast_forward_inference(
+    self,
+    input_ids,
+    past_key_values,
+):
+    # Fix out of bounds tokenization
+    input_ids = input_ids[:,:self.max_seq_length]
+
+    hidden_states = self.embed_tokens(input_ids)
+
+    next_decoder_cache = []
+    for idx, decoder_layer in enumerate(self.layers):
+        # Self Attention
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
+        hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
+            decoder_layer.self_attn,
+            hidden_states,
+            past_key_values[idx],
+            None,
+        )
+        hidden_states += residual
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
+        hidden_states = fast_mlp_inference(decoder_layer.mlp, hidden_states)
+        hidden_states += residual
+
+        next_decoder_cache.append(present_key_value)
+    pass
+    hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
+
+    return BaseModelOutputWithPast(
+        last_hidden_state = hidden_states,
+        past_key_values   = next_decoder_cache,
+        hidden_states     = [],
+        attentions        = [],
     )
 pass
 
@@ -513,7 +664,7 @@ def LlamaForCausalLM_fast_forward(
     *args, **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-    if causal_mask is None:
+    if causal_mask is None and past_key_values is None:
         causal_mask = xformers.attn_bias.LowerTriangularMask()
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -523,21 +674,38 @@ def LlamaForCausalLM_fast_forward(
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    outputs = self.model(
-        input_ids=input_ids,
-        causal_mask=causal_mask,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_values=past_key_values,
-        inputs_embeds=inputs_embeds,
-        use_cache=use_cache,
-        output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
-        return_dict=return_dict,
-    )
+    self.model._has_no_labels = labels is None
+
+    if past_key_values is not None and \
+        hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        outputs = LlamaModel_fast_forward_inference(
+            self.model,
+            input_ids,
+            past_key_values,
+        )
+    else:
+        outputs = self.model(
+            input_ids=input_ids,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+    pass
 
     hidden_states = outputs[0]
-    logits = self.lm_head(hidden_states)
+    bsz, q_len, hd = hidden_states.shape
+    if bsz == 1 and q_len == 1:
+        logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+        logits = logits.unsqueeze(0).unsqueeze(0)
+    else:
+        logits = self.lm_head(hidden_states)
+    pass
 
     loss = None
     if labels is not None:
@@ -612,13 +780,15 @@ class FastLlamaModel:
 
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/llama-2-7b-bnb-4bit",
+        model_name     = "unsloth/llama-2-7b-bnb-4bit",
         max_seq_length = 4096,
-        dtype = None,
-        load_in_4bit = True,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,
+        dtype          = None,
+        load_in_4bit   = True,
+        token          = None,
+        device_map     = "sequential",
+        rope_scaling   = None,
+        fix_tokenizer  = True,
+        **kwargs,
     ):
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
@@ -626,11 +796,11 @@ class FastLlamaModel:
 
         statistics = \
            f"==((====))==  Unsloth: Fast Llama patching release {__version__}\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
-           f"O^O/ \_/ \\    CUDA capability = {gpu_stats.major}.{gpu_stats.minor}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
-           f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform_system}\n'
-        logger.warning_once(statistics)
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
+           f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
+           f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
+           f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
+        print(statistics)
         FastLlamaModel.pre_patch()
 
         if dtype is None:
@@ -664,24 +834,26 @@ class FastLlamaModel:
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
             )
+        pass
 
         # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
         # RoPE Scaling's max_position_embeddings must be updated
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map = device_map,
-            torch_dtype = dtype,
-            quantization_config = bnb_config,
-            token = token,
-            rope_scaling = rope_scaling,
+            device_map              = device_map,
+            torch_dtype             = dtype,
+            quantization_config     = bnb_config,
+            token                   = token,
+            rope_scaling            = rope_scaling,
             max_position_embeddings = max_position_embeddings,
+            **kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            model_max_length = max_seq_length,
-            padding_side = "right",
-            token = token,
+            model_max_length = max_position_embeddings,
+            padding_side     = "right",
+            token            = token,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -703,14 +875,34 @@ class FastLlamaModel:
         internal_model.max_seq_length = max_position_embeddings
 
         # We check the tokenizer first for errors
-        tokenizer = check_tokenizer(
-            model = model,
-            tokenizer = tokenizer,
-            model_name = model_name,
-            model_max_length = max_seq_length,
-            padding_side = "right",
-            token = token,
-        )
+        if fix_tokenizer:
+            tokenizer = check_tokenizer(
+                model            = model,
+                tokenizer        = tokenizer,
+                model_name       = model_name,
+                model_max_length = max_position_embeddings,
+                padding_side     = "right",
+                token            = token,
+            )
+        pass
+        patch_saving_functions(tokenizer)
+
+        # Fix up config for transformers uploading PEFT
+        # Not necessary anymore since we require transformers>=4.37!
+        if False:
+            name = model.config._name_or_path
+            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                name = name[:len(name) - len("-bnb-4bit")]
+                model.config.update({"_name_or_path" : name})
+            pass
+        pass
+
+        # Log Unsloth version for future fastpaths for inference
+        model.config.update({"unsloth_version" : __version__})
+
+        # Add save modules
+        patch_saving_functions(model)
+
         return model, tokenizer
     pass
 
@@ -738,7 +930,7 @@ class FastLlamaModel:
         correct_dtype = lm_head.weight.dtype
 
         for name, module in model.named_modules():
-            if isinstance(module, (bnb.nn.Linear4bit, peft.tuners.lora.Linear4bit)):
+            if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
                 weight = module.weight
                 quant_state = weight.quant_state
 
@@ -753,8 +945,10 @@ class FastLlamaModel:
         pass
 
         # Clear deleted GPU items
-        gc.collect()
-        torch.cuda.empty_cache()
+        import gc
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
         return model
     pass
 
@@ -762,18 +956,35 @@ class FastLlamaModel:
     @staticmethod
     def get_peft_model(
         model,
-        r = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                          "gate_proj", "up_proj", "down_proj"],
-        lora_alpha = 16,
-        lora_dropout = 0,
-        bias = "none",
+        r                   = 16,
+        target_modules      = ["q_proj", "k_proj", "v_proj", "o_proj",
+                               "gate_proj", "up_proj", "down_proj"],
+        lora_alpha          = 16,
+        lora_dropout        = 0,
+        bias                = "none",
         layers_to_transform = None,
+        layers_pattern      = None,
         use_gradient_checkpointing = True,
-        random_state = 3407,
-        max_seq_length = 2048, # not used anymore
+        random_state        = 3407,
+        max_seq_length      = 2048, # not used anymore
+        use_rslora          = False,
+        init_lora_weights   = True,
+        loftq_config        = {},
         **kwargs,
     ):
+        transformers_set_seed(random_state)
+
+        if isinstance(model, PeftModelForCausalLM):
+            raise TypeError(
+                "Unsloth: Your model already has LoRA adapters. No need to run this again!"
+            )
+        pass
+
+        import inspect
+        signature = str(inspect.signature(LoraConfig))
+        SUPPORTS_LOFTQ  = "loftq_config" in signature
+        SUPPORTS_RSLORA = "use_rslora"   in signature
+
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
@@ -781,13 +992,62 @@ class FastLlamaModel:
                 f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"\
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
+        pass
+
         if bias != "none":
             logger.warning_once(
                 f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"\
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
+        pass
 
-        transformers_set_seed(random_state)
+        if not (type(init_lora_weights) is bool or \
+            init_lora_weights == "gaussian" or init_lora_weights == "loftq"):
+            raise ValueError(
+                'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
+            )
+        pass
+
+        if init_lora_weights == "loftq":
+
+            if not SUPPORTS_LOFTQ:
+                import peft
+                raise RuntimeError(
+                    f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
+                    "Please install PEFT 0.7.2 or higher.\n"\
+                    "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+                )
+            pass
+
+            if loftq_config == {}:
+                from peft import LoftQConfig
+                logger.warning_once(
+                    f"Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
+                    f"We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
+                )
+                loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
+            pass
+            
+            if hasattr(model.config, "quantization_config"):
+                raise ValueError(
+                    "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"\
+                    "Reload your model without any quantization by setting `load_in_4bit = False`."
+                )
+            pass
+        pass
+
+        assert(type(use_rslora) is bool)
+        if use_rslora:
+            if not SUPPORTS_RSLORA:
+                # We manually check for PEFT
+                import peft
+                raise RuntimeError(
+                    f"Unsloth: Your PEFT version of {peft.__version__} does not support `use_rslora`.\n"\
+                    "Please install PEFT 0.7.2 or higher.\n"\
+                    "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+                )
+            pass
+        pass
 
         accepted_modules = frozenset(("q_proj", "k_proj", "v_proj", "o_proj",
                                       "gate_proj", "up_proj", "down_proj",),)
@@ -797,28 +1057,73 @@ class FastLlamaModel:
         pass
 
         # Get LoRA
-        lora_config = LoraConfig(
-            r              = r,
-            lora_alpha     = lora_alpha,
-            target_modules = target_modules,
-            lora_dropout   = lora_dropout,
-            bias           = bias,
-            task_type      = TaskType.CAUSAL_LM,
+        arguments = dict(
+            r                   = r,
+            lora_alpha          = lora_alpha,
+            target_modules      = target_modules,
+            lora_dropout        = lora_dropout,
+            bias                = bias,
+            task_type           = TaskType.CAUSAL_LM,
             layers_to_transform = layers_to_transform,
+            init_lora_weights   = init_lora_weights,
+            loftq_config        = loftq_config,
+            use_rslora          = use_rslora,
             **kwargs,
         )
+        if not SUPPORTS_LOFTQ:  del arguments["loftq_config"]
+        if not SUPPORTS_RSLORA: del arguments["use_rslora"]
+
+        lora_config = LoraConfig(**arguments)
+        model = _get_peft_model(model, lora_config)
+
+        model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        return model
+    pass
+
+
+    @staticmethod
+    def patch_peft_model(
+        model,
+        use_gradient_checkpointing = True,
+    ):
+        if not isinstance(model, PeftModelForCausalLM):
+            raise TypeError(
+                "Unsloth: Your model needs to call `.get_peft_model` first!"
+            )
+        pass
 
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             use_reentrant = True,
         )
-        model = _get_peft_model(model, lora_config)
+
+        # Fix up config for transformers uploading PEFT
+        for active_adapter in model.peft_config.keys():
+            # Not necessary since we requires transformers >= 4.37
+            if False:
+                name = model.peft_config[active_adapter].base_model_name_or_path
+                if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                    name = name[:len(name) - len("-bnb-4bit")]
+                    model.peft_config[active_adapter].base_model_name_or_path = name
+                pass
+            # Add revision to enable future fast inference paths
+            model.peft_config[active_adapter].revision = f"unsloth"
+        pass
 
         # Do patching
         n_mlp = 0
         n_qkv = 0
         n_o   = 0
+        import types
+
+        active_adapter = model.active_adapters[0] if \
+            hasattr(model, "active_adapters") else model.active_adapter
+
+        # Get dropout and bias
+        lora_dropout = model.peft_config[active_adapter].lora_dropout
+        bias         = model.peft_config[active_adapter].bias
+
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
@@ -884,6 +1189,7 @@ class FastLlamaModel:
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "\
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.",
         )
+        patch_saving_functions(model)
 
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10
@@ -897,5 +1203,39 @@ class FastLlamaModel:
         pass
         internal_model.max_seq_length = max_seq_length
         return model
+    pass
+
+
+    @staticmethod
+    def for_inference(model):
+        internal_model = model
+        internal_model.gradient_checkpointing = False
+        internal_model.training = False
+
+        while hasattr(internal_model, "model"):
+            internal_model = internal_model.model
+            internal_model.gradient_checkpointing = False
+            internal_model.training = False
+        pass
+    pass
+
+
+    @staticmethod
+    def for_training(model, use_gradient_checkpointing = True):
+        internal_model = model
+        internal_model.gradient_checkpointing = use_gradient_checkpointing
+        internal_model.training = True
+
+        # Delete all fast inference loras
+        for param in model.parameters():
+            if hasattr(param, "_fast_lora"):
+                del param._fast_lora
+        pass
+
+        while hasattr(internal_model, "model"):
+            internal_model = internal_model.model
+            internal_model.gradient_checkpointing = use_gradient_checkpointing
+            internal_model.training = True
+        pass
     pass
 pass

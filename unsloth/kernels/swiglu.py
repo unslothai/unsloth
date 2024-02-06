@@ -25,10 +25,11 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
     mask = offsets < n_elements
 
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0).to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0)#.to(tl.float32)
 
     # f = e * sigmoid(e)
-    f_row = e_row / (1 + tl.exp(-e_row))
+    f_row = e_row * tl.sigmoid(e_row) # e_row / (1 + tl.exp(-e_row))
+    f_row = f_row.to(g_row.dtype) # Exact copy from HF
     # h = f * g
     h_row = f_row * g_row
 
@@ -49,29 +50,43 @@ pass
 
 @triton.jit
 def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
+    """
+    e = e.float()
+    se = 1.0 / (1.0 + torch.exp(-e))
+    f = (se * e).to(dtype)
+    h = f * g
+    df = DW * f
+    dg = DW * g
+    de = (dg.float() * se * (1.0 + e * (1.0 - se))).to(dtype)
+    """
     block_idx = tl.program_id(0)
     offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0).to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask = mask, other = 0)#.to(tl.float32)
     e_row  = tl.load(e  + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row  = tl.load(g  + offsets, mask = mask, other = 0).to(tl.float32)
+    g_row  = tl.load(g  + offsets, mask = mask, other = 0)#.to(tl.float32)
 
-    # f = e * sigmoid(e)
-    se_row = 1 / (1 + tl.exp(-e_row))
-    # f = e * se
-    f_row = e_row * se_row
+    # e = e.float()
+    # se = 1.0 / (1.0 + torch.exp(-e))
+    se_row = tl.sigmoid(e_row) # 1.0 / (1.0 + tl.exp(-e_row))
+    # f = (se * e).to(dtype)
+    f_row = se_row * e_row
+    f_row = f_row.to(DW_row.dtype)
     # h = f * g
-    h_row = f_row * g_row
-    # DW_f = DW * f
-    DWf_row = DW_row * f_row
-    # DW_dfg = DW * (se*(g - h) + h)
-    DW_dfg_row = DW_row * (se_row*(g_row - h_row) + h_row)
+    h_row  =  f_row * g_row
+    # df = DW * f
+    df_row = DW_row * f_row
+    # dg = DW * g
+    dg_row = DW_row * g_row
+    # de = (dg.float() * se * (1.0 + e * (1.0 - se))).to(dtype)
+    de_row = dg_row.to(tl.float32) * se_row * (1.0 + e_row * (1.0 - se_row))
+    de_row = de_row.to(DW_row.dtype)
 
     # Store derivatives in buffers
-    tl.store(DW + offsets, h_row,      mask = mask)
-    tl.store(e  + offsets, DWf_row,    mask = mask)
-    tl.store(g  + offsets, DW_dfg_row, mask = mask)
+    tl.store(DW + offsets, h_row,  mask = mask) # h  = f * g
+    tl.store(e  + offsets, df_row, mask = mask) # df = DW * f
+    tl.store(g  + offsets, de_row, mask = mask) # de
 pass
 
 

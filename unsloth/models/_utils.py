@@ -14,24 +14,35 @@
 
 import torch
 from typing import Union, Optional, List, Any, Callable
-import numpy as np
 import warnings
-import gc
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
 from platform import system as platform_system
 platform_system = platform_system()
+import math
 
-__version__ = "2024.1"
+__version__ = "2024.2"
 
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()
 if major_version >= 8:
     try:
         from flash_attn import flash_attn_func
-        HAS_FLASH_ATTENTION = True
+        # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
+        try:
+            from flash_attn.flash_attn_interface import flash_attn_cuda
+            HAS_FLASH_ATTENTION = True
+        except:
+            logger.warning_once(
+                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
+                "A possible explanation is you have a new CUDA version which isn't\n"\
+                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
+                "We shall now use Xformers instead, which gets a 0.01% performance hit.\n"\
+                "We found this negligible impact by benchmarking on 1x A100."
+            )
+            HAS_FLASH_ATTENTION = False
     except:
         HAS_FLASH_ATTENTION = False
 else:
@@ -55,6 +66,11 @@ __all__ = [
 ]
 
 
+IGNORED_TOKENIZER_CHECKING = frozenset((
+    "CodeLlamaTokenizerFast",
+    "CodeLlamaTokenizer",
+))
+
 def prepare_model_for_kbit_training(
     model                      : Any,
     use_gradient_checkpointing : bool = True,
@@ -75,9 +91,13 @@ def prepare_model_for_kbit_training(
             future Pytorch versions.
     """
 
-    # Freeze all parameters
-    for param in model.parameters():
-        param.requires_grad_(False)
+    # Freeze all parameters except LoRA
+    for name, param in model.named_parameters():
+        if ".lora_A." in name or ".lora_B." in name:
+            param.requires_grad_(True)
+        else:
+            param.requires_grad_(False)
+    pass
 
     if use_gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -130,6 +150,11 @@ def check_tokenizer(
     # where <sep> had token id=32002.
     # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
     # Seems like the Fast tokenizer in Rust breaks things!
+
+    # We ignore some of them!
+    if tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
+        return tokenizer
+    pass
 
     max_embedding_size = model.model.embed_tokens.weight.shape[0]
     added_tokens_fast = tokenizer.added_tokens_decoder
@@ -233,7 +258,17 @@ def LoraLayer_update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init
         self.scaling[adapter_name] = lora_alpha / r
 
     if init_lora_weights == "loftq":
+        # We manually check for PEFT
+        if not hasattr(self, "loftq_init"):
+            import peft
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
+                "Please install PEFT 0.7.2 or higher.\n"\
+                "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+            )
+        pass
         self.loftq_init(adapter_name)
+
     elif init_lora_weights:
         self.reset_lora_parameters(adapter_name, init_lora_weights)
 

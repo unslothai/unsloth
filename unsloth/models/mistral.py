@@ -46,19 +46,18 @@ def MistralAttention_fast_forward(
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
-    bsz, q_len, _ = hidden_states.size()
-    Q, K, V = self.apply_qkv(self, hidden_states)
-
-    # Check for inference
-    if use_cache and past_key_value is not None and q_len == 1:
-        A, past_key_value = LlamaAttention_fast_forward_inference(
-            self,
-            hidden_states,
-            past_key_value,
-            position_ids,
-        )
-        return A, None, past_key_value
+    # Clear inference
+    if hasattr(self, "paged_attention"):
+        del self.paged_attention_K
+        del self.paged_attention_V
+        del self.paged_attention
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
+        del self.attention
     pass
+
+    bsz, q_len, _ = hidden_states.size()
 
     n_heads    = self.num_heads
     n_groups   = self.num_key_value_groups
@@ -66,6 +65,7 @@ def MistralAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
+    Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -84,70 +84,74 @@ def MistralAttention_fast_forward(
     pass
 
     if past_key_value is not None:
-        # reuse k, v, self_attention
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    pass
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION):
+    if (not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        M = bsz * q_len
+        K_M = V_M = bsz * kv_seq_len
+        Q_M = bsz * q_len
 
         has_swa = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
 
         # Group query attention
-        K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-        V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-        K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
+        K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+        V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+        K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
+        V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
         if hidden_states.requires_grad:
-            K = K.reshape(bsz, q_len, n_heads, head_dim)
-            V = V.reshape(bsz, q_len, n_heads, head_dim)
+            K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
+            V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
 
             if has_swa:
-                Q = Q.view(1, M, n_heads, head_dim)
-                K = K.view(1, M, n_heads, head_dim)
-                V = V.view(1, M, n_heads, head_dim)
+                Q = Q.view(1, Q_M, n_heads, head_dim)
+                K = K.view(1, K_M, n_heads, head_dim)
+                V = V.view(1, V_M, n_heads, head_dim)
             pass
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
 
             if has_swa:
-                Q = Q.view(1, M, n_kv_heads, n_groups, head_dim)
-                K = K.view(1, M, n_kv_heads, n_groups, head_dim)
-                V = V.view(1, M, n_kv_heads, n_groups, head_dim)
+                Q = Q.view(1, Q_M, n_kv_heads, n_groups, head_dim)
+                K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
+                V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
             pass
         pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif HAS_FLASH_ATTENTION:
+    elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        sw = getattr(self.config, "sliding_window")
-        sw = q_len if sw is None else sw
-        window = (-1, -1) if (q_len <= sw) else (sw, sw)
+        sw = getattr(self.config, "sliding_window", None)
+        sw = kv_seq_len if (sw is None or sw == "null") else sw
+        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window)
     else:
         # Grouped query attention
         # if n_groups != 1:
-        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-        K = K.reshape(bsz, n_heads, q_len, head_dim)
-        V = V.reshape(bsz, n_heads, q_len, head_dim)
+        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+        K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
         # pass
+        # Must be contiguous or else results are False!
+        # https://github.com/pytorch/pytorch/issues/112577
+        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
         A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2)
+        A = A.transpose(1, 2).contiguous()
     pass
     
     attn_output = A.reshape(bsz, q_len, self.hidden_size)
@@ -173,10 +177,10 @@ def MistralForCausalLM_fast_forward(
     *args, **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-    if causal_mask is None:
+    if causal_mask is None and past_key_values is None:
         bsz, q_len = input_ids.shape
-        sliding_window = getattr(self.config, "sliding_window")
-        if sliding_window is None or sliding_window <= 0:
+        sliding_window = getattr(self.config, "sliding_window", None)
+        if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
         elif q_len <= sliding_window:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
@@ -194,21 +198,38 @@ def MistralForCausalLM_fast_forward(
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    outputs = self.model(
-        input_ids=input_ids,
-        causal_mask=causal_mask,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_values=past_key_values,
-        inputs_embeds=inputs_embeds,
-        use_cache=use_cache,
-        output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
-        return_dict=return_dict,
-    )
+    self.model._has_no_labels = labels is None
+
+    if past_key_values is not None and \
+        hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        outputs = LlamaModel_fast_forward_inference(
+            self.model,
+            input_ids,
+            past_key_values,
+        )
+    else:
+        outputs = self.model(
+            input_ids=input_ids,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+    pass
 
     hidden_states = outputs[0]
-    logits = self.lm_head(hidden_states)
+    bsz, q_len, hd = hidden_states.shape
+    if bsz == 1 and q_len == 1:
+        logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+        logits = logits.unsqueeze(0).unsqueeze(0)
+    else:
+        logits = self.lm_head(hidden_states)
+    pass
 
     loss = None
     if labels is not None:
@@ -256,16 +277,20 @@ class FastMistralModel(FastLlamaModel):
 
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/mistral-7b-bnb-4bit",
+        model_name     = "unsloth/mistral-7b-bnb-4bit",
         max_seq_length = 4096,
-        dtype = None,
-        load_in_4bit = True,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None, # Mistral does not support RoPE scaling
-    ): 
+        dtype          = None,
+        load_in_4bit   = True,
+        token          = None,
+        device_map     = "sequential",
+        rope_scaling   = None, # Mistral does not support RoPE scaling
+        fix_tokenizer  = True,
+        **kwargs,
+    ):
+        # Mistral does NOT support RoPE Scaling!
         if rope_scaling is not None:
             logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
+        pass
 
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
@@ -273,11 +298,11 @@ class FastMistralModel(FastLlamaModel):
 
         statistics = \
            f"==((====))==  Unsloth: Fast Mistral patching release {__version__}\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB\n"\
-           f"O^O/ \_/ \\    CUDA capability = {gpu_stats.major}.{gpu_stats.minor}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
-           f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform_system}\n'
-        logger.warning_once(statistics)
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
+           f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
+           f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
+           f' "-____-"     Apache 2 free license: http://github.com/unslothai/unsloth'
+        print(statistics)
         FastMistralModel.pre_patch()
 
         if dtype is None:
@@ -288,6 +313,18 @@ class FastMistralModel(FastLlamaModel):
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
+        # Check max sequence length
+        model_config = AutoConfig.from_pretrained(model_name, token = token)
+        model_max_seq_length = model_config.max_position_embeddings
+
+        # Mistral does NOT support RoPE Scaling sadly so we have to error out.
+        if max_seq_length > model_max_seq_length:
+            raise RuntimeError(
+                "Unsloth: Unfortunately Mistral type models do not support RoPE scaling!\n"\
+                f"The maximum sequence length supported is {model_max_seq_length}.",
+            )
+        pass
+
         bnb_config = None
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
@@ -297,19 +334,21 @@ class FastMistralModel(FastLlamaModel):
                 bnb_4bit_compute_dtype    = dtype,
             )
 
+        max_position_embeddings = max(max_seq_length, model_max_seq_length)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map = device_map,
-            torch_dtype = dtype,
+            device_map          = device_map,
+            torch_dtype         = dtype,
             quantization_config = bnb_config,
-            token = token,
-            # rope_scaling = rope_scaling,
+            token               = token,
+            # rope_scaling      = rope_scaling,
+            **kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            model_max_length = max_seq_length,
-            padding_side = "right",
-            token = token,
+            model_max_length = max_position_embeddings,
+            padding_side     = "right",
+            token            = token,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -332,14 +371,33 @@ class FastMistralModel(FastLlamaModel):
         internal_model.max_seq_length = max_position_embeddings
 
         # We check the tokenizer first for errors
-        tokenizer = check_tokenizer(
-            model = model,
-            tokenizer = tokenizer,
-            model_name = model_name,
-            model_max_length = max_seq_length,
-            padding_side = "right",
-            token = token,
-        )
+        if fix_tokenizer:
+            tokenizer = check_tokenizer(
+                model            = model,
+                tokenizer        = tokenizer,
+                model_name       = model_name,
+                model_max_length = max_position_embeddings,
+                padding_side     = "right",
+                token            = token,
+            )
+        pass
+        patch_saving_functions(tokenizer)
+
+        # Fix up config for transformers uploading PEFT
+        # Not necessary anymore since we require transformers>=4.37
+        if False:
+            name = model.config._name_or_path
+            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
+                name = name[:len(name) - len("-bnb-4bit")]
+                model.config.update({"_name_or_path" : name})
+            pass
+        
+        # Log Unsloth version for future fastpaths for inference
+        model.config.update({"unsloth_version" : __version__})
+
+        # Add save modules
+        patch_saving_functions(model)
+        
         return model, tokenizer
     pass
 pass
