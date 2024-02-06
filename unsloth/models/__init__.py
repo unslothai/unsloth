@@ -16,3 +16,4 @@ from .loader import FastLanguageModel
 from .llama import FastLlamaModel
 from .mistral import FastMistralModel
 from .dpo import PatchDPOTrainer
+from ._utils import __version__
