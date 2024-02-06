@@ -128,7 +128,7 @@ class FastLanguageModel(FastLlamaModel):
                 "bnb_4bit_use_double_quant"        : True,
                 "llm_int8_enable_fp32_cpu_offload" : False,
                 "llm_int8_has_fp16_weight"         : False,
-                "llm_int8_skip_modules"            : "null",
+                "llm_int8_skip_modules"            : None,
                 "llm_int8_threshold"               : 6.0,
                 "load_in_4bit"                     : True,
                 "load_in_8bit"                     : False,
