@@ -377,11 +377,11 @@ def unsloth_save_model(
                 # Save to GPU memory
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???
-            # elif (max_ram - W.nbytes) > 0:
-            #     # Save to CPU memory
-            #     logger.warning_once(f"We will save to RAM and not VRAM now.")
-            #     state_dict[name] = W.to("cpu", non_blocking = True)
-            #     max_ram = max(max_ram - W.nbytes, 0)
+            elif (max_ram - W.nbytes) > 0:
+                # Save to CPU memory
+                logger.warning_once(f"We will save to RAM and not VRAM now.")
+                state_dict[name] = W.to("cpu", non_blocking = True, copy = True)
+                max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
                 logger.warning_once(f"We will save to Disk and not RAM now.")
