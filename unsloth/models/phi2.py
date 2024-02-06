@@ -169,8 +169,10 @@ class FastPhi2Model(FastLlamaModel):
     
     @staticmethod
     def pre_patch():
-        return 
-    
+        PhiAttention        .forward = Phi2Attention_fast_forward
+        PhiFlashAttention2  .forward = Phi2Attention_fast_forward
+    pass 
+
     @staticmethod
     def from_pretrained(
         model_name = "unsloth/llama-2-7b-bnb-4bit", #TODO: update me.
