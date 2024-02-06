@@ -171,15 +171,28 @@ def LlamaAttention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Grouped query attention
-    if n_groups != 1:
-        _, _, cached_len, _ = Kn.shape
-        Knn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Vnn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
-        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
+    # Handle sliding windows
+    sliding_window = getattr(self.config, "sliding_window", None)
+    if sliding_window is not None and kv_seq_len > sliding_window:
+        # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
+        slicing_tokens = 1 - sliding_window
+        Knn = Kn[:, :, slicing_tokens:, :]#.contiguous()
+        Vnn = Vn[:, :, slicing_tokens:, :]#.contiguous()
     else:
         Knn, Vnn = Kn, Vn
+    pass
+
+    # Grouped query attention
+    if n_groups != 1:
+        _, _, cached_len, _ = Knn.shape
+        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
+        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
+    pass
+    # else:
+    #     Knn, Vnn = Knn, Vnn
+    # pass
 
     # Attention
     A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:kv_seq_len])
