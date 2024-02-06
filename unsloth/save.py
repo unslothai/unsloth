@@ -72,6 +72,7 @@ def print_quantization_methods():
 pass
 
 
+
 def _merge_lora(layer, name):
 
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
@@ -85,9 +86,12 @@ def _merge_lora(layer, name):
         W = W.to(torch.float32).t()
 
         if A is not None:
-            sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
-            W += sAB
-            if not torch.isfinite(W).all():
+            # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
+            # W += sAB
+            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            # if not torch.isfinite(W).all():
+            maximum_element = torch.max(W.min().abs(), W.max())
+            if not torch.isfinite(maximum_element).item():
                 raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
         pass
         W = W.t().to(dtype)
@@ -373,7 +377,7 @@ def unsloth_save_model(
             # elif (max_ram - W.nbytes) > 0:
             #     # Save to CPU memory
             #     logger.warning_once(f"We will save to RAM and not VRAM now.")
-            #     state_dict[name] = W.to("cpu", non_blocking = True)
+            #     state_dict[name] = W.to("cpu", non_blocking = True, copy = True)
             #     max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
@@ -579,9 +583,11 @@ def save_to_gguf(
         f"--outfile {final_location} "\
         f"--outtype {first_conversion} --concurrency {n_cpus}"
 
-    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
         for line in sp.stdout:
             print(line.decode("utf-8"), flush = True, end = "")
+        if sp.returncode is not None and sp.returncode != 0:
+            raise subprocess.CalledProcessError(sp.returncode, sp.args)
     pass
 
     # Check if quantization succeeded!
@@ -609,6 +615,8 @@ def save_to_gguf(
         with subprocess.Popen(command, shell = True, stderr = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stderr:
                 print(line.decode("utf-8"), flush = True, end = "")
+            if sp.returncode is not None and sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, sp.args)
         pass
 
         # Check if quantization succeeded!

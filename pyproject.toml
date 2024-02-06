@@ -23,7 +23,7 @@ classifiers = [
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "unsloth.__version__"}
+version = {attr = "unsloth.models._utils.__version__"}
 
 [tool.setuptools]
 include-package-data = false
@@ -62,6 +62,16 @@ cu121onlytorch211 = [
     "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.23-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
     "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.23-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
 ]
+cu118onlytorch220 = [
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.24%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.24%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.24%2Bcu118-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+]
+cu121onlytorch220 = [
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.24-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.24-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.24-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+]
 cu118 = [
     "unsloth[huggingface]",
     "bitsandbytes",
@@ -81,6 +91,16 @@ cu121_torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch211]",
+]
+cu118_torch220 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu118onlytorch220]",
+]
+cu121_torch220 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121onlytorch220]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -106,6 +126,19 @@ colab_ampere_torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch211]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
+colab_torch220 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121onlytorch220]",
+]
+colab_ampere_torch220 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121onlytorch220]",
     "packaging",
     "ninja",
     "flash-attn",
@@ -138,6 +171,22 @@ cu121_ampere_torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch211]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
+cu118_ampere_torch220 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu118onlytorch220]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
+cu121_ampere_torch220 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121onlytorch220]",
     "packaging",
     "ninja",
     "flash-attn",
