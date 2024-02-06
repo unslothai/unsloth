@@ -10,31 +10,31 @@
 <a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="48"></a>
 <a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/shimmyshimmer/unsloth/main/images/buy me a coffee button.png" height="48"></a>
 
-### Finetune Mistral, Llama 2-5x faster with 50% less memory!
+### Finetune Mistral, Llama 2-5x faster with 70% less memory!
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
 </div>
 
-## ✨ Finetune for Free
-- You can now **easily** finetune a model from scratch with our free notebooks.
-- **No expertise & cost required!** Just upload your data set, load it and you're done!
+## ✨ Finetune for Free with our easy notebooks
 
-| Models          |    Free Notebooks                                                                                           | Performance | VRAM use |
-|-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
-| **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
-| **Llama 7b**       | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
-| **TinyLlama 1.1b** | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing")              | 3.9x faster | 74% less |
-| **DPO Zephyr**    | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 19% less |
-| **CodeLlama 34b** 1xA100  | [▶️ Start on Colab](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing)              | 1.9x faster | 27% less |
-| **Llama 7b** 2xT4 | [▶️ Start on Kaggle](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) | 5.5x faster | 44% less |
+| Unsloth supports          | Archs |    Free Notebooks                                                                                           | Performance | Memory use |
+|-----------------|------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
+| **Mistral 7b**    | 7b | [▶️ Start on Colab Free](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
+| **Llama-2 7b**       | 7b, 13b, 70b | [▶️ Start on Colab Free](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
+| **DPO - Zephyr**    | Llama, Mistral  | [▶️ Start on Colab Free](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 19% less |
+| **TinyLlama** | 1.1b | [▶️ Start on Colab Free](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)              | 3.9x faster | 74% less |
+| **CodeLlama 34b**  | 7b, 13b, 34b, 70b  | [▶️ Start on Colab A100](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing)              | 1.9x faster | 27% less |
+| **Mistral 7b** | Kaggle 2x T4  | [▶️ Start on Kaggle Free](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster | 60% less |
+| **Text Completion** | Community  | [▶️ Start on Colab Free](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing)              | 2.2x faster | 62% less |
+| **Conversational** | Community  | [▶️ Start on Colab Free](https://colab.research.google.com/drive/1bMOKOBzxQWUIGZBs_B0zm8pimuEnZdfM?usp=sharing)              | 2.2x faster | 62% less |
 
 ## 🦥 Unsloth.ai News
-- 📣 [DPO](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) support is now included. [More info](#DPO) on DPO.
+- 📣 [DPO support](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) is now included. [More info](#DPO) on DPO.
 - 📣 [TinyLlama 1.1b](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing) on 3T tokens now works.
-- 📣 We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth).
-- 📣 Now supports Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek and their derived models (Open Hermes etc).
-- 📣 Download 4 bit models 4x faster from 🤗Hugging Face! Eg: `unsloth/mistral-7b-bnb-4bit`
+- 📣 We did a [blog](https://huggingface.co/blog/unsloth-trl) with 🤗Hugging Face! We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth).
+- 📣 Now supports **Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek** and their derived models (**Open Hermes** etc).
+- 📣 **Download models 4x faster** from 🤗Hugging Face! Eg: `unsloth/mistral-7b-bnb-4bit` See our [HF collection](https://huggingface.co/collections/unsloth/load-4bit-models-4x-faster-659042e3a41c3cbad582e734) for more!
 
 ## 🔗 Links and Resources
 | Type                            | Links                               |
@@ -80,10 +80,14 @@
 
 ## 💾 Installation Instructions
 ### Conda Installation
-Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1.
+Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
 ```bash
-conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
-  -c pytorch -c nvidia -c xformers -c conda-forge -y
+conda install pytorch torchvision torchaudio pytorch-cuda=<12.1/11.8> -c pytorch -c nvidia
+
+conda install xformers -c xformers -y
+
+pip install bitsandbytes
+
 pip install "unsloth[conda] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
@@ -94,7 +98,7 @@ Do **NOT** use this if you have Anaconda. You must use the Conda install method,
 ```python
 import torch; torch.version.cuda
 ```
-2. For Pytorch 2.1.0: You can update Pytorch via Pip (interchange `cu121` / `cu118`). Go to https://pytorch.org/ to learn more. Select either `cu118` for CUDA 11.8 or `cu121` for CUDA 12.1. If you have a RTX 3060 or higher (A100, H100 etc), use the `"ampere"` path. For Pytorch 2.1.1: got to step 3.
+2. For Pytorch 2.1.0: You can update Pytorch via Pip (interchange `cu121` / `cu118`). Go to https://pytorch.org/ to learn more. Select either `cu118` for CUDA 11.8 or `cu121` for CUDA 12.1. If you have a RTX 3060 or higher (A100, H100 etc), use the `"ampere"` path. For Pytorch 2.1.1: go to step 3. For Pytorch 2.2.0: go to step 4.
 ```bash
 pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.0 triton \
   --index-url https://download.pytorch.org/whl/cu121
@@ -116,7 +120,17 @@ pip install "unsloth[cu121_torch211] @ git+https://github.com/unslothai/unsloth.
 pip install "unsloth[cu118_ampere_torch211] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121_ampere_torch211] @ git+https://github.com/unslothai/unsloth.git"
 ```
-4. We're working on Pytorch 2.1.2 support.
+4. For Pytorch 2.2.0: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
+```bash
+pip install --upgrade --force-reinstall --no-cache-dir torch==2.2.0 triton \
+  --index-url https://download.pytorch.org/whl/cu121
+```
+```bash
+pip install "unsloth[cu118_torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121_torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118_ampere_torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121_ampere_torch220] @ git+https://github.com/unslothai/unsloth.git"
+```
 5. If you get errors, try the below first, then go back to step 1:
 ```bash
 pip install --upgrade pip
