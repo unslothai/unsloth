@@ -16,18 +16,18 @@
 
 </div>
 
-## ✨ Finetune with our Free UI
-- You can now **easily** finetune a model from scratch with our free UI notebooks
+## ✨ Finetune for Free
+- You can now **easily** finetune a model from scratch with our free notebooks.
 - **No expertise & cost required!** Just upload your data set, load it and you're done!
-- All have **DPO support** included.
 
-| Models          |    Free UI Link                                                                                           | Performance | VRAM use |
+| Models          |    Free Notebooks                                                                                           | Performance | VRAM use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
-| **Llama 7b**       | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
 | **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
+| **Llama 7b**       | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
 | **TinyLlama 1.1b** | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing")              | 3.9x faster | 74% less |
-| **CodeLlama 34b**  | [▶️ Start on Colab](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing)              | 1.9x faster | 27% less |
-| **Llama 7b 2x T4** | [▶️ Start on Kaggle](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) | 5.5x faster | 44% less |
+| **DPO Zephyr**    | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 19% less |
+| **CodeLlama 34b** 1xA100  | [▶️ Start on Colab](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing)              | 1.9x faster | 27% less |
+| **Llama 7b** 2xT4 | [▶️ Start on Kaggle](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) | 5.5x faster | 44% less |
 
 ## 🦥 Unsloth.ai News
 - 📣 [DPO](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) support is now included. [More info](#DPO) on DPO.
