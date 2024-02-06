@@ -86,10 +86,10 @@ def _merge_lora(layer, name):
         W = W.to(torch.float32).t()
 
         if A is not None:
-            sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
+            # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
             # new_W = W + sAB
-            # W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
-            W += sAB
+            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            # W += sAB
             # if not torch.isfinite(new_W).all() or not torch.isfinite(W).all():
             #     print(torch.dist(new_W, W))
             # if not torch.isfinite(W).all():
