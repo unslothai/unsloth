@@ -18,7 +18,7 @@
 
 ## ✨ Finetune for Free
 
-Colab provides a **free GPU**. Kaggle provides 30 hours for free per week. All notebooks are beginner friendly!
+All notebooks are **beginner friendly**! Colab provides a free GPU. Kaggle provides 30 hours for free per week.
 | Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
 | **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
@@ -28,7 +28,8 @@ Colab provides a **free GPU**. Kaggle provides 30 hours for free per week. All n
 | **CodeLlama 34b** A100   | [▶️ Start on Colab](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing)              | 1.9x faster | 27% less |
 | **Mistral 7b** 2xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster | 60% less |
 
-This [**conversational notebook**](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is useful for ShareGPT ChatML datatsets. Our [**raw text notebook**](https://colab.research.google.com/drive/1bMOKOBzxQWUIGZBs_B0zm8pimuEnZdfM?usp=sharing) is useful for text completion.
+- This [conversational notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is useful for ShareGPT ChatML datatsets.
+- Our [raw text notebook](https://colab.research.google.com/drive/1bMOKOBzxQWUIGZBs_B0zm8pimuEnZdfM?usp=sharing) is useful for text completion.
 
 ## 🦥 Unsloth.ai News
 - 📣 [DPO support](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) is now included. [More info](#DPO) on DPO.
@@ -43,7 +44,6 @@ This [**conversational notebook**](https://colab.research.google.com/drive/1ef-t
 | 📜 **Documentation**              | [Read The Doc](https://github.com/shimmyshimmer/unsloth/tree/main#-documentation) |
 | 💾 **Installation**               | [unsloth/README.md](https://github.com/shimmyshimmer/unsloth/tree/main#installation-instructions)|
 | <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  [Follow us on X](https://twitter.com/unslothai)|
-| <img height="13" src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/653714c174fc6c8bbea73caf_636e0a69f118df70ad7828d4_icon_clyde_blurple_RGB.svg" />&nbsp; **Discord**              |  [Join our Discord](https://discord.gg/u54VK8m8tk)|
 | 🥇 **Benchmarking**                   | [Performance Tables](https://github.com/shimmyshimmer/unsloth/tree/main#-performance-benchmarking)
 | 🌐 **Released Models**            | [Unsloth Releases](https://huggingface.co/unsloth)|
 | ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
@@ -61,7 +61,7 @@ This [**conversational notebook**](https://colab.research.google.com/drive/1ef-t
 ## 🥇 Performance Benchmarking
 - For the full list of **reproducable** benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
 
-| 1 A100 40GB  | 🤗Hugging Face | Flash Attention | 🦥Unsloth Open Source | [🦥Unsloth Pro](https://unsloth.ai/pricing) |
+| 1 A100 40GB  | 🤗Hugging Face | Flash Attention | 🦥Unsloth Open Source | 🦥[Unsloth Pro](https://unsloth.ai/pricing) |
 |--------------|--------------|-----------------|---------------------|-----------------|
 | Alpaca       | 1x           | 1.04x           | 1.98x               | **15.64x**      |
 | LAION Chip2  | 1x           | 0.92x           | 1.61x               | **20.73x**      |
@@ -208,7 +208,7 @@ trainer.train()
 ## DPO Support
 DPO (Direct Preference Optimization), PPO, Reward Modelling all seem to work as per 3rd party independent testing from [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory). We have a preliminary Google Colab notebook for reproducing Zephyr on Tesla T4 here: [notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
 
-We're in 🤗 Huggingface's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
+We're in 🤗Hugging Face's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 
 ```python
 from unsloth import FastLanguageModel, PatchDPOTrainer
@@ -268,7 +268,7 @@ dpo_trainer.train()
 - "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
 - For the full list of benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
   
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+| 1 A100 40GB | 🤗Hugging Face | Flash Attention 2 | 🦥Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
 |--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
 | Alpaca       | 1x          | 1.04x       | 1.98x           | 2.48x        | 5.32x         | **15.64x**      |
 | code | [Code](https://colab.research.google.com/drive/1u4dBeM-0vGNVmmO6X7cScAut-Hyt4KDF?usp=sharing) |    [Code](https://colab.research.google.com/drive/1fgTOxpMbVjloQBvZyz4lF4BacKSZOB2A?usp=sharing) |    [Code](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) |    [Code](https://colab.research.google.com/drive/1ANW8EFL3LVyTD7Gq4TkheC1Z7Rxw-rHp?usp=sharing) | | |
