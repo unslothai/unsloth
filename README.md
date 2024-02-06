@@ -17,11 +17,11 @@
 </div>
 
 ## ✨ Finetune with our Free UI
-- Use our free UI notebooks which we have set up so you can **easily** finetune a model from scratch.
+- You can now **easily** finetune a model from scratch with our free UI notebooks
 - **No expertise & cost required!** Just upload your data set, load it and you're done!
 - All have **DPO support** included.
 
-| Models          |    Free User Interface                                                                                             | Performance | VRAM use |
+| Models          |    Free UI Link                                                                                           | Performance | VRAM use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
 | **Llama 7b**       | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
 | **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
@@ -39,8 +39,8 @@
 ## 🔗 Links and Resources
 | Type                            | Links                               |
 | ------------------------------- | --------------------------------------- |
-| 📰 **Documentation**              | 🤗Hugging Face's [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)|
-| 💾 **Installation**               | [unsloth/README.md](https://github.com/shimmyshimmer/unsloth/tree/main#installation-instructions---conda)|
+| 📜 **Documentation**              | [Read The Doc](https://github.com/shimmyshimmer/unsloth/tree/main#-documentation) |
+| 💾 **Installation**               | [unsloth/README.md](https://github.com/shimmyshimmer/unsloth/tree/main#installation-instructions)|
 | <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  [Follow us on X](https://twitter.com/unslothai)|
 | <img height="13" src="https://assets-global.website-files.com/6257adef93867e50d84d30e2/653714c174fc6c8bbea73caf_636e0a69f118df70ad7828d4_icon_clyde_blurple_RGB.svg" />&nbsp; **Discord**              |  [Join our Discord](https://discord.gg/u54VK8m8tk)|
 | 🥇 **Benchmarking**                   | [Performance Tables](https://github.com/shimmyshimmer/unsloth/tree/main#-performance-benchmarking)
@@ -67,7 +67,7 @@
 | OASST        | 1x           | 1.19x           | 2.17x               | **14.83x**      |
 | Slim Orca    | 1x           | 1.18x           | 2.22x               | **14.82x**      |
 
-- This benchmarking table below was conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
+- Benchmarking table below was conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
 
 | Free Colab T4 | Dataset | 🤗Hugging Face | Pytorch 2.1.1 | 🦥Unsloth | 🦥 VRAM reduction |
 | --- | --- | --- | --- | --- | --- |
@@ -78,7 +78,8 @@
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
-## Installation Instructions - Conda
+## 💾 Installation Instructions
+### Conda Installation
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1.
 ```bash
 conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
@@ -86,7 +87,7 @@ conda install cudatoolkit xformers bitsandbytes pytorch pytorch-cuda=12.1 \
 pip install "unsloth[conda] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
-## Installation Instructions - Pip
+### Pip Installation
 Do **NOT** use this if you have Anaconda. You must use the Conda install method, or else stuff will BREAK.
 
 1. Find your CUDA version via
@@ -121,10 +122,9 @@ pip install "unsloth[cu121_ampere_torch211] @ git+https://github.com/unslothai/u
 pip install --upgrade pip
 ```
 
-## Documentation
-We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
-
-We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
+## 📜 Documentation
+- We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
+- We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 
 ```python
 from unsloth import FastLanguageModel
@@ -248,14 +248,76 @@ dpo_trainer = DPOTrainer(
 dpo_trainer.train()
 ```
 
+## 🥇 Detailed Benchmarking Tables
+- Click "Code" for fully reproducible examples
+- "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
+- For the full list of benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
+  
+| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
+| Alpaca       | 1x          | 1.04x       | 1.98x           | 2.48x        | 5.32x         | **15.64x**      |
+| code | [Code](https://colab.research.google.com/drive/1u4dBeM-0vGNVmmO6X7cScAut-Hyt4KDF?usp=sharing) |    [Code](https://colab.research.google.com/drive/1fgTOxpMbVjloQBvZyz4lF4BacKSZOB2A?usp=sharing) |    [Code](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) |    [Code](https://colab.research.google.com/drive/1ANW8EFL3LVyTD7Gq4TkheC1Z7Rxw-rHp?usp=sharing) | | |
+| seconds| 1040 | 1001 | 525 | 419 | 196 | 67  |
+| memory MB| 18235 | 15365 | 9631 | 8525 | | |
+| % saved| | 15.74 | 47.18 | 53.25 | | | |
 
-## 📌 Unsloth.ai Roadmap
-- [ ] Support Mixtral.
-- [x] Support all Mistral, Llama type models, but some are unoptimized (Qwen with biases)
-- [ ] Dropout, bias in LoRA matrices are supported, just not optimized.
+### Llama-Factory 3rd party benchmarking
+- [Link to performance table.](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
 
-## Performance comparisons on 1 Tesla T4 GPU:
-**Time taken for 1 epoch**
+| Method | Bits | TGS | GRAM | Speed |
+| --- | --- | --- | --- | --- |
+| HF | 16 | 2392 | 18GB | 100% |
+| HF+FA2 | 16 | 2954 | 17GB | 123% |
+| Unsloth+FA2 | 16 | 4007 | 16GB | **168%** |
+| HF | 4 | 2415 | 9GB | 101% |
+| Unsloth+FA2 | 4 | 3726 | 7GB | **160%** |
+
+### Performance comparisons between popular models
+<details>
+  <summary>Click for specific model benchmarking tables (Mistral 7b, CodeLlama 34b etc.)</summary>
+  
+### Mistral 7b
+| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
+| Mistral 7B Slim Orca  | 1x | 1.15x        | 2.15x        | 2.53x            | 4.61x         | **13.69x**         |
+| code | [Code](https://colab.research.google.com/drive/1mePk3KzwTD81hr5mcNcs_AX3Kbg_Ha0x?usp=sharing) | [Code](https://colab.research.google.com/drive/1dgHxjvTmX6hb0bPcLp26RXSE6_n9DKj7?usp=sharing) | [Code](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | [Code](https://colab.research.google.com/drive/18yOiyX0T81mTwZqOALFSCX_tSAqju6aD?usp=sharing) | |
+| seconds      | 1813        | 1571        | 842             | 718          | 393           | 132         |
+| memory MB    | 32853       | 19385       | 12465           | 10271        |          |        |
+| % saved| | 40.99      | 62.06       | 68.74           |         |          |
+
+### CodeLlama 34b
+| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
+| Code Llama 34B   | OOM ❌         | 0.99x        | 1.87x           | 2.61x        | 4.27x      | 12.82x      |
+| code | [▶️ Code](https://colab.research.google.com/drive/1ykfz3BqrtC_AUFegCzUQjjfUNlxp6Otc?usp=sharing) | [Code](https://colab.research.google.com/drive/12ZypxQh7OC6kBXvWZI-5d05I4m-B_hoR?usp=sharing) | [Code](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) | [Code](https://colab.research.google.com/drive/1fm7wqx9MJ0kRrwKOfmLkK1Rmw-pySahB?usp=sharing) | |
+| seconds      | 1953  | 1982  | 1043  | 748   | 458   | 152   |
+| memory MB    | 40000 | 33217 | 27413 | 22161 |       | |
+| % saved|    | 16.96| 31.47 | 44.60 |       | | |
+
+### 1 Tesla T4
+
+| 1 T4 16GB  | Hugging Face | Flash Attention | Unsloth Open    | Unsloth Pro Equal | Unsloth Pro   | Unsloth Max |
+|--------------|-------------|-----------------|-----------------|---------------|---------------|-------------|
+| Alpaca       | 1x          | 1.09x           | 1.69x           | 1.79x         | 2.93x          | **8.3x**        |
+| code | [▶️ Code](https://colab.research.google.com/drive/1XpLIV4s8Bj5uryB-X2gqM88oRGHEGdaB?usp=sharing) |    [Code](https://colab.research.google.com/drive/1LyXu6CjuymQg6ddHX8g1dpUvrMa1nn4L?usp=sharing) |    [Code](https://colab.research.google.com/drive/1gsv4LpY7C32otl1rgRo5wXTk4HIitXoM?usp=sharing) |    [Code](https://colab.research.google.com/drive/1VtULwRQwhEnVdNryjm27zXfdSM1tNfFK?usp=sharing) | | |
+| seconds       | 1599        | 1468        | 942             | 894          | 545           | 193         |
+| memory MB       | 7199        | 7059        | 6459            | 5443         |               |             |
+| % saved        |         | 1.94        | 10.28           | 24.39        |               | |
+
+### 2 Tesla T4s via DDP
+
+ | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+|--------------|----------|-------------|-----------------|--------------|---------------|-------------|
+| Alpaca       | 1x       | 0.99x       | 4.95x           | 4.44x        | 7.28x         | **20.61x**      |
+| code | [▶️ Code](https://www.kaggle.com/danielhanchen/hf-original-alpaca-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-alpaca-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) | | |
+| seconds       | 9882     | 9946        | 1996            | 2227         | 1357          | 480         |
+| memory MB| 9176 | 9128 | 6904 | 6782 |  | |
+| % saved |     | 0.52 | 24.76 | 26.09 |  | | |
+</details>
+
+### Performance comparisons on 1 Tesla T4 GPU:
+<details>
+  <summary>Click for Time taken for 1 epoch</summary>
 
 One Tesla T4 on Google Colab
 `bsz = 2, ga = 4, max_grad_norm = 0.3, num_train_epochs = 1, seed = 3047, lr = 2e-4, wd = 0.01, optim = "adamw_8bit", schedule = "linear", schedule_steps = 10`
@@ -275,8 +337,10 @@ One Tesla T4 on Google Colab
 | Unsloth Open | 1 T4 | 6.8GB | 5.7GB | 7.8GB | 7.7GB |
 | Unsloth Pro | 1 T4 | 6.4GB | 6.4GB | 6.4GB | 6.4GB |
 | Unsloth Max | 1 T4 | 11.4GB | 12.4GB | 11.9GB | 14.4GB |
+</details>
 
-## Performance comparisons on 2 Tesla T4 GPUs via DDP:
+<details>
+  <summary>Click for Performance Comparisons on 2 Tesla T4 GPUs via DDP:</summary>
 **Time taken for 1 epoch**
 
 Two Tesla T4s on Kaggle
@@ -297,79 +361,7 @@ Two Tesla T4s on Kaggle
 | Unsloth Max | 2 T4 | 10.5GB \| 5GB | 10.6GB \| 5GB | 10.6GB \| 5GB | 10.5GB \| 5GB * |
 
 * Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
-
-## Troubleshooting
-1. Sometimes `bitsandbytes` or `xformers` does not link properly. Try running:
-```bash
-!ldconfig /usr/lib64-nvidia
-```
-2. Windows is not supported as of yet - we rely on Xformers and Triton support, so until both packages support Windows officially, Unsloth will then support Windows.
-
-3. If it doesn't install - maybe try updating `pip`.
-
-
-## 🥇 Benchmarking Tables
-- Click  "Code" for a fully reproducible example.
-- "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
-- For the full list of benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
-  
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| Alpaca       | 1x          | 1.04x       | 1.98x           | 2.48x        | 5.32x         | **15.64x**      |
-| code | [Code](https://colab.research.google.com/drive/1u4dBeM-0vGNVmmO6X7cScAut-Hyt4KDF?usp=sharing) |    [Code](https://colab.research.google.com/drive/1fgTOxpMbVjloQBvZyz4lF4BacKSZOB2A?usp=sharing) |    [Code](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) |    [Code](https://colab.research.google.com/drive/1ANW8EFL3LVyTD7Gq4TkheC1Z7Rxw-rHp?usp=sharing) | | |
-| seconds| 1040 | 1001 | 525 | 419 | 196 | 67  |
-| memory MB| 18235 | 15365 | 9631 | 8525 | | |
-| % saved| | 15.74 | 47.18 | 53.25 | | | |
-
-### Llama-Factory 3rd party benchmarking
-- [Link](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) to performance table. TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
-
-| Method | Bits | TGS | GRAM | Speed |
-| --- | --- | --- | --- | --- |
-| HF | 16 | 2392 | 18GB | 100% |
-| HF+FA2 | 16 | 2954 | 17GB | 123% |
-| Unsloth+FA2 | 16 | 4007 | 16GB | **168%** |
-| HF | 4 | 2415 | 9GB | 101% |
-| Unsloth+FA2 | 4 | 3726 | 7GB | **160%** |
-
-### Mistral 7b
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| Mistral 7B Slim Orca  | 1x | 1.15x        | 2.15x        | 2.53x            | 4.61x         | **13.69x**         |
-| code | [Code](https://colab.research.google.com/drive/1mePk3KzwTD81hr5mcNcs_AX3Kbg_Ha0x?usp=sharing) | [Code](https://colab.research.google.com/drive/1dgHxjvTmX6hb0bPcLp26RXSE6_n9DKj7?usp=sharing) | [Code](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | [Code](https://colab.research.google.com/drive/18yOiyX0T81mTwZqOALFSCX_tSAqju6aD?usp=sharing) | |
-| seconds      | 1813        | 1571        | 842             | 718          | 393           | 132         |
-| memory MB    | 32853       | 19385       | 12465           | 10271        |          |        |
-| % saved| | 40.99      | 62.06       | 68.74           |         |          |
-
-### CodeLlama 34b
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| Code Llama 34B   | OOM ❌         | 0.99x        | 1.87x           | 2.61x        | 4.27x      | 12.82x      |
-| code | [Code](https://colab.research.google.com/drive/1ykfz3BqrtC_AUFegCzUQjjfUNlxp6Otc?usp=sharing) | [Code](https://colab.research.google.com/drive/12ZypxQh7OC6kBXvWZI-5d05I4m-B_hoR?usp=sharing) | [Code](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) | [Code](https://colab.research.google.com/drive/1fm7wqx9MJ0kRrwKOfmLkK1Rmw-pySahB?usp=sharing) | |
-| seconds      | 1953  | 1982  | 1043  | 748   | 458   | 152   |
-| memory MB    | 40000 | 33217 | 27413 | 22161 |       | |
-| % saved|    | 16.96| 31.47 | 44.60 |       | | |
-
-### 1 Tesla T4
-
-| 1 T4 16GB  | Hugging Face | Flash Attention | Unsloth Open    | Unsloth Pro Equal | Unsloth Pro   | Unsloth Max |
-|--------------|-------------|-----------------|-----------------|---------------|---------------|-------------|
-| Alpaca       | 1x          | 1.09x           | 1.69x           | 1.79x         | 2.93x          | **8.3x**        |
-| code | [Code](https://colab.research.google.com/drive/1XpLIV4s8Bj5uryB-X2gqM88oRGHEGdaB?usp=sharing) |    [Code](https://colab.research.google.com/drive/1LyXu6CjuymQg6ddHX8g1dpUvrMa1nn4L?usp=sharing) |    [Code](https://colab.research.google.com/drive/1gsv4LpY7C32otl1rgRo5wXTk4HIitXoM?usp=sharing) |    [Code](https://colab.research.google.com/drive/1VtULwRQwhEnVdNryjm27zXfdSM1tNfFK?usp=sharing) | | |
-| seconds       | 1599        | 1468        | 942             | 894          | 545           | 193         |
-| memory MB       | 7199        | 7059        | 6459            | 5443         |               |             |
-| % saved        |         | 1.94        | 10.28           | 24.39        |               | |
-
-### 2 Tesla T4s via DDP
-
- | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|----------|-------------|-----------------|--------------|---------------|-------------|
-| Alpaca       | 1x       | 0.99x       | 4.95x           | 4.44x        | 7.28x         | **20.61x**      |
-| code | [Code](https://www.kaggle.com/danielhanchen/hf-original-alpaca-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-alpaca-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) | | |
-| seconds       | 9882     | 9946        | 1996            | 2227         | 1357          | 480         |
-| memory MB| 9176 | 9128 | 6904 | 6782 |  | |
-| % saved |     | 0.52 | 24.76 | 26.09 |  | | |
-
+</details>
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 <br>
