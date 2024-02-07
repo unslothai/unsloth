@@ -172,14 +172,14 @@ def LlamaAttention_fast_forward_inference(
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Handle sliding windows
-    sliding_window = getattr(self.config, "sliding_window", None)
-    if sliding_window is not None and kv_seq_len > sliding_window:
+    attention_size = getattr(self.config, "sliding_window", kv_seq_len)
+    if kv_seq_len <= attention_size:
+        Knn, Vnn = Kn, Vn
+    else:
         # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
-        slicing_tokens = 1 - sliding_window
+        slicing_tokens = 1 - attention_size
         Knn = Kn[:, :, slicing_tokens:, :]#.contiguous()
         Vnn = Vn[:, :, slicing_tokens:, :]#.contiguous()
-    else:
-        Knn, Vnn = Kn, Vn
     pass
 
     # Grouped query attention
@@ -195,7 +195,7 @@ def LlamaAttention_fast_forward_inference(
     # pass
 
     # Attention
-    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:kv_seq_len])
+    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:attention_size])
     A *= self.scalar
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
@@ -618,6 +618,7 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
+@torch.compile(mode = "max-autotune-no-cudagraphs", options = {"trace.enabled" : True, "trace.graph_diagram" : True,}, dynamic = True,)
 @torch.inference_mode
 def LlamaModel_fast_forward_inference(
     self,
