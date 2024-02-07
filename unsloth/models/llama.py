@@ -618,7 +618,15 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.compile(mode = "max-autotune-no-cudagraphs", options = {"trace.enabled" : True, "trace.graph_diagram" : True,}, dynamic = True,)
+@torch.compile(options = {
+    "epilogue_fusion" : True,
+    "max_autotune" : True,
+    "fallback_random" : False,
+    "shape_padding" : True,
+    "triton.cudagraphs" : False,
+    "trace.enabled" : True,
+    "trace.graph_diagram" : True,
+}, dynamic = True,)
 @torch.inference_mode
 def LlamaModel_fast_forward_inference(
     self,
