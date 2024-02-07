@@ -72,7 +72,7 @@ pass
 
 
 from math import sqrt as math_sqrt
-KV_CACHE_INCREMENT = 128 # KV Cache update size
+KV_CACHE_INCREMENT = 1024 # KV Cache update size
 
 @torch.compile(options = {
     "epilogue_fusion" : True,
@@ -144,12 +144,12 @@ def LlamaAttention_fast_forward_inference(
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
-    elif kv_seq_len >= self.paged_attention.shape[0]:
-        self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
-        self.paged_attention_K = self.paged_attention[:,0]
-        self.paged_attention_V = self.paged_attention[:,1]
-        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
-    pass
+    # elif kv_seq_len >= self.paged_attention.shape[0]:
+    #     self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
+    #     self.paged_attention_K = self.paged_attention[:,0]
+    #     self.paged_attention_V = self.paged_attention[:,1]
+    #     self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
+    # pass
 
     Qn = fast_linear_forward(self.q_proj, Xn)#, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn)#, out = self.temp_KV[0])
@@ -206,7 +206,7 @@ def LlamaAttention_fast_forward_inference(
 
     # Attention
     A = torch.matmul(Qn, Knn.transpose(2, 3)) #out = self.attention[:,:,:,:attention_size])
-    A *= self.scalar
+    A *= 1.0 / (self.head_dim**0.5)
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn)#, out = Qn)
     A = A.transpose(1, 2)
