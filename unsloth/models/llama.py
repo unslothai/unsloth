@@ -196,7 +196,7 @@ def LlamaAttention_fast_forward_inference(
     # pass
 
     # Attention
-    A = torch.matmul(Qn, Knn.transpose(2, 3)), #out = self.attention[:,:,:,:attention_size])
+    A = torch.matmul(Qn, Knn.transpose(2, 3)) #out = self.attention[:,:,:,:attention_size])
     A *= self.scalar
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
