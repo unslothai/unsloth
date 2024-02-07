@@ -174,6 +174,7 @@ def LlamaAttention_fast_forward_inference(
     # Handle sliding windows
     attention_size = getattr(self.config, "sliding_window", kv_seq_len)
     if kv_seq_len <= attention_size:
+        attention_size = kv_seq_len
         Knn, Vnn = Kn, Vn
     else:
         # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
