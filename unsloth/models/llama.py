@@ -72,17 +72,8 @@ pass
 
 
 from math import sqrt as math_sqrt
-KV_CACHE_INCREMENT = 1024 # KV Cache update size
+KV_CACHE_INCREMENT = 128 # KV Cache update size
 
-@torch.compile(options = {
-    "epilogue_fusion" : True,
-    "max_autotune" : True,
-    "fallback_random" : False,
-    "shape_padding" : True,
-    "triton.cudagraphs" : False,
-    "trace.enabled" : True,
-    "trace.graph_diagram" : True,
-}, dynamic = True,)
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
@@ -144,16 +135,16 @@ def LlamaAttention_fast_forward_inference(
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
-    # elif kv_seq_len >= self.paged_attention.shape[0]:
-    #     self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
-    #     self.paged_attention_K = self.paged_attention[:,0]
-    #     self.paged_attention_V = self.paged_attention[:,1]
-    #     self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
-    # pass
+    elif kv_seq_len >= self.paged_attention.shape[0]:
+        self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
+    pass
 
-    Qn = fast_linear_forward(self.q_proj, Xn)#, out = self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn)#, out = self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn)#, out = self.temp_KV[1])
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -181,15 +172,14 @@ def LlamaAttention_fast_forward_inference(
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Handle sliding windows
-    attention_size = getattr(self.config, "sliding_window", kv_seq_len)
-    if kv_seq_len <= attention_size:
-        attention_size = kv_seq_len
-        Knn, Vnn = Kn, Vn
-    else:
+    sliding_window = getattr(self.config, "sliding_window", None)
+    if sliding_window is not None and kv_seq_len > sliding_window:
         # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
-        slicing_tokens = 1 - attention_size
+        slicing_tokens = 1 - sliding_window
         Knn = Kn[:, :, slicing_tokens:, :]#.contiguous()
         Vnn = Vn[:, :, slicing_tokens:, :]#.contiguous()
+    else:
+        Knn, Vnn = Kn, Vn
     pass
 
     # Grouped query attention
@@ -205,51 +195,35 @@ def LlamaAttention_fast_forward_inference(
     # pass
 
     # Attention
-    A = torch.matmul(Qn, Knn.transpose(2, 3)) #out = self.attention[:,:,:,:attention_size])
-    A *= 1.0 / (self.head_dim**0.5)
+    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:kv_seq_len])
+    A *= self.scalar
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    A = torch.matmul(A, Vnn)#, out = Qn)
+    A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
-    A = fast_linear_forward(self.o_proj, A)#, out = self.temp_QA[1])
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1])
     return A, (Kn, Vn)
 pass
 
-@torch.compile(options = {
-    "epilogue_fusion" : True,
-    "max_autotune" : True,
-    "fallback_random" : False,
-    "shape_padding" : True,
-    "triton.cudagraphs" : False,
-    "trace.enabled" : True,
-    "trace.graph_diagram" : True,
-}, dynamic = True,)
+
 def fast_mlp_inference(self, X):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     mlp_size = self.config.intermediate_size
-    #temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
+    temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
 
-    gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
-    up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
+    gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
+    up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
     gate = torch.nn.functional.silu(gate, inplace = True)
     gate *= up
 
     # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
+    down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
     return down
 pass
 
-@torch.compile(options = {
-    "epilogue_fusion" : True,
-    "max_autotune" : True,
-    "fallback_random" : False,
-    "shape_padding" : True,
-    "triton.cudagraphs" : False,
-    "trace.enabled" : True,
-    "trace.graph_diagram" : True,
-}, dynamic = True,)
+
 def fast_rms_layernorm_inference(self, X):
     old_dtype = X.dtype
     XX = X.to(torch.float32)
