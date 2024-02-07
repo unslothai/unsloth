@@ -627,7 +627,6 @@ pass
     "trace.enabled" : True,
     "trace.graph_diagram" : True,
 }, dynamic = True,)
-@torch.inference_mode
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
