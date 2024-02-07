@@ -199,7 +199,7 @@ def LlamaAttention_fast_forward_inference(
     A = torch.matmul(Qn, Knn.transpose(2, 3)) #out = self.attention[:,:,:,:attention_size])
     A *= self.scalar
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    A = torch.matmul(A, Vnn, out = Qn)
+    A = torch.matmul(A, Vnn)#, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, self.hidden_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1])
