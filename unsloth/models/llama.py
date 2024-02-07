@@ -224,7 +224,15 @@ def fast_mlp_inference(self, X):
     return down
 pass
 
-
+@torch.compile(options = {
+    "epilogue_fusion" : True,
+    "max_autotune" : True,
+    "fallback_random" : False,
+    "shape_padding" : True,
+    "triton.cudagraphs" : False,
+    "trace.enabled" : True,
+    "trace.graph_diagram" : True,
+}, dynamic = True,)
 def fast_rms_layernorm_inference(self, X):
     old_dtype = X.dtype
     XX = X.to(torch.float32)
@@ -619,15 +627,6 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.compile(options = {
-    "epilogue_fusion" : True,
-    "max_autotune" : True,
-    "fallback_random" : False,
-    "shape_padding" : True,
-    "triton.cudagraphs" : False,
-    "trace.enabled" : True,
-    "trace.graph_diagram" : True,
-}, dynamic = True,)
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
