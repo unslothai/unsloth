@@ -28,7 +28,7 @@ __INT_TO_FLOAT_MAPPER = \
         "meta-llama/Llama-2-7b-hf",
     ),
     "unsloth/llama-2-13b-bnb-4bit" : (
-        "unsloth/llama-13-7b",
+        "unsloth/llama-2-13b",
         "meta-llama/Llama-2-13b-hf",
     ),
     "unsloth/codellama-34b-bnb-4bit" : (
