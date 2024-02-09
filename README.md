@@ -18,7 +18,7 @@
 
 ## ✨ Finetune for Free
 
-All notebooks are **beginner friendly**! Easily add your dataset, click "Run All", and you'll get a 2x faster finetuned model which can be exported to GGUF / vLLM / uploaded to HuggingFace. There's optional data prep, training adjustments and more!
+All notebooks are **beginner friendly**! Add your dataset, click "Run All", and you'll get a 2x faster finetuned model which can be exported to GGUF, vLLM or uploaded to Hugging Face.
 
 | Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
@@ -27,17 +27,17 @@ All notebooks are **beginner friendly**! Easily add your dataset, click "Run All
 | **DPO - Zephyr**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 19% less |
 | **TinyLlama**  | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)              | 3.9x faster | 74% less |
 | **CodeLlama 34b** A100   | [▶️ Start on Colab](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing)              | 1.9x faster | 27% less |
-| **Mistral 7b** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster\* | 60% less |
+| **Mistral 7b** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster\* | 62% less |
 
 - This [conversational notebook](https://colab.research.google.com/drive/1bMOKOBzxQWUIGZBs_B0zm8pimuEnZdfM?usp=sharing) is useful for ShareGPT ChatML datatsets.
 - Our [raw text notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is useful for text completion.
 - Colab provides a free GPU sometimes. Kaggle has 30 hrs free per week on a 12 hr running cap.
-- \* Kaggle has 2x T4s, but we use 1. Due to 2x GPU overhead, 1 T4 is 5x faster than 2x T4. Apples to apples, Unsloth is 2x faster.
+- \* Kaggle has 2x T4s, but we use 1. Due to overhead, 1x T4 is 5x faster. Use Colab as Kaggle takes 10 mins to install.
 
 ## 🦥 Unsloth.ai News
 - 📣 [DPO support](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) is now included. [More info](#DPO) on DPO.
 - 📣 [TinyLlama 1.1b](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing) on 3T tokens now works.
-- 📣 We did a [blog](https://huggingface.co/blog/unsloth-trl) with 🤗Hugging Face! We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth).
+- 📣 We did a [blog](https://huggingface.co/blog/unsloth-trl) with 🤗Hugging Face, and we're in their official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth).
 - 📣 Now supports **Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek** and their derived models (**Open Hermes** etc). Llama 7, 13, 70b; CodeLlama 7, 13, 34, 70b; Yi 6, 34b are all supported!
 - 📣 **Download models 4x faster** from 🤗Hugging Face! Eg: `unsloth/mistral-7b-bnb-4bit` See our [HF collection](https://huggingface.co/collections/unsloth/load-4bit-models-4x-faster-659042e3a41c3cbad582e734) for more!
 
