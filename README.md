@@ -18,7 +18,8 @@
 
 ## ✨ Finetune for Free
 
-All notebooks are **beginner friendly**! Colab provides a free GPU. Kaggle provides 30 hours for free per week.
+All notebooks are **beginner friendly**! Easily add your dataset, click "Run All", and you'll get a 2x faster finetuned model which can be exported to GGUF / vLLM / uploaded to HuggingFace. There's optional data prep, training adjustments and more!
+
 | Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
 | **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
@@ -26,10 +27,12 @@ All notebooks are **beginner friendly**! Colab provides a free GPU. Kaggle provi
 | **DPO - Zephyr**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 19% less |
 | **TinyLlama**  | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)              | 3.9x faster | 74% less |
 | **CodeLlama 34b** A100   | [▶️ Start on Colab](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing)              | 1.9x faster | 27% less |
-| **Mistral 7b** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster | 60% less |
+| **Mistral 7b** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster\* | 60% less |
 
-- This [conversational notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is useful for ShareGPT ChatML datatsets.
-- Our [raw text notebook](https://colab.research.google.com/drive/1bMOKOBzxQWUIGZBs_B0zm8pimuEnZdfM?usp=sharing) is useful for text completion.
+- This [conversational notebook](https://colab.research.google.com/drive/1bMOKOBzxQWUIGZBs_B0zm8pimuEnZdfM?usp=sharing) is useful for ShareGPT ChatML datatsets.
+- Our [raw text notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is useful for text completion.
+- Colab provides a free GPU sometimes. Kaggle has 30 hrs free per week on a 12 hr running cap.
+- \* Kaggle has 2x T4s, but we use 1. Due to 2x GPU overhead, 1 T4 is 5x faster than 2x T4. Apples to apples, Unsloth is 2x faster.
 
 ## 🦥 Unsloth.ai News
 - 📣 [DPO support](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) is now included. [More info](#DPO) on DPO.
