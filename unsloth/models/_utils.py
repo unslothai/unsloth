@@ -16,6 +16,7 @@ import torch
 from typing import Union, Optional, List, Any, Callable
 import warnings
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
+warnings.filterwarnings(action = "ignore", category = UserWarning, module = "huggingface_hub")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer

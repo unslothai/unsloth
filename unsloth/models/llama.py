@@ -540,7 +540,7 @@ def LlamaModel_fast_forward(
 
     hidden_states = inputs_embeds
 
-    if past_key_values is None and self.gradient_checkpointing and self.training:
+    if past_key_values is None and self.training:
         use_cache = False
         # if use_cache:
         #     logger.warning_once(
