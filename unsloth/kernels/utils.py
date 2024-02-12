@@ -13,6 +13,12 @@
 # limitations under the License.
 
 import triton
+from torch.profiler import profile, record_function, ProfilerActivity
+import bitsandbytes as bnb
+import ctypes
+import torch
+from typing import Optional
+
 MAX_FUSED_SIZE = 65536
 next_power_of_2 = triton.next_power_of_2
 
@@ -29,10 +35,7 @@ def calculate_settings(n):
 pass
 
 
-import bitsandbytes as bnb
 get_ptr = bnb.functional.get_ptr
-import ctypes
-import torch
 cdequantize_blockwise_fp32     = bnb.functional.lib.cdequantize_blockwise_fp32
 cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
 cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
@@ -90,3 +93,15 @@ def fast_dequantize(W, quant_state = None, out = None):
     is_transposed = (True if W.shape[0] == 1 else False)
     return out.t() if is_transposed else out
 pass
+
+def profile_nn_module(model : torch.nn.Module, inputs: tuple, logging: Optional[bool] = True, **kwargs)->torch.profiler.profile:
+    with profile(activities = [ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                 record_shapes = True, **kwargs) as prof:
+        with record_function("model_inference"):
+            model(*inputs)
+        pass
+
+    if logging:
+        print(prof.key_averages().table(sort_by = "self_cuda_time_total"))
+    
+    return prof
