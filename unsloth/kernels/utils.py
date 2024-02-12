@@ -94,14 +94,23 @@ def fast_dequantize(W, quant_state = None, out = None):
     return out.t() if is_transposed else out
 pass
 
-def profile_nn_module(model : torch.nn.Module, inputs: tuple, logging: Optional[bool] = True, **kwargs)->torch.profiler.profile:
-    with profile(activities = [ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                 record_shapes = True, **kwargs) as prof:
-        with record_function("model_inference"):
-            model(*inputs)
-        pass
+def profile_generate_method(model, generate_args: dict, logging: Optional[bool] = True, **kwargs):
+    """
+    Profile the generate method of a transformer model.
 
-    if logging:
-        print(prof.key_averages().table(sort_by = "self_cuda_time_total"))
+    Args:
+        model: The transformer model with a generate method.
+        generate_args (dict): Arguments to pass to the model's generate method.
+        logging (Optional[bool]): If True, logs the profiling results. Default is True.
+
+    Returns:
+        torch.profiler.profile: The profiler object with recorded activities.
+    """
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True, **kwargs) as prof:
+        with record_function("generate_inference"):
+            model.generate(**generate_args)
     
+    if logging:
+        print(prof.key_averages().table(sort_by="cuda_time_total"))  # Adjust sort_by if needed
+
     return prof
