@@ -118,6 +118,10 @@ class FastLanguageModel(FastLlamaModel):
             *args, **kwargs,
         )
 
+        # in case the model supports tagging, add the unsloth tag.
+        if hasattr(model, "add_model_tags"):
+            model.add_model_tags(["unsloth"])
+
         if load_in_4bit:
             # Fix up bitsandbytes config
             quantization_config = \
