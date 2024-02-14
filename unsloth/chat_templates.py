@@ -30,7 +30,7 @@ unsloth_template = \
         "{{ messages[0]['content'] + '\n' }}"\
         "{% set loop_messages = messages[1:] %}"\
     "{% else %}"\
-        "{{ 'You are a helpful assistant to a user\n' }}"\
+        "{{ 'You are a helpful assistant to the user\n' }}"\
         "{% set loop_messages = messages %}"\
     "{% endif %}"\
     "{% for message in loop_messages %}"\
@@ -231,10 +231,10 @@ def get_chat_template(
         assert(type(chat_template) is str)
         assert(type(stop_word) is str)
 
-        tokenizer.chat_template = chat_template
-
     elif type(chat_template) is str:
-        tokenizer.chat_template, stop_word = CHAT_TEMPLATES[chat_template]
+
+        chat_template, stop_word = CHAT_TEMPLATES[chat_template]
+
         if stop_word != "eos_token":
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
 
@@ -257,11 +257,13 @@ def get_chat_template(
     pass
 
     # For ShareGPT role -> from and content -> value
-    tokenizer.chat_template = tokenizer.chat_template\
+    chat_template = chat_template\
         .replace("'role'",      "'" + mapping["role"]      + "'")\
         .replace("'content'",   "'" + mapping["content"]   + "'")\
         .replace("'user'",      "'" + mapping["user"]      + "'")\
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
+
+    tokenizer.chat_template = chat_template
 
     #stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
