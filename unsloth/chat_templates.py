@@ -372,5 +372,6 @@ def test_chat_templates():
     correct_tokenizer = AutoTokenizer.from_pretrained("lmsys/vicuna-7b-v1.5")
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
-    assert(correct_prompt == our_prompt)
+    # We add </s> ourselves
+    assert(correct_prompt == our_prompt.replace("</s>", ""))
 pass
