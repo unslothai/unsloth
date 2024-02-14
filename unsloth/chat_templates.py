@@ -20,6 +20,7 @@ __all__ = [
 from transformers import StoppingCriteria, StoppingCriteriaList
 from torch import LongTensor, FloatTensor
 from transformers.models.llama.modeling_llama import logger
+from .models._utils import patch_tokenizer
 
 CHAT_TEMPLATES = {}
 
@@ -263,6 +264,7 @@ def get_chat_template(
         .replace("'user'",      "'" + mapping["user"]      + "'")\
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
+    _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
     tokenizer.chat_template = chat_template
 
     #stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
