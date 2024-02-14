@@ -41,6 +41,7 @@ LLAMA_LAYERNORMS = (
     "input_layernorm", "post_attention_layernorm",
 )
 
+# https://github.com/ggerganov/llama.cpp/blob/master/examples/quantize/quantize.cpp#L19
 # From https://mlabonne.github.io/blog/posts/Quantize_Llama_2_models_using_ggml.html
 ALLOWED_QUANTS = \
 {
@@ -59,10 +60,16 @@ ALLOWED_QUANTS = \
     "q4_0"    : "Original quant method, 4-bit.",
     "q4_1"    : "Higher accuracy than q4_0 but not as high as q5_0. However has quicker inference than q5 models.",
     "q4_k_s"  : "Uses Q4_K for all tensors",
+    "q4_k"    : "alias for q4_k_m",
+    "q5_k"    : "alias for q5_k_m",
     "q5_0"    : "Higher accuracy, higher resource usage and slower inference.",
     "q5_1"    : "Even higher accuracy, resource usage and slower inference.",
     "q5_k_s"  : "Uses Q5_K for all tensors",
     "q6_k"    : "Uses Q8_K for all tensors",
+    "iq2_xxs" : "2.06 bpw quantization",
+    "iq2_xs"  : "2.31 bpw quantization",
+    "iq3_xxs" : "3.06 bpw quantization",
+    "q3_k_xs" : "3-bit extra small quantization",
 }
 
 def print_quantization_methods():
@@ -246,7 +253,8 @@ def unsloth_save_model(
     # If push_to_hub, we must remove the .../ part of a repo
     if push_to_hub and "/" in save_directory:
 
-        new_save_directory = save_directory[save_directory.find("/"):]
+        # +1 solves absolute path issues
+        new_save_directory = save_directory[save_directory.find("/")+1:]
 
         logger.warning_once(
             f"Unsloth: You are pushing to hub, but you passed your HF username.\n"\
@@ -861,10 +869,16 @@ def unsloth_save_pretrained_gguf(
         "q4_0"    : "Original quant method, 4-bit.",
         "q4_1"    : "Higher accuracy than q4_0 but not as high as q5_0. However has quicker inference than q5 models.",
         "q4_k_s"  : "Uses Q4_K for all tensors",
+        "q4_k"    : "alias for q4_k_m",
+        "q5_k"    : "alias for q5_k_m",
         "q5_0"    : "Higher accuracy, higher resource usage and slower inference.",
         "q5_1"    : "Even higher accuracy, resource usage and slower inference.",
         "q5_k_s"  : "Uses Q5_K for all tensors",
         "q6_k"    : "Uses Q8_K for all tensors",
+        "iq2_xxs" : "2.06 bpw quantization",
+        "iq2_xs"  : "2.31 bpw quantization",
+        "iq3_xxs" : "3.06 bpw quantization",
+        "q3_k_xs" : "3-bit extra small quantization",
     """
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")

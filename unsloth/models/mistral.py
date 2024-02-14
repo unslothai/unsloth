@@ -271,6 +271,14 @@ class FastMistralModel(FastLlamaModel):
         MistralModel          .forward = LlamaModel_fast_forward
         MistralForCausalLM    .forward = MistralForCausalLM_fast_forward
         PeftModelForCausalLM  .forward = PeftModelForCausalLM_fast_forward
+
+        # Solves https://github.com/unslothai/unsloth/issues/168
+        # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
+        # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
+        # https://github.com/huggingface/transformers/pull/27931
+        # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
+        import transformers.models.mistral.modeling_mistral
+        transformers.models.mistral.modeling_mistral.MistralRotaryEmbedding = LlamaRotaryEmbedding
         return
     pass
 
