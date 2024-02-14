@@ -14,11 +14,12 @@
 
 __all__ = [
     "get_chat_template",
-    "create_stopping_criteria",
+    "test_chat_templates",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
 from torch import LongTensor, FloatTensor
+from transformers.models.llama.modeling_llama import logger
 
 CHAT_TEMPLATES = {}
 
@@ -177,7 +178,7 @@ vicuna_old_template = \
         "{% if message['role'] == 'user' %}"\
             "{{ '### Human: ' + message['content'] + '\n' }}"\
         "{% elif message['role'] == 'assistant' %}"\
-            "{{ '### Assistant: ' + message['content'] + '\n' }}"\
+            "{{ '### Assistant: ' + message['content'] + eos_token + '\n' }}"\
         "{% else %}"\
             "{{ raise_exception('Only user and assistant roles are supported!') }}"\
         "{% endif %}"\
@@ -185,7 +186,7 @@ vicuna_old_template = \
     "{% if add_generation_prompt %}"\
         "{{ '### Assistant:' }}"\
     "{% endif %}"
-vicuna_old_eos_token = "### Human: "
+vicuna_old_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token,)
 
 
@@ -203,7 +204,7 @@ alpaca_template = \
         "{% if message['role'] == 'user' %}"\
             "{{ '### Instruction:\n' + message['content'] + '\n\n' }}"\
         "{% elif message['role'] == 'assistant' %}"\
-            "{{ '### Response:\n' + message['content'] + '\n\n' }}"\
+            "{{ '### Response:\n' + message['content'] + eos_token + '\n\n' }}"\
         "{% else %}"\
             "{{ raise_exception('Only user and assistant roles are supported!') }}"\
         "{% endif %}"\
@@ -211,24 +212,50 @@ alpaca_template = \
     "{% if add_generation_prompt %}"\
         "{{ '### Response:\n' }}"\
     "{% endif %}"
-alpaca_eos_token = "### Instruction:"
+alpaca_eos_token = "eos_token"
 CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token,)
 
 
 def get_chat_template(
     tokenizer,
-    method = "chatml",
+    chat_template = "chatml",
     mapping = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
+    map_eos_token = True,
 ):
-    if method not in CHAT_TEMPLATES:
-        raise KeyError(f"Only {CHAT_TEMPLATES.keys()} allowed.")
-    assert(
-        len(mapping) == 4 \
-        and "role" in mapping and "content"   in mapping \
-        and "user" in mapping and "assistant" in mapping
-    )
+    if map_eos_token is False:
+        assert("Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
+    pass
 
-    tokenizer.chat_template, stop_word = CHAT_TEMPLATES[method]
+    if type(chat_template) in (list, tuple):
+        chat_template, stop_word = chat_template
+        assert(type(chat_template) is str)
+        assert(type(stop_word) is str)
+
+        tokenizer.chat_template = chat_template
+
+    elif type(chat_template) is str:
+        tokenizer.chat_template, stop_word = CHAT_TEMPLATES[chat_template]
+        if stop_word != "eos_token":
+            logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
+
+            # Replaces the old EOS token with a new one.
+            # Useful for ChatML <|im_end|> for example.
+            # Usually we train 2 more tokens <|im_start|> and <|im_end|>
+            # But training the lm_head and embeddings are slow!
+            # This is a HACK!
+            # Idea from https://huggingface.co/cognitivecomputations/dolphin-2.6-mistral-7b-dpo-laser
+            string_vocab = tokenizer._tokenizer.to_str()
+            string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
+            new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
+            tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+        pass
+    else:
+        raise TypeError(
+            f"Unsloth: `chat_template` must be a tuple of (your_template, eos_token,) or one of\n"\
+            f"{CHAT_TEMPLATES.keys()}"
+        )
+    pass
+
     # For ShareGPT role -> from and content -> value
     tokenizer.chat_template = tokenizer.chat_template\
         .replace("'role'",      "'" + mapping["role"]      + "'")\
@@ -236,9 +263,9 @@ def get_chat_template(
         .replace("'user'",      "'" + mapping["user"]      + "'")\
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
-    stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
+    #stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
-    return tokenizer, stopping_criteria
+    return tokenizer#, stopping_criteria
 pass
 
 
@@ -250,14 +277,13 @@ def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
             super().__init__()
             if stops == "eos_token":
                 self.stop_token = torch.tensor(tokenizer.eos_token_id, device = "cuda")
-                self.single_match = True
-                self.length = 0
+                self.length = 1
             else:
                 self.stop_token = tokenizer(["\n" + stops], add_special_tokens = False, return_tensors = "pt")
                 self.stop_token = self.stop_token.input_ids.ravel()[1:].to("cuda")
-                self.single_match = False
                 self.length = self.stop_token.shape[0]
             pass
+            self.single_match = self.length == 1
         pass
 
         def __call__(self, input_ids: LongTensor, scores: FloatTensor) -> bool:
@@ -275,7 +301,7 @@ def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
 pass
 
 
-def _test_chat_templates():
+def test_chat_templates():
     messages = [
         {"role": "system","content": " You are a friendly chatbot.",},
         {"role": "user", "content": "What is 2+2?"},
