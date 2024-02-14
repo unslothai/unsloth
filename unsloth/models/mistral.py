@@ -278,7 +278,7 @@ class FastMistralModel(FastLlamaModel):
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.mistral.modeling_mistral
-        transformers.models.llama.modeling_mistral.MistralRotaryEmbedding = LlamaRotaryEmbedding
+        transformers.models.mistral.modeling_mistral.MistralRotaryEmbedding = LlamaRotaryEmbedding
         return
     pass
 
