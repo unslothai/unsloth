@@ -227,6 +227,8 @@ def get_chat_template(
         assert("Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
     pass
 
+    old_padding_side = tokenizer.padding_side
+
     if type(chat_template) in (list, tuple):
         chat_template, stop_word = chat_template
         assert(type(chat_template) is str)
@@ -265,6 +267,7 @@ def get_chat_template(
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
 
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
+    tokenizer.padding_side  = old_padding_side
     tokenizer.chat_template = chat_template
 
     #stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
