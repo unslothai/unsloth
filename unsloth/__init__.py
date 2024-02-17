@@ -64,7 +64,7 @@ try:
     libcuda_dirs()
 except:
     warnings.warn(
-        "Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
+        "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
     )
     os.system("ldconfig /usr/lib64-nvidia")
     importlib.reload(bnb)
@@ -75,7 +75,7 @@ except:
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
-        raise ImportError("CUDA is not linked properly.\n"\
+        raise ImportError("Unsloth: CUDA is not linked properly.\n"\
                           "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
                           "You need to run in your terminal `ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.")
 pass
