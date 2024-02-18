@@ -250,23 +250,6 @@ def unsloth_save_model(
         )
     pass
 
-    # If push_to_hub, we must remove the .../ part of a repo
-    # username = None
-    # if push_to_hub and "/" in save_directory:
-
-    #     # +1 solves absolute path issues
-    #     username = save_directory[:save_directory.find("/")]
-    #     new_save_directory = save_directory[save_directory.find("/")+1:]
-
-    #     logger.warning_once(
-    #         f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
-    #         f"We shall truncate {save_directory} to {new_save_directory}"
-    #     )
-
-    #     save_pretrained_settings["save_directory"] = new_save_directory
-    #     save_directory = new_save_directory
-    # pass
-
     # Tokenizer has different saving arguments
     tokenizer_save_settings = \
     {
@@ -314,6 +297,24 @@ def unsloth_save_model(
         model.save_pretrained(**save_pretrained_settings)
         print(" Done.")
         return save_directory
+    pass
+
+    # If push_to_hub, we must remove the .../ part of a repo
+    username = None
+    if push_to_hub and "/" in save_directory:
+
+        # +1 solves absolute path issues
+        username = save_directory[:save_directory.find("/")]
+        new_save_directory = save_directory[save_directory.find("/")+1:]
+
+        logger.warning_once(
+            f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
+            f"We shall truncate {save_directory} to {new_save_directory}"
+        )
+
+        save_pretrained_settings["save_directory"] = new_save_directory
+        tokenizer_save_settings ["save_directory"] = new_save_directory
+        save_directory = new_save_directory
     pass
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
@@ -1040,8 +1041,6 @@ def patch_saving_functions(model):
     import types
     from typing import Callable, Optional, Union, List
 
-    if hasattr(model, "_original_push_to_hub"): return
-
     # First check if this has already been called, and revert it
     original_model = model
     while True:
@@ -1052,6 +1051,8 @@ def patch_saving_functions(model):
             if hasattr(original_model, "save_pretrained_merged"): del original_model.save_pretrained_merged
             if hasattr(original_model, "push_to_hub_gguf"):       del original_model.push_to_hub_gguf
             if hasattr(original_model, "save_pretrained_gguf"):   del original_model.save_pretrained_gguf
+        else:
+            original_model._original_push_to_hub = original_model.push_to_hub
         pass
 
         if hasattr(original_model, "model"): original_model = original_model.model
@@ -1059,12 +1060,11 @@ def patch_saving_functions(model):
     pass
 
     # And now re add our saving methods!
-    original_push_to_hub = model.push_to_hub
+    original_push_to_hub = model._original_push_to_hub
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
     signature = re.sub("<function save at .+?>", "torch.save", signature)
     docs = original_push_to_hub.__doc__.encode("utf-8").decode("utf-8")
-    model._original_push_to_hub = original_push_to_hub
 
     push_to_hub_text = f'''def unsloth_push_to_hub(self, {signature}:
     """
@@ -1093,12 +1093,13 @@ def patch_saving_functions(model):
 
         if not hasattr(original_model, "_original_push_to_hub"):
             original_model._original_push_to_hub = original_model.push_to_hub
-            original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
-
-            if hasattr(original_model, "add_model_tags"):
-                original_model.add_model_tags(["unsloth",])
         pass
 
+        original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+        if hasattr(original_model, "add_model_tags"):
+            original_model.add_model_tags(["unsloth",])
+        pass
+        
         if hasattr(original_model, "model"): original_model = original_model.model
         else: break
     pass
