@@ -1098,6 +1098,7 @@ def patch_saving_functions(model):
     while True:
 
         if original_model.push_to_hub.__name__ != "unsloth_push_to_hub":
+            original_model.original_push_to_hub = original_model.push_to_hub
             original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
             if hasattr(original_model, "add_model_tags"):
                 original_model.add_model_tags(["unsloth",])
