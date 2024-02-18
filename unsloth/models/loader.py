@@ -118,9 +118,13 @@ class FastLanguageModel(FastLlamaModel):
             *args, **kwargs,
         )
 
-        # in case the model supports tagging, add the unsloth tag.
+        # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
-            model.add_model_tags(["unsloth"])
+            model.add_model_tags(["unsloth",])
+        pass
+        if hasattr(tokenizer, "add_model_tags"):
+            tokenizer.add_model_tags(["unsloth",])
+        pass
 
         if load_in_4bit:
             # Fix up bitsandbytes config
