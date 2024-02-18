@@ -1059,7 +1059,9 @@ def patch_saving_functions(model):
     pass
 
     # And now re add our saving methods!
+    print(1)
     original_push_to_hub = model.original_push_to_hub
+    print(2)
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
     signature = re.sub("<function save at .+?>", "torch.save", signature)
