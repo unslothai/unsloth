@@ -1046,15 +1046,6 @@ def patch_saving_functions(model):
     while True:
         if hasattr(original_model, "original_push_to_hub"):
             original_model.push_to_hub = types.MethodType(original_model.original_push_to_hub, original_model)
-            print(original_model)
-            try:
-                del original_model.original_push_to_hub
-            except:
-                print("!")
-            if hasattr(original_model, "push_to_hub_merged"):     del original_model.push_to_hub_merged
-            if hasattr(original_model, "save_pretrained_merged"): del original_model.save_pretrained_merged
-            if hasattr(original_model, "push_to_hub_gguf"):       del original_model.push_to_hub_gguf
-            if hasattr(original_model, "save_pretrained_gguf"):   del original_model.save_pretrained_gguf
         pass
         original_model.original_push_to_hub = types.MethodType(original_model.push_to_hub, original_model)
 
@@ -1063,9 +1054,7 @@ def patch_saving_functions(model):
     pass
 
     # And now re add our saving methods!
-    print(1)
     original_push_to_hub = model.original_push_to_hub
-    print(2)
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
     signature = re.sub("<function save at .+?>", "torch.save", signature)
