@@ -427,8 +427,24 @@ def unsloth_save_model(
     # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
     save_pretrained_settings["state_dict"] = state_dict
-    for deletion in \
-        ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
+
+    # Edit message / commit description
+    commit_message = save_pretrained_settings["commit_message"]
+    if commit_message is None: commit_message = ""
+    commit_message += " (Trained with Unsloth 2x faster)"
+    commit_message = commit_message.lstrip()
+
+    commit_description = save_pretrained_settings["commit_description"]
+    if commit_description is None:
+        commit_description = "Upload model trained with Unsloth 2x faster"
+    else:
+        commit_description += " (Trained with Unsloth 2x faster)"
+    pass
+    
+    what_to_delete = ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",) \
+        if username is None else
+        ("use_temp_dir", "create_pr", "revision", "tags",)
+    for deletion in what_to_delete:
         del save_pretrained_settings[deletion]
     pass
     if hasattr(model, "add_model_tags"):
