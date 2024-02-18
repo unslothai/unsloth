@@ -324,7 +324,7 @@ def unsloth_save_model(
         )
 
         save_pretrained_settings["save_directory"] = new_save_directory
-        # tokenizer_save_settings ["save_directory"] = new_save_directory
+        tokenizer_save_settings ["save_directory"] = new_save_directory
         save_directory = new_save_directory
     pass
 
