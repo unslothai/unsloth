@@ -1041,20 +1041,13 @@ def patch_saving_functions(model):
     import types
     from typing import Callable, Optional, Union, List
 
-    # First check if this has already been called, and revert it
-    original_model = model
-    while True:
-        if hasattr(original_model, "original_push_to_hub"):
-            original_model.push_to_hub = original_model.original_push_to_hub
-        pass
-        original_model.original_push_to_hub = original_model.push_to_hub
-
-        if hasattr(original_model, "model"): original_model = original_model.model
-        else: break
+    # And now re add our saving methods!
+    if model.push_to_hub.__name__ == "unsloth_push_to_hub":
+        original_push_to_hub = model.original_push_to_hub
+    else:
+        original_push_to_hub = model.push_to_hub
     pass
 
-    # And now re add our saving methods!
-    original_push_to_hub = model.original_push_to_hub
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
     signature = re.sub("<function save at .+?>", "torch.save", signature)
@@ -1078,7 +1071,7 @@ def patch_saving_functions(model):
         commit_message = arguments["commit_message"]
         if commit_message is not None:
             if not commit_message.endswith(" "): commit_message += " "
-            commit_message += "(Trained with Unsloth)"
+            commit_message += "(Trained with Unsloth 2x faster)"
         else:
             commit_message = "Upload model trained with Unsloth"
         arguments["commit_message"] = commit_message
@@ -1087,9 +1080,9 @@ def patch_saving_functions(model):
         commit_description = arguments["commit_description"]
         if commit_description is not None:
             if not commit_description.endswith(" "): commit_description += " "
-            commit_description += "(Trained with Unsloth)"
+            commit_description += "(Trained with Unsloth 2x faster)"
         else:
-            commit_description = "Upload model trained with Unsloth"
+            commit_description = "Upload model trained with Unsloth 2x faster"
         arguments["commit_description"] = commit_description
 
     try:
@@ -1104,13 +1097,11 @@ def patch_saving_functions(model):
     original_model = model
     while True:
 
-        if not hasattr(original_model, "original_push_to_hub"):
-            original_model.original_push_to_hub = original_model.push_to_hub
-        pass
-
-        original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
-        if hasattr(original_model, "add_model_tags"):
-            original_model.add_model_tags(["unsloth",])
+        if original_model.push_to_hub.__name__ != "unsloth_push_to_hub":
+            original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
+            if hasattr(original_model, "add_model_tags"):
+                original_model.add_model_tags(["unsloth",])
+            pass
         pass
 
         if hasattr(original_model, "model"): original_model = original_model.model
