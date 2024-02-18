@@ -219,7 +219,7 @@ def unsloth_save_model(
         else:
             commit_description += " (Trained with Unsloth 2x faster)"
         pass
-        
+
         model.push_to_hub(
             repo_id            = save_directory,
             use_temp_dir       = use_temp_dir,
@@ -492,7 +492,7 @@ def unsloth_save_model(
     for _ in range(3):
         torch.cuda.empty_cache()
         gc.collect()
-    return save_directory
+    return save_directory, username
 pass
 
 
