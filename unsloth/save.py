@@ -1042,19 +1042,19 @@ def patch_saving_functions(model):
     from typing import Callable, Optional, Union, List
 
     # First check if this has already been called, and revert it
-    original_model = model
-    while True:
-        if hasattr(original_model, "original_push_to_hub"):
-            original_model.push_to_hub = types.MethodType(original_model.original_push_to_hub, original_model)
-        pass
-        original_model.original_push_to_hub = types.MethodType(original_model.push_to_hub, original_model)
-        if hasattr(original_model, "add_model_tags"):
-            original_model.add_model_tags(["unsloth",])
-        pass
+    # original_model = model
+    # while True:
+    #     if hasattr(original_model, "original_push_to_hub"):
+    #         original_model.push_to_hub = types.MethodType(original_model.original_push_to_hub, original_model)
+    #     pass
+    #     original_model.original_push_to_hub = types.MethodType(original_model.push_to_hub, original_model)
+    #     if hasattr(original_model, "add_model_tags"):
+    #         original_model.add_model_tags(["unsloth",])
+    #     pass
 
-        if hasattr(original_model, "model"): original_model = original_model.model
-        else: break
-    pass
+    #     if hasattr(original_model, "model"): original_model = original_model.model
+    #     else: break
+    # pass
     return model
 
     # And now re add our saving methods!
