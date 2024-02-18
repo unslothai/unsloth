@@ -984,7 +984,7 @@ class FastLlamaModel:
         front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
 
         debug_info = """debug_info = \\
-        f"==((====))==  Unsloth - Free Apache OSS license | Num GPUs = {args.world_size}\\n"\\
+        f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
         f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
         f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
