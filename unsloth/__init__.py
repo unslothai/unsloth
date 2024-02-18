@@ -77,7 +77,7 @@ except:
     except:
         raise ImportError("Unsloth: CUDA is not linked properly.\n"\
                           "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
-                          "You need to run in your terminal `ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.")
+                          "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.")
 pass
 
 from .models import *
