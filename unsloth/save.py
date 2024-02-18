@@ -1044,22 +1044,22 @@ def patch_saving_functions(model):
     # First check if this has already been called, and revert it
     original_model = model
     while True:
-        if hasattr(original_model, "_original_push_to_hub"):
-            original_model.push_to_hub = original_model._original_push_to_hub
-            del original_model._original_push_to_hub
+        if hasattr(original_model, "original_push_to_hub"):
+            original_model.push_to_hub = types.MethodType(original_model.original_push_to_hub, original_model)
+            del original_model.original_push_to_hub
             if hasattr(original_model, "push_to_hub_merged"):     del original_model.push_to_hub_merged
             if hasattr(original_model, "save_pretrained_merged"): del original_model.save_pretrained_merged
             if hasattr(original_model, "push_to_hub_gguf"):       del original_model.push_to_hub_gguf
             if hasattr(original_model, "save_pretrained_gguf"):   del original_model.save_pretrained_gguf
         pass
-        original_model._original_push_to_hub = original_model.push_to_hub
+        original_model.original_push_to_hub = types.MethodType(original_model.push_to_hub, original_model)
 
         if hasattr(original_model, "model"): original_model = original_model.model
         else: break
     pass
 
     # And now re add our saving methods!
-    original_push_to_hub = model._original_push_to_hub
+    original_push_to_hub = model.original_push_to_hub
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
     signature = re.sub("<function save at .+?>", "torch.save", signature)
@@ -1087,7 +1087,7 @@ def patch_saving_functions(model):
     else:
         commit_message = "Upload model trained with Unsloth"
     arguments["commit_message"] = commit_message
-    
+
     if commit_description is not None:
         if not commit_description.endswith(" "): commit_description += " "
         commit_description += "(Trained with Unsloth)"
@@ -1096,10 +1096,10 @@ def patch_saving_functions(model):
     arguments["commit_description"] = commit_description
 
     try:
-        return self._original_push_to_hub(**arguments)
+        return self.original_push_to_hub(**arguments)
     except:
         del arguments["tags"]
-        return self._original_push_to_hub(**arguments)
+        return self.original_push_to_hub(**arguments)
     pass
     '''
     exec(push_to_hub_text, globals())
@@ -1107,8 +1107,8 @@ def patch_saving_functions(model):
     original_model = model
     while True:
 
-        if not hasattr(original_model, "_original_push_to_hub"):
-            original_model._original_push_to_hub = original_model.push_to_hub
+        if not hasattr(original_model, "original_push_to_hub"):
+            original_model.original_push_to_hub = types.MethodType(original_model.push_to_hub, original_model)
         pass
 
         original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
