@@ -1051,9 +1051,8 @@ def patch_saving_functions(model):
             if hasattr(original_model, "save_pretrained_merged"): del original_model.save_pretrained_merged
             if hasattr(original_model, "push_to_hub_gguf"):       del original_model.push_to_hub_gguf
             if hasattr(original_model, "save_pretrained_gguf"):   del original_model.save_pretrained_gguf
-        else:
-            original_model._original_push_to_hub = original_model.push_to_hub
         pass
+        original_model._original_push_to_hub = original_model.push_to_hub
 
         if hasattr(original_model, "model"): original_model = original_model.model
         else: break
@@ -1079,6 +1078,23 @@ def patch_saving_functions(model):
         arguments["tags"] = ["unsloth",]
     elif hasattr(self, "add_model_tags"):
         self.add_model_tags(["unsloth",])
+
+    commit_message     = arguments["commit_message"]
+    commit_description = arguments["commit_description"]
+    if commit_message is not None:
+        if not commit_message.endswith(" "): commit_message += " "
+        commit_message += "(Trained with Unsloth)"
+    else:
+        commit_message = "Upload model trained with Unsloth"
+    arguments["commit_message"] = commit_message
+    
+    if commit_description is not None:
+        if not commit_description.endswith(" "): commit_description += " "
+        commit_description += "(Trained with Unsloth)"
+    else:
+        commit_description = "Upload model trained with Unsloth"
+    arguments["commit_description"] = commit_description
+
     try:
         return self._original_push_to_hub(**arguments)
     except:
@@ -1099,7 +1115,7 @@ def patch_saving_functions(model):
         if hasattr(original_model, "add_model_tags"):
             original_model.add_model_tags(["unsloth",])
         pass
-        
+
         if hasattr(original_model, "model"): original_model = original_model.model
         else: break
     pass
