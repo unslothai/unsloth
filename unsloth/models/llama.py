@@ -1006,7 +1006,7 @@ class FastLlamaModel:
             )
         debug_info ="""
         debug_info = debug_info.split('\n')
-        debug_info = "\n".join([debug_info[0]] + [spaces + x for x in debug_info[1:]])
+        debug_info = "\n".join([debug_info[0]] + [spaces + x.lstrip('\t ') for x in debug_info[1:]])
         inner_training_loop = inner_training_loop.replace("debug_info =", debug_info, 1)
 
         front_spaces = re.match(r"[\t\s]{1,}", inner_training_loop).group(0)
@@ -1039,7 +1039,7 @@ class FastLlamaModel:
                 divisor = n_total_devices / 2 / 2
                 ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
         check_batches = check_batches.split('\n')
-        check_batches = "\n".join([check_batches[0]] + [front_spaces + x for x in check_batches[1:]])
+        check_batches = "\n".join([check_batches[0]] + [front_spaces + x.lstrip('\t ') for x in check_batches[1:]])
         inner_training_loop = inner_training_loop.replace(
             "train_dataloader = self.get_train_dataloader()",
             check_batches, 1,
