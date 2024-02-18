@@ -1042,20 +1042,16 @@ def patch_saving_functions(model):
     from typing import Callable, Optional, Union, List
 
     # First check if this has already been called, and revert it
-    # original_model = model
-    # while True:
-    #     if hasattr(original_model, "original_push_to_hub"):
-    #         original_model.push_to_hub = types.MethodType(original_model.original_push_to_hub, original_model)
-    #     pass
-    #     original_model.original_push_to_hub = types.MethodType(original_model.push_to_hub, original_model)
-    #     if hasattr(original_model, "add_model_tags"):
-    #         original_model.add_model_tags(["unsloth",])
-    #     pass
+    original_model = model
+    while True:
+        if hasattr(original_model, "original_push_to_hub"):
+            original_model.push_to_hub = original_model.original_push_to_hub, original_model
+        pass
+        original_model.original_push_to_hub = original_model.push_to_hub, original_model
 
-    #     if hasattr(original_model, "model"): original_model = original_model.model
-    #     else: break
-    # pass
-    return model
+        if hasattr(original_model, "model"): original_model = original_model.model
+        else: break
+    pass
 
     # And now re add our saving methods!
     original_push_to_hub = model.original_push_to_hub
@@ -1078,6 +1074,24 @@ def patch_saving_functions(model):
     elif hasattr(self, "add_model_tags"):
         self.add_model_tags(["unsloth",])
 
+    if "commit_message" in arguments:
+        commit_message = arguments["commit_message"]
+        if commit_message is not None:
+            if not commit_message.endswith(" "): commit_message += " "
+            commit_message += "(Trained with Unsloth)"
+        else:
+            commit_message = "Upload model trained with Unsloth"
+        arguments["commit_message"] = commit_message
+
+    if "commit_description" in arguments:
+        commit_description = arguments["commit_description"]
+        if commit_description is not None:
+            if not commit_description.endswith(" "): commit_description += " "
+            commit_description += "(Trained with Unsloth)"
+        else:
+            commit_description = "Upload model trained with Unsloth"
+        arguments["commit_description"] = commit_description
+
     try:
         return self.original_push_to_hub(**arguments)
     except:
@@ -1091,7 +1105,7 @@ def patch_saving_functions(model):
     while True:
 
         if not hasattr(original_model, "original_push_to_hub"):
-            original_model.original_push_to_hub = types.MethodType(original_model.push_to_hub, original_model)
+            original_model.original_push_to_hub = original_model.push_to_hub, original_model
         pass
 
         original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
