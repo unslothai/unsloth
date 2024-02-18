@@ -313,7 +313,7 @@ def unsloth_save_model(
         )
 
         save_pretrained_settings["save_directory"] = new_save_directory
-        tokenizer_save_settings ["save_directory"] = new_save_directory
+        # tokenizer_save_settings ["save_directory"] = new_save_directory
         save_directory = new_save_directory
     pass
 
@@ -1074,21 +1074,23 @@ def patch_saving_functions(model):
     elif hasattr(self, "add_model_tags"):
         self.add_model_tags(["unsloth",])
 
-    commit_message     = arguments["commit_message"]
-    commit_description = arguments["commit_description"]
-    if commit_message is not None:
-        if not commit_message.endswith(" "): commit_message += " "
-        commit_message += "(Trained with Unsloth)"
-    else:
-        commit_message = "Upload model trained with Unsloth"
-    arguments["commit_message"] = commit_message
+    if "commit_message" in arguments:
+        commit_message = arguments["commit_message"]
+        if commit_message is not None:
+            if not commit_message.endswith(" "): commit_message += " "
+            commit_message += "(Trained with Unsloth)"
+        else:
+            commit_message = "Upload model trained with Unsloth"
+        arguments["commit_message"] = commit_message
 
-    if commit_description is not None:
-        if not commit_description.endswith(" "): commit_description += " "
-        commit_description += "(Trained with Unsloth)"
-    else:
-        commit_description = "Upload model trained with Unsloth"
-    arguments["commit_description"] = commit_description
+    if "commit_description" in arguments:
+        commit_description = arguments["commit_description"]
+        if commit_description is not None:
+            if not commit_description.endswith(" "): commit_description += " "
+            commit_description += "(Trained with Unsloth)"
+        else:
+            commit_description = "Upload model trained with Unsloth"
+        arguments["commit_description"] = commit_description
 
     try:
         return self.original_push_to_hub(**arguments)
