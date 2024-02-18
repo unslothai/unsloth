@@ -83,22 +83,22 @@ cu121 = [
     "bitsandbytes",
     "unsloth[cu121only]",
 ]
-cu118_torch211 = [
+cu118-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118onlytorch211]",
 ]
-cu121_torch211 = [
+cu121-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch211]",
 ]
-cu118_torch220 = [
+cu118-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118onlytorch220]",
 ]
-cu121_torch220 = [
+cu121-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch220]",
@@ -112,18 +112,18 @@ conda = [
 colab = [
     "unsloth[cu121]",
 ]
-colab_ampere = [
+colab-ampere = [
     "unsloth[cu121]",
     "packaging",
     "ninja",
     "flash-attn",
 ]
-colab_torch211 = [
+colab-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch211]",
 ]
-colab_ampere_torch211 = [
+colab-ampere-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch211]",
@@ -131,12 +131,12 @@ colab_ampere_torch211 = [
     "ninja",
     "flash-attn",
 ]
-colab_torch220 = [
+colab-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch220]",
 ]
-colab_ampere_torch220 = [
+colab-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch220]",
@@ -144,7 +144,7 @@ colab_ampere_torch220 = [
     "ninja",
     "flash-attn",
 ]
-cu118_ampere = [
+cu118-ampere = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118only]",
@@ -152,7 +152,7 @@ cu118_ampere = [
     "ninja",
     "flash-attn",
 ]
-cu121_ampere = [
+cu121-ampere = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121only]",
@@ -160,7 +160,7 @@ cu121_ampere = [
     "ninja",
     "flash-attn",
 ]
-cu118_ampere_torch211 = [
+cu118-ampere-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118onlytorch211]",
@@ -168,7 +168,7 @@ cu118_ampere_torch211 = [
     "ninja",
     "flash-attn",
 ]
-cu121_ampere_torch211 = [
+cu121-ampere-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch211]",
@@ -176,7 +176,7 @@ cu121_ampere_torch211 = [
     "ninja",
     "flash-attn",
 ]
-cu118_ampere_torch220 = [
+cu118-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu118onlytorch220]",
@@ -184,7 +184,7 @@ cu118_ampere_torch220 = [
     "ninja",
     "flash-attn",
 ]
-cu121_ampere_torch220 = [
+cu121-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch220]",
