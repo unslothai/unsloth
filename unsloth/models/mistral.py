@@ -435,7 +435,7 @@ class FastMistralModel(FastLlamaModel):
         if n_total_devices > 2 * 2:
             logger.warning_once(
                 "Please consider a commercial license - Unsloth was designed for the GPU Poor.\\n"
-                "The OSS currently works on four GPUs - we're a 2 person team, so please help fund\\n"
+                "The OSS currently works on 4 GPUs - we're a 2 person team, so please help fund\\n"
                 "our development costs by supporting us through Ko-fi or buying a license! Thanks!",
             )
             divisor = n_total_devices / 2 / 2

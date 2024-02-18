@@ -1030,7 +1030,7 @@ class FastLlamaModel:
         if n_total_devices > 2 * 2:
             logger.warning_once(
                 "Please consider a commercial license - Unsloth was designed for the GPU Poor.\\n"
-                "The OSS currently works on four GPUs - we're a 2 person team, so please help fund\\n"
+                "The OSS currently works on 4 GPUs - we're a 2 person team, so please help fund\\n"
                 "our development costs by supporting us through Ko-fi or buying a license! Thanks!",
             )
             divisor = n_total_devices / 2 / 2
@@ -1188,16 +1188,6 @@ class FastLlamaModel:
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora"   in signature
-
-        from transformers.trainer import Trainer 
-        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
-            raise RuntimeError(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
-            )
-        pass
         
         assert(max_seq_length <= model.max_seq_length)
 
@@ -1323,6 +1313,16 @@ class FastLlamaModel:
                 pass
             # Add revision to enable future fast inference paths
             model.peft_config[active_adapter].revision = f"unsloth"
+        pass
+
+        from transformers.trainer import Trainer 
+        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
         pass
 
         # Fix loftq issues

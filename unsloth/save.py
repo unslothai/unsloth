@@ -251,19 +251,21 @@ def unsloth_save_model(
     pass
 
     # If push_to_hub, we must remove the .../ part of a repo
-    if push_to_hub and "/" in save_directory:
+    # username = None
+    # if push_to_hub and "/" in save_directory:
 
-        # +1 solves absolute path issues
-        new_save_directory = save_directory[save_directory.find("/")+1:]
+    #     # +1 solves absolute path issues
+    #     username = save_directory[:save_directory.find("/")]
+    #     new_save_directory = save_directory[save_directory.find("/")+1:]
 
-        logger.warning_once(
-            f"Unsloth: You are pushing to hub, but you passed your HF username.\n"\
-            f"We shall truncate {save_directory} to {new_save_directory}"
-        )
+    #     logger.warning_once(
+    #         f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
+    #         f"We shall truncate {save_directory} to {new_save_directory}"
+    #     )
 
-        save_pretrained_settings["save_directory"] = new_save_directory
-        save_directory = new_save_directory
-    pass
+    #     save_pretrained_settings["save_directory"] = new_save_directory
+    #     save_directory = new_save_directory
+    # pass
 
     # Tokenizer has different saving arguments
     tokenizer_save_settings = \
