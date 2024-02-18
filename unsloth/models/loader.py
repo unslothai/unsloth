@@ -147,7 +147,7 @@ class FastLanguageModel(FastLlamaModel):
 
         if is_peft:
             # Now add PEFT adapters
-            model = PeftModel.from_pretrained(model, old_model_name)
+            model = PeftModel.from_pretrained(model, old_model_name, token = token)
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
         pass

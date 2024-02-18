@@ -210,6 +210,16 @@ def unsloth_save_model(
             )
         pass
 
+        if commit_message is None: commit_message = ""
+        commit_message += " (Trained with Unsloth 2x faster)"
+        commit_message = commit_message.lstrip()
+
+        if commit_description is None:
+            commit_description = "Upload model trained with Unsloth 2x faster"
+        else:
+            commit_description += " (Trained with Unsloth 2x faster)"
+        pass
+        
         model.push_to_hub(
             repo_id            = save_directory,
             use_temp_dir       = use_temp_dir,
@@ -247,6 +257,7 @@ def unsloth_save_model(
         username = upload_to_huggingface(
             model, save_directory, token,
             "finetuned", "trl", file_location = None,
+            old_username = None,
         )
     pass
 
@@ -763,7 +774,7 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
 
-def upload_to_huggingface(model, save_directory, token, method, extra = "", file_location = None):
+def upload_to_huggingface(model, save_directory, token, method, extra = "", file_location = None, old_username = None):
     # Check for username
     username = ""
     save_directory = save_directory.lstrip("./")
@@ -771,6 +782,9 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
         from huggingface_hub import whoami
         try: 
             username = whoami()['name']
+            if type(old_username) is str and username != old_username:
+                username = old_username
+            pass
             save_directory = f"{save_directory}/{username}"
         except:
             raise RuntimeError(f"Unsloth: {save_directory} is not a Huggingface directory.")
@@ -814,6 +828,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             path_in_repo    = uploaded_location,
             repo_id         = save_directory,
             repo_type       = "model",
+            commit_message  = "(Trained with Unsloth 2x faster)",
         )
 
         # We also upload a config.json file
@@ -826,6 +841,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             path_in_repo    = "config.json",
             repo_id         = save_directory,
             repo_type       = "model",
+            commit_message  = "(Trained with Unsloth 2x faster)",
         )
         os.remove("_temporary_unsloth_config.json")
     pass
@@ -901,7 +917,7 @@ def unsloth_save_pretrained_gguf(
         python_install = install_python_non_blocking(["gguf", "protobuf"])
         git_clone.wait()
         makefile  = install_llama_cpp_make_non_blocking()
-        new_save_directory = unsloth_save_model(**arguments)
+        new_save_directory, old_username = unsloth_save_model(**arguments)
         python_install.wait()
     else:
         try:
@@ -913,7 +929,7 @@ def unsloth_save_pretrained_gguf(
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
             makefile  = install_llama_cpp_make_non_blocking()
-            new_save_directory = unsloth_save_model(**arguments)
+            new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
     pass
@@ -927,7 +943,7 @@ def unsloth_save_pretrained_gguf(
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
             self, save_directory, token,
-            "GGUF converted", "gguf", file_location,
+            "GGUF converted", "gguf", file_location, old_username,
         )
         link = f"{username}/{new_save_directory.lstrip('/.')}" \
             if username not in new_save_directory else \
@@ -1001,7 +1017,7 @@ def unsloth_push_to_hub_gguf(
         python_install = install_python_non_blocking(["gguf", "protobuf"])
         git_clone.wait()
         makefile  = install_llama_cpp_make_non_blocking()
-        new_save_directory = unsloth_save_model(**arguments)
+        new_save_directory, old_username = unsloth_save_model(**arguments)
         python_install.wait()
     else:
         try:
@@ -1012,8 +1028,8 @@ def unsloth_push_to_hub_gguf(
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
-            makefile  = install_llama_cpp_make_non_blocking()
-            new_save_directory = unsloth_save_model(**arguments)
+            makefile = install_llama_cpp_make_non_blocking()
+            new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
     pass
@@ -1026,7 +1042,7 @@ def unsloth_push_to_hub_gguf(
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
         self, repo_id, token,
-        "GGUF converted", "gguf", file_location,
+        "GGUF converted", "gguf", file_location, old_username,
     )
     link = f"{username}/{new_save_directory.lstrip('/.')}" \
         if username not in new_save_directory else \
