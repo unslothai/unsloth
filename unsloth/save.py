@@ -1048,10 +1048,14 @@ def patch_saving_functions(model):
             original_model.push_to_hub = types.MethodType(original_model.original_push_to_hub, original_model)
         pass
         original_model.original_push_to_hub = types.MethodType(original_model.push_to_hub, original_model)
+        if hasattr(original_model, "add_model_tags"):
+            original_model.add_model_tags(["unsloth",])
+        pass
 
         if hasattr(original_model, "model"): original_model = original_model.model
         else: break
     pass
+    return model
 
     # And now re add our saving methods!
     original_push_to_hub = model.original_push_to_hub
