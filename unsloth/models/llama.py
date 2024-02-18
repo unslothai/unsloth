@@ -975,7 +975,7 @@ class FastLlamaModel:
             if item.startswith(("deepspeed", "xm", "met", "smp")): continue
             if item in inner_training_loop: good_items.append(item)
         pass
-        exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")")
+        exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
 
         start = re.search('logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
         end = inner_training_loop.find("\n\n", start)

@@ -380,14 +380,14 @@ class FastMistralModel(FastLlamaModel):
             if item.startswith(("deepspeed", "xm", "met", "smp")): continue
             if item in inner_training_loop: good_items.append(item)
         pass
-        exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")")
+        exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
 
         start = re.search('logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
         end = inner_training_loop.find("\n\n", start)
         original_debug = inner_training_loop[start:end]
         spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
         front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
-
+        
         debug_info = """debug_info = \\
         f"==((====))==  Unsloth - Free Apache OSS license | Num GPUs = {args.world_size}\\n"\\
         f"   \\\   /|   Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
