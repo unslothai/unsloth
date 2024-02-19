@@ -441,9 +441,10 @@ def unsloth_save_model(
         commit_description += " (Trained with Unsloth 2x faster)"
     pass
     
+    # commit_description does not seem to work?
     what_to_delete = ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",) \
         if username is None else \
-        ("use_temp_dir", "create_pr", "revision", "tags",)
+        ("use_temp_dir", "create_pr", "revision", "tags", "commit_description",)
     for deletion in what_to_delete:
         del save_pretrained_settings[deletion]
     pass
