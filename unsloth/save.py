@@ -1175,6 +1175,7 @@ def patch_saving_functions(model):
         "finetuned", "trl", file_location = None,
         old_username = None,
     )
+    return out
     '''
     exec(push_to_hub_text, globals())
 
