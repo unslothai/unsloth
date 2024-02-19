@@ -1163,11 +1163,18 @@ def patch_saving_functions(model):
         arguments["commit_description"] = commit_description
 
     try:
-        return self.original_push_to_hub(**arguments)
+        out = self.original_push_to_hub(**arguments)
     except:
         del arguments["tags"]
-        return self.original_push_to_hub(**arguments)
+        out = self.original_push_to_hub(**arguments)
     pass
+
+    # Update model tag
+    _ = upload_to_huggingface(
+        self, arguments["repo_id"], arguments["token"],
+        "finetuned", "trl", file_location = None,
+        old_username = None,
+    )
     '''
     exec(push_to_hub_text, globals())
 
