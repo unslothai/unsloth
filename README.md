@@ -30,7 +30,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 | **Mistral 7b** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster\* | 62% less |
 
 - This [conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for ShareGPT ChatML / Vicuna templates.
-- Our [raw text notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is useful for text completion.
+- Our [raw text notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for text completion. Our [DPO notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) is a replication of Zephyr.
 - Colab provides a free GPU sometimes. Kaggle has 30 hrs free per week on a 12 hr running cap.
 - \* Kaggle has 2x T4s, but we use 1. Due to overhead, 1x T4 is 5x faster. Use Colab as Kaggle takes 10 mins to install.
 
@@ -113,8 +113,8 @@ pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.0 triton \
 ```bash
 pip install "unsloth[cu118] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-ampere] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-ampere] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118_ampere] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121_ampere] @ git+https://github.com/unslothai/unsloth.git"
 ```
 3. For Pytorch 2.1.1: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
 ```bash
@@ -122,10 +122,10 @@ pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.1 triton \
   --index-url https://download.pytorch.org/whl/cu121
 ```
 ```bash
-pip install "unsloth[cu118-torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-ampere-torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-ampere-torch211] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118_torch211] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121_torch211] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118_ampere_torch211] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121_ampere_torch211] @ git+https://github.com/unslothai/unsloth.git"
 ```
 4. For Pytorch 2.2.0: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
 ```bash
@@ -133,10 +133,10 @@ pip install --upgrade --force-reinstall --no-cache-dir torch==2.2.0 triton \
   --index-url https://download.pytorch.org/whl/cu121
 ```
 ```bash
-pip install "unsloth[cu118-torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118_torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121_torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118_ampere_torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121_ampere_torch220] @ git+https://github.com/unslothai/unsloth.git"
 ```
 5. If you get errors, try the below first, then go back to step 1:
 ```bash
@@ -144,6 +144,7 @@ pip install --upgrade pip
 ```
 
 ## 📜 Documentation
+- Go to our [Wiki page](https://github.com/unslothai/unsloth/wiki) for saving to GGUF, checkpointing, evaluation and more!
 - We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
 - We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 

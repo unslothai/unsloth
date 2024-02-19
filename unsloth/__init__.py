@@ -79,10 +79,15 @@ except:
         find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
         possible_cudas = [find_cuda.search(x) for x in possible_cudas]
         possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
-        find_number = re.compile(r"([\d\.]{2,})")
-        latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
-        latest_cuda = possible_cudas[latest_cuda]
-        os.system(f"ldconfig /usr/local/{latest_cuda}")
+
+        # Try linking cuda folder, or everything in local
+        if len(possible_cudas) == 0:
+            os.system(f"ldconfig /usr/local/")
+        else:
+            find_number = re.compile(r"([\d\.]{2,})")
+            latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
+            latest_cuda = possible_cudas[latest_cuda]
+            os.system(f"ldconfig /usr/local/{latest_cuda}")
     pass
 
     importlib.reload(bnb)

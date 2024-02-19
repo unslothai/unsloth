@@ -538,6 +538,40 @@ def install_python_non_blocking(packages = []):
 pass
 
 
+def install_llama_cpp_old(version = -10):
+    # Download the 10th latest release since the latest might be broken!
+    # FALLBACK mechanism
+    releases = subprocess.check_output(["git", "ls-remote", "--tags", "https://github.com/ggerganov/llama.cpp.git"])
+    releases = releases.decode("utf-8").replace("\t", " ").split("\n")
+    for i, x in enumerate(releases):
+        if "refs/tags/b" not in x: break
+    releases = releases[:i]
+    latest = releases[-1]
+    version = releases[version].split(" ")[0]
+
+    # Clone a specific commit
+    commands = [
+        "git clone https://github.com/ggerganov/llama.cpp",
+        f"cd llama.cpp && git reset --hard {version} && git clean -df && "\
+        f"make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
+        "pip install gguf protobuf",
+    ]
+    for command in commands:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+            for line in sp.stdout:
+                print(line.decode("utf-8"), flush = True, end = "")
+        pass
+    pass
+    # Check if successful
+    if not os.path.exists("llama.cpp/quantize"):
+        raise RuntimeError(
+            "Unsloth: llama.cpp GGUF seems to be too buggy to install.\n"\
+            "File a report to llama.cpp's main repo since this is not an Unsloth issue."
+        )
+    pass
+pass
+
+
 def install_llama_cpp_blocking():
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
@@ -594,11 +628,14 @@ def save_to_gguf(
 
     print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
     if _run_installer is not None:
-        _run_installer.wait()
+        error = _run_installer.wait()
     else:
+        error = 0
         install_llama_cpp_blocking()
     pass
-
+    # Check if successful. If not install 10th latest release
+    if error != 0 or not os.path.exists("llama.cpp/quantize"): install_llama_cpp_old(-10)
+    
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
