@@ -70,7 +70,12 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         cos, sin = cos.squeeze(), sin.squeeze()
         batch, seq_len, n_heads, head_dim = Q.shape
         head_dim = head_dim * partial_rotary_factor #Copy of https://github.com/huggingface/transformers/blob/main/src/transformers/models/phi/modeling_phi.py
-        Q = Q.view(batch*seq_len, n_heads*head_dim)
+        head_dim = int(head_dim)
+        Q = Q.reshape(
+            batch*seq_len, 
+            n_heads*head_dim
+        )
+
         n_rows, n_cols = Q.shape
         assert(seq_len <= cos.shape[0])
 

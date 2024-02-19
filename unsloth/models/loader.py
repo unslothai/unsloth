@@ -14,6 +14,8 @@
 
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
+from .phi2 import FastPhi2Model 
+
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -95,9 +97,9 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         model_type = model_config.model_type
-
-        if   model_type == "llama":   dispatch_model = FastLlamaModel
-        elif model_type == "mistral": dispatch_model = FastMistralModel
+        if   model_type == "llama"      :   dispatch_model = FastLlamaModel
+        elif model_type == "mistral"    :   dispatch_model = FastMistralModel
+        elif model_type == "phi"        :   dispatch_model = FastPhi2Model
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\

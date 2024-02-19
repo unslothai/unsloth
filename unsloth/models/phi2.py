@@ -17,6 +17,8 @@ from ._utils import __version__
 from ..kernels.relu import relu_kernel
 
 from torch.nn import CrossEntropyLoss
+from torch import nn
+import math 
 
 from transformers.models.phi.modeling_phi import (
     PhiAttention,
@@ -24,6 +26,7 @@ from transformers.models.phi.modeling_phi import (
     PhiModel,
     PhiForCausalLM,
 )
+from transformers.cache_utils import Cache
 # For Pytorch 2.1.1
 try:
     from transformers.models.phi.modeling_phi import (
@@ -37,125 +40,112 @@ pass
 
 def Phi2Attention_fast_forward(
     self,
-    hidden_states:        torch.Tensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    bool = False,
-    use_cache:            bool = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
-    *args, **kwargs,
+    hidden_states: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    past_key_value: Optional[Cache] = None,
+    output_attentions: bool = False,
+    use_cache: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-
     bsz, q_len, _ = hidden_states.size()
-    Q, K, V = self.apply_qkv(self, hidden_states)
 
-    # Check for inference
-    if use_cache and past_key_value is not None and q_len == 1:
-        A, past_key_value = LlamaAttention_fast_forward_inference(
-            self,
-            hidden_states,
-            past_key_value,
-            position_ids,
+    query_states = self.q_proj(hidden_states)
+    key_states = self.k_proj(hidden_states)
+    value_states = self.v_proj(hidden_states)
+
+    if self.qk_layernorm:
+        query_states = self.q_layernorm(query_states)
+        key_states = self.k_layernorm(key_states)
+
+    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+    kv_seq_len = key_states.shape[-2]
+    if past_key_value is not None:
+        if self.layer_idx is None:
+            raise ValueError(
+                f"The cache structure has changed since version v4.36. If you are using {self.__class__.__name__} "
+                "for auto-regressive decoding with k/v caching, please make sure to initialize the attention class "
+                "with a layer index."
+            )
+        kv_seq_len += past_key_value.get_usable_length(kv_seq_len, self.layer_idx)
+    cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+
+    # Partial rotary embedding
+    query_rot, query_pass = (
+        query_states[..., : self.rotary_emb.dim],
+        query_states[..., self.rotary_emb.dim :],
+    )
+    key_rot, key_pass = (
+        key_states[..., : self.rotary_emb.dim],
+        key_states[..., self.rotary_emb.dim :],
+    )
+    # [batch_size, seq_length, num_heads, head_dim // config.partial_rotary_factor]
+    query_rot, key_rot = fast_rope_embedding(query_rot, key_rot, cos, sin)
+
+    # [batch_size, seq_length, num_heads, head_dim]
+    query_states = torch.cat((query_rot, query_pass), dim=-1)
+    key_states = torch.cat((key_rot, key_pass), dim=-1)
+
+    if past_key_value is not None:
+        cache_kwargs = {"sin": sin, "cos": cos, "partial_rotation_size": self.rotary_emb.dim}
+        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+    key_states = repeat_kv(key_states, self.num_key_value_groups)
+    value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+    # Queries and keys upcast to fp32 is required by Phi-2 to avoid overflow
+    attn_weights = torch.matmul(
+        query_states.to(torch.float32), key_states.to(torch.float32).transpose(2, 3)
+    ) / math.sqrt(self.head_dim)
+
+    if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+        raise ValueError(
+            f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
+            f" {attn_weights.size()}"
         )
-        return A, None, past_key_value
-    pass
-    #Get attention parameters 
-    n_heads    = self.num_heads
-    n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
-    head_dim   = self.head_dim
-    assert(n_kv_heads * n_groups == n_heads)
 
-    #.view() : (bsz, seq_len, embed_dim) -> (bsz, 1, n_attention_heads, head_dim)
-    #transpose() : (bsz, 1, n_attention_heads, head_dim) -> (bsz, n_attention_heads, 1, head_dim) 
-    Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
-    K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
-    V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    if attention_mask is not None:
+        if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
+            raise ValueError(
+                f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
+            )
+        attn_weights = attn_weights + attention_mask
 
-    kv_seq_len = K.shape[-2]
-    if past_key_value is not None:
-        kv_seq_len += past_key_value[0].shape[-2]
+    # upcast attention to fp32
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(value_states.dtype)
+    attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
 
-    if position_ids is None:
-        cos = self.rotary_emb.cos_cached
-        sin = self.rotary_emb.sin_cached
-        Q, K = fast_rope_embedding(Q, K, cos, sin)
-    else:
-        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
-        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    pass
+    attn_output = torch.matmul(attn_weights, value_states)
 
-    if past_key_value is not None:
-        # reuse k, v, self_attention
-        K = torch.cat([past_key_value[0], K], dim = 2)
-        V = torch.cat([past_key_value[1], V], dim = 2)
-    past_key_value = (K, V) if use_cache else None
+    if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+        raise ValueError(
+            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+            f" {attn_output.size()}"
+        )
 
+    attn_output = attn_output.transpose(1, 2).contiguous()
+    attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
-    # Attention module
-    if (not HAS_FLASH_ATTENTION):
-        # Xformers memory efficient attention
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        M = bsz * q_len
+    attn_output = self.dense(attn_output)
 
-        has_swa = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
+    if not output_attentions:
+        attn_weights = None
 
-        # Group query attention
-        K = K  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-        V = V  .view(bsz, q_len, n_kv_heads,        1, head_dim)
-        K = K.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        V = V.expand(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        if hidden_states.requires_grad:
-            K = K.reshape(bsz, q_len, n_heads, head_dim)
-            V = V.reshape(bsz, q_len, n_heads, head_dim)
-
-            if has_swa:
-                Q = Q.view(1, M, n_heads, head_dim)
-                K = K.view(1, M, n_heads, head_dim)
-                V = V.view(1, M, n_heads, head_dim)
-            pass
-        else:
-            # Xformers does support the forward pass though
-            Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-
-            if has_swa:
-                Q = Q.view(1, M, n_kv_heads, n_groups, head_dim)
-                K = K.view(1, M, n_kv_heads, n_groups, head_dim)
-                V = V.view(1, M, n_kv_heads, n_groups, head_dim)
-            pass
-        pass
-
-    elif HAS_FLASH_ATTENTION:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        sw = getattr(self.config, "sliding_window")
-        sw = q_len if sw is None else sw
-        window = (-1, -1) if (q_len <= sw) else (sw, sw)
-        A = flash_attn_func(Q, K, V, causal = True, window_size = window)
-    else:
-        # Grouped query attention
-        # if n_groups != 1:
-        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-        K = K.reshape(bsz, n_heads, q_len, head_dim)
-        V = V.reshape(bsz, n_heads, q_len, head_dim)
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
-        # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2)
-    pass
-
-    attn_output = A.reshape(bsz, q_len, self.hidden_size)
-    attn_output = self.apply_o(self, attn_output)
-    attn_weights = None
     return attn_output, attn_weights, past_key_value
-pass
+
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
 
 
 def Phi2ForCausalLM_fast_forward(
@@ -207,6 +197,11 @@ def Phi2ForCausalLM_fast_forward(
         shift_labels = shift_labels.view(-1)
         # Enable model parallelism
         shift_labels = shift_labels.to(shift_logits.device)
+        
+        #Make of shape (batch_size, seq_len, vocab_size)
+        shift_labels = shift_labels.unsqueeze(0)
+        shift_logits = shift_logits.unsqueeze(0)
+
         loss = fast_cross_entropy_loss(
             logits = shift_logits,
             labels = shift_labels,
@@ -225,27 +220,27 @@ def Phi2ForCausalLM_fast_forward(
 pass 
 
 
-def fast_mlp_inference(self, X):
+"""def fast_mlp_inference(self, X):
     gate = self.gate_proj(X)
     up   = self.up_proj(X)
     gate = relu_kernel(gate, inplace = True)
     gate *= up
     X = self.down_proj(gate)
     return X
-pass
+pass"""
 
 class FastPhi2Model(FastLlamaModel):
     
     @staticmethod
     def pre_patch():
         PhiAttention        .forward = Phi2Attention_fast_forward
-        PhiFlashAttention2  .forward = Phi2Attention_fast_forward
-        PhiDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
-        PhiModel          .forward = LlamaModel_fast_forward
+        #PhiFlashAttention2  .forward = Phi2Attention_fast_forward
+        #PhiDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
+        #PhiModel          .forward = LlamaModel_fast_forward
         PhiForCausalLM      .forward = Phi2ForCausalLM_fast_forward
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        #PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
 
-    pass 
+        pass 
 
     @staticmethod
     def from_pretrained(
