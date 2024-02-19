@@ -842,7 +842,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
     if "/" not in save_directory:
         from huggingface_hub import whoami
         try: 
-            username = whoami()['name']
+            username = whoami(token = token)['name']
             if type(old_username) is str and username != old_username:
                 username = old_username
             pass
