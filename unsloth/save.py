@@ -256,6 +256,7 @@ def unsloth_save_model(
             "finetuned", "trl", file_location = None,
             old_username = None,
         )
+        print("Saved to https://huggingface.co/" + save_directory)
         return save_directory
     pass
 
@@ -315,6 +316,7 @@ def unsloth_save_model(
                 "finetuned", "trl", file_location = None,
                 old_username = None,
             )
+            print("Saved to https://huggingface.co/" + save_pretrained_settings["save_directory"])
         pass
 
         print(" Done.")
