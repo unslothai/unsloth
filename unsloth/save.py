@@ -140,17 +140,28 @@ def unsloth_save_model(
 
     # Push to hub
     use_temp_dir         : Optional[bool] = None,
-    commit_message       : Optional[str] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
     private              : Optional[bool] = None,
     create_pr            : bool = False,
     revision             : str = None,
-    commit_description   : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
     tags                 : List[str] = None,
 
     # Our functions
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
+    if commit_message is None: commit_message = ""
+    if "Unsloth" not in commit_message:
+        commit_message += " (Trained with Unsloth)"
+    commit_message = commit_message.lstrip()
+
+    if commit_description is None:
+        commit_description = "Upload model trained with Unsloth 2x faster"
+    elif "Unsloth 2x faster" not in commit_description:
+        commit_description += " (Trained with Unsloth 2x faster)"
+    pass
+
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"\
@@ -208,17 +219,6 @@ def unsloth_save_model(
                 "Unsloth: Pushing to HF requires a token. Pass `token = 'hf_....'`\n"\
                 "Go to https://huggingface.co/settings/tokens."
             )
-        pass
-
-        if commit_message is None: commit_message = ""
-        if "Unsloth 2x faster" not in commit_message:
-            commit_message += " (Trained with Unsloth 2x faster)"
-        commit_message = commit_message.lstrip()
-
-        if commit_description is None:
-            commit_description = "Upload model trained with Unsloth 2x faster"
-        elif "Unsloth 2x faster" not in commit_description:
-            commit_description += " (Trained with Unsloth 2x faster)"
         pass
 
         model.push_to_hub(
@@ -431,20 +431,6 @@ def unsloth_save_model(
     # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
     save_pretrained_settings["state_dict"] = state_dict
-
-    # Edit message / commit description
-    commit_message = save_pretrained_settings["commit_message"]
-    if commit_message is None: commit_message = ""
-    if "Unsloth 2x faster" not in commit_message:
-        commit_message += " (Trained with Unsloth 2x faster)"
-    commit_message = commit_message.lstrip()
-
-    commit_description = save_pretrained_settings["commit_description"]
-    if commit_description is None:
-        commit_description = "Upload model trained with Unsloth 2x faster"
-    elif "Unsloth 2x faster" not in commit_description:
-        commit_description += " (Trained with Unsloth 2x faster)"
-    pass
     
     # commit_description does not seem to work?
     what_to_delete = ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",) \
@@ -735,7 +721,7 @@ def unsloth_save_pretrained_merged(
     save_peft_format     : bool = True,
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,   
+    maximum_memory_usage : float = 0.85,
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
@@ -768,14 +754,14 @@ def unsloth_push_to_hub_merged(
     tokenizer            = None,
     save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
     use_temp_dir         : Optional[bool] = None,
-    commit_message       : Optional[str] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
     private              : Optional[bool] = None,
     token                : Union[bool, str, None] = None,
     max_shard_size       : Union[int, str, None] = "5GB",
     create_pr            : bool = False,
     safe_serialization   : bool = True,
     revision             : str = None,
-    commit_description   : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
     tags                 : Optional[List[str]] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.85,
@@ -887,7 +873,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             path_in_repo    = uploaded_location,
             repo_id         = save_directory,
             repo_type       = "model",
-            commit_message  = "(Trained with Unsloth 2x faster)",
+            commit_message  = "(Trained with Unsloth)",
         )
 
         # We also upload a config.json file
@@ -900,7 +886,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             path_in_repo    = "config.json",
             repo_id         = save_directory,
             repo_type       = "model",
-            commit_message  = "(Trained with Unsloth 2x faster)",
+            commit_message  = "(Trained with Unsloth)",
         )
         os.remove("_temporary_unsloth_config.json")
     pass
@@ -1019,14 +1005,14 @@ def unsloth_push_to_hub_gguf(
     quantization_method  : str = "fast_quantized",
     first_conversion     : str = "f16",
     use_temp_dir         : Optional[bool] = None,
-    commit_message       : Optional[str] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
     private              : Optional[bool] = None,
     token                : Union[bool, str, None] = None,
     max_shard_size       : Union[int, str, None] = "5GB",
     create_pr            : bool = False,
     safe_serialization   : bool = True,
     revision             : str = None,
-    commit_description   : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
     tags                 : Optional[List[str]] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.85,
@@ -1146,9 +1132,9 @@ def patch_saving_functions(model):
         commit_message = arguments["commit_message"]
         if commit_message is not None:
             if not commit_message.endswith(" "): commit_message += " "
-            commit_message += "(Trained with Unsloth 2x faster)"
+            commit_message += "(Trained with Unsloth)"
         else:
-            commit_message = "Upload model trained with Unsloth 2x faster"
+            commit_message = "Upload model trained with Unsloth"
         arguments["commit_message"] = commit_message
 
     if "commit_description" in arguments:
