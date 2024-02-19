@@ -213,7 +213,7 @@ def unsloth_save_model(
     pass
     save_pretrained_settings["tags"] = tags
 
-    if (save_method == "lora") and push_to_hub:
+    if ((save_method == "lora") or (save_method == "merged_4bit")) and push_to_hub:
         if token is None:
             raise RuntimeError(
                 "Unsloth: Pushing to HF requires a token. Pass `token = 'hf_....'`\n"\
@@ -249,17 +249,14 @@ def unsloth_save_model(
                 tags               = tags,
             )
         pass
-        return save_directory
-    pass
 
-    # Update model tag
-    username = ""
-    if push_to_hub:
-        username = upload_to_huggingface(
+        # Update model tag
+        _ = upload_to_huggingface(
             model, save_directory, token,
             "finetuned", "trl", file_location = None,
             old_username = None,
         )
+        return save_directory
     pass
 
     # Tokenizer has different saving arguments
@@ -310,6 +307,16 @@ def unsloth_save_model(
         if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
 
         model.save_pretrained(**save_pretrained_settings)
+
+        # Update model tag
+        if push_to_hub:
+            _ = upload_to_huggingface(
+                model, save_pretrained_settings["save_directory"], token,
+                "finetuned", "trl", file_location = None,
+                old_username = None,
+            )
+        pass
+
         print(" Done.")
         return save_directory
     pass
@@ -473,6 +480,15 @@ def unsloth_save_model(
         original_model.config = old_config
     model.config = old_config
     print("Done.")
+
+    # Update model tag
+    if push_to_hub:
+        _ = upload_to_huggingface(
+            model, save_pretrained_settings["save_directory"], token,
+            "finetuned", "trl", file_location = None,
+            old_username = username,
+        )
+    pass
 
     # Print location
     if push_to_hub:
