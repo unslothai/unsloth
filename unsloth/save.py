@@ -442,7 +442,7 @@ def unsloth_save_model(
     pass
     
     what_to_delete = ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",) \
-        if username is None else
+        if username is None else \
         ("use_temp_dir", "create_pr", "revision", "tags",)
     for deletion in what_to_delete:
         del save_pretrained_settings[deletion]
