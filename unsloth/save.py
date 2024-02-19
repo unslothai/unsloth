@@ -211,12 +211,13 @@ def unsloth_save_model(
         pass
 
         if commit_message is None: commit_message = ""
-        commit_message += " (Trained with Unsloth 2x faster)"
+        if "Unsloth 2x faster" not in commit_message:
+            commit_message += " (Trained with Unsloth 2x faster)"
         commit_message = commit_message.lstrip()
 
         if commit_description is None:
             commit_description = "Upload model trained with Unsloth 2x faster"
-        else:
+        elif "Unsloth 2x faster" not in commit_description:
             commit_description += " (Trained with Unsloth 2x faster)"
         pass
 
@@ -288,8 +289,11 @@ def unsloth_save_model(
         # Do general saving
         # Edit save_pretrained_settings
         # [TODO] _create_repo has errors due to **kwargs getting accepted
-        for deletion in \
-            ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
+        # commit_description does not seem to work?
+        what_to_delete = ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",) \
+            if save_pretrained_settings["push_to_hub"] is False else \
+            ("use_temp_dir", "create_pr", "revision", "tags", "commit_description",)
+        for deletion in what_to_delete:
             del save_pretrained_settings[deletion]
         pass
         if hasattr(model, "add_model_tags"):
@@ -431,13 +435,14 @@ def unsloth_save_model(
     # Edit message / commit description
     commit_message = save_pretrained_settings["commit_message"]
     if commit_message is None: commit_message = ""
-    commit_message += " (Trained with Unsloth 2x faster)"
+    if "Unsloth 2x faster" not in commit_message:
+        commit_message += " (Trained with Unsloth 2x faster)"
     commit_message = commit_message.lstrip()
 
     commit_description = save_pretrained_settings["commit_description"]
     if commit_description is None:
         commit_description = "Upload model trained with Unsloth 2x faster"
-    else:
+    elif "Unsloth 2x faster" not in commit_description:
         commit_description += " (Trained with Unsloth 2x faster)"
     pass
     
@@ -635,7 +640,7 @@ def save_to_gguf(
     pass
     # Check if successful. If not install 10th latest release
     if error != 0 or not os.path.exists("llama.cpp/quantize"): install_llama_cpp_old(-10)
-    
+
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
