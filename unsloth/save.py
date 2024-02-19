@@ -525,7 +525,7 @@ def install_llama_cpp_make_non_blocking():
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
     os.system("make clean -C llama.cpp")
-    full_command = ["make", "all", "-j", str(n_jobs), "-C", "llama.cpp"]
+    full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
     run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
@@ -541,7 +541,7 @@ pass
 def install_llama_cpp_blocking():
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j {psutil.cpu_count()*2}",
+        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return

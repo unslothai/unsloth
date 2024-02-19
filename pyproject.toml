@@ -42,6 +42,7 @@ huggingface = [
     "tqdm",
     "psutil",
     "wheel>=0.42.0",
+    "numpy",
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",

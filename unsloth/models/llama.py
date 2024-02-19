@@ -965,7 +965,18 @@ class FastLlamaModel:
 
         # Patch Trainer
         from transformers.trainer import Trainer
-        inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
+        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+            try:
+                inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
+            except:
+                raise RuntimeError(
+                    "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                    "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                    "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                    "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                )
+            pass
+        pass
 
         import transformers.trainer
         items_in_trainer = dir(transformers.trainer)
