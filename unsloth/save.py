@@ -1191,16 +1191,15 @@ def patch_saving_functions(model):
     pass
 
     try:
-        out = self.original_push_to_hub(**arguments)
+        self.original_push_to_hub(**arguments)
     except:
         del arguments["tags"]
-        out = self.original_push_to_hub(**arguments)
+        self.original_push_to_hub(**arguments)
     pass
 
     if hasattr(self, "config"):
         print("Saved model to https://huggingface.co/" + arguments["repo_id"])
     pass
-    return out
     '''
     exec(push_to_hub_text, globals())
 
