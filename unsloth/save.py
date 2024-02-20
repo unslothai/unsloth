@@ -231,7 +231,7 @@ def unsloth_save_model(
         _ = upload_to_huggingface(
             model, save_directory, token,
             "finetuned", "trl", file_location = None,
-            old_username = None,
+            old_username = None, private = private,
         )
 
         model.original_push_to_hub(
@@ -311,7 +311,7 @@ def unsloth_save_model(
              _ = upload_to_huggingface(
                 model, save_pretrained_settings["save_directory"], token,
                 "finetuned", "trl", file_location = None,
-                old_username = None,
+                old_username = None, private = private,
             )
         pass
 
@@ -468,7 +468,7 @@ def unsloth_save_model(
         _ = upload_to_huggingface(
             model, save_pretrained_settings["save_directory"], token,
             "finetuned", "trl", file_location = None,
-            old_username = username,
+            old_username = username, private = private,
         )
     pass
 
@@ -668,12 +668,15 @@ def save_to_gguf(
             first_conversion = "f16"
         pass
     pass
-    print(f"Unsloth: [1] Converting HF into {first_conversion} GGUF format. This will take 3 minutes...")
 
     n_cpus = psutil.cpu_count()*2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
     
     final_location = f"./{model_directory}-unsloth.{first_conversion.upper()}.gguf"
+
+    print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
+          f"The output location will be {final_location}\n"\
+          "This will take 3 minutes...")
 
     command = f"python llama.cpp/convert.py {model_directory} "\
         f"--outfile {final_location} --vocab-type hfft "\
@@ -689,7 +692,8 @@ def save_to_gguf(
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
         raise RuntimeError(
-            "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
+            f"Unsloth: Quantization failed for {final_location}\n"\
+            "You might have to compile llama.cpp yourself, then run this again.\n"\
             "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
             "You must run this in the same folder as you're saving your model.\n"\
             "git clone https://github.com/ggerganov/llama.cpp\n"\
@@ -848,7 +852,16 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
 
-def upload_to_huggingface(model, save_directory, token, method, extra = "", file_location = None, old_username = None):
+def upload_to_huggingface(
+    model,
+    save_directory,
+    token,
+    method,
+    extra = "",
+    file_location = None,
+    old_username = None,
+    private = None,
+):
     # Check for username
     username = ""
     save_directory = save_directory.lstrip("./")
@@ -935,6 +948,7 @@ def unsloth_save_pretrained_gguf(
     first_conversion     : str = "f16",
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
+    private              : Optional[bool] = None,
     is_main_process      : bool = True,
     state_dict           : Optional[dict] = None,
     save_function        : Callable = torch.save,
@@ -944,7 +958,7 @@ def unsloth_save_pretrained_gguf(
     save_peft_format     : bool = True,
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,   
+    maximum_memory_usage : float = 0.85,
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
@@ -999,7 +1013,7 @@ def unsloth_save_pretrained_gguf(
         python_install.wait()
     else:
         try:
-            new_save_directory = unsloth_save_model(**arguments)
+            new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         except:
             # Retry by recloning llama.cpp
@@ -1021,7 +1035,7 @@ def unsloth_save_pretrained_gguf(
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
             self, save_directory, token,
-            "GGUF converted", "gguf", file_location, old_username,
+            "GGUF converted", "gguf", file_location, old_username, private,
         )
         link = f"{username}/{new_save_directory.lstrip('/.')}" \
             if username not in new_save_directory else \
@@ -1099,7 +1113,7 @@ def unsloth_push_to_hub_gguf(
         python_install.wait()
     else:
         try:
-            new_save_directory = unsloth_save_model(**arguments)
+            new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         except:
             # Retry by recloning llama.cpp
@@ -1120,7 +1134,7 @@ def unsloth_push_to_hub_gguf(
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
         self, repo_id, token,
-        "GGUF converted", "gguf", file_location, old_username,
+        "GGUF converted", "gguf", file_location, old_username, private,
     )
     link = f"{username}/{new_save_directory.lstrip('/.')}" \
         if username not in new_save_directory else \
@@ -1186,7 +1200,7 @@ def patch_saving_functions(model):
         _ = upload_to_huggingface(
             self, arguments["repo_id"], arguments["token"],
             "finetuned", "trl", file_location = None,
-            old_username = None,
+            old_username = None, private = arguments["private"],
         )
     pass
 
