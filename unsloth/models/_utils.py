@@ -17,6 +17,7 @@ from typing import Union, Optional, List, Any, Callable
 import warnings
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer

@@ -55,6 +55,7 @@ from peft import PeftModelForCausalLM
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
+import re, os, inspect, math, sys
 
 
 def original_apply_qkv(self, X):
@@ -782,30 +783,33 @@ pass
 # https://github.com/huggingface/transformers/pull/27931
 # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
 class LlamaRotaryEmbedding(torch.nn.Module):
+    # Fixes https://github.com/huggingface/transformers/pull/28837
+    # https://github.com/microsoft/DeepSpeed/issues/4932
+    # The precision of RoPE buffers is not correct, so we cast to int64.
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
         super().__init__()
-
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
-        )
+        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
+        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
+        # in FP32. They are applied (multiplied) in FP32 as well.
         self.max_seq_len_cached = seq_len
-        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
+        )
+        t = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).float()
 
-        freqs = torch.outer(t, self.inv_freq)
+        freqs = torch.outer(t, inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
 
     def forward(self, x, seq_len=None):
@@ -823,7 +827,9 @@ pass
 
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
-
+    # Fixes https://github.com/huggingface/transformers/pull/28837
+    # https://github.com/microsoft/DeepSpeed/issues/4932
+    # The precision of RoPE buffers is not correct, so we cast to int64.
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None, scaling_factor=1.0):
         self.scaling_factor = scaling_factor
         super().__init__(dim, max_position_embeddings, base, device)
@@ -831,14 +837,17 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         self.max_seq_len_cached = seq_len
-        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
+        )
+        t = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).float()
         t = t / self.scaling_factor
 
-        freqs = torch.outer(t, self.inv_freq)
+        freqs = torch.outer(t, inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
 pass
 
@@ -953,6 +962,125 @@ class FastLlamaModel:
             layer.self_attn.apply_qkv = original_apply_qkv
             layer.self_attn.apply_o   = original_apply_o
         pass
+
+        # Patch Trainer
+        from transformers.trainer import Trainer
+        try:
+            if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+                inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
+                Trainer._original_training_loop = inner_training_loop
+            else:
+                inner_training_loop = Trainer._original_training_loop
+        except:
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        pass
+
+        import transformers.trainer
+        items_in_trainer = dir(transformers.trainer)
+        good_items = []
+        for item in items_in_trainer:
+            # TODO: Support Deepspeed
+            if item.startswith(("deepspeed", "xm", "met", "smp")): continue
+            if item in inner_training_loop: good_items.append(item)
+        pass
+        exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
+
+        start = re.search('logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
+        end = inner_training_loop.find("\n\n", start)
+        original_debug = inner_training_loop[start:end]
+        spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
+        front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
+
+        debug_info = """debug_info = \\
+        f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
+        f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
+        f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
+        f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
+        f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
+        logger.warning_once(debug_info)"""
+
+        debug_info = debug_info.split('\n')
+        debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
+        inner_training_loop = inner_training_loop.replace(original_debug, debug_info)
+
+        debug_info = """n_total_devices = total_train_batch_size // \\
+            args.gradient_accumulation_steps // self._train_batch_size
+        if n_total_devices > 2:
+            logger.warning_once(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        debug_info ="""
+        debug_info = debug_info.split('\n')
+        debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
+        inner_training_loop = inner_training_loop.replace("debug_info =", debug_info, 1)
+
+        front_spaces = re.match(r"[\t\s]{1,}", inner_training_loop).group(0)
+        inner_training_loop = re.sub(r"^" + front_spaces, "", inner_training_loop, flags = re.MULTILINE)
+        inner_training_loop = inner_training_loop.replace(
+            "train_dataloader = tpu_spmd_dataloader(train_dataloader)",
+            "raise RuntimeError('Unsloth: TPUs are not yet supported!')"
+        )
+        inner_training_loop = inner_training_loop.replace(
+            "self.accelerator.free_memory()",
+            "self.accelerator.free_memory()\n" + \
+            front_spaces + "if self.is_deepspeed_enabled:"\
+            "raise RuntimeError('Unsloth: Deepspeed is not yet supported!')\n", 1,
+        )
+
+        check_batches = """train_dataloader = self.get_train_dataloader()
+        ga  = args.gradient_accumulation_steps
+        bsz = self._train_batch_size
+        total_batches = bsz * ga * args.world_size
+        n_total_devices = total_batches // ga // bsz
+        if n_total_devices > 2:
+            logger.warning_once(
+                "Please consider a commercial license - Unsloth was designed for the GPU Poor.\\n"
+                "The OSS currently works on 4 GPUs - we're a 2 person team, so please help fund\\n"
+                "our development costs by supporting us through Ko-fi or buying a license! Thanks!",
+            )
+            divisor = n_total_devices / 2
+            bsz = self._train_batch_size = max(int(bsz / divisor), 1)
+            if total_batches // ga // bsz > 2:
+                divisor = n_total_devices / 2
+                ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
+        check_batches = check_batches.split('\n')
+        check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])
+        inner_training_loop = inner_training_loop.replace(
+            "train_dataloader = self.get_train_dataloader()",
+            check_batches, 1,
+        )
+        inner_training_loop = inner_training_loop.replace(
+            "_inner_training_loop",
+            "_fast_inner_training_loop", 1,
+        )
+        exec(inner_training_loop, globals())
+
+        Trainer._inner_training_loop = _fast_inner_training_loop
+        inner_training_loop = inner_training_loop.replace(
+            "is_torch_tpu_available()",
+            "False",
+        )
+        if "n_total_devices >" not in inner_training_loop:
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        pass
+        inner_training_loop = inner_training_loop.replace(
+            "is_sagemaker_mp_enabled()",
+            "False",
+        )
+        Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save max_seq_length
         model.max_seq_length = max_position_embeddings
@@ -1073,7 +1201,7 @@ class FastLlamaModel:
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora"   in signature
-
+        
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
@@ -1198,6 +1326,28 @@ class FastLlamaModel:
                 pass
             # Add revision to enable future fast inference paths
             model.peft_config[active_adapter].revision = f"unsloth"
+        pass
+
+        from transformers.trainer import Trainer 
+        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        pass
+
+        # Fix loftq issues
+        # loftq_config must not = None, but rather {}
+        all_configs = model.peft_config
+        for key, current_config in all_configs.items():
+            if hasattr(current_config, "loftq_config") and current_config.loftq_config is None:
+                new_args = current_config.__dict__
+                new_args["loftq_config"] = {}
+                current_config = current_config.__class__(**new_args)
+                all_configs[key] = current_config
+            pass
         pass
 
         # Do patching
