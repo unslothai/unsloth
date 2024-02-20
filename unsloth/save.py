@@ -841,7 +841,6 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
         from huggingface_hub import whoami
         try: 
             username = whoami(token = token)["name"]
-            print("Username = ", username, save_directory)
             if type(old_username) is str and username != old_username:
                 username = old_username
             pass
@@ -851,7 +850,6 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
     else:
         username = save_directory.split("/")[0]
     pass
-    print("Username = ", username, save_directory)
 
     from huggingface_hub import create_repo
     create_repo(
@@ -1178,8 +1176,8 @@ def patch_saving_functions(model):
             "finetuned", "trl", file_location = None,
             old_username = None,
         )
+        print("Saved to https://huggingface.co/" + arguments["repo_id"])
     pass
-    print("Saved to https://huggingface.co/" + arguments["repo_id"])
     return out
     '''
     exec(push_to_hub_text, globals())
