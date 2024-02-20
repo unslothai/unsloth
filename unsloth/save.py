@@ -140,17 +140,28 @@ def unsloth_save_model(
 
     # Push to hub
     use_temp_dir         : Optional[bool] = None,
-    commit_message       : Optional[str] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
     private              : Optional[bool] = None,
     create_pr            : bool = False,
     revision             : str = None,
-    commit_description   : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
     tags                 : List[str] = None,
 
     # Our functions
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
+    if commit_message is None: commit_message = ""
+    if "Unsloth" not in commit_message:
+        commit_message += " (Trained with Unsloth)"
+    commit_message = commit_message.lstrip()
+
+    if commit_description is None:
+        commit_description = "Upload model trained with Unsloth 2x faster"
+    elif "Unsloth 2x faster" not in commit_description:
+        commit_description += " (Trained with Unsloth 2x faster)"
+    pass
+
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"\
@@ -202,7 +213,7 @@ def unsloth_save_model(
     pass
     save_pretrained_settings["tags"] = tags
 
-    if (save_method == "lora") and push_to_hub:
+    if ((save_method == "lora") or (save_method == "merged_4bit")) and push_to_hub:
         if token is None:
             raise RuntimeError(
                 "Unsloth: Pushing to HF requires a token. Pass `token = 'hf_....'`\n"\
@@ -210,7 +221,20 @@ def unsloth_save_model(
             )
         pass
 
-        model.push_to_hub(
+        if save_method == "lora":
+            print("Unsloth: Saving LoRA adapters. Please wait...")
+        elif save_method == "merged_4bit":
+            print("Unsloth: Saving 4bit Bitsandbytes model. Please wait...")
+        pass
+
+        # Update model tag
+        _ = upload_to_huggingface(
+            model, save_directory, token,
+            "finetuned", "trl", file_location = None,
+            old_username = None, private = private,
+        )
+
+        model.original_push_to_hub(
             repo_id            = save_directory,
             use_temp_dir       = use_temp_dir,
             commit_message     = commit_message,
@@ -224,7 +248,7 @@ def unsloth_save_model(
             tags               = tags,
         )
         if tokenizer is not None:
-            tokenizer.push_to_hub(
+            tokenizer.original_push_to_hub(
                 repo_id            = save_directory,
                 use_temp_dir       = use_temp_dir,
                 commit_message     = commit_message,
@@ -238,31 +262,11 @@ def unsloth_save_model(
                 tags               = tags,
             )
         pass
+
+        if hasattr(model, "config"):
+            print(f"Saved {save_method} model to https://huggingface.co/" + save_directory)
+        pass
         return save_directory
-    pass
-
-    # Update model tag
-    username = ""
-    if push_to_hub:
-        username = upload_to_huggingface(
-            model, save_directory, token,
-            "finetuned", "trl", file_location = None,
-        )
-    pass
-
-    # If push_to_hub, we must remove the .../ part of a repo
-    if push_to_hub and "/" in save_directory:
-
-        # +1 solves absolute path issues
-        new_save_directory = save_directory[save_directory.find("/")+1:]
-
-        logger.warning_once(
-            f"Unsloth: You are pushing to hub, but you passed your HF username.\n"\
-            f"We shall truncate {save_directory} to {new_save_directory}"
-        )
-
-        save_pretrained_settings["save_directory"] = new_save_directory
-        save_directory = new_save_directory
     pass
 
     # Tokenizer has different saving arguments
@@ -292,12 +296,24 @@ def unsloth_save_model(
         # Do general saving
         # Edit save_pretrained_settings
         # [TODO] _create_repo has errors due to **kwargs getting accepted
-        for deletion in \
-            ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
+        # commit_description does not seem to work?
+        what_to_delete = ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",) \
+            if save_pretrained_settings["push_to_hub"] is False else \
+            ("use_temp_dir", "create_pr", "revision", "tags", "commit_description",)
+        for deletion in what_to_delete:
             del save_pretrained_settings[deletion]
         pass
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(["unsloth",])
+
+        # Update model tag
+        if push_to_hub:
+             _ = upload_to_huggingface(
+                model, save_pretrained_settings["save_directory"], token,
+                "finetuned", "trl", file_location = None,
+                old_username = None, private = private,
+            )
+        pass
 
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
@@ -310,8 +326,31 @@ def unsloth_save_model(
         if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
 
         model.save_pretrained(**save_pretrained_settings)
+
+        if push_to_hub and hasattr(model, "config"):
+            print("Saved to https://huggingface.co/" + save_pretrained_settings["save_directory"])
+        pass
+
         print(" Done.")
         return save_directory
+    pass
+
+    # If push_to_hub, we must remove the .../ part of a repo
+    username = None
+    if push_to_hub and "/" in save_directory:
+
+        # +1 solves absolute path issues
+        username = save_directory[:save_directory.find("/")]
+        new_save_directory = save_directory[save_directory.find("/")+1:]
+
+        logger.warning_once(
+            f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
+            f"We shall truncate {save_directory} to {new_save_directory}"
+        )
+
+        save_pretrained_settings["save_directory"] = new_save_directory
+        tokenizer_save_settings ["save_directory"] = new_save_directory
+        save_directory = new_save_directory
     pass
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
@@ -339,7 +378,7 @@ def unsloth_save_model(
         logger.warning_once(
             f"Unsloth: You have {n_cpus} CPUs. Using `safe_serialization` is 10x slower.\n"\
             f"We shall switch to Pytorch saving, which will take 3 minutes and not 30 minutes.\n"\
-            f"To force `safe_serialization`, set it to None instead.",
+            f"To force `safe_serialization`, set it to `None` instead.",
         )
         safe_serialization = False
         save_function = fast_save_pickle
@@ -413,12 +452,25 @@ def unsloth_save_model(
     # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
     save_pretrained_settings["state_dict"] = state_dict
-    for deletion in \
-        ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",):
+    
+    # commit_description does not seem to work?
+    what_to_delete = ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",) \
+        if not push_to_hub else \
+        ("use_temp_dir", "create_pr", "revision", "tags", "commit_description",)
+    for deletion in what_to_delete:
         del save_pretrained_settings[deletion]
     pass
     if hasattr(model, "add_model_tags"):
         model.add_model_tags(["unsloth",])
+
+    # Update model tag
+    if push_to_hub:
+        _ = upload_to_huggingface(
+            model, save_pretrained_settings["save_directory"], token,
+            "finetuned", "trl", file_location = None,
+            old_username = username, private = private,
+        )
+    pass
 
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
@@ -452,9 +504,8 @@ def unsloth_save_model(
     model.config = old_config
     print("Done.")
 
-    # Print location
-    if push_to_hub:
-        print(f"Saved to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
+    if push_to_hub and hasattr(model, "config"):
+        print(f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
     pass
 
     save_pretrained_settings["state_dict"] = None
@@ -478,7 +529,7 @@ def unsloth_save_model(
     for _ in range(3):
         torch.cuda.empty_cache()
         gc.collect()
-    return save_directory
+    return save_directory, username
 pass
 
 
@@ -494,7 +545,7 @@ def install_llama_cpp_make_non_blocking():
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
     os.system("make clean -C llama.cpp")
-    full_command = ["make", "all", "-j", str(n_jobs), "-C", "llama.cpp"]
+    full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
     run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
@@ -507,10 +558,44 @@ def install_python_non_blocking(packages = []):
 pass
 
 
+def install_llama_cpp_old(version = -10):
+    # Download the 10th latest release since the latest might be broken!
+    # FALLBACK mechanism
+    releases = subprocess.check_output(["git", "ls-remote", "--tags", "https://github.com/ggerganov/llama.cpp.git"])
+    releases = releases.decode("utf-8").replace("\t", " ").split("\n")
+    for i, x in enumerate(releases):
+        if "refs/tags/b" not in x: break
+    releases = releases[:i]
+    latest = releases[-1]
+    version = releases[version].split(" ")[0]
+
+    # Clone a specific commit
+    commands = [
+        "git clone https://github.com/ggerganov/llama.cpp",
+        f"cd llama.cpp && git reset --hard {version} && git clean -df && "\
+        f"make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
+        "pip install gguf protobuf",
+    ]
+    for command in commands:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+            for line in sp.stdout:
+                print(line.decode("utf-8"), flush = True, end = "")
+        pass
+    pass
+    # Check if successful
+    if not os.path.exists("llama.cpp/quantize"):
+        raise RuntimeError(
+            "Unsloth: llama.cpp GGUF seems to be too buggy to install.\n"\
+            "File a report to llama.cpp's main repo since this is not an Unsloth issue."
+        )
+    pass
+pass
+
+
 def install_llama_cpp_blocking():
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j {psutil.cpu_count()*2}",
+        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
@@ -563,10 +648,13 @@ def save_to_gguf(
 
     print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
     if _run_installer is not None:
-        _run_installer.wait()
+        error = _run_installer.wait()
     else:
+        error = 0
         install_llama_cpp_blocking()
     pass
+    # Check if successful. If not install 10th latest release
+    if error != 0 or not os.path.exists("llama.cpp/quantize"): install_llama_cpp_old(-10)
 
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
@@ -580,15 +668,18 @@ def save_to_gguf(
             first_conversion = "f16"
         pass
     pass
-    print(f"Unsloth: [1] Converting HF into {first_conversion} GGUF format. This will take 3 minutes...")
 
     n_cpus = psutil.cpu_count()*2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
     
     final_location = f"./{model_directory}-unsloth.{first_conversion.upper()}.gguf"
 
+    print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
+          f"The output location will be {final_location}\n"\
+          "This will take 3 minutes...")
+
     command = f"python llama.cpp/convert.py {model_directory} "\
-        f"--outfile {final_location} "\
+        f"--outfile {final_location} --vocab-type hfft "\
         f"--outtype {first_conversion} --concurrency {n_cpus}"
 
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
@@ -601,7 +692,8 @@ def save_to_gguf(
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
         raise RuntimeError(
-            "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
+            f"Unsloth: Quantization failed for {final_location}\n"\
+            "You might have to compile llama.cpp yourself, then run this again.\n"\
             "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
             "You must run this in the same folder as you're saving your model.\n"\
             "git clone https://github.com/ggerganov/llama.cpp\n"\
@@ -662,7 +754,7 @@ def unsloth_save_pretrained_merged(
     save_peft_format     : bool = True,
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,   
+    maximum_memory_usage : float = 0.85,
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
@@ -695,14 +787,14 @@ def unsloth_push_to_hub_merged(
     tokenizer            = None,
     save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
     use_temp_dir         : Optional[bool] = None,
-    commit_message       : Optional[str] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
     private              : Optional[bool] = None,
     token                : Union[bool, str, None] = None,
     max_shard_size       : Union[int, str, None] = "5GB",
     create_pr            : bool = False,
     safe_serialization   : bool = True,
     revision             : str = None,
-    commit_description   : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
     tags                 : Optional[List[str]] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.85,
@@ -760,15 +852,27 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
 
-def upload_to_huggingface(model, save_directory, token, method, extra = "", file_location = None):
+def upload_to_huggingface(
+    model,
+    save_directory,
+    token,
+    method,
+    extra = "",
+    file_location = None,
+    old_username = None,
+    private = None,
+):
     # Check for username
     username = ""
     save_directory = save_directory.lstrip("./")
     if "/" not in save_directory:
         from huggingface_hub import whoami
         try: 
-            username = whoami()['name']
-            save_directory = f"{save_directory}/{username}"
+            username = whoami(token = token)["name"]
+            if type(old_username) is str and username != old_username:
+                username = old_username
+            pass
+            save_directory = f"{username}/{save_directory}"
         except:
             raise RuntimeError(f"Unsloth: {save_directory} is not a Huggingface directory.")
     else:
@@ -776,24 +880,28 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
     pass
 
     from huggingface_hub import create_repo
-    create_repo(
-        repo_id   = save_directory,
-        token     = token,
-        repo_type = "model",
-        exist_ok  = True,
-    )
+    try:
+        create_repo(
+            repo_id   = save_directory,
+            token     = token,
+            repo_type = "model",
+            exist_ok  = False,
+            private   = private,
+        ) 
 
-    # Create model card
-    from huggingface_hub import ModelCard
-    content = MODEL_CARD.format(
-        username   = username,
-        base_model = model.config._name_or_path,
-        model_type = model.config.model_type,
-        method     = "",
-        extra      = extra,
-    )
-    card = ModelCard(content)
-    card.push_to_hub(save_directory, token = token)
+        # Create model card
+        from huggingface_hub import ModelCard
+        content = MODEL_CARD.format(
+            username   = username,
+            base_model = model.config._name_or_path,
+            model_type = model.config.model_type,
+            method     = "",
+            extra      = extra,
+        )
+        card = ModelCard(content)
+        card.push_to_hub(save_directory, token = token)
+    except:
+        pass
 
     if file_location is not None:
         # Now upload file
@@ -811,6 +919,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             path_in_repo    = uploaded_location,
             repo_id         = save_directory,
             repo_type       = "model",
+            commit_message  = "(Trained with Unsloth)",
         )
 
         # We also upload a config.json file
@@ -823,6 +932,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             path_in_repo    = "config.json",
             repo_id         = save_directory,
             repo_type       = "model",
+            commit_message  = "(Trained with Unsloth)",
         )
         os.remove("_temporary_unsloth_config.json")
     pass
@@ -838,6 +948,7 @@ def unsloth_save_pretrained_gguf(
     first_conversion     : str = "f16",
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
+    private              : Optional[bool] = None,
     is_main_process      : bool = True,
     state_dict           : Optional[dict] = None,
     save_function        : Callable = torch.save,
@@ -847,7 +958,7 @@ def unsloth_save_pretrained_gguf(
     save_peft_format     : bool = True,
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,   
+    maximum_memory_usage : float = 0.85,
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
@@ -898,11 +1009,11 @@ def unsloth_save_pretrained_gguf(
         python_install = install_python_non_blocking(["gguf", "protobuf"])
         git_clone.wait()
         makefile  = install_llama_cpp_make_non_blocking()
-        new_save_directory = unsloth_save_model(**arguments)
+        new_save_directory, old_username = unsloth_save_model(**arguments)
         python_install.wait()
     else:
         try:
-            new_save_directory = unsloth_save_model(**arguments)
+            new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         except:
             # Retry by recloning llama.cpp
@@ -910,7 +1021,7 @@ def unsloth_save_pretrained_gguf(
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
             makefile  = install_llama_cpp_make_non_blocking()
-            new_save_directory = unsloth_save_model(**arguments)
+            new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
     pass
@@ -924,12 +1035,12 @@ def unsloth_save_pretrained_gguf(
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
             self, save_directory, token,
-            "GGUF converted", "gguf", file_location,
+            "GGUF converted", "gguf", file_location, old_username, private,
         )
         link = f"{username}/{new_save_directory.lstrip('/.')}" \
             if username not in new_save_directory else \
             new_save_directory.lstrip('/.')
-        print(f"Saved to https://huggingface.co/{link}")
+        print(f"Saved GGUF to https://huggingface.co/{link}")
     pass
 pass
 
@@ -941,14 +1052,14 @@ def unsloth_push_to_hub_gguf(
     quantization_method  : str = "fast_quantized",
     first_conversion     : str = "f16",
     use_temp_dir         : Optional[bool] = None,
-    commit_message       : Optional[str] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
     private              : Optional[bool] = None,
     token                : Union[bool, str, None] = None,
     max_shard_size       : Union[int, str, None] = "5GB",
     create_pr            : bool = False,
     safe_serialization   : bool = True,
     revision             : str = None,
-    commit_description   : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
     tags                 : Optional[List[str]] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.85,
@@ -998,19 +1109,19 @@ def unsloth_push_to_hub_gguf(
         python_install = install_python_non_blocking(["gguf", "protobuf"])
         git_clone.wait()
         makefile  = install_llama_cpp_make_non_blocking()
-        new_save_directory = unsloth_save_model(**arguments)
+        new_save_directory, old_username = unsloth_save_model(**arguments)
         python_install.wait()
     else:
         try:
-            new_save_directory = unsloth_save_model(**arguments)
+            new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         except:
             # Retry by recloning llama.cpp
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
-            makefile  = install_llama_cpp_make_non_blocking()
-            new_save_directory = unsloth_save_model(**arguments)
+            makefile = install_llama_cpp_make_non_blocking()
+            new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
     pass
@@ -1023,12 +1134,12 @@ def unsloth_push_to_hub_gguf(
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
         self, repo_id, token,
-        "GGUF converted", "gguf", file_location,
+        "GGUF converted", "gguf", file_location, old_username, private,
     )
     link = f"{username}/{new_save_directory.lstrip('/.')}" \
         if username not in new_save_directory else \
         new_save_directory.lstrip('/.')
-    print(f"Saved to https://huggingface.co/{link}")
+    print(f"Saved GGUF to https://huggingface.co/{link}")
 pass
 
 
@@ -1038,31 +1149,17 @@ def patch_saving_functions(model):
     import types
     from typing import Callable, Optional, Union, List
 
-    if hasattr(model, "_original_push_to_hub"): return
-
-    # First check if this has already been called, and revert it
-    original_model = model
-    while True:
-        if hasattr(original_model, "_original_push_to_hub"):
-            original_model.push_to_hub = original_model._original_push_to_hub
-            del original_model._original_push_to_hub
-            if hasattr(original_model, "push_to_hub_merged"):     del original_model.push_to_hub_merged
-            if hasattr(original_model, "save_pretrained_merged"): del original_model.save_pretrained_merged
-            if hasattr(original_model, "push_to_hub_gguf"):       del original_model.push_to_hub_gguf
-            if hasattr(original_model, "save_pretrained_gguf"):   del original_model.save_pretrained_gguf
-        pass
-
-        if hasattr(original_model, "model"): original_model = original_model.model
-        else: break
+    # And now re add our saving methods!
+    if model.push_to_hub.__name__ == "unsloth_push_to_hub":
+        original_push_to_hub = model.original_push_to_hub
+    else:
+        original_push_to_hub = model.push_to_hub
     pass
 
-    # And now re add our saving methods!
-    original_push_to_hub = model.push_to_hub
     signature = str(inspect.signature(original_push_to_hub)).replace("NoneType", "None")
     signature = signature[1:]
     signature = re.sub("<function save at .+?>", "torch.save", signature)
     docs = original_push_to_hub.__doc__.encode("utf-8").decode("utf-8")
-    model._original_push_to_hub = original_push_to_hub
 
     push_to_hub_text = f'''def unsloth_push_to_hub(self, {signature}:
     """
@@ -1077,11 +1174,45 @@ def patch_saving_functions(model):
         arguments["tags"] = ["unsloth",]
     elif hasattr(self, "add_model_tags"):
         self.add_model_tags(["unsloth",])
+
+    if "commit_message" in arguments:
+        commit_message = arguments["commit_message"]
+        if commit_message is not None:
+            if not commit_message.endswith(" "): commit_message += " "
+            if "Unsloth" not in commit_message:
+                commit_message += "(Trained with Unsloth)"
+        else:
+            commit_message = "Upload model trained with Unsloth"
+        arguments["commit_message"] = commit_message
+
+    if "commit_description" in arguments:
+        commit_description = arguments["commit_description"]
+        if commit_description is not None:
+            if not commit_description.endswith(" "): commit_description += " "
+            if "Unsloth" not in commit_description:
+                commit_description += "(Trained with Unsloth 2x faster)"
+        else:
+            commit_description = "Upload model trained with Unsloth 2x faster"
+        arguments["commit_description"] = commit_description
+
+    # Update model tag
+    if hasattr(self, "config"):
+        _ = upload_to_huggingface(
+            self, arguments["repo_id"], arguments["token"],
+            "finetuned", "trl", file_location = None,
+            old_username = None, private = arguments["private"],
+        )
+    pass
+
     try:
-        return self._original_push_to_hub(**arguments)
+        self.original_push_to_hub(**arguments)
     except:
         del arguments["tags"]
-        return self._original_push_to_hub(**arguments)
+        self.original_push_to_hub(**arguments)
+    pass
+
+    if hasattr(self, "config"):
+        print("Saved model to https://huggingface.co/" + arguments["repo_id"])
     pass
     '''
     exec(push_to_hub_text, globals())
@@ -1089,12 +1220,12 @@ def patch_saving_functions(model):
     original_model = model
     while True:
 
-        if not hasattr(original_model, "_original_push_to_hub"):
-            original_model._original_push_to_hub = original_model.push_to_hub
+        if original_model.push_to_hub.__name__ != "unsloth_push_to_hub":
+            original_model.original_push_to_hub = original_model.push_to_hub
             original_model.push_to_hub = types.MethodType(unsloth_push_to_hub, original_model)
-
             if hasattr(original_model, "add_model_tags"):
                 original_model.add_model_tags(["unsloth",])
+            pass
         pass
 
         if hasattr(original_model, "model"): original_model = original_model.model

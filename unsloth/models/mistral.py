@@ -368,6 +368,140 @@ class FastMistralModel(FastLlamaModel):
             layer.self_attn.apply_o   = original_apply_o
         pass
 
+        # Patch Trainer
+        from transformers.trainer import Trainer
+        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+            try:
+                inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
+            except:
+                raise RuntimeError(
+                    "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                    "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                    "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                    "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                )
+            pass
+        pass
+
+        # Patch Trainer
+        from transformers.trainer import Trainer
+        try:
+            if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+                inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
+                Trainer._original_training_loop = inner_training_loop
+            else:
+                inner_training_loop = Trainer._original_training_loop
+        except:
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        pass
+
+        import transformers.trainer
+        items_in_trainer = dir(transformers.trainer)
+        good_items = []
+        for item in items_in_trainer:
+            # TODO: Support Deepspeed
+            if item.startswith(("deepspeed", "xm", "met", "smp")): continue
+            if item in inner_training_loop: good_items.append(item)
+        pass
+        exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
+
+        start = re.search('logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
+        end = inner_training_loop.find("\n\n", start)
+        original_debug = inner_training_loop[start:end]
+        spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
+        front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
+
+        debug_info = """debug_info = \\
+        f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
+        f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
+        f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
+        f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
+        f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
+        logger.warning_once(debug_info)"""
+
+        debug_info = debug_info.split('\n')
+        debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
+        inner_training_loop = inner_training_loop.replace(original_debug, debug_info)
+
+        debug_info = """n_total_devices = total_train_batch_size // \\
+            args.gradient_accumulation_steps // self._train_batch_size
+        if n_total_devices > 2:
+            logger.warning_once(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        debug_info ="""
+        debug_info = debug_info.split('\n')
+        debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
+        inner_training_loop = inner_training_loop.replace("debug_info =", debug_info, 1)
+
+        front_spaces = re.match(r"[\t\s]{1,}", inner_training_loop).group(0)
+        inner_training_loop = re.sub(r"^" + front_spaces, "", inner_training_loop, flags = re.MULTILINE)
+        inner_training_loop = inner_training_loop.replace(
+            "train_dataloader = tpu_spmd_dataloader(train_dataloader)",
+            "raise RuntimeError('Unsloth: TPUs are not yet supported!')"
+        )
+        inner_training_loop = inner_training_loop.replace(
+            "self.accelerator.free_memory()",
+            "self.accelerator.free_memory()\n" + \
+            front_spaces + "if self.is_deepspeed_enabled:"\
+            "raise RuntimeError('Unsloth: Deepspeed is not yet supported!')\n", 1,
+        )
+
+        check_batches = """train_dataloader = self.get_train_dataloader()
+        ga  = args.gradient_accumulation_steps
+        bsz = self._train_batch_size
+        total_batches = bsz * ga * args.world_size
+        n_total_devices = total_batches // ga // bsz
+        if n_total_devices > 2:
+            logger.warning_once(
+                "Please consider a commercial license - Unsloth was designed for the GPU Poor.\\n"
+                "The OSS currently works on 4 GPUs - we're a 2 person team, so please help fund\\n"
+                "our development costs by supporting us through Ko-fi or buying a license! Thanks!",
+            )
+            divisor = n_total_devices / 2
+            bsz = self._train_batch_size = max(int(bsz / divisor), 1)
+            if total_batches // ga // bsz > 2:
+                divisor = n_total_devices / 2
+                ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
+        check_batches = check_batches.split('\n')
+        check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])
+        inner_training_loop = inner_training_loop.replace(
+            "train_dataloader = self.get_train_dataloader()",
+            check_batches, 1,
+        )
+        inner_training_loop = inner_training_loop.replace(
+            "_inner_training_loop",
+            "_fast_inner_training_loop", 1,
+        )
+        exec(inner_training_loop, globals())
+
+        Trainer._inner_training_loop = _fast_inner_training_loop
+        inner_training_loop = inner_training_loop.replace(
+            "is_torch_tpu_available()",
+            "False",
+        )
+        if "n_total_devices >" not in inner_training_loop:
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        pass
+        inner_training_loop = inner_training_loop.replace(
+            "is_sagemaker_mp_enabled()",
+            "False",
+        )
+        Trainer._inner_training_loop = _fast_inner_training_loop
+
         # Save max_seq_length
         max_position_embeddings = max(max_seq_length, model.config.max_position_embeddings)
         model.max_seq_length = max_position_embeddings

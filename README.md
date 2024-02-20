@@ -30,7 +30,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 | **Mistral 7b** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster\* | 62% less |
 
 - This [conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for ShareGPT ChatML / Vicuna templates.
-- Our [raw text notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is useful for text completion.
+- This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for raw text. This [DPO notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) replicates Zephyr.
 - Colab provides a free GPU sometimes. Kaggle has 30 hrs free per week on a 12 hr running cap.
 - \* Kaggle has 2x T4s, but we use 1. Due to overhead, 1x T4 is 5x faster. Use Colab as Kaggle takes 10 mins to install.
 
@@ -86,9 +86,12 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 ### Conda Installation
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
 ```bash
-conda install pytorch torchvision torchaudio pytorch-cuda=<12.1/11.8> -c pytorch -c nvidia
+conda create --name unsloth_env python=3.10
+conda activate unsloth_env
 
-conda install xformers -c xformers -y
+conda install pytorch cudatoolkit torchvision torchaudio pytorch-cuda=<12.1/11.8> -c pytorch -c nvidia
+
+conda install xformers -c xformers
 
 pip install bitsandbytes
 
@@ -141,6 +144,7 @@ pip install --upgrade pip
 ```
 
 ## 📜 Documentation
+- Go to our [Wiki page](https://github.com/unslothai/unsloth/wiki) for saving to GGUF, checkpointing, evaluation and more!
 - We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
 - We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 
@@ -162,7 +166,8 @@ fourbit_models = [
     "unsloth/llama-2-13b-bnb-4bit",
     "unsloth/codellama-34b-bnb-4bit",
     "unsloth/tinyllama-bnb-4bit",
-]
+] # Go to https://huggingface.co/unsloth for more 4-bit models!
+
 # Load Llama model
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/mistral-7b-bnb-4bit", # Supports Llama, Mistral - replace this!
@@ -183,6 +188,8 @@ model = FastLanguageModel.get_peft_model(
     use_gradient_checkpointing = True,
     random_state = 3407,
     max_seq_length = max_seq_length,
+    use_rslora = False,  # We support rank stabilized LoRA
+    loftq_config = None, # And LoftQ
 )
 
 trainer = SFTTrainer(
@@ -205,6 +212,12 @@ trainer = SFTTrainer(
     ),
 )
 trainer.train()
+
+# Go to https://github.com/unslothai/unsloth/wiki for advanced tips like
+# (1) Saving to GGUF / merging to 16bit for vLLM
+# (2) Continued training from a saved LoRA adapter
+# (3) Adding an evaluation loop / OOMs
+# (4) Cutomized chat templates
 ```
 
 <a name="DPO"></a>
