@@ -174,6 +174,7 @@ def unsloth_save_model(
     pass
 
     save_pretrained_settings = dict(locals())
+    print(save_pretrained_settings)
     for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
         del save_pretrained_settings[deletion]
     pass
@@ -366,7 +367,7 @@ def unsloth_save_model(
         logger.warning_once(
             f"Unsloth: You have {n_cpus} CPUs. Using `safe_serialization` is 10x slower.\n"\
             f"We shall switch to Pytorch saving, which will take 3 minutes and not 30 minutes.\n"\
-            f"To force `safe_serialization`, set it to None instead.",
+            f"To force `safe_serialization`, set it to `None` instead.",
         )
         safe_serialization = False
         save_function = fast_save_pickle
@@ -490,10 +491,6 @@ def unsloth_save_model(
             "finetuned", "trl", file_location = None,
             old_username = username,
         )
-    pass
-
-    # Print location
-    if push_to_hub:
         print(f"Saved to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
     pass
 
@@ -844,7 +841,8 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
     if "/" not in save_directory:
         from huggingface_hub import whoami
         try: 
-            username = whoami(token = token)['name']
+            username = whoami(token = token)["name"]
+            print("Username = ", username, save_directory)
             if type(old_username) is str and username != old_username:
                 username = old_username
             pass
@@ -854,6 +852,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
     else:
         username = save_directory.split("/")[0]
     pass
+    print("Username = ", username, save_directory)
 
     from huggingface_hub import create_repo
     create_repo(
@@ -1146,6 +1145,7 @@ def patch_saving_functions(model):
     elif hasattr(self, "add_model_tags"):
         self.add_model_tags(["unsloth",])
 
+    print(arguments)
     if "commit_message" in arguments:
         commit_message = arguments["commit_message"]
         if commit_message is not None:
