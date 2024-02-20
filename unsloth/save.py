@@ -174,7 +174,6 @@ def unsloth_save_model(
     pass
 
     save_pretrained_settings = dict(locals())
-    print(save_pretrained_settings)
     for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
         del save_pretrained_settings[deletion]
     pass
