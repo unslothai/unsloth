@@ -221,6 +221,19 @@ def unsloth_save_model(
             )
         pass
 
+        if save_method == "lora":
+            print("Unsloth: Saving LoRA adapters. Please wait...")
+        elif save_method == "merged_4bit":
+            print("Unsloth: Saving 4bit Bitsandbytes model. Please wait...")
+        pass
+
+        # Update model tag
+        _ = upload_to_huggingface(
+            model, save_directory, token,
+            "finetuned", "trl", file_location = None,
+            old_username = None,
+        )
+
         model.push_to_hub(
             repo_id            = save_directory,
             use_temp_dir       = use_temp_dir,
@@ -250,13 +263,9 @@ def unsloth_save_model(
             )
         pass
 
-        # Update model tag
-        _ = upload_to_huggingface(
-            model, save_directory, token,
-            "finetuned", "trl", file_location = None,
-            old_username = None,
-        )
-        print("Saved to https://huggingface.co/" + save_directory)
+        if hasattr(model, "config"):
+            print(f"Saved {save_method} model to https://huggingface.co/" + save_directory)
+        pass
         return save_directory
     pass
 
@@ -297,6 +306,15 @@ def unsloth_save_model(
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(["unsloth",])
 
+        # Update model tag
+        if push_to_hub:
+             _ = upload_to_huggingface(
+                model, save_pretrained_settings["save_directory"], token,
+                "finetuned", "trl", file_location = None,
+                old_username = None,
+            )
+        pass
+
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
             tokenizer.save_pretrained(**tokenizer_save_settings)
@@ -309,13 +327,7 @@ def unsloth_save_model(
 
         model.save_pretrained(**save_pretrained_settings)
 
-        # Update model tag
         if push_to_hub and hasattr(model, "config"):
-            _ = upload_to_huggingface(
-                model, save_pretrained_settings["save_directory"], token,
-                "finetuned", "trl", file_location = None,
-                old_username = None,
-            )
             print("Saved to https://huggingface.co/" + save_pretrained_settings["save_directory"])
         pass
 
@@ -451,6 +463,15 @@ def unsloth_save_model(
     if hasattr(model, "add_model_tags"):
         model.add_model_tags(["unsloth",])
 
+    # Update model tag
+    if push_to_hub:
+        _ = upload_to_huggingface(
+            model, save_pretrained_settings["save_directory"], token,
+            "finetuned", "trl", file_location = None,
+            old_username = username,
+        )
+    pass
+
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
         tokenizer.save_pretrained(**tokenizer_save_settings)
@@ -483,14 +504,8 @@ def unsloth_save_model(
     model.config = old_config
     print("Done.")
 
-    # Update model tag
     if push_to_hub and hasattr(model, "config"):
-        _ = upload_to_huggingface(
-            model, save_pretrained_settings["save_directory"], token,
-            "finetuned", "trl", file_location = None,
-            old_username = username,
-        )
-        print(f"Saved to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
+        print(f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
     pass
 
     save_pretrained_settings["state_dict"] = None
@@ -859,7 +874,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             repo_type = "model",
             exist_ok  = False,
             private   = private,
-        )
+        ) 
 
         # Create model card
         from huggingface_hub import ModelCard
@@ -1011,7 +1026,7 @@ def unsloth_save_pretrained_gguf(
         link = f"{username}/{new_save_directory.lstrip('/.')}" \
             if username not in new_save_directory else \
             new_save_directory.lstrip('/.')
-        print(f"Saved to https://huggingface.co/{link}")
+        print(f"Saved GGUF to https://huggingface.co/{link}")
     pass
 pass
 
@@ -1110,7 +1125,7 @@ def unsloth_push_to_hub_gguf(
     link = f"{username}/{new_save_directory.lstrip('/.')}" \
         if username not in new_save_directory else \
         new_save_directory.lstrip('/.')
-    print(f"Saved to https://huggingface.co/{link}")
+    print(f"Saved GGUF to https://huggingface.co/{link}")
 pass
 
 
@@ -1166,13 +1181,6 @@ def patch_saving_functions(model):
             commit_description = "Upload model trained with Unsloth 2x faster"
         arguments["commit_description"] = commit_description
 
-    try:
-        out = self.original_push_to_hub(**arguments)
-    except:
-        del arguments["tags"]
-        out = self.original_push_to_hub(**arguments)
-    pass
-
     # Update model tag
     if hasattr(self, "config"):
         _ = upload_to_huggingface(
@@ -1180,7 +1188,17 @@ def patch_saving_functions(model):
             "finetuned", "trl", file_location = None,
             old_username = None,
         )
-        print("Saved to https://huggingface.co/" + arguments["repo_id"])
+    pass
+
+    try:
+        out = self.original_push_to_hub(**arguments)
+    except:
+        del arguments["tags"]
+        out = self.original_push_to_hub(**arguments)
+    pass
+
+    if hasattr(self, "config"):
+        print("Saved model to https://huggingface.co/" + arguments["repo_id"])
     pass
     return out
     '''
