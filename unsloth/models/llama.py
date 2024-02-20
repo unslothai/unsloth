@@ -1049,7 +1049,7 @@ class FastLlamaModel:
                     divisor = n_total_devices / 2
                     ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
             check_batches = check_batches.split('\n')
-            check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])
+            check_batches = "\n".join([check_batches[0]] + [front_spaces + x[16:] for x in check_batches[1:]])
             inner_training_loop = inner_training_loop.replace(
                 "train_dataloader = self.get_train_dataloader()",
                 check_batches, 1,
