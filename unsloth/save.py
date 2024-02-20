@@ -662,7 +662,7 @@ def save_to_gguf(
     final_location = f"./{model_directory}-unsloth.{first_conversion.upper()}.gguf"
 
     command = f"python llama.cpp/convert.py {model_directory} "\
-        f"--outfile {final_location} "\
+        f"--outfile {final_location} --vocab-type hfft "\
         f"--outtype {first_conversion} --concurrency {n_cpus}"
 
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
@@ -1144,12 +1144,13 @@ def patch_saving_functions(model):
         arguments["tags"] = ["unsloth",]
     elif hasattr(self, "add_model_tags"):
         self.add_model_tags(["unsloth",])
-    
+
     if "commit_message" in arguments:
         commit_message = arguments["commit_message"]
         if commit_message is not None:
             if not commit_message.endswith(" "): commit_message += " "
-            commit_message += "(Trained with Unsloth)"
+            if "Unsloth" not in commit_message:
+                commit_message += "(Trained with Unsloth)"
         else:
             commit_message = "Upload model trained with Unsloth"
         arguments["commit_message"] = commit_message
@@ -1158,7 +1159,8 @@ def patch_saving_functions(model):
         commit_description = arguments["commit_description"]
         if commit_description is not None:
             if not commit_description.endswith(" "): commit_description += " "
-            commit_description += "(Trained with Unsloth 2x faster)"
+            if "Unsloth" not in commit_description:
+                commit_description += "(Trained with Unsloth 2x faster)"
         else:
             commit_description = "Upload model trained with Unsloth 2x faster"
         arguments["commit_description"] = commit_description
@@ -1171,11 +1173,13 @@ def patch_saving_functions(model):
     pass
 
     # Update model tag
-    _ = upload_to_huggingface(
-        self, arguments["repo_id"], arguments["token"],
-        "finetuned", "trl", file_location = None,
-        old_username = None,
-    )
+    if hasattr(self, "config"):
+        _ = upload_to_huggingface(
+            self, arguments["repo_id"], arguments["token"],
+            "finetuned", "trl", file_location = None,
+            old_username = None,
+        )
+    pass
     print("Saved to https://huggingface.co/" + arguments["repo_id"])
     return out
     '''
