@@ -62,6 +62,7 @@ from triton.common.build import libcuda_dirs
 import os
 import re
 import numpy as np
+import subprocess
 
 try:
     cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
