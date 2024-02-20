@@ -234,7 +234,7 @@ def unsloth_save_model(
             old_username = None,
         )
 
-        model.push_to_hub(
+        model.original_push_to_hub(
             repo_id            = save_directory,
             use_temp_dir       = use_temp_dir,
             commit_message     = commit_message,
@@ -248,7 +248,7 @@ def unsloth_save_model(
             tags               = tags,
         )
         if tokenizer is not None:
-            tokenizer.push_to_hub(
+            tokenizer.original_push_to_hub(
                 repo_id            = save_directory,
                 use_temp_dir       = use_temp_dir,
                 commit_message     = commit_message,
