@@ -846,7 +846,7 @@ def upload_to_huggingface(model, save_directory, token, method, extra = "", file
             if type(old_username) is str and username != old_username:
                 username = old_username
             pass
-            save_directory = f"{save_directory}/{username}"
+            save_directory = f"{username}/{save_directory}"
         except:
             raise RuntimeError(f"Unsloth: {save_directory} is not a Huggingface directory.")
     else:
@@ -1144,8 +1144,7 @@ def patch_saving_functions(model):
         arguments["tags"] = ["unsloth",]
     elif hasattr(self, "add_model_tags"):
         self.add_model_tags(["unsloth",])
-
-    print(arguments)
+    
     if "commit_message" in arguments:
         commit_message = arguments["commit_message"]
         if commit_message is not None:
