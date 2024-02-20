@@ -310,7 +310,7 @@ def unsloth_save_model(
         model.save_pretrained(**save_pretrained_settings)
 
         # Update model tag
-        if push_to_hub:
+        if push_to_hub and hasattr(model, "config"):
             _ = upload_to_huggingface(
                 model, save_pretrained_settings["save_directory"], token,
                 "finetuned", "trl", file_location = None,
@@ -484,7 +484,7 @@ def unsloth_save_model(
     print("Done.")
 
     # Update model tag
-    if push_to_hub:
+    if push_to_hub and hasattr(model, "config"):
         _ = upload_to_huggingface(
             model, save_pretrained_settings["save_directory"], token,
             "finetuned", "trl", file_location = None,
