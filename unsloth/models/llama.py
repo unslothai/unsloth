@@ -207,7 +207,7 @@ def LlamaAttention_fast_forward_inference(
 pass
 
 
-def fast_mlp_inference(self, X):
+def fast_swiglu_inference(self, X):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
@@ -390,7 +390,7 @@ def LlamaDecoderLayer_fast_forward(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
-        hidden_states = fast_mlp_inference(self.mlp, hidden_states)
+        hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
         hidden_states += residual
     else:
         residual = hidden_states
@@ -506,6 +506,11 @@ def LlamaModel_fast_forward(
     # embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
+
+    # Mormalized from Gemma
+    if self.config.model_type == "gemma":
+        inputs_embeds *= math_sqrt(self.config.hidden_size)
+    pass
 
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
@@ -646,7 +651,7 @@ def LlamaModel_fast_forward_inference(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
-        hidden_states = fast_mlp_inference(decoder_layer.mlp, hidden_states)
+        hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
@@ -886,6 +891,7 @@ class FastLlamaModel:
         device_map     = "sequential",
         rope_scaling   = None,
         fix_tokenizer  = True,
+        model_patcher  = FastLlamaModel,
         **kwargs,
     ):
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
@@ -893,13 +899,13 @@ class FastLlamaModel:
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
-           f"==((====))==  Unsloth: Fast Llama patching release {__version__}\n"\
+           f"==((====))==  Unsloth: Fast {model_patcher.__name__[4:-5]} patching release {__version__}\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
-        FastLlamaModel.pre_patch()
+        model_patcher.pre_patch()
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -955,7 +961,7 @@ class FastLlamaModel:
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = FastLlamaModel.post_patch(model)
+        model = model_patcher.post_patch(model)
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
@@ -1307,6 +1313,15 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
             )
+        pass
+
+        # Get activation function
+        if model.config.mod == "swiglu":
+            apply_lora_mlp = apply_lora_mlp_swiglu
+        elif activation_function == "geglu":
+            apply_lora_mlp = apply_lora_mlp_geglu
+        else:
+            raise NotImplementedError(f"Unsloth: {activation_function} is not yet implemented!")
         pass
 
         model = prepare_model_for_kbit_training(
