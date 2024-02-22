@@ -294,8 +294,6 @@ def LlamaAttention_fast_forward(
     pass
     past_key_value = (K, V) if use_cache else None
 
-    print(Q.shape, K.shape, V.shape)
-
     # Attention module
     if (not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
@@ -341,8 +339,7 @@ def LlamaAttention_fast_forward(
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
-    print(A.shape)
-    attn_output = A.reshape(bsz, q_len, self.hidden_size)
+    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
