@@ -509,7 +509,10 @@ def LlamaModel_fast_forward(
 
     # Mormalized from Gemma
     if self.config.model_type == "gemma":
+        inputs_requires_grad = inputs_embeds.requires_grad
+        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
         inputs_embeds *= math_sqrt(self.config.hidden_size)
+        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
 
     # Fix up attention mask by setting elements to 0
