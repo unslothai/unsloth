@@ -110,7 +110,7 @@ class LoRA_MLP(torch.autograd.Function):
     @staticmethod
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY : torch.Tensor):
-        gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS,
+        gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS, \
             _backward_function = ctx.custom_saved_tensors
         gateA, gateB, upA, upB, downA, downB, \
             X, e, g = ctx.saved_tensors
