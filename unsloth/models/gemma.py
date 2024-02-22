@@ -331,7 +331,8 @@ class FastGemmaModel(FastLlamaModel):
         for name, module in model.named_modules():
             if isinstance(module, GemmaRMSNorm):
                 module.weight += 1.0 # return output * (1 + self.weight)
-                model.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
+                if not hasattr(module, "variance_epsilon"):
+                    model.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
         pass
 
         # Clear deleted GPU items
