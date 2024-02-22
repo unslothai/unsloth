@@ -293,9 +293,10 @@ class FastMistralModel(FastLlamaModel):
         device_map     = "sequential",
         rope_scaling   = None, # Mistral does not support RoPE scaling
         fix_tokenizer  = True,
-        model_patcher  = FastMistralModel,
+        model_patcher  = None,
         **kwargs,
     ):
+        if model_patcher is None: model_patcher = FastMistralModel
         # Mistral does NOT support RoPE Scaling!
         if rope_scaling is not None:
             logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")

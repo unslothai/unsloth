@@ -891,9 +891,10 @@ class FastLlamaModel:
         device_map     = "sequential",
         rope_scaling   = None,
         fix_tokenizer  = True,
-        model_patcher  = FastLlamaModel,
+        model_patcher  = None,
         **kwargs,
     ):
+        if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
