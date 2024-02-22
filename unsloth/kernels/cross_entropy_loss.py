@@ -168,7 +168,7 @@ def fast_cross_entropy_loss(logits, labels):
             "Unsloth's Github page if you want a faster and more memory efficient kernel!"
         )
         loss = slow_cross_entropy_loss(
-            logits.view(batch*seq_len, d), # Must cast to float32 for numerical stability
+            logits.float().view(batch*seq_len, d), # Must cast to float32 for numerical stability
             labels.view(-1),
         )
         return loss

@@ -14,7 +14,6 @@
 
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
-from .gemma import FastGemmaModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -26,6 +25,8 @@ major, minor = transformers_version.split(".")[:2]
 major, minor = int(major), int(minor)
 SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
 SUPPORTS_GEMMA   = (major > 4) or (major == 4 and minor >= 38)
+if SUPPORTS_GEMMA:
+    from .gemma import FastGemmaModel
 del major, minor
 
 
