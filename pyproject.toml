@@ -33,7 +33,7 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "transformers>=4.37.0",
+    "transformers>=4.38.0",
     "datasets",
     "sentencepiece",
     "accelerate>=0.26.1",
