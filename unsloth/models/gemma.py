@@ -319,17 +319,20 @@ class FastGemmaModel(FastLlamaModel):
         from transformers.models.gemma.modeling_gemma import GemmaRMSNorm
 
         # Freeze all parameters except LoRA
+        # We do this first since += 1 seems to not be liked by requires_grad = True
         for name, param in model.named_parameters():
             if ".lora_A." in name or ".lora_B." in name:
                 param.requires_grad_(True)
             else:
                 param.requires_grad_(False)
         pass
+
+        print("Unsloth: Patching Gemma RMS Layernorm + 1")
         for name, module in model.named_modules():
             if isinstance(module, GemmaRMSNorm):
                 module.weight += 1.0 # return output * (1 + self.weight)
         pass
-        
+
         # Clear deleted GPU items
         import gc
         for _ in range(3):

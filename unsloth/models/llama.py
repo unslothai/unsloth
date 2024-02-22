@@ -1317,14 +1317,15 @@ class FastLlamaModel:
         pass
 
         # Get activation function
-        if model.config.mod == "swiglu":
-            apply_lora_mlp = apply_lora_mlp_swiglu
-        elif activation_function == "geglu":
-            apply_lora_mlp = apply_lora_mlp_geglu
-        else:
-            raise NotImplementedError(f"Unsloth: {activation_function} is not yet implemented!")
-        pass
+        model_type = model_config.model_type
 
+        if   model_type == "llama":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "mistral": apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu
+        else:
+            raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
+        pass
+        
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
