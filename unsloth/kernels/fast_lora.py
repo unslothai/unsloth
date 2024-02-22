@@ -163,7 +163,8 @@ class LoRA_MLP(torch.autograd.Function):
         return dX.view(batch, seq_len, hd), \
             None, None, d_gateA.t(), d_gateB.t(), None, \
             None, None,   d_upA.t(),   d_upB.t(), None, \
-            None, None, d_downA.t(), d_downB.t(), None,
+            None, None, d_downA.t(), d_downB.t(), None, \
+            None, None, # _backward and _forward
     pass
 pass
 
