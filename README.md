@@ -113,8 +113,8 @@ pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.0 triton \
 ```bash
 pip install "unsloth[cu118] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118_ampere] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121_ampere] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-ampere] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-ampere] @ git+https://github.com/unslothai/unsloth.git"
 ```
 3. For Pytorch 2.1.1: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
 ```bash
@@ -122,10 +122,10 @@ pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.1 triton \
   --index-url https://download.pytorch.org/whl/cu121
 ```
 ```bash
-pip install "unsloth[cu118_torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121_torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118_ampere_torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121_ampere_torch211] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-torch211] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-torch211] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-ampere-torch211] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-ampere-torch211] @ git+https://github.com/unslothai/unsloth.git"
 ```
 4. For Pytorch 2.2.0: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
 ```bash
@@ -133,10 +133,10 @@ pip install --upgrade --force-reinstall --no-cache-dir torch==2.2.0 triton \
   --index-url https://download.pytorch.org/whl/cu121
 ```
 ```bash
-pip install "unsloth[cu118_torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121_torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118_ampere_torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121_ampere_torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
 ```
 5. If you get errors, try the below first, then go back to step 1:
 ```bash
