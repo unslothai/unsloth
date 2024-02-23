@@ -119,6 +119,7 @@ def LlamaAttention_fast_forward_inference(
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
+    attention_size = n_heads*head_dim
     # assert(n_kv_heads * n_groups == n_heads)
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
@@ -131,7 +132,7 @@ def LlamaAttention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:,1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
+        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda")
@@ -201,8 +202,8 @@ def LlamaAttention_fast_forward_inference(
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
-    A = A.reshape(bsz, 1, self.hidden_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1])
+    A = A.reshape(bsz, 1, attention_size)
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,self.hidden_size])
     return A, (Kn, Vn)
 pass
 
