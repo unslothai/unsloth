@@ -1399,7 +1399,7 @@ class FastLlamaModel:
                     (down_proj.base_layer if hasattr(down_proj, "base_layer") else down_proj).bias is None:
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                    # layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
                     n_mlp += 1
                 else:
                     logger.warning_once(
@@ -1419,7 +1419,7 @@ class FastLlamaModel:
                     (k_proj.base_layer if hasattr(k_proj, "base_layer") else k_proj).bias is None and \
                     (v_proj.base_layer if hasattr(v_proj, "base_layer") else v_proj).bias is None:
 
-                    # layer.self_attn.apply_qkv = apply_lora_qkv
+                    layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
                 else:
                     logger.warning_once(
