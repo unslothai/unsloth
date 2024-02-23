@@ -106,7 +106,7 @@ def _large_cross_entropy_forward(
         if  (label_idx >=    (col_idx+0)*BLOCK_SIZE) and \
             (label_idx < min((col_idx+1)*BLOCK_SIZE, n_cols)):
 
-            loss = tl.load(logits_ptr + label_idx).to(tl.float32)
+            logits_label = tl.load(logits_ptr + label_idx).to(tl.float32)
             lse  = 0.0
             loss = lse - logits_label # We add the final logsumexp after a reduction
         pass
