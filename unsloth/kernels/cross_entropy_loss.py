@@ -99,16 +99,19 @@ def _large_cross_entropy_forward(
     # Maximum stops overflow
     lse = tl.log(tl.sum(tl.exp(logits - max_logits), 0)) + max_logits
     tl.store(lse_ptr, lse)
-    
-    if (label_idx != -100) and \
-        (label_idx >=    (col_idx+0)*BLOCK_SIZE) and \
-        (label_idx < min((col_idx+1)*BLOCK_SIZE, n_cols)):
 
-        loss = tl.load(logits_ptr + label_idx).to(tl.float32)
-        lse  = 0.0
-        loss = lse - logits_label # We add the final logsumexp after a reduction
-    else:
-        loss = 0.0
+    loss = 0.0
+    # chained boolean operators (A or B or C) are not supported; use parentheses to split the chain.
+    if (label_idx != -100):
+        if  (label_idx >=    (col_idx+0)*BLOCK_SIZE) and \
+            (label_idx < min((col_idx+1)*BLOCK_SIZE, n_cols)):
+
+            loss = tl.load(logits_ptr + label_idx).to(tl.float32)
+            lse  = 0.0
+            loss = lse - logits_label # We add the final logsumexp after a reduction
+        pass
+    pass
+        
     tl.store(loss_ptr, loss)
 pass
 
