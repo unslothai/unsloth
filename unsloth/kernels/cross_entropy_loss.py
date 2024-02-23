@@ -508,7 +508,7 @@ def cross_entropy_loss(
     ignored_index=-100,
     inplace_backward: bool = False,
     process_group=None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) :
     """
     Arguments:
         logits: (batch, vocab_size)
