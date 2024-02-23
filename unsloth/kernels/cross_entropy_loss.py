@@ -188,8 +188,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             )
         else:
             # For small vocabs > 65336 like Gemma
-            losses    = torch.empty((n_rows, n_splits), dtype = torch.float32, device = "cuda")
-            logsumexp = torch.empty((n_rows, n_splits), dtype = torch.float32, device = "cuda")
+            losses    = torch.empty((n_splits, n_rows), dtype = torch.float32, device = "cuda")
+            logsumexp = torch.empty((n_splits, n_rows), dtype = torch.float32, device = "cuda")
 
             _large_cross_entropy_forward[(n_rows, n_splits,)](
                 logits, logits.stride(0),
