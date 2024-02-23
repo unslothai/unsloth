@@ -571,7 +571,7 @@ def fast_cross_entropy_loss(logits, labels):
     #     logits.view(batch*seq_len, d),
     #     labels.view(-1),
     # )
-    loss = cross_entropy_loss(
+    loss, _ = cross_entropy_loss(
         logits.view(batch*seq_len, d),
         labels.view(-1),
         inplace_backward = True,
