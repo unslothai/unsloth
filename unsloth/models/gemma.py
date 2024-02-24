@@ -299,6 +299,7 @@ def GemmaModel_fast_forward(
     output_attentions:    Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
     return_dict:          Optional[bool] = None,
+    cache_position:       Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
