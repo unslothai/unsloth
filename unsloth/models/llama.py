@@ -510,10 +510,10 @@ def LlamaModel_fast_forward(
 
     # Mormalized from Gemma
     if self.config.model_type == "gemma":
-        inputs_requires_grad = inputs_embeds.requires_grad
-        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
-        inputs_embeds *= math_sqrt(self.config.hidden_size)
-        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+        # inputs_requires_grad = inputs_embeds.requires_grad
+        # if inputs_requires_grad: inputs_embeds.requires_grad_(False)
+        inputs_embeds = inputs_embeds * math_sqrt(self.config.hidden_size)
+        # if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
 
     # Fix up attention mask by setting elements to 0
@@ -879,8 +879,8 @@ class FastLlamaModel:
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.llama.modeling_llama
-        transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
-        transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
+        # transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
+        # transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
         return
     pass
 
