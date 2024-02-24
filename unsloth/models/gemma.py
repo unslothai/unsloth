@@ -539,14 +539,13 @@ class FastGemmaModel(FastLlamaModel):
         GemmaModel          .forward = GemmaModel_fast_forward
         GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
-        GemmaRotaryEmbedding = FastGemmaRotaryEmbedding
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
-        # import transformers.models.gemma.modeling_gemma
-        # transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = LlamaRotaryEmbedding
+        import transformers.models.gemma.modeling_gemma
+        transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = FastGemmaRotaryEmbedding
         return
     pass
 
