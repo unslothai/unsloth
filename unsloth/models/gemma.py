@@ -154,10 +154,10 @@ def GemmaAttention_fast_forward(
     if True:#position_ids is None:
         # cos = self.rotary_emb.cos_cached
         # sin = self.rotary_emb.sin_cached
-        cos, sin = self.rotary_emb(V, position_ids, seq_len = q_len+1)
+        cos, sin = self.rotary_emb(V, position_ids, seq_len = q_len)
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb(V, position_ids, seq_len = q_len+1)
+        cos, sin = self.rotary_emb(V, position_ids, seq_len = q_len)
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
