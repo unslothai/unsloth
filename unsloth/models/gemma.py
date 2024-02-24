@@ -205,8 +205,8 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        # hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        # hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             # causal_mask=causal_mask,
@@ -221,8 +221,8 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        # hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        # hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     pass
@@ -371,7 +371,7 @@ def GemmaModel_fast_forward(
     if self.config.model_type == "gemma":
         inputs_requires_grad = inputs_embeds.requires_grad
         if inputs_requires_grad: inputs_embeds.requires_grad_(False)
-        inputs_embeds *= math_sqrt(self.config.hidden_size)
+        inputs_embeds *= (self.config.hidden_size**0.5)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
 
@@ -468,8 +468,8 @@ def GemmaModel_fast_forward(
             all_self_attns += (layer_outputs[1],)
     pass
     
-    # hidden_states = fast_rms_layernorm(self.norm, hidden_states)
-    hidden_states = self.norm(hidden_states)
+    hidden_states = fast_rms_layernorm(self.norm, hidden_states)
+    # hidden_states = self.norm(hidden_states)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
@@ -582,10 +582,10 @@ class FastGemmaModel(FastLlamaModel):
         # GemmaAttention      .forward = GemmaAttention_fast_forward
         # GemmaSdpaAttention  .forward = GemmaAttention_fast_forward
         # GemmaFlashAttention2.forward = GemmaAttention_fast_forward
-        # GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
-        # GemmaModel          .forward = GemmaModel_fast_forward
-        # GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
-        # PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
+        GemmaModel          .forward = GemmaModel_fast_forward
+        GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
+        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
@@ -650,12 +650,12 @@ class FastGemmaModel(FastLlamaModel):
         pass
 
         print("Unsloth: Patching Gemma RMS Layernorm + 1")
-        # for name, module in model.named_modules():
-        #     if isinstance(module, GemmaRMSNorm):
-        #         module.weight += 1.0 # return output * (1 + self.weight)
-        #         if not hasattr(module, "variance_epsilon"):
-        #             module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
-        # pass
+        for name, module in model.named_modules():
+            if isinstance(module, GemmaRMSNorm):
+                module.weight += 1.0 # return output * (1 + self.weight)
+                if not hasattr(module, "variance_epsilon"):
+                    module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
+        pass
 
         # Clear deleted GPU items
         import gc
