@@ -93,10 +93,8 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         if length > self.max_seq_len_cached:
             self._set_cos_sin_cache(seq_len=length, device=x.device, dtype=x.dtype)
 
-        return (
-            self.cos_cached[:seq_len].to(dtype=x.dtype),
-            self.sin_cached[:seq_len].to(dtype=x.dtype),
-        )
+        old_cos = self.cos_cached[:seq_len].to(dtype=x.dtype)
+        old_sin = self.sin_cached[:seq_len].to(dtype=x.dtype)
 
         # x: [bs, num_attention_heads, seq_len, head_size]
         if self.inv_freq is None:
@@ -111,7 +109,10 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)
 
         seq_len = position_ids.shape[1]
-        return emb.cos().to(dtype=x.dtype)[:seq_len], emb.sin().to(dtype=x.dtype)[:seq_len]
+        new_cos = emb.cos().to(dtype=x.dtype)[:seq_len]
+        new_sin = emb.sin().to(dtype=x.dtype)[:seq_len]
+
+        logger.warning_once(str(torch.dist(new_cos, old_cos)))
 pass
 
 
