@@ -102,29 +102,33 @@ def GemmaAttention_fast_forward(
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         K, V = past_key_value.update(K, V, self.layer_idx, cache_kwargs)
 
-    K = repeat_kv(K, n_groups)
-    V = repeat_kv(V, n_groups)
+    if HAS_FLASH_ATTENTION and attention_mask is None:
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
+        A = flash_attn_func(Q, K, V, causal = True)
+    else:
+        causal_mask = attention_mask
+        if attention_mask is not None and cache_position is not None:
+            causal_mask = causal_mask[:, :, cache_position, : K.shape[-2]]
 
-    causal_mask = attention_mask
-    if attention_mask is not None and cache_position is not None:
-        causal_mask = causal_mask[:, :, cache_position, : K.shape[-2]]
-
-    # Grouped query attention
-    if n_groups != 1:
-        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-        K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        # Grouped query attention
+        if n_groups != 1:
+            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        pass
+        # Must be contiguous or else results are False!
+        # https://github.com/pytorch/pytorch/issues/112577
+        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+        # Needs (batch_size, n_heads, seq_len, head_dim)
+        # is_casual and attention_mask must not be both set!
+        A = scaled_dot_product_attention(Q, K, V, attn_mask = causal_mask, is_causal = False)
+        # Go back to (batch_size, seq_len, n_heads, head_dim)
+        A = A.transpose(1, 2).contiguous()
     pass
-    # Must be contiguous or else results are False!
-    # https://github.com/pytorch/pytorch/issues/112577
-    Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-    # Needs (batch_size, n_heads, seq_len, head_dim)
-    # is_casual and attention_mask must not be both set!
-    A = scaled_dot_product_attention(Q, K, V, attn_mask = causal_mask, is_causal = False)
-    # Go back to (batch_size, seq_len, n_heads, head_dim)
-    A = A.transpose(1, 2).contiguous()
-    pass
+    
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
