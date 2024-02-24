@@ -821,7 +821,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
 
-    def forward(self, x, seq_len=None):
+    def forward(self, x, position_ids, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
