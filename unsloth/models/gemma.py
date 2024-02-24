@@ -237,10 +237,10 @@ def GemmaModel_fast_forward(
         position_ids = None
     pass
 
-    if position_ids is not None:
-        if position_ids.shape[0] != batch_size:
-            position_ids = position_ids.repeat((batch_size, 1))
-    pass
+    # if position_ids is not None:
+    #     if position_ids.shape[0] != batch_size:
+    #         position_ids = position_ids.repeat((batch_size, 1))
+    # pass
 
     # embed positions
     if inputs_embeds is None:
