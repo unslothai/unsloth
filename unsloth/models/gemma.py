@@ -301,181 +301,99 @@ def GemmaModel_fast_forward(
     return_dict:          Optional[bool] = None,
     *args, **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
-
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-    assert(output_attentions is False)
     output_hidden_states = (
         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
     )
     use_cache = use_cache if use_cache is not None else self.config.use_cache
-
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-    # retrieve input_ids and inputs_embeds
-    if input_ids is not None and inputs_embeds is not None:
-        raise ValueError("Unsloth: You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
-    elif input_ids is not None:
-        batch_size, seq_length = input_ids.shape
-    elif inputs_embeds is not None:
-        batch_size, seq_length, _ = inputs_embeds.shape
-    else:
-        raise ValueError("Unsloth: You have to specify either decoder_input_ids or decoder_inputs_embeds")
-
-    seq_length_with_past = seq_length
-
-    # Fix out of bounds tokenization
-    if hasattr(self, "max_seq_length"):
-        if seq_length > self.max_seq_length:
-            logger.warning_once(
-                f"Unsloth: Input IDs of length {seq_length} > the model's max sequence length of {self.max_seq_length}.\n"\
-                "We shall truncate it ourselves. It's imperative if you correct this issue first."
-            )
-        if input_ids is not None:
-            input_ids = input_ids[:,:self.max_seq_length]
-        elif inputs_embeds is not None:
-            inputs_embeds = inputs_embeds[:,:self.max_seq_length,:]
-        pass
-    pass
-    
-    past_key_values_length = 0
-
-    if past_key_values is not None:
-        past_key_values_length = past_key_values[0][0].shape[2]
-        seq_length_with_past = seq_length_with_past + past_key_values_length
-    pass
-
-    # We already handle KV cache position_ids ourselves.
-    if True:#(past_key_values_length != 0):
-        position_ids = torch.arange(
-            past_key_values_length, seq_length + past_key_values_length,
-            dtype  = torch.int32,
-            device = "cuda",
+    if (input_ids is None) ^ (inputs_embeds is not None):
+        raise ValueError(
+            "You cannot specify both input_ids and inputs_embeds at the same time, and must specify either one"
         )
-        position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
-    elif position_ids is not None:
-        position_ids = position_ids.view(-1, seq_length).to(torch.int32)#.long()
-    else:
-        position_ids = None
-    pass
 
-    # if position_ids is not None:
-    #     if position_ids.shape[0] != batch_size:
-    #         position_ids = position_ids.repeat((batch_size, 1))
-    # pass
+    if self.gradient_checkpointing and self.training and use_cache:
+        logger.warning_once(
+            "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+        )
+        use_cache = False
 
-    # embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # Mormalized from Gemma
-    if self.config.model_type == "gemma":
-        inputs_requires_grad = inputs_embeds.requires_grad
-        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
-        inputs_embeds *= (self.config.hidden_size**0.5)
-        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
-    pass
+    past_seen_tokens = 0
+    if use_cache:  # kept for BC (cache positions)
+        if not isinstance(past_key_values, StaticCache):
+            past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+        past_seen_tokens = past_key_values.get_seq_length()
 
-    # Fix up attention mask by setting elements to 0
-    # Specifically for DPO
-    if self._has_no_labels and (attention_mask is not None) and (past_key_values is None):
-        # Careful for inference the attention_mask is size (1, kv_seq_len)
-        # Whilst the input_embeds is size (1, 1, 4096)
-        inputs_requires_grad = inputs_embeds.requires_grad
-        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
-        inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
-        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
-    pass
-
-    # Ignore attention_mask
-    if attention_mask is None:
-        padding_mask = None
-    elif False:#self.training:
-        attention_mask = None
-        padding_mask = None
-    else:
-        # if 0 in attention_mask:
-        #     padding_mask = attention_mask
-        # else:
-        padding_mask = None
-
-        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-            attention_mask,
-            (batch_size, seq_length),
-            inputs_embeds,
-            past_key_values_length,
-            sliding_window = getattr(self.config, "sliding_window", None),
+    if cache_position is None:
+        cache_position = torch.arange(
+            past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
         )
-    pass
 
+    if position_ids is None:
+        position_ids = cache_position.unsqueeze(0)
+
+    causal_mask = self._update_causal_mask(attention_mask, inputs_embeds)
+
+    # embed positions
     hidden_states = inputs_embeds
 
-    if past_key_values is None and self.training:
-        use_cache = False
-        # if use_cache:
-        #     logger.warning_once(
-        #         "Unsloth: `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`"
-        #     )
-        #     use_cache = False
-    pass
+    # normalized
+    hidden_states = hidden_states * (self.config.hidden_size**0.5)
 
     # decoder layers
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
-    next_decoder_cache = () if use_cache else None
+    next_decoder_cache = None
 
-    for idx, decoder_layer in enumerate(self.layers):
+    for decoder_layer in self.layers:
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        past_key_value = past_key_values[idx] if past_key_values is not None else None
-
         if self.gradient_checkpointing and self.training:
-
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    # None for past_key_value
-                    return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
-
-                return custom_forward
-
-            layer_outputs = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(decoder_layer),
+            layer_outputs = self._gradient_checkpointing_func(
+                decoder_layer.__call__,
                 hidden_states,
                 causal_mask,
-                attention_mask,
                 position_ids,
-                use_reentrant=True,
-                preserve_rng_state=False,
+                past_key_values,
+                output_attentions,
+                use_cache,
+                cache_position,
             )
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
-                causal_mask=causal_mask,
-                attention_mask=attention_mask,
+                attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_value,
+                past_key_value=past_key_values,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
-                padding_mask=padding_mask,
+                cache_position=cache_position,
             )
 
         hidden_states = layer_outputs[0]
 
         if use_cache:
-            next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+            next_decoder_cache = layer_outputs[2 if output_attentions else 1]
 
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
-    pass
-    
-    # hidden_states = fast_rms_layernorm(self.norm, hidden_states)
+
     hidden_states = self.norm(hidden_states)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
         all_hidden_states += (hidden_states,)
 
-    next_cache = next_decoder_cache if use_cache else None
+    next_cache = None
+    if use_cache:
+        next_cache = (
+            next_decoder_cache.to_legacy_cache() if isinstance(next_decoder_cache, Cache) else next_decoder_cache
+        )
     if not return_dict:
         return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
     return BaseModelOutputWithPast(
@@ -483,7 +401,7 @@ def GemmaModel_fast_forward(
         past_key_values=next_cache,
         hidden_states=all_hidden_states,
         attentions=all_self_attns,
-    )
+        )
 pass
 
 
