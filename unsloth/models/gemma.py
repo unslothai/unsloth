@@ -102,7 +102,30 @@ def GemmaAttention_fast_forward(
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         K, V = past_key_value.update(K, V, self.layer_idx, cache_kwargs)
 
-    if HAS_FLASH_ATTENTION:# and attention_mask is None:
+    # Attention module
+    if (not HAS_FLASH_ATTENTION):# and attention_mask is None):
+        # Xformers memory efficient attention
+        # Also has Flash Attention v2 dispatching
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
+
+        # Group query attention
+        if n_groups != 1:
+            K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
+            V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
+            if hidden_states.requires_grad:
+                K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
+                V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
+            else:
+                Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
+        pass
+        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
+        A = A.view(bsz, q_len, n_heads, head_dim)
+
+    elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
