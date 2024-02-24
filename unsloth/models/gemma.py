@@ -86,7 +86,7 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             causal_mask=causal_mask,
@@ -101,7 +101,7 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     pass
@@ -328,12 +328,12 @@ class FastGemmaModel(FastLlamaModel):
         pass
 
         print("Unsloth: Patching Gemma RMS Layernorm + 1")
-        for name, module in model.named_modules():
-            if isinstance(module, GemmaRMSNorm):
-                module.weight += 1.0 # return output * (1 + self.weight)
-                if not hasattr(module, "variance_epsilon"):
-                    module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
-        pass
+        # for name, module in model.named_modules():
+        #     if isinstance(module, GemmaRMSNorm):
+        #         module.weight += 1.0 # return output * (1 + self.weight)
+        #         if not hasattr(module, "variance_epsilon"):
+        #             module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
+        # pass
 
         # Clear deleted GPU items
         import gc
