@@ -21,6 +21,9 @@ from transformers.models.gemma.modeling_gemma import (
     GemmaModel,
     GemmaForCausalLM,
 )
+from transformers.modeling_attn_mask_utils import (
+    _prepare_4d_causal_attention_mask_for_sdpa,
+)
 # For Pytorch 2.1.1
 try:
     from transformers.models.gemma.modeling_gemma import (
