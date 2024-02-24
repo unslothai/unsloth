@@ -109,27 +109,26 @@ def GemmaAttention_fast_forward(
     if attention_mask is not None and cache_position is not None:
         causal_mask = causal_mask[:, :, cache_position, : K.shape[-2]]
 
-    # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
-    # Reference: https://github.com/pytorch/pytorch/issues/112577.
-    if Q.device.type == "cuda" and causal_mask is not None:
-        Q = Q.contiguous()
-        K = K.contiguous()
-        V = V.contiguous()
-
-    attn_output = torch.nn.functional.scaled_dot_product_attention(
-        Q,
-        K,
-        V,
-        attn_mask=causal_mask,
-        dropout_p=self.attention_dropout if self.training else 0.0,
-    )
-
-    attn_output = attn_output.transpose(1, 2).contiguous()
-    attn_output = attn_output.view(bsz, q_len, -1)
-
+    # Grouped query attention
+    if n_groups != 1:
+        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+        K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+    pass
+    # Must be contiguous or else results are False!
+    # https://github.com/pytorch/pytorch/issues/112577
+    Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+    # Needs (batch_size, n_heads, seq_len, head_dim)
+    # is_casual and attention_mask must not be both set!
+    A = scaled_dot_product_attention(Q, K, V, attn_mask = causal_mask, is_causal = False)
+    # Go back to (batch_size, seq_len, n_heads, head_dim)
+    A = A.transpose(1, 2).contiguous()
+    pass
+    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
-
-    return attn_output, None, past_key_value
+    attn_weights = None
+    return attn_output, attn_weights, past_key_value
 pass
 
 
