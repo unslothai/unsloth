@@ -231,7 +231,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 pass
 
 
-# slow_cross_entropy_loss = torch.nn.functional.cross_entropy
+slow_cross_entropy_loss = torch.nn.functional.cross_entropy
 def fast_cross_entropy_loss(logits, labels):
     """
     Arguments:
