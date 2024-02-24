@@ -76,6 +76,7 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.max_seq_len_cached = max(self.max_position_embeddings, seq_len)
+        print(self.max_seq_len_cached)
         inv_freq = 1.0 / (
             self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
         )
@@ -104,6 +105,7 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
                 self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cuda").float() / self.dim)
             )
 
+        print(self.max_position_embeddings)
         t = torch.arange(self.max_position_embeddings, device="cpu", dtype=torch.int64).float().to("cuda").unsqueeze(0)
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(1, -1, 1).to("cuda")
         position_ids_expanded = t[:, None, :].float()
