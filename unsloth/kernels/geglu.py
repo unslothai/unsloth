@@ -27,10 +27,10 @@ def _forward_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
     # f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     # h = f * up
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)#.to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0).to(tl.float32)
 
     f_row = 0.5 * e_row * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
-    f_row = f_row.to(g_row.dtype) # Exact copy from HF
+    # f_row = f_row.to(g_row.dtype) # Exact copy from HF
     h_row = f_row * g_row
 
     # Store h
@@ -64,16 +64,16 @@ def _backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)#.to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask = mask, other = 0).to(tl.float32)
     e_row  = tl.load(e  + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row  = tl.load(g  + offsets, mask = mask, other = 0)#.to(tl.float32)
+    g_row  = tl.load(g  + offsets, mask = mask, other = 0).to(tl.float32)
 
     # Break e_row away for re-use
     # f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     f_partial_row = 0.5 * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
     f_row = f_partial_row * e_row
     
-    f_row = f_row.to(DW_row.dtype)
+    # f_row = f_row.to(DW_row.dtype)
     # h = f * g
     h_row  =  f_row * g_row
     # df = DW * f
