@@ -67,105 +67,54 @@ def GemmaAttention_fast_forward(
     cache_position: Optional[torch.LongTensor] = None,
     **kwargs,
 ):
-    
-    # Clear inference
-    if hasattr(self, "paged_attention"):
-        del self.paged_attention_K
-        del self.paged_attention_V
-        del self.paged_attention
-        del self.temp_QA
-        del self.temp_KV
-        del self.RH_Q
-        del self.attention
-    pass
-
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads    = self.num_heads
-    n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
-    head_dim   = self.head_dim
-    assert(n_kv_heads * n_groups == n_heads)
+    query_states = self.q_proj(hidden_states)
+    key_states = self.k_proj(hidden_states)
+    value_states = self.v_proj(hidden_states)
 
-    Q = self.q_proj(hidden_states)
-    K = self.k_proj(hidden_states)
-    V = self.v_proj(hidden_states)
-    # Q, K, V = self.apply_qkv(self, hidden_states)
-    Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
-    K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
-    V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-    kv_seq_len = K.shape[-2]
-    if past_key_value is not None:
-        kv_seq_len += past_key_value[0].shape[-2]
+    cos, sin = self.rotary_emb(value_states, position_ids, seq_len=None)
+    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, None)
 
-    # if False:#position_ids is None:
-    #     cos = self.rotary_emb.cos_cached
-    #     sin = self.rotary_emb.sin_cached
-    #     Q, K = fast_rope_embedding(Q, K, cos, sin)
-    # else:
-    #     cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
-    #     Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    # pass
-    cos, sin = self.rotary_emb(V, position_ids, seq_len=None)
-    Q, K = apply_rotary_pos_emb(Q, K, cos, sin, None)
+    past_key_value = getattr(self, "past_key_value", past_key_value)
 
     if past_key_value is not None:
-        K = torch.cat([past_key_value[0], K], dim = 2)
-        V = torch.cat([past_key_value[1], V], dim = 2)
-    pass
-    past_key_value = (K, V) if use_cache else None
+        # sin and cos are specific to RoPE models; position_ids needed for the static cache
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
-    # Attention module
-    if False:#(not HAS_FLASH_ATTENTION and attention_mask is None):
-        # Xformers memory efficient attention
-        # Also has Flash Attention v2 dispatching
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+    key_states = repeat_kv(key_states, self.num_key_value_groups)
+    value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        # Group query attention
-        if n_groups != 1:
-            K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
-            V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
-            K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
-            V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
-            if hidden_states.requires_grad:
-                K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
-                V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
-            else:
-                Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        pass
-        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
-        A = A.view(bsz, q_len, n_heads, head_dim)
+    causal_mask = attention_mask
+    if attention_mask is not None and cache_position is not None:
+        causal_mask = causal_mask[:, :, cache_position, : key_states.shape[-2]]
 
-    elif False:#HAS_FLASH_ATTENTION and attention_mask is None:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        A = flash_attn_func(Q, K, V, causal = True)
-    else:
-        # Grouped query attention
-        if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        pass
-        # Must be contiguous or else results are False!
-        # https://github.com/pytorch/pytorch/issues/112577
-        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
-        # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2).contiguous()
-    pass
-    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
-    # attn_output = self.apply_o(self, attn_output)
+    # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
+    # Reference: https://github.com/pytorch/pytorch/issues/112577.
+    if query_states.device.type == "cuda" and causal_mask is not None:
+        query_states = query_states.contiguous()
+        key_states = key_states.contiguous()
+        value_states = value_states.contiguous()
+
+    attn_output = torch.nn.functional.scaled_dot_product_attention(
+        query_states,
+        key_states,
+        value_states,
+        attn_mask=causal_mask,
+        dropout_p=self.attention_dropout if self.training else 0.0,
+    )
+
+    attn_output = attn_output.transpose(1, 2).contiguous()
+    attn_output = attn_output.view(bsz, q_len, -1)
+
     attn_output = self.o_proj(attn_output)
-    attn_weights = None
-    return attn_output, attn_weights, past_key_value
+
+    return attn_output, None, past_key_value
 pass
 
 
