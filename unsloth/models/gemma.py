@@ -650,12 +650,12 @@ class FastGemmaModel(FastLlamaModel):
         pass
 
         print("Unsloth: Patching Gemma RMS Layernorm + 1")
-        for name, module in model.named_modules():
-            if isinstance(module, GemmaRMSNorm):
-                module.weight += 1.0 # return output * (1 + self.weight)
-                if not hasattr(module, "variance_epsilon"):
-                    module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
-        pass
+        # for name, module in model.named_modules():
+        #     if isinstance(module, GemmaRMSNorm):
+        #         module.weight += 1.0 # return output * (1 + self.weight)
+        #         if not hasattr(module, "variance_epsilon"):
+        #             module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
+        # pass
 
         # Clear deleted GPU items
         import gc
