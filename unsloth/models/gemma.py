@@ -65,6 +65,8 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         self.max_position_embeddings = max_position_embeddings
         self.base = base
         self.register_buffer("inv_freq", None, persistent=False)
+        self.register_buffer("cos_cached", None, persistent=False)
+        self.register_buffer("cos_cached", None, persistent=False)
 
         # Build here to make `torch.jit.trace` work.
         self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
@@ -77,15 +79,14 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         inv_freq = 1.0 / (
             self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
         )
-        t = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).float().to("cuda").unsqueeze(0)
-        inv_freq_expanded = inv_freq[None, :, None].float().expand(1, -1, 1).to("cuda")
+        t = torch.arange(self.max_position_embeddings, device="cpu", dtype=torch.int64).float().to("cuda").unsqueeze(0)
+        inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to("cuda")
         position_ids_expanded = t[:, None, :].float()
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
-
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype), persistent=False)
+
+        self.cos_cached = emb.cos().to(dtype=torch.bfloat16)
+        self.sin_cached = emb.sin().to(dtype=torch.bfloat16)
     pass
 
     def forward(self, x, position_ids, seq_len=None):
