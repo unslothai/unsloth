@@ -54,6 +54,115 @@ def fast_geglu_inference(self, X):
 pass
 
 
+# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
+def GemmaAttention_fast_forward(
+    self,
+    hidden_states:        torch.Tensor,
+    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    attention_mask:       Optional[torch.Tensor] = None,
+    position_ids:         Optional[torch.LongTensor] = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:    bool = False,
+    use_cache:            bool = False,
+    padding_mask:         Optional[torch.LongTensor] = None,
+    *args, **kwargs,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    
+    # Clear inference
+    if hasattr(self, "paged_attention"):
+        del self.paged_attention_K
+        del self.paged_attention_V
+        del self.paged_attention
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
+        del self.attention
+    pass
+
+    bsz, q_len, _ = hidden_states.size()
+
+    n_heads    = self.num_heads
+    n_groups   = self.num_key_value_groups
+    n_kv_heads = self.num_key_value_heads
+    head_dim   = self.head_dim
+    assert(n_kv_heads * n_groups == n_heads)
+
+    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
+    K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+
+    kv_seq_len = K.shape[-2]
+    if past_key_value is not None:
+        kv_seq_len += past_key_value[0].shape[-2]
+
+    if position_ids is None:
+        cos = self.rotary_emb.cos_cached
+        sin = self.rotary_emb.sin_cached
+        Q, K = fast_rope_embedding(Q, K, cos, sin)
+    else:
+        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
+        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
+    pass
+
+    if past_key_value is not None:
+        K = torch.cat([past_key_value[0], K], dim = 2)
+        V = torch.cat([past_key_value[1], V], dim = 2)
+    pass
+    past_key_value = (K, V) if use_cache else None
+
+    # Attention module
+    if (not HAS_FLASH_ATTENTION and attention_mask is None):
+        # Xformers memory efficient attention
+        # Also has Flash Attention v2 dispatching
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
+
+        # Group query attention
+        if n_groups != 1:
+            K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
+            K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
+            V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
+            if hidden_states.requires_grad:
+                K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
+                V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
+            else:
+                Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
+        pass
+        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
+        A = A.view(bsz, q_len, n_heads, head_dim)
+
+    elif HAS_FLASH_ATTENTION and attention_mask is None:
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
+        A = flash_attn_func(Q, K, V, causal = True)
+    else:
+        # Grouped query attention
+        if n_groups != 1:
+            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        pass
+        # Must be contiguous or else results are False!
+        # https://github.com/pytorch/pytorch/issues/112577
+        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+        # Needs (batch_size, n_heads, seq_len, head_dim)
+        # is_casual and attention_mask must not be both set!
+        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+        # Go back to (batch_size, seq_len, n_heads, head_dim)
+        A = A.transpose(1, 2).contiguous()
+    pass
+    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
+    attn_output = self.apply_o(self, attn_output)
+    attn_weights = None
+    return attn_output, attn_weights, past_key_value
+pass
+
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
 def GemmaDecoderLayer_fast_forward(
     self,
@@ -64,7 +173,7 @@ def GemmaDecoderLayer_fast_forward(
     past_key_value:       Optional[Tuple[torch.Tensor]] = None,
     output_attentions:    Optional[bool] = False,
     use_cache:            Optional[bool] = False,
-    # padding_mask:         Optional[torch.LongTensor] = None,
+    padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
     if False:#past_key_value is not None:
@@ -92,13 +201,13 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
-            # causal_mask=causal_mask,
+            causal_mask=causal_mask,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
-            # padding_mask=padding_mask,
+            padding_mask=padding_mask,
         )
         hidden_states = residual + hidden_states
 
@@ -316,7 +425,7 @@ def GemmaModel_fast_forward(
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     # None for past_key_value
-                    return module(*inputs, past_key_value, output_attentions)#, padding_mask=padding_mask)
+                    return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
 
                 return custom_forward
 
@@ -338,7 +447,7 @@ def GemmaModel_fast_forward(
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
-                # padding_mask=padding_mask,
+                padding_mask=padding_mask,
             )
 
         hidden_states = layer_outputs[0]
@@ -460,9 +569,9 @@ class FastGemmaModel(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
-        # GemmaAttention      .forward = LlamaAttention_fast_forward
-        # GemmaSdpaAttention  .forward = LlamaAttention_fast_forward
-        # GemmaFlashAttention2.forward = LlamaAttention_fast_forward
+        GemmaAttention      .forward = GemmaAttention_fast_forward
+        GemmaSdpaAttention  .forward = GemmaAttention_fast_forward
+        GemmaFlashAttention2.forward = GemmaAttention_fast_forward
         GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
         GemmaModel          .forward = GemmaModel_fast_forward
         GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
@@ -473,8 +582,8 @@ class FastGemmaModel(FastLlamaModel):
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
-        # import transformers.models.gemma.modeling_gemma
-        # transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = LlamaRotaryEmbedding
+        import transformers.models.gemma.modeling_gemma
+        transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = LlamaRotaryEmbedding
         return
     pass
 
