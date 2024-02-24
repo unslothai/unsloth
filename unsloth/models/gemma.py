@@ -20,6 +20,7 @@ from transformers.models.gemma.modeling_gemma import (
     GemmaDecoderLayer,
     GemmaModel,
     GemmaForCausalLM,
+    apply_rotary_pos_emb,
 )
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
@@ -107,8 +108,8 @@ def GemmaAttention_fast_forward(
     #     cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
     #     Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     # pass
-    cos, sin = self.rotary_emb(value_states, position_ids, seq_len=None)
-    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, None)
+    cos, sin = self.rotary_emb(V, position_ids, seq_len=None)
+    Q, K = apply_rotary_pos_emb(Q, K, cos, sin, None)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
