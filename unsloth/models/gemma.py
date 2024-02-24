@@ -73,7 +73,7 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
                 self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cuda").float() / self.dim)
             )
 
-        t = torch.arange(position_ids.shape[1], device="cuda", dtype=torch.int64).float().unsqueeze(0)
+        t = torch.arange(position_ids.shape[1], device="cuda", dtype=torch.int64).unsqueeze(0)
         print(t)
         print(position_ids)
         raise False
