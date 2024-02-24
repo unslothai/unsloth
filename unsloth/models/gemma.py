@@ -68,44 +68,58 @@ def GemmaAttention_fast_forward(
     cache_position: Optional[torch.LongTensor] = None,
     **kwargs,
 ):
+    # Clear inference
+    if hasattr(self, "paged_attention"):
+        del self.paged_attention_K
+        del self.paged_attention_V
+        del self.paged_attention
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
+        del self.attention
+    pass
+
     bsz, q_len, _ = hidden_states.size()
 
-    query_states = self.q_proj(hidden_states)
-    key_states = self.k_proj(hidden_states)
-    value_states = self.v_proj(hidden_states)
+    n_heads    = self.num_heads
+    n_groups   = self.num_key_value_groups
+    n_kv_heads = self.num_key_value_heads
+    head_dim   = self.head_dim
+    assert(n_kv_heads * n_groups == n_heads)
 
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
+    K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
 
-    cos, sin = self.rotary_emb(value_states, position_ids, seq_len=None)
-    query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, None)
+    cos, sin = self.rotary_emb(V, position_ids, seq_len=None)
+    Q, K = apply_rotary_pos_emb(Q, K, cos, sin, None)
 
     past_key_value = getattr(self, "past_key_value", past_key_value)
 
     if past_key_value is not None:
         # sin and cos are specific to RoPE models; position_ids needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+        K, V = past_key_value.update(K, V, self.layer_idx, cache_kwargs)
 
-    key_states = repeat_kv(key_states, self.num_key_value_groups)
-    value_states = repeat_kv(value_states, self.num_key_value_groups)
+    K = repeat_kv(K, n_groups)
+    V = repeat_kv(V, n_groups)
 
     causal_mask = attention_mask
     if attention_mask is not None and cache_position is not None:
-        causal_mask = causal_mask[:, :, cache_position, : key_states.shape[-2]]
+        causal_mask = causal_mask[:, :, cache_position, : K.shape[-2]]
 
     # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
     # Reference: https://github.com/pytorch/pytorch/issues/112577.
-    if query_states.device.type == "cuda" and causal_mask is not None:
-        query_states = query_states.contiguous()
-        key_states = key_states.contiguous()
-        value_states = value_states.contiguous()
+    if Q.device.type == "cuda" and causal_mask is not None:
+        Q = Q.contiguous()
+        K = K.contiguous()
+        V = V.contiguous()
 
     attn_output = torch.nn.functional.scaled_dot_product_attention(
-        query_states,
-        key_states,
-        value_states,
+        Q,
+        K,
+        V,
         attn_mask=causal_mask,
         dropout_p=self.attention_dropout if self.training else 0.0,
     )
@@ -113,7 +127,7 @@ def GemmaAttention_fast_forward(
     attn_output = attn_output.transpose(1, 2).contiguous()
     attn_output = attn_output.view(bsz, q_len, -1)
 
-    attn_output = self.o_proj(attn_output)
+    attn_output = self.apply_o(self, attn_output)
 
     return attn_output, None, past_key_value
 pass
