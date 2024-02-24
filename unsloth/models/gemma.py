@@ -98,8 +98,8 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         if length > self.max_seq_len_cached:
             self._set_cos_sin_cache(seq_len=length, device=x.device, dtype=x.dtype)
 
-        old_cos = self.cos_cached[:,:seq_len].to(dtype=x.dtype)
-        old_sin = self.sin_cached[:,:seq_len].to(dtype=x.dtype)
+        old_cos = self.cos_cached[:,:length].to(dtype=x.dtype)
+        old_sin = self.sin_cached[:,:length].to(dtype=x.dtype)
 
         # x: [bs, num_attention_heads, seq_len, head_size]
         if self.inv_freq is None:
@@ -111,14 +111,11 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         t = torch.arange(self.max_position_embeddings, device="cpu", dtype=torch.int64).float().to("cuda").unsqueeze(0)
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(1, -1, 1).to("cuda")
         position_ids_expanded = t[:, None, :].float()
-        print(position_ids_expanded.shape, position_ids_expanded.to(torch.float64))
-        print(inv_freq_expanded.shape, inv_freq_expanded.to(torch.float64))
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
         print(freqs.to(torch.int64))
         emb = torch.cat((freqs, freqs), dim=-1)
 
         seq_len = position_ids.shape[1]
-        print(position_ids.shape)
         new_cos = emb.cos().to(dtype=x.dtype)[:,:seq_len]
         new_sin = emb.sin().to(dtype=x.dtype)[:,:seq_len]
 
