@@ -385,9 +385,9 @@ def GemmaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
 
-    
+
     # hidden_states = self.norm(hidden_states)
-    hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
+    hidden_states = fast_rms_layernorm(self.norm, hidden_states)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
