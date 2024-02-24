@@ -205,8 +205,8 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        # hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        # hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             # causal_mask=causal_mask,
@@ -222,8 +222,8 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        # hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        # hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     pass
@@ -385,7 +385,9 @@ def GemmaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
 
-    hidden_states = self.norm(hidden_states)
+    
+    # hidden_states = self.norm(hidden_states)
+    hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
@@ -549,22 +551,22 @@ class FastGemmaModel(FastLlamaModel):
 
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
-        # correct_dtype = lm_head.weight.dtype
+        correct_dtype = lm_head.weight.dtype
 
-        # for name, module in model.named_modules():
-        #     if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
-        #         weight = module.weight
-        #         quant_state = weight.quant_state
+        for name, module in model.named_modules():
+            if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
+                weight = module.weight
+                quant_state = weight.quant_state
 
-        #         if type(quant_state) is list:
-        #             # BnB seems to have float16 as default!
-        #             module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
-        #         else:
-        #             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-        #             quant_state.dtype = correct_dtype
-        #         pass
-        #     pass
-        # pass
+                if type(quant_state) is list:
+                    # BnB seems to have float16 as default!
+                    module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
+                else:
+                    # https://github.com/TimDettmers/bitsandbytes/pull/763/files
+                    quant_state.dtype = correct_dtype
+                pass
+            pass
+        pass
 
         # Add 1 to weight
         # return output * (1 + self.weight)
@@ -581,12 +583,12 @@ class FastGemmaModel(FastLlamaModel):
         pass
 
         print("Unsloth: Patching Gemma RMS Layernorm + 1")
-        # for name, module in model.named_modules():
-        #     if isinstance(module, GemmaRMSNorm):
-        #         module.weight += 1.0 # return output * (1 + self.weight)
-        #         if not hasattr(module, "variance_epsilon"):
-        #             module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
-        # pass
+        for name, module in model.named_modules():
+            if isinstance(module, GemmaRMSNorm):
+                module.weight += 1.0 # return output * (1 + self.weight)
+                if not hasattr(module, "variance_epsilon"):
+                    module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon
+        pass
 
         # Clear deleted GPU items
         import gc
