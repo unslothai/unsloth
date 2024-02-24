@@ -75,12 +75,14 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
 
         t = torch.arange(position_ids.shape[1], device="cpu", dtype=torch.int64).float()
         freqs = torch.outer(t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1).to("cuda")
+        emb_old = torch.cat((freqs, freqs), dim=-1).to("cuda")
 
-        # inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
-        # position_ids_expanded = position_ids[:, None, :].float()
-        # freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
-        # emb = torch.cat((freqs, freqs), dim=-1)
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
+        emb_new = torch.cat((freqs, freqs), dim=-1)
+
+        print(torch.dist(emd_old, emd_new))
         return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
 pass
 
