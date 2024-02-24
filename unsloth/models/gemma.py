@@ -65,58 +65,19 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         self.max_position_embeddings = max_position_embeddings
         self.base = base
         self.register_buffer("inv_freq", None, persistent=False)
-        self.register_buffer("cos_cached", None, persistent=False)
-        self.register_buffer("cos_cached", None, persistent=False)
-
-        # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
-    pass
-
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
-        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
-        # in FP32. They are applied (multiplied) in FP32 as well.
-        self.max_seq_len_cached = max(self.max_position_embeddings, seq_len)
-        inv_freq = 1.0 / (
-            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
-        )
-        t = torch.arange(self.max_position_embeddings, device="cpu", dtype=torch.int64).float().to("cuda").unsqueeze(0)
-        inv_freq_expanded = inv_freq[None, :, None].float().expand(1, -1, 1).to("cuda")
-        position_ids_expanded = t[:, None, :].float()
-        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
-        emb = torch.cat((freqs, freqs), dim=-1)
-
-        self.cos_cached = emb.cos().to(dtype=torch.bfloat16)
-        self.sin_cached = emb.sin().to(dtype=torch.bfloat16)
-    pass
 
     def forward(self, x, position_ids, seq_len=None):
-        length = position_ids.shape[1] if position_ids is not None else seq_len
-        if length > self.max_seq_len_cached:
-            self._set_cos_sin_cache(seq_len=length, device=x.device, dtype=x.dtype)
-
-        old_cos = self.cos_cached[:,:length].to(dtype=x.dtype)
-        old_sin = self.sin_cached[:,:length].to(dtype=x.dtype)
-
         # x: [bs, num_attention_heads, seq_len, head_size]
         if self.inv_freq is None:
             self.inv_freq = 1.0 / (
-                self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cuda").float() / self.dim)
+                self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device=x.device).float() / self.dim)
             )
 
-        t = torch.arange(self.max_position_embeddings, device="cpu", dtype=torch.int64).float().to("cuda").unsqueeze(0)
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(1, -1, 1).to("cuda")
-        position_ids_expanded = t[:, None, :].float()
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
         emb = torch.cat((freqs, freqs), dim=-1)
-
-        seq_len = position_ids.shape[1]
-        new_cos = emb.cos().to(dtype=x.dtype)[:,:length]
-        new_sin = emb.sin().to(dtype=x.dtype)[:,:length]
-
-        print(new_cos, new_cos.shape)
-        print(old_cos, old_cos.shape)
-        raise 1
-        return new_cos, new_sin
+        return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
 pass
 
 
