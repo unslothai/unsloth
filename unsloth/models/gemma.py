@@ -68,19 +68,6 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         self.register_buffer("cos_cached", None, persistent=False)
         self.register_buffer("sin_cached", None, persistent=False)
 
-        self.inv_freq = 1.0 / (
-            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cuda").float() / self.dim)
-        )
-        position_ids = torch.arange(self.max_position_embeddings, device="cuda", dtype=torch.int64).unsqueeze(0)
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(1, -1, 1)
-        position_ids_expanded = position_ids[:, None, :].float()
-        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.cos_cached = emb.cos().to(dtype=torch.bfloat16)
-        self.sin_cached = emb.sin().to(dtype=torch.bfloat16)
-        print(self.cos_cached)
-        print(self.sin_cached)
-
     def forward(self, x, position_ids, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if self.inv_freq is None:
@@ -88,20 +75,18 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
                 self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device=x.device).float() / self.dim)
             )
 
-        length = position_ids.shape[1]
-        #if self.cos_cached is None:
-        position_ids = torch.arange(self.max_position_embeddings, device=x.device, dtype=torch.int64).unsqueeze(0)
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(1, -1, 1)
-        position_ids_expanded = position_ids[:, None, :].float()
-        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.cos_cached = emb.cos().to(dtype=x.dtype)
-        self.sin_cached = emb.sin().to(dtype=x.dtype)
-        # pass
-        print(self.cos_cached)
-        print(self.sin_cached)
-        raise
-        return self.cos_cached[:,:length], self.sin_cached[:,:length]
+        # length = position_ids.shape[1]
+        if self.cos_cached is None:
+            position_ids = torch.arange(self.max_position_embeddings, device=x.device, dtype=torch.int64).unsqueeze(0)
+            inv_freq_expanded = self.inv_freq[None, :, None].float().expand(1, -1, 1)
+            position_ids_expanded = position_ids[:, None, :].float()
+            freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            self.cos_cached = emb.cos().to(dtype=x.dtype)
+            self.sin_cached = emb.sin().to(dtype=x.dtype)
+        pass
+        # return self.cos_cached[:,:length], self.sin_cached[:,:length]
+        return self.cos_cached, self.sin_cached
 pass
 
 
@@ -141,7 +126,7 @@ def GemmaAttention_fast_forward(
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
 
-    if True:#position_ids is None:
+    if True:# position_ids is None:
         # cos = self.rotary_emb.cos_cached
         # sin = self.rotary_emb.sin_cached
         cos, sin = self.rotary_emb(V, position_ids, seq_len = q_len)
