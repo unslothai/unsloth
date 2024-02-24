@@ -102,7 +102,7 @@ def GemmaAttention_fast_forward(
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         K, V = past_key_value.update(K, V, self.layer_idx, cache_kwargs)
 
-    if HAS_FLASH_ATTENTION and attention_mask is None:
+    if HAS_FLASH_ATTENTION:# and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
