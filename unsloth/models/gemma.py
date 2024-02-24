@@ -64,7 +64,7 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        # self.register_buffer("inv_freq", None, persistent=False)
+        self.register_buffer("inv_freq", None, persistent=False)
 
         # Build here to make `torch.jit.trace` work.
         self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
