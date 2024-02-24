@@ -110,6 +110,7 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)
 
         seq_len = position_ids.shape[1]
+        print(position_ids.shape)
         new_cos = emb.cos().to(dtype=x.dtype)[:,:seq_len]
         new_sin = emb.sin().to(dtype=x.dtype)[:,:seq_len]
 
