@@ -582,10 +582,10 @@ class FastGemmaModel(FastLlamaModel):
         # GemmaAttention      .forward = GemmaAttention_fast_forward
         # GemmaSdpaAttention  .forward = GemmaAttention_fast_forward
         # GemmaFlashAttention2.forward = GemmaAttention_fast_forward
-        GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
-        GemmaModel          .forward = GemmaModel_fast_forward
-        GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        # GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
+        # GemmaModel          .forward = GemmaModel_fast_forward
+        # GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
+        # PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
