@@ -67,7 +67,8 @@ def GemmaDecoderLayer_fast_forward(
     # padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-    if past_key_value is not None:
+    print(past_key_value)
+    if False:#past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
 
         # Self Attention
