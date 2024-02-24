@@ -205,8 +205,8 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
-        # hidden_states = self.input_layernorm(hidden_states)
+        # hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             # causal_mask=causal_mask,
@@ -221,8 +221,8 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        # hidden_states = self.post_attention_layernorm(hidden_states)
+        # hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     pass
@@ -468,8 +468,8 @@ def GemmaModel_fast_forward(
             all_self_attns += (layer_outputs[1],)
     pass
     
-    hidden_states = fast_rms_layernorm(self.norm, hidden_states)
-    # hidden_states = self.norm(hidden_states)
+    # hidden_states = fast_rms_layernorm(self.norm, hidden_states)
+    hidden_states = self.norm(hidden_states)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
