@@ -95,7 +95,7 @@ def GemmaDecoderLayer_fast_forward(
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
-            padding_mask=padding_mask,
+            # padding_mask=padding_mask,
         )
         hidden_states = residual + hidden_states
 
