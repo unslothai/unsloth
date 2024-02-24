@@ -87,7 +87,10 @@ def GemmaAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
-    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q = self.q_proj(hidden_states)
+    K = self.k_proj(hidden_states)
+    V = self.v_proj(hidden_states)
+    # Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -157,7 +160,8 @@ def GemmaAttention_fast_forward(
         A = A.transpose(1, 2).contiguous()
     pass
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
-    attn_output = self.apply_o(self, attn_output)
+    # attn_output = self.apply_o(self, attn_output)
+    attn_output = self.o_proj(attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 pass
