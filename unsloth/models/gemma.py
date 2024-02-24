@@ -324,7 +324,7 @@ def GemmaModel_fast_forward(
             layer_outputs = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(decoder_layer),
                 hidden_states,
-                # causal_mask,
+                causal_mask,
                 attention_mask,
                 position_ids,
                 use_reentrant=True,
@@ -333,7 +333,7 @@ def GemmaModel_fast_forward(
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
-                # causal_mask=causal_mask,
+                causal_mask=causal_mask,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_value=past_key_value,
