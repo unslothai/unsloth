@@ -73,7 +73,7 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
                 self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device=x.device).float() / self.dim)
             )
 
-        position_ids = torch.arange(self.max_position_embeddings, device=x.device, dtype=torch.int64).float().unsqueeze(0)
+        position_ids = torch.arange(self.max_position_embeddings, device=x.device, dtype=torch.int64).unsqueeze(0)
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(1, -1, 1)
         position_ids_expanded = position_ids[:, None, :].float()
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
