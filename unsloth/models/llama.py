@@ -283,7 +283,7 @@ def LlamaAttention_fast_forward(
     if position_ids is None:
         cos = self.rotary_emb.cos_cached
         sin = self.rotary_emb.sin_cached
-        if cos in None:
+        if cos is None:
             # Need to call rotary_emb to init it
             cos, sin = self.rotary_emb(V, position_ids, seq_len = kv_seq_len)
         pass
