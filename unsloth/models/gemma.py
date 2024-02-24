@@ -209,14 +209,13 @@ def GemmaDecoderLayer_fast_forward(
         # hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
-            # causal_mask=causal_mask,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
             cache_position=cache_position,
-            # padding_mask=padding_mask,
+            **kwargs,
         )
         hidden_states = residual + hidden_states
 
