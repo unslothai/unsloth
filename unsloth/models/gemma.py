@@ -61,7 +61,7 @@ def GemmaDecoderLayer_fast_forward(
     past_key_value:       Optional[Tuple[torch.Tensor]] = None,
     output_attentions:    Optional[bool] = False,
     use_cache:            Optional[bool] = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    # padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
     if past_key_value is not None:
@@ -313,7 +313,7 @@ def GemmaModel_fast_forward(
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     # None for past_key_value
-                    return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
+                    return module(*inputs, past_key_value, output_attentions)#, padding_mask=padding_mask)
 
                 return custom_forward
 
@@ -335,7 +335,7 @@ def GemmaModel_fast_forward(
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
-                padding_mask=padding_mask,
+                # padding_mask=padding_mask,
             )
 
         hidden_states = layer_outputs[0]
