@@ -93,7 +93,8 @@ def GemmaAttention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
 
     cos, sin = self.rotary_emb(V, position_ids, seq_len=None)
-    Q, K = apply_rotary_pos_emb(Q, K, cos, sin, None)
+    Q, K = fast_rope_embedding(Q, K, cos, sin)
+    # Q, K = apply_rotary_pos_emb(Q, K, cos, sin, None)
 
     past_key_value = getattr(self, "past_key_value", past_key_value)
 
