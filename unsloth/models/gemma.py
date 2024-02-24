@@ -64,9 +64,40 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        self.register_buffer("inv_freq", None, persistent=False)
+        # self.register_buffer("inv_freq", None, persistent=False)
+
+        # Build here to make `torch.jit.trace` work.
+        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
+    pass
+
+    def _set_cos_sin_cache(self, seq_len, device, dtype):
+        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
+        # in FP32. They are applied (multiplied) in FP32 as well.
+        self.max_seq_len_cached = max(self.max_position_embeddings, seq_len)
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
+        )
+        t = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).float().to("cuda").unsqueeze(0)
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to("cuda")
+        position_ids_expanded = t[:, None, :].float()
+        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
+
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype), persistent=False)
+    pass
 
     def forward(self, x, position_ids, seq_len=None):
+        length = seq_len if seq_len is not None else position_ids.shape[1]
+        if length > self.max_seq_len_cached:
+            self._set_cos_sin_cache(seq_len=length, device=x.device, dtype=x.dtype)
+
+        return (
+            self.cos_cached[:seq_len].to(dtype=x.dtype),
+            self.sin_cached[:seq_len].to(dtype=x.dtype),
+        )
+
         # x: [bs, num_attention_heads, seq_len, head_size]
         if self.inv_freq is None:
             self.inv_freq = 1.0 / (
