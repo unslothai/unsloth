@@ -618,22 +618,22 @@ class FastGemmaModel(FastLlamaModel):
 
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
-        correct_dtype = lm_head.weight.dtype
+        # correct_dtype = lm_head.weight.dtype
 
-        for name, module in model.named_modules():
-            if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
-                weight = module.weight
-                quant_state = weight.quant_state
+        # for name, module in model.named_modules():
+        #     if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
+        #         weight = module.weight
+        #         quant_state = weight.quant_state
 
-                if type(quant_state) is list:
-                    # BnB seems to have float16 as default!
-                    module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
-                else:
-                    # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-                    quant_state.dtype = correct_dtype
-                pass
-            pass
-        pass
+        #         if type(quant_state) is list:
+        #             # BnB seems to have float16 as default!
+        #             module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
+        #         else:
+        #             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
+        #             quant_state.dtype = correct_dtype
+        #         pass
+        #     pass
+        # pass
 
         # Add 1 to weight
         # return output * (1 + self.weight)
