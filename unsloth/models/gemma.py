@@ -113,6 +113,7 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         new_sin = emb.sin().to(dtype=x.dtype)[:seq_len]
 
         logger.warning_once(str(torch.dist(new_cos, old_cos)))
+        return new_cos, new_sin
 pass
 
 
