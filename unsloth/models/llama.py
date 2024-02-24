@@ -812,7 +812,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         inv_freq = 1.0 / (
             self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
         )
-        position_ids = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).unsqueeze()#.float()
+        position_ids = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).unsqueeze(-1)#.float()
         inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
         position_ids_expanded = position_ids[:, None, :].float()
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
