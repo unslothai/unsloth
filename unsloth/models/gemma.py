@@ -547,19 +547,30 @@ def GemmaForCausalLM_fast_forward(
     pass
 
     loss = None
-    if labels is not None:
-        shift_logits = logits
-        if not hasattr(self, "extra_ignored_labels"):
-            # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda")
-        pass
+    # if labels is not None:
+    #     shift_logits = logits
+    #     if not hasattr(self, "extra_ignored_labels"):
+    #         # Fixes https://github.com/unslothai/unsloth/issues/10
+    #         self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda")
+    #     pass
         
-        shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-        loss = fast_cross_entropy_loss(
-            logits = shift_logits,
-            labels = shift_labels,
-        )
-    pass
+    #     shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+    #     loss = fast_cross_entropy_loss(
+    #         logits = shift_logits,
+    #         labels = shift_labels,
+    #     )
+    # pass
+    if labels is not None:
+        # Shift so that tokens < n predict n
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        # Flatten the tokens
+        loss_fct = torch.nn.CrossEntropyLoss()
+        shift_logits = shift_logits.view(-1, self.config.vocab_size)
+        shift_labels = shift_labels.view(-1)
+        # Enable model parallelism
+        shift_labels = shift_labels.to(shift_logits.device)
+        loss = loss_fct(shift_logits, shift_labels)
 
     if not return_dict:
         output = (logits,) + outputs[1:]
