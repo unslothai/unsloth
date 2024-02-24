@@ -58,16 +58,15 @@ pass
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
 def GemmaAttention_fast_forward(
     self,
-    hidden_states:        torch.Tensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    bool = False,
-    use_cache:            bool = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
-    *args, **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    hidden_states: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_ids: Optional[torch.LongTensor] = None,
+    past_key_value: Optional[Cache] = None,
+    output_attentions: bool = False,
+    use_cache: bool = False,
+    cache_position: Optional[torch.LongTensor] = None,
+    **kwargs,
+):
     
     # Clear inference
     if hasattr(self, "paged_attention"):
@@ -118,7 +117,7 @@ def GemmaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if True:#(not HAS_FLASH_ATTENTION and attention_mask is None):
+    if False:#(not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -510,9 +509,9 @@ class FastGemmaModel(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
-        # GemmaAttention      .forward = GemmaAttention_fast_forward
-        # GemmaSdpaAttention  .forward = GemmaAttention_fast_forward
-        # GemmaFlashAttention2.forward = GemmaAttention_fast_forward
+        GemmaAttention      .forward = GemmaAttention_fast_forward
+        GemmaSdpaAttention  .forward = GemmaAttention_fast_forward
+        GemmaFlashAttention2.forward = GemmaAttention_fast_forward
         GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
         GemmaModel          .forward = GemmaModel_fast_forward
         GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
