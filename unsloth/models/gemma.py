@@ -463,7 +463,7 @@ class FastGemmaModel(FastLlamaModel):
         # GemmaAttention      .forward = LlamaAttention_fast_forward
         # GemmaSdpaAttention  .forward = LlamaAttention_fast_forward
         # GemmaFlashAttention2.forward = LlamaAttention_fast_forward
-        # GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
+        GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
         GemmaModel          .forward = GemmaModel_fast_forward
         GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
