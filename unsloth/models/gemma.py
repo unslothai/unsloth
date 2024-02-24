@@ -82,8 +82,8 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
         emb_new = torch.cat((freqs, freqs), dim=-1)
 
-        print(torch.dist(emd_old, emd_new))
-        return emb.cos().to(dtype=x.dtype), emb.sin().to(dtype=x.dtype)
+        print(torch.dist(emb_old, emb_new))
+        return emb_new.cos().to(dtype=x.dtype), emb_new.sin().to(dtype=x.dtype)
 pass
 
 
