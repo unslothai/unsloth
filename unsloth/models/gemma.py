@@ -257,9 +257,9 @@ class FastGemmaModel(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
-        GemmaAttention      .forward = LlamaAttention_fast_forward
-        GemmaSdpaAttention  .forward = LlamaAttention_fast_forward
-        GemmaFlashAttention2.forward = LlamaAttention_fast_forward
+        # GemmaAttention      .forward = LlamaAttention_fast_forward
+        # GemmaSdpaAttention  .forward = LlamaAttention_fast_forward
+        # GemmaFlashAttention2.forward = LlamaAttention_fast_forward
         GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
         GemmaModel          .forward = LlamaModel_fast_forward
         GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
