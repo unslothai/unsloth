@@ -208,7 +208,7 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
-            causal_mask=causal_mask,
+            # causal_mask=causal_mask,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
@@ -576,9 +576,9 @@ class FastGemmaModel(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
-        GemmaAttention      .forward = GemmaAttention_fast_forward
-        GemmaSdpaAttention  .forward = GemmaAttention_fast_forward
-        GemmaFlashAttention2.forward = GemmaAttention_fast_forward
+        # GemmaAttention      .forward = GemmaAttention_fast_forward
+        # GemmaSdpaAttention  .forward = GemmaAttention_fast_forward
+        # GemmaFlashAttention2.forward = GemmaAttention_fast_forward
         GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
         GemmaModel          .forward = GemmaModel_fast_forward
         GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
