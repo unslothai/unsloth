@@ -203,14 +203,15 @@ pass
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
 def GemmaDecoderLayer_fast_forward(
     self,
-    hidden_states: torch.Tensor,
-    attention_mask: Optional[torch.Tensor] = None,
-    position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Tuple[torch.Tensor]] = None,
-    output_attentions: Optional[bool] = False,
-    use_cache: Optional[bool] = False,
-    cache_position: Optional[torch.LongTensor] = None,
-    **kwargs,
+    hidden_states:        torch.Tensor,
+    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    attention_mask:       Optional[torch.Tensor] = None,
+    position_ids:         Optional[torch.LongTensor] = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:    Optional[bool] = False,
+    use_cache:            Optional[bool] = False,
+    padding_mask:         Optional[torch.LongTensor] = None,
+    *args, **kwargs,
 ):
     if False:#past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
@@ -238,13 +239,13 @@ def GemmaDecoderLayer_fast_forward(
         # hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
+            causal_mask=causal_mask,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
-            cache_position=cache_position,
-            **kwargs,
+            padding_mask=padding_mask,
         )
         hidden_states = residual + hidden_states
 
@@ -540,12 +541,12 @@ class FastGemmaModel(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
-        GemmaAttention      .forward = GemmaAttention_fast_forward
-        GemmaSdpaAttention  .forward = GemmaAttention_fast_forward
-        GemmaFlashAttention2.forward = GemmaAttention_fast_forward
+        GemmaAttention      .forward = LlamaAttention_fast_forward
+        GemmaSdpaAttention  .forward = LlamaAttention_fast_forward
+        GemmaFlashAttention2.forward = LlamaAttention_fast_forward
         GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
-        GemmaModel          .forward = GemmaModel_fast_forward
-        GemmaForCausalLM    .forward = GemmaForCausalLM_fast_forward
+        GemmaModel          .forward = LlamaModel_fast_forward
+        GemmaForCausalLM    .forward = LlamaForCausalLM_fast_forward
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
