@@ -242,7 +242,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         div, mod = divmod(vocab_size, BLOCK_SIZE)
         n_blocks = div + (mod != 0)
 
-        print(dlosses.stride)
+        print(dlosses.stride())
         _cross_entropy_backward[(n_rows, n_blocks,)](
             logits,   logits.stride(0),
             dlosses, dlosses.stride(0),
