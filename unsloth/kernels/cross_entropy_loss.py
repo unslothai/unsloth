@@ -129,7 +129,7 @@ pass
 def _cross_entropy_backward(
     logits_ptr, logits_row_stride,
     dloss_ptr,   dloss_row_stride,
-    lse_ptr,
+    logsumexp_ptr,
     labels_ptr,
     VOCAB_SIZE : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
@@ -162,12 +162,18 @@ def _cross_entropy_backward(
         dloss = tl.load(dloss_ptr)
     else:
         dloss = 0.0
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
-    lse = tl.load(lse_ptr + row_idx)
-    probs = tl.exp(logits - lse)
 
-    probs = tl.where(col_offsets == label_idx, probs - 1.0, probs)
-    tl.store(logits_ptr + col_offsets, dloss * probs, mask = mask)
+    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
+    logsumexp = tl.load(logsumexp_ptr + row_idx)
+    y = tl.exp(x - logsumexp)
+    y = tl.where(
+        col_offsets == label_idx,
+        y - 1.0, # exp(x - logsumexp) - 1
+        y,       # exp(x - logsumexp)
+    )
+
+    # If y == 0: dC/dx = 0 ==> we already masked it to be = 0, so dloss = 0.
+    tl.store(logits_ptr + col_offsets, dloss * y, mask = mask)
 pass
 
 
