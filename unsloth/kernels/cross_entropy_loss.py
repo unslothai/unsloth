@@ -180,7 +180,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
     def forward(ctx, logits, labels):
         n_rows, vocab_size = logits.shape
 
-        div, mod = divmod(n_cols, MAX_FUSED_SIZE)
+        div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
         n_chunks = div + (mod != 0)
 
         if n_chunks == 1:
