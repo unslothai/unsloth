@@ -131,8 +131,8 @@ def _cross_entropy_backward(
     dloss_ptr,   dloss_row_stride,
     lse_ptr,
     labels_ptr,
-    n_cols,
-    BLOCK_SIZE: tl.constexpr,
+    VOCAB_SIZE : tl.constexpr,
+    BLOCK_SIZE : tl.constexpr,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
@@ -149,23 +149,21 @@ def _cross_entropy_backward(
         If y == 1 and x == label: dC/dlabel = exp[x - logsumexp] - 1
         If y == 1 and x != label: dC/dx     = exp[x - logsumexp]
     """
-    row_idx = tl.program_id(0)
-    col_idx = tl.program_id(1)
+    row_idx   = tl.program_id(0)
+    block_idx = tl.program_id(1)
+
     logits_ptr += row_idx * logits_row_stride.to(tl.int64)
     dloss_ptr  += row_idx *  dloss_row_stride
-    col_offsets = col_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < n_cols
+    col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < VOCAB_SIZE
     label_idx = tl.load(labels_ptr + row_idx).to(tl.int32)
-
-    if label_idx != -100:
-        dloss = tl.load(dloss_ptr)
-    else:
-        dloss = 0.0
+    
     logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
     lse = tl.load(lse_ptr + row_idx)
     probs = tl.exp(logits - lse)
-
     probs = tl.where(col_offsets == label_idx, probs - 1.0, probs)
+
+    dloss = tl.load(dloss_ptr) if label_idx != -100 else 0.0
     tl.store(logits_ptr + col_offsets, dloss * probs, mask = mask)
 pass
 
