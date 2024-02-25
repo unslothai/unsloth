@@ -108,6 +108,8 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
 
         print(freqs)
         print(self.cos_cached2)
+        print(freqs.to(torch.int64))
+        print(self.cos_cached2.to(torch.int64))
         raise 1
 
         # return self.cos_cached[:,:length], self.sin_cached[:,:length]
