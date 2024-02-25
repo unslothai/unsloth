@@ -217,7 +217,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         n_rows, n_cols = logits.shape
         grid = lambda meta: (n_rows, triton.cdiv(n_cols, meta["BLOCK_SIZE"]))
 
-        print(logits.stride(), dlosses.stride(), dlosses.shape)
+        print(logits.stride(), dlosses.stride(), dlosses.shape, dlosses)
         _cross_entropy_backward[grid](
             logits,   logits.stride(0),
             dlosses, dlosses.stride(0),
