@@ -20,13 +20,13 @@ from transformers.models.llama.modeling_llama import logger
 
 
 @triton.jit
-def _cross_entropy_forward(
+def _small_cross_entropy_forward(
     logits_ptr, logits_row_stride,
     loss_ptr,
-    logsumexp_ptr,
+    lse_ptr,
     labels_ptr,
-    VOCAB_SIZE : tl.constexpr,
-    BLOCK_SIZE : tl.constexpr,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
 ):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
@@ -36,102 +36,83 @@ def _cross_entropy_forward(
              = y * (log[sum(exp(x))] - x)
         If y == 0: CE_i = 0
         If y == 1: CE_i = logsumexp - x
-
-        logsumexp is also stable
-        Take    y =         log[sum(exp(x))]
-           exp(y) =             sum(exp(x))
-           exp(y) =             sum(exp(x - c)*exp(c)) Since e^(x-c)*e^c = e^x
-           exp(y) =      exp(c)*sum(exp(x - c))
-               y  = log(exp(c)*sum(exp(x - c)))
-               y  = c + log[sum(exp(x - c))]
-        This means we can set c = max(x) to make sure
-        exp(x - c) always is exp(x - max(x)).
-        This ensures exp(x - max(x))'s maximum is 1 as exp(0) = 1.
     """
     row_idx = tl.program_id(0)
-    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
-    loss_ptr      += row_idx
-    logsumexp_ptr += row_idx
-    labels_ptr    += row_idx
+    logits_ptr += row_idx * logits_row_stride
+    loss_ptr   += row_idx
+    lse_ptr    += row_idx
+    labels_ptr += row_idx
 
     col_offsets = tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < VOCAB_SIZE
+    mask = col_offsets < n_cols
 
+    # TODO: Fixup int32 locations to int64
     label_idx = tl.load(labels_ptr).to(tl.int32)
     logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
-    c = tl.max(logits, 0)
-    logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
+    max_logits = tl.max(logits, 0)
+    # Maximum stops overflow
+    lse = tl.log(tl.sum(tl.exp(logits - max_logits), 0)) + max_logits
+    tl.store(lse_ptr, lse)
 
     if label_idx != -100:
-        x = tl.load(logits_ptr + label_idx).to(tl.float32)
-        loss = logsumexp - x
+        logits_label = tl.load(logits_ptr + label_idx).to(tl.float32)
+        loss = lse - logits_label
     else:
         loss = 0.0
-    tl.store(logsumexp_ptr, logsumexp)
     tl.store(loss_ptr, loss)
 pass
 
 
 @triton.jit
-def _chunked_cross_entropy_forward(
+def _large_cross_entropy_forward(
     logits_ptr, logits_row_stride,
     loss_ptr,
-    logsumexp_ptr,
+    lse_ptr,
     labels_ptr,
-    VOCAB_SIZE : tl.constexpr,
-    N_CHUNKS   : tl.constexpr,
-    BLOCK_SIZE : tl.constexpr,
+    n_rows,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
 ):
     """
-        256K vocab divided in 4 chunks
-
-        |-65536-| |-65536-| |-65536-| |-65536-|
-        |-------| |-------| |-------| |-------|
-        |-------| |-------| |-------| |-------|
-
+        Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
+        Pi = exp(xi) / sum(exp(xi))
+        CE_i = -y log(p) = -y log[ exp(x) / sum(exp(x)) ]
+             = -y [ x - log[sum(exp(x))] ]
+             = y * (log[sum(exp(x))] - x)
         If y == 0: CE_i = 0
         If y == 1: CE_i = logsumexp - x
-
-        Notice we can do logsumexp for each chunk and then
-        logsumexp[chunk_sum(logsumexp)] == logsumexp
-
-        chunk_sum = log[chunk_sum(logsumexp)]
-                  = log[exp(logsumexp(a)) + ... + exp(logsumexp(z))]
-                  = log[exp(log[sum(exp(a))]) + ... + exp(log[sum(exp(z))])]
-                  = log[sum(exp(a)) + ... + sum(exp(z))]
-                  = logsumexp(x)
-
-        This means we can perform a logsumexp for each chunk, then do a
-        final logsumexp reduction!
-
-        Ie do: logsumexp(chunked_logsumexp) - x
     """
-    row_idx   = tl.program_id(0)
-    chunk_idx = tl.program_id(1)
-    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
-    loss_ptr      += row_idx
-    logsumexp_ptr += row_idx * N_CHUNKS + chunk_idx
-    labels_ptr    += row_idx
+    row_idx = tl.program_id(0)
+    col_idx = tl.program_id(1)
+    logits_ptr += row_idx * logits_row_stride.to(tl.int64)
+    loss_ptr   += row_idx + col_idx*n_rows
+    lse_ptr    += row_idx + col_idx*n_rows
+    labels_ptr += row_idx
 
-    col_offsets = chunk_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < VOCAB_SIZE
+    col_offsets = col_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
 
-    label_idx = tl.load(labels_ptr).to(tl.int32)
+    # Get labels and logits
+    label_idx = tl.load(labels_ptr).to(tl.int64)
     logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
-    c = tl.max(logits, 0)
-    logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
+    max_logits = tl.max(logits, 0)
+    # Maximum stops overflow
+    lse = tl.log(tl.sum(tl.exp(logits - max_logits), 0)) + max_logits
+    tl.store(lse_ptr, lse)
 
-    if chunk_idx == 0:
-        # logsumexp(chunked_logsumexp) - x
-        # Do the -x separately
-        if label_idx != -100:
-            x = tl.load(logits_ptr + label_idx).to(tl.float32)
-            loss = -1.0 * x
-        else:
-            loss = 0.0
-        tl.store(loss_ptr, loss)
+    loss = 0.0
+    # chained boolean operators (A or B or C) are not supported; use parentheses to split the chain.
+    if (label_idx != -100):
+        if  (label_idx >=    (col_idx+0)*BLOCK_SIZE) and \
+            (label_idx < min((col_idx+1)*BLOCK_SIZE, n_cols)):
+
+            logits_label = tl.load(logits_ptr + label_idx).to(tl.float32)
+            lse  = 0.0
+            loss = lse - logits_label # We add the final logsumexp after a reduction
+        pass
     pass
-    tl.store(logsumexp_ptr, logsumexp)
+        
+    tl.store(loss_ptr, loss)
 pass
 
 
@@ -139,10 +120,10 @@ pass
 def _cross_entropy_backward(
     logits_ptr, logits_row_stride,
     dloss_ptr,   dloss_row_stride,
-    logsumexp_ptr,
+    lse_ptr,
     labels_ptr,
-    VOCAB_SIZE : tl.constexpr,
-    BLOCK_SIZE : tl.constexpr,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
@@ -159,28 +140,25 @@ def _cross_entropy_backward(
         If y == 1 and x == label: dC/dlabel = exp[x - logsumexp] - 1
         If y == 1 and x != label: dC/dx     = exp[x - logsumexp]
     """
-    row_idx   = tl.program_id(0)
-    block_idx = tl.program_id(1)
-
+    row_idx = tl.program_id(0)
+    col_idx = tl.program_id(1)
     logits_ptr += row_idx * logits_row_stride.to(tl.int64)
     dloss_ptr  += row_idx *  dloss_row_stride
-    col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < VOCAB_SIZE
+    col_offsets = col_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
     label_idx = tl.load(labels_ptr + row_idx).to(tl.int32)
 
-    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
-    logsumexp = tl.load(logsumexp_ptr + row_idx)
-    y = tl.exp(x - logsumexp)
-    y = tl.where(
-        col_offsets == label_idx,
-        y - 1.0, # exp(x - logsumexp) - 1
-        y,       # exp(x - logsumexp)
-    )
+    if label_idx != -100:
+        dloss = tl.load(dloss_ptr)
+    else:
+        dloss = 0.0
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
+    lse = tl.load(lse_ptr + row_idx)
+    probs = tl.exp(logits - lse)
 
-    # If y == 0: dC/dx = 0 ==> we already masked it to be = 0, so dloss = 0.
-    dloss = tl.load(dloss_ptr) if label_idx != -100 else 0.0
-    tl.store(logits_ptr + col_offsets, dloss * y, mask = mask)
-pass 
+    probs = tl.where(col_offsets == label_idx, probs - 1.0, probs)
+    tl.store(logits_ptr + col_offsets, dloss * probs, mask = mask)
+pass
 
 
 MAX_FUSED_SIZE = 65536 # 2**16
@@ -188,45 +166,45 @@ MAX_FUSED_SIZE = 65536 # 2**16
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def forward(ctx, logits, labels):
-        n_rows, vocab_size = logits.shape
+        n_rows, n_cols = logits.shape
 
-        div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
-        n_chunks = div + (mod != 0)
-        losses = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
+        div, mod = divmod(n_cols, MAX_FUSED_SIZE)
+        n_splits = div + (mod != 0)
 
-        if n_chunks == 1:
+        if n_splits == 1:
             # For small vocabs <= 65336 like Llama, Mistral
-            BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
+            BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+            losses    = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
             logsumexp = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
 
-            _cross_entropy_forward[(n_rows,)](
+            _small_cross_entropy_forward[(n_rows,)](
                 logits, logits.stride(0),
                 losses,
                 logsumexp,
                 labels,
-                VOCAB_SIZE = vocab_size,
+                n_cols,
                 BLOCK_SIZE = BLOCK_SIZE,
                 num_warps  = num_warps,
             )
         else:
             # For large vocabs > 65336 like Gemma 256K
-            logsumexp = torch.empty((n_rows, n_chunks), dtype = torch.float32, device = "cuda")
+            losses    = torch.empty((n_splits, n_rows), dtype = torch.float32, device = "cuda")
+            logsumexp = torch.empty((n_splits, n_rows), dtype = torch.float32, device = "cuda")
 
-            _chunked_cross_entropy_forward[(n_rows, n_chunks,)](
+            _large_cross_entropy_forward[(n_rows, n_splits,)](
                 logits, logits.stride(0),
                 losses,
                 logsumexp,
                 labels,
-                VOCAB_SIZE = vocab_size,
-                N_CHUNKS   = n_chunks,
+                n_rows,
+                n_cols,
                 BLOCK_SIZE = MAX_FUSED_SIZE,
                 num_warps  = 32,
             )
-            # logsumexp(chunked_logsumexp) - x
-            # Do the -x separately
-            logsumexp = torch.logsumexp(logsumexp, dim = 1) # Row sum
-            losses += logsumexp
-            losses.masked_fill_(labels == -100, 0) # Don't forget to mask padding out!
+            logsumexp = torch.logsumexp(logsumexp, dim = 0) # Column sum
+            losses = losses.sum(dim = 0) # Column sum
+            losses += logsumexp # loss = lse - logits_label
+            losses.masked_fill_(labels == -100, 0) # Padding tokens
         pass
 
         ctx.save_for_backward(logits, logsumexp, labels)
@@ -236,20 +214,16 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dlosses):
         logits, logsumexp, labels = ctx.saved_tensors
-        n_rows, vocab_size = logits.shape
+        n_rows, n_cols = logits.shape
+        grid = lambda meta: (n_rows, triton.cdiv(n_cols, meta["BLOCK_SIZE"]))
 
-        BLOCK_SIZE = 4096
-        div, mod = divmod(vocab_size, BLOCK_SIZE)
-        n_blocks = div + (mod != 0)
-
-        print(logits.stride(0), dlosses.stride(0))
-        _cross_entropy_backward[(n_rows, n_blocks,)](
+        _cross_entropy_backward[grid](
             logits,   logits.stride(0),
             dlosses, dlosses.stride(0),
             logsumexp,
             labels,
-            VOCAB_SIZE = vocab_size,
-            BLOCK_SIZE = BLOCK_SIZE,
+            n_cols,
+            BLOCK_SIZE = 4096,
             num_warps  = 8,
         )
         return logits, None, None,
