@@ -157,13 +157,16 @@ def _cross_entropy_backward(
     col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
     label_idx = tl.load(labels_ptr + row_idx).to(tl.int32)
-    
+
+    if label_idx != -100:
+        dloss = tl.load(dloss_ptr)
+    else:
+        dloss = 0.0
     logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
     lse = tl.load(lse_ptr + row_idx)
     probs = tl.exp(logits - lse)
-    probs = tl.where(col_offsets == label_idx, probs - 1.0, probs)
 
-    dloss = tl.load(dloss_ptr) if label_idx != -100 else 0.0
+    probs = tl.where(col_offsets == label_idx, probs - 1.0, probs)
     tl.store(logits_ptr + col_offsets, dloss * probs, mask = mask)
 pass
 
