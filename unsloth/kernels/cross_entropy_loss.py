@@ -129,10 +129,10 @@ pass
 def _cross_entropy_backward(
     logits_ptr, logits_row_stride,
     dloss_ptr,   dloss_row_stride,
-    logsumexp_ptr,
+    lse_ptr,
     labels_ptr,
-    VOCAB_SIZE : tl.constexpr,
-    BLOCK_SIZE : tl.constexpr,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
@@ -149,27 +149,24 @@ def _cross_entropy_backward(
         If y == 1 and x == label: dC/dlabel = exp[x - logsumexp] - 1
         If y == 1 and x != label: dC/dx     = exp[x - logsumexp]
     """
-    row_idx   = tl.program_id(0)
-    block_idx = tl.program_id(1)
-
+    row_idx = tl.program_id(0)
+    col_idx = tl.program_id(1)
     logits_ptr += row_idx * logits_row_stride.to(tl.int64)
     dloss_ptr  += row_idx *  dloss_row_stride
-    col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = col_offsets < VOCAB_SIZE
+    col_offsets = col_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
     label_idx = tl.load(labels_ptr + row_idx).to(tl.int32)
 
-    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
-    logsumexp = tl.load(logsumexp_ptr + row_idx)
-    y = tl.exp(x - logsumexp)
-    y = tl.where(
-        col_offsets == label_idx,
-        y - 1.0, # exp(x - logsumexp) - 1
-        y,       # exp(x - logsumexp)
-    )
+    if label_idx != -100:
+        dloss = tl.load(dloss_ptr)
+    else:
+        dloss = 0.0
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
+    lse = tl.load(lse_ptr + row_idx)
+    probs = tl.exp(logits - lse)
 
-    # If y == 0: dC/dx = 0 ==> we already masked it to be = 0, so dloss = 0.
-    dloss = tl.load(dloss_ptr) if label_idx != -100 else 0.0
-    tl.store(logits_ptr + col_offsets, dloss * y, mask = mask)
+    probs = tl.where(col_offsets == label_idx, probs - 1.0, probs)
+    tl.store(logits_ptr + col_offsets, dloss * probs, mask = mask)
 pass
 
 
@@ -231,13 +228,13 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         BLOCK_SIZE = 4096
         div, mod = divmod(vocab_size, BLOCK_SIZE)
         n_blocks = div + (mod != 0)
-        
+
         _cross_entropy_backward[(n_rows, n_blocks,)](
             logits,   logits.stride(0),
             dlosses, dlosses.stride(0),
             logsumexp,
             labels,
-            VOCAB_SIZE = vocab_size,
+            vocab_size,
             BLOCK_SIZE = BLOCK_SIZE,
             num_warps  = 8,
         )
