@@ -68,6 +68,18 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         self.register_buffer("cos_cached", None, persistent=False)
         self.register_buffer("sin_cached", None, persistent=False)
 
+        self.inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cuda").float() / self.dim)
+        )
+
+        position_ids = torch.arange(self.max_position_embeddings, device="cuda", dtype=torch.int64).unsqueeze(0)
+        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(1, -1, 1)
+        position_ids_expanded = position_ids[:, None, :].float()
+        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.cos_cached = emb.cos().to(torch.bfloat16)
+        self.sin_cached = emb.sin().to(torch.bfloat16)
+
     def forward(self, x, position_ids, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if self.inv_freq is None:
@@ -576,6 +588,16 @@ class FastGemmaModel(FastLlamaModel):
         lm_head.in_features  = lm_head.weight.shape[1]
         lm_head.out_features = lm_head.weight.shape[0]
         model.lm_head = lm_head
+
+        # Gemma has tied weights! This means lm_head == embed_tokens
+        if model.model.embed_tokens.weight.data_ptr() != model.lm_head.weight.data_ptr():
+            lm_head = torch.nn.Linear(1, 1, bias = None)
+            del lm_head.weight
+            lm_head.weight = model.model.embed_tokens.weight
+            lm_head.in_features  = lm_head.weight.shape[1]
+            lm_head.out_features = lm_head.weight.shape[0]
+            model.lm_head = lm_head
+        pass
 
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
