@@ -217,7 +217,6 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 losses,
                 logsumexp,
                 labels,
-                n_rows,
                 VOCAB_SIZE = vocab_size,
                 BLOCK_SIZE = MAX_FUSED_SIZE,
                 num_warps  = 32,
