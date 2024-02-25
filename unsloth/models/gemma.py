@@ -77,7 +77,7 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         position_ids_expanded = position_ids[:, None, :].float()
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.cos_cached2 = emb.cos().to(torch.bfloat16)
+        self.cos_cached2 = freqs
         self.sin_cached2 = emb.sin().to(torch.bfloat16)
 
     def forward(self, x, position_ids, seq_len=None):
@@ -106,8 +106,9 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         cos_cached = emb.cos().to(dtype=x.dtype)
         sin_cached = emb.sin().to(dtype=x.dtype)
 
-        print(cos_cached)
+        print(freqs)
         print(self.cos_cached2)
+        raise 1
 
         # return self.cos_cached[:,:length], self.sin_cached[:,:length]
         return self.cos_cached, self.sin_cached
