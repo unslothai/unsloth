@@ -106,6 +106,9 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
         cos_cached = emb.cos().to(dtype=x.dtype)
         sin_cached = emb.sin().to(dtype=x.dtype)
 
+        print(position_ids)
+        print(inv_freq_expanded)
+        print(position_ids_expanded)
         print(freqs)
         print(self.cos_cached2)
         raise 1
