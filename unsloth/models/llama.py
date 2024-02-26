@@ -55,6 +55,7 @@ from peft import PeftModelForCausalLM
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
+import re, os, inspect, math, sys
 
 
 def original_apply_qkv(self, X):
@@ -118,6 +119,7 @@ def LlamaAttention_fast_forward_inference(
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
+    attention_size = n_heads*head_dim
     # assert(n_kv_heads * n_groups == n_heads)
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
@@ -130,7 +132,7 @@ def LlamaAttention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:,1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
+        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda")
@@ -200,13 +202,13 @@ def LlamaAttention_fast_forward_inference(
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
-    A = A.reshape(bsz, 1, self.hidden_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1])
+    A = A.reshape(bsz, 1, attention_size)
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
     return A, (Kn, Vn)
 pass
 
 
-def fast_mlp_inference(self, X):
+def fast_swiglu_inference(self, X):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
@@ -338,7 +340,7 @@ def LlamaAttention_fast_forward(
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
-    attn_output = A.reshape(bsz, q_len, self.hidden_size)
+    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
@@ -389,7 +391,7 @@ def LlamaDecoderLayer_fast_forward(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
-        hidden_states = fast_mlp_inference(self.mlp, hidden_states)
+        hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
         hidden_states += residual
     else:
         residual = hidden_states
@@ -505,6 +507,14 @@ def LlamaModel_fast_forward(
     # embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
+
+    # Mormalized from Gemma
+    if self.config.model_type == "gemma":
+        inputs_requires_grad = inputs_embeds.requires_grad
+        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
+        inputs_embeds *= math_sqrt(self.config.hidden_size)
+        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+    pass
 
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
@@ -645,7 +655,7 @@ def LlamaModel_fast_forward_inference(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
-        hidden_states = fast_mlp_inference(decoder_layer.mlp, hidden_states)
+        hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
@@ -782,33 +792,36 @@ pass
 # https://github.com/huggingface/transformers/pull/27931
 # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
 class LlamaRotaryEmbedding(torch.nn.Module):
+    # Fixes https://github.com/huggingface/transformers/pull/28837
+    # https://github.com/microsoft/DeepSpeed/issues/4932
+    # The precision of RoPE buffers is not correct, so we cast to int64.
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
         super().__init__()
-
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
-        )
+        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
+        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
+        # in FP32. They are applied (multiplied) in FP32 as well.
         self.max_seq_len_cached = seq_len
-        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
+        )
+        t = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).float()
 
-        freqs = torch.outer(t, self.inv_freq)
+        freqs = torch.outer(t, inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
 
-    def forward(self, x, seq_len=None):
+    def forward(self, x, position_ids=None, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
@@ -823,7 +836,9 @@ pass
 
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
-
+    # Fixes https://github.com/huggingface/transformers/pull/28837
+    # https://github.com/microsoft/DeepSpeed/issues/4932
+    # The precision of RoPE buffers is not correct, so we cast to int64.
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None, scaling_factor=1.0):
         self.scaling_factor = scaling_factor
         super().__init__(dim, max_position_embeddings, base, device)
@@ -831,14 +846,17 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         self.max_seq_len_cached = seq_len
-        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
+        )
+        t = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).float()
         t = t / self.scaling_factor
 
-        freqs = torch.outer(t, self.inv_freq)
+        freqs = torch.outer(t, inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
 pass
 
@@ -877,20 +895,22 @@ class FastLlamaModel:
         device_map     = "sequential",
         rope_scaling   = None,
         fix_tokenizer  = True,
+        model_patcher  = None,
         **kwargs,
     ):
+        if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
-           f"==((====))==  Unsloth: Fast Llama patching release {__version__}\n"\
+           f"==((====))==  Unsloth: Fast {model_patcher.__name__[4:-5]} patching release {__version__}\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
-        FastLlamaModel.pre_patch()
+        model_patcher.pre_patch()
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -946,13 +966,132 @@ class FastLlamaModel:
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = FastLlamaModel.post_patch(model)
+        model = model_patcher.post_patch(model)
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
             layer.self_attn.apply_qkv = original_apply_qkv
             layer.self_attn.apply_o   = original_apply_o
         pass
+
+        # Patch Trainer
+        from transformers.trainer import Trainer
+        try:
+            if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+                inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
+                Trainer._original_training_loop = inner_training_loop
+            else:
+                inner_training_loop = Trainer._original_training_loop
+        except:
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        pass
+
+        import transformers.trainer
+        items_in_trainer = dir(transformers.trainer)
+        good_items = []
+        for item in items_in_trainer:
+            # TODO: Support Deepspeed
+            if item.startswith(("deepspeed", "xm", "met", "smp")): continue
+            if item in inner_training_loop: good_items.append(item)
+        pass
+        exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
+
+        start = re.search('logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
+        end = inner_training_loop.find("\n\n", start)
+        original_debug = inner_training_loop[start:end]
+        spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
+        front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
+
+        debug_info = """debug_info = \\
+        f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
+        f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
+        f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
+        f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
+        f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
+        logger.warning_once(debug_info)"""
+
+        debug_info = debug_info.split('\n')
+        debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
+        inner_training_loop = inner_training_loop.replace(original_debug, debug_info)
+
+        debug_info = """n_total_devices = total_train_batch_size // \\
+            args.gradient_accumulation_steps // self._train_batch_size
+        if n_total_devices > 2:
+            logger.warning_once(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        debug_info ="""
+        debug_info = debug_info.split('\n')
+        debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
+        inner_training_loop = inner_training_loop.replace("debug_info =", debug_info, 1)
+
+        front_spaces = re.match(r"[\t\s]{1,}", inner_training_loop).group(0)
+        inner_training_loop = re.sub(r"^" + front_spaces, "", inner_training_loop, flags = re.MULTILINE)
+        inner_training_loop = inner_training_loop.replace(
+            "train_dataloader = tpu_spmd_dataloader(train_dataloader)",
+            "raise RuntimeError('Unsloth: TPUs are not yet supported!')"
+        )
+        inner_training_loop = inner_training_loop.replace(
+            "self.accelerator.free_memory()",
+            "self.accelerator.free_memory()\n" + \
+            front_spaces + "if self.is_deepspeed_enabled:"\
+            "raise RuntimeError('Unsloth: Deepspeed is not yet supported!')\n", 1,
+        )
+
+        check_batches = """train_dataloader = self.get_train_dataloader()
+        ga  = args.gradient_accumulation_steps
+        bsz = self._train_batch_size
+        total_batches = bsz * ga * args.world_size
+        n_total_devices = total_batches // ga // bsz
+        if n_total_devices > 2:
+            logger.warning_once(
+                "Please consider a commercial license - Unsloth was designed for the GPU Poor.\\n"
+                "The OSS currently works on 4 GPUs - we're a 2 person team, so please help fund\\n"
+                "our development costs by supporting us through Ko-fi or buying a license! Thanks!",
+            )
+            divisor = n_total_devices / 2
+            bsz = self._train_batch_size = max(int(bsz / divisor), 1)
+            if total_batches // ga // bsz > 2:
+                divisor = n_total_devices / 2
+                ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
+        check_batches = check_batches.split('\n')
+        check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])
+        inner_training_loop = inner_training_loop.replace(
+            "train_dataloader = self.get_train_dataloader()",
+            check_batches, 1,
+        )
+        inner_training_loop = inner_training_loop.replace(
+            "_inner_training_loop",
+            "_fast_inner_training_loop", 1,
+        )
+        exec(inner_training_loop, globals())
+
+        Trainer._inner_training_loop = _fast_inner_training_loop
+        inner_training_loop = inner_training_loop.replace(
+            "is_torch_tpu_available()",
+            "False",
+        )
+        if "n_total_devices >" not in inner_training_loop:
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        pass
+        inner_training_loop = inner_training_loop.replace(
+            "is_sagemaker_mp_enabled()",
+            "False",
+        )
+        Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save max_seq_length
         model.max_seq_length = max_position_embeddings
@@ -1031,6 +1170,14 @@ class FastLlamaModel:
                     quant_state.dtype = correct_dtype
                 pass
             pass
+            # Downcast RoPE embedding to correct data type
+            if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")) \
+                and (module.cos_cached.dtype != correct_dtype):
+                
+                module.cos_cached = module.cos_cached.to(correct_dtype)
+                module.sin_cached = module.sin_cached.to(correct_dtype)
+                pass
+            pass
         pass
 
         # Clear deleted GPU items
@@ -1073,7 +1220,7 @@ class FastLlamaModel:
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora"   in signature
-
+        
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
@@ -1181,6 +1328,16 @@ class FastLlamaModel:
             )
         pass
 
+        # Get activation function
+        model_type = model.config.model_type
+
+        if   model_type == "llama":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "mistral": apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu
+        else:
+            raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
+        pass
+
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
@@ -1198,6 +1355,28 @@ class FastLlamaModel:
                 pass
             # Add revision to enable future fast inference paths
             model.peft_config[active_adapter].revision = f"unsloth"
+        pass
+
+        from transformers.trainer import Trainer 
+        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+            raise RuntimeError(
+                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
+                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+            )
+        pass
+
+        # Fix loftq issues
+        # loftq_config must not = None, but rather {}
+        all_configs = model.peft_config
+        for key, current_config in all_configs.items():
+            if hasattr(current_config, "loftq_config") and current_config.loftq_config is None:
+                new_args = current_config.__dict__
+                new_args["loftq_config"] = {}
+                current_config = current_config.__class__(**new_args)
+                all_configs[key] = current_config
+            pass
         pass
 
         # Do patching

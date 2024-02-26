@@ -101,7 +101,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         sin = ctx.sin
         scaled_head_dim = ctx.scaled_head_dim  # Retrieve scaled_head_dim for backward pass
         head_dim = ctx.head_dim  # Retrieve original head_dim for reshaping in backward
-        
+
         _rope_embedding[(n_rows, n_heads,)](
             dY,  dY.stride(0),
             cos, cos.stride(0),

@@ -432,19 +432,20 @@ class FastPhi2Model(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
 
         pass 
-
+    
     @staticmethod
     def from_pretrained(
         model_name = "unsloth/llama-2-7b-bnb-4bit", #TODO: update me.
         max_seq_length = 4096,
-        dtype = None,
-        load_in_4bit = True,
-        token = None,
-        device_map = "sequential",
-        rope_scaling = None,
-        fix_tokenizer = True,
+        dtype          = None,
+        load_in_4bit   = True,
+        token          = None,
+        device_map     = "sequential",
+        rope_scaling   = None,
+        fix_tokenizer  = True,
+        use_gradient_checkpointing = True,
+        *args, **kwargs,
     ):
-
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)

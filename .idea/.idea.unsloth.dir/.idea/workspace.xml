@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="c24ba3cf-cb72-4861-b896-ee9a71143178" name="Changes" comment="" />
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;cm2435&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">
+    <option name="selectedUrlAndAccountId">
+      <UrlAndAccount>
+        <option name="accountId" value="3a4c123f-1c4e-4350-a313-8b468199f502" />
+        <option name="url" value="https://github.com/cm2435/unsloth" />
+      </UrlAndAccount>
+    </option>
+  </component>
+  <component name="MarkdownSettingsMigration">
+    <option name="stateVersion" value="1" />
+  </component>
+  <component name="MetaFilesCheckinStateConfiguration" checkMetaFiles="true" />
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 5
+}</component>
+  <component name="ProjectId" id="2b8gEXzXKccpoW0dpzBZ5wqAsh8" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  },
+  &quot;keyToStringList&quot;: {
+    &quot;rider.external.source.directories&quot;: [
+      &quot;/home/cm2435/.config/JetBrains/Rider2023.3/resharper-host/DecompilerCache&quot;,
+      &quot;/home/cm2435/.config/JetBrains/Rider2023.3/resharper-host/SourcesCache&quot;,
+      &quot;/home/cm2435/.local/share/Symbols/src&quot;
+    ]
+  }
+}</component>
+  <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="c24ba3cf-cb72-4861-b896-ee9a71143178" name="Changes" comment="" />
+      <created>1705602009132</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1705602009132</updated>
+      <workItem from="1705602010310" duration="2185000" />
+      <workItem from="1705959196222" duration="805000" />
+      <workItem from="1706118213344" duration="1978000" />
+    </task>
+    <task id="LOCAL-00001" summary="Added kernel for layerNORMS from triton tutorials[https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html]">
+      <option name="closed" value="true" />
+      <created>1705602099814</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1705602099814</updated>
+    </task>
+    <task id="LOCAL-00002" summary="Contributed relu triton kernl, removed a small amount of boilerplate from the layernorm, added test suite for kernls.">
+      <option name="closed" value="true" />
+      <created>1705959264306</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1705959264306</updated>
+    </task>
+    <task id="LOCAL-00003" summary="update test to use common torch.allclose function util">
+      <option name="closed" value="true" />
+      <created>1706118282372</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1706118282372</updated>
+    </task>
+    <task id="LOCAL-00004" summary="impliment forward and backward kernels for GeLU">
+      <option name="closed" value="true" />
+      <created>1706118302509</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1706118302509</updated>
+    </task>
+    <task id="LOCAL-00005" summary="fixed incorrect bwd pass for GeLU, wrapped functions in pytorch convience handlers">
+      <option name="closed" value="true" />
+      <created>1706119381948</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1706119381948</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="UnityCheckinConfiguration" checkUnsavedScenes="true" />
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <option name="CLEAR_INITIAL_COMMIT_MESSAGE" value="true" />
+    <MESSAGE value="Added kernel for layerNORMS from triton tutorials[https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html]" />
+    <MESSAGE value="Contributed relu triton kernl, removed a small amount of boilerplate from the layernorm, added test suite for kernls." />
+    <MESSAGE value="update test to use common torch.allclose function util" />
+    <MESSAGE value="impliment forward and backward kernels for GeLU" />
+    <MESSAGE value="fixed incorrect bwd pass for GeLU, wrapped functions in pytorch convience handlers" />
+    <option name="LAST_COMMIT_MESSAGE" value="fixed incorrect bwd pass for GeLU, wrapped functions in pytorch convience handlers" />
+  </component>
+</project>
