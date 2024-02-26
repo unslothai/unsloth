@@ -264,7 +264,7 @@ class FastGemmaModel(FastLlamaModel):
                 param.requires_grad_(False)
         pass
 
-        print("Unsloth: Patching Gemma RMS Layernorm + 1")
+        # Patch RMS Layernorm
         for name, module in model.named_modules():
             if isinstance(module, GemmaRMSNorm):
                 module.weight += 1.0 # return output * (1 + self.weight)

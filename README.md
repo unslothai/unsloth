@@ -10,7 +10,7 @@
 <a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="48"></a>
 <a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/buy me a coffee button.png" height="48"></a>
 
-### Finetune Mistral, Llama 2-5x faster with 70% less memory!
+### Finetune Mistral, Gemma, Llama 2-5x faster with 70% less memory!
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
@@ -22,28 +22,30 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 | Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
+| **Gemma 7b**      | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.5x faster | 24% less |
 | **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
 | **Llama-2 7b**      | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
-| **DPO - Zephyr**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 19% less |
 | **TinyLlama**  | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)              | 3.9x faster | 74% less |
 | **CodeLlama 34b** A100   | [▶️ Start on Colab](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing)              | 1.9x faster | 27% less |
 | **Mistral 7b** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster\* | 62% less |
+| **DPO - Zephyr**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 19% less |
 
 - This [conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for ShareGPT ChatML / Vicuna templates.
 - This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for raw text. This [DPO notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) replicates Zephyr.
-- Colab provides a free GPU sometimes. Kaggle has 30 hrs free per week on a 12 hr running cap.
-- \* Kaggle has 2x T4s, but we use 1. Due to overhead, 1x T4 is 5x faster. Use Colab as Kaggle takes 10 mins to install.
+- \* Kaggle has 2x T4s, but we use 1. Due to overhead, 1x T4 is 5x faster.
 
 ## 🦥 Unsloth.ai News
-- 📣 [DPO support](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) is now included. [More info](#DPO) on DPO.
-- 📣 [TinyLlama 1.1b](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing) on 3T tokens now works.
-- 📣 We did a [blog](https://huggingface.co/blog/unsloth-trl) with 🤗Hugging Face, and we're in their official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth).
-- 📣 Now supports **Llama, Yi, Mistral, CodeLlama, Qwen (llamafied), Deepseek** and their derived models (**Open Hermes** etc). Llama 7, 13, 70b; CodeLlama 7, 13, 34, 70b; Yi 6, 34b are all supported!
-- 📣 **Download models 4x faster** from 🤗Hugging Face! Eg: `unsloth/mistral-7b-bnb-4bit` See our [HF collection](https://huggingface.co/collections/unsloth/load-4bit-models-4x-faster-659042e3a41c3cbad582e734) for more!
+- 📣 [Gemma 7b](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing) on 6T tokens now works. And [Gemma 2b notebook](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)
+- 📣 Added [conversational notebooks](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) and [raw text notebooks](https://colab.research.google.com/drive/1bMOKOBzxQWUIGZBs_B0zm8pimuEnZdfM?usp=sharing)
+- 📣 [2x faster inference](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) added for all our models
+- 📣 [DPO support](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) is now included. [More info](#DPO) on DPO
+- 📣 We did a [blog](https://huggingface.co/blog/unsloth-trl) with 🤗Hugging Face and are in their official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)
+- 📣 [Download models 4x faster](https://huggingface.co/collections/unsloth/)  from 🤗Hugging Face. Eg: `unsloth/mistral-7b-bnb-4bit`
 
 ## 🔗 Links and Resources
 | Type                            | Links                               |
 | ------------------------------- | --------------------------------------- |
+| 📚 **Wiki & FAQ**              | [Read Our Wiki](https://github.com/unslothai/unsloth/wiki) |
 | 📜 **Documentation**              | [Read The Doc](https://github.com/unslothai/unsloth/tree/main#-documentation) |
 | 💾 **Installation**               | [unsloth/README.md](https://github.com/unslothai/unsloth/tree/main#installation-instructions)|
 | <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  [Follow us on X](https://twitter.com/unslothai)|
