@@ -22,7 +22,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 | Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
-| **Gemma 7b**      | [▶️ Start on Colab](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.5x faster | 24% less |
+| **Gemma 7b**      | [▶️ Start on Colab](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 58% less |
 | **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 62% less |
 | **Llama-2 7b**      | [▶️ Start on Colab](https://colab.research.google.com/drive/1lBzz5KeZJKXjvivbYvmGarix9Ao6Wxe5?usp=sharing)               | 2.2x faster | 43% less |
 | **TinyLlama**  | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)              | 3.9x faster | 74% less |
