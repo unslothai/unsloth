@@ -293,8 +293,10 @@ class FastMistralModel(FastLlamaModel):
         device_map     = "sequential",
         rope_scaling   = None, # Mistral does not support RoPE scaling
         fix_tokenizer  = True,
+        model_patcher  = None,
         **kwargs,
     ):
+        if model_patcher is None: model_patcher = FastMistralModel
         # Mistral does NOT support RoPE Scaling!
         if rope_scaling is not None:
             logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
@@ -305,13 +307,13 @@ class FastMistralModel(FastLlamaModel):
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
-           f"==((====))==  Unsloth: Fast Mistral patching release {__version__}\n"\
+           f"==((====))==  Unsloth: Fast {model_patcher.__name__[4:-5]} patching release {__version__}\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
-           f' "-____-"     Apache 2 free license: http://github.com/unslothai/unsloth'
+           f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
-        FastMistralModel.pre_patch()
+        model_patcher.pre_patch()
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -360,7 +362,7 @@ class FastMistralModel(FastLlamaModel):
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = FastMistralModel.post_patch(model)
+        model = model_patcher.post_patch(model)
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):

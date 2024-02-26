@@ -119,6 +119,7 @@ def LlamaAttention_fast_forward_inference(
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.num_key_value_heads
     head_dim   = self.head_dim
+    attention_size = n_heads*head_dim
     # assert(n_kv_heads * n_groups == n_heads)
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
@@ -131,7 +132,7 @@ def LlamaAttention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:,1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, hd), dtype = dtype, device = "cuda")
+        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda")
@@ -201,13 +202,13 @@ def LlamaAttention_fast_forward_inference(
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
-    A = A.reshape(bsz, 1, self.hidden_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1])
+    A = A.reshape(bsz, 1, attention_size)
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
     return A, (Kn, Vn)
 pass
 
 
-def fast_mlp_inference(self, X):
+def fast_swiglu_inference(self, X):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
@@ -339,7 +340,7 @@ def LlamaAttention_fast_forward(
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
-    attn_output = A.reshape(bsz, q_len, self.hidden_size)
+    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
@@ -390,7 +391,7 @@ def LlamaDecoderLayer_fast_forward(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
-        hidden_states = fast_mlp_inference(self.mlp, hidden_states)
+        hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
         hidden_states += residual
     else:
         residual = hidden_states
@@ -506,6 +507,14 @@ def LlamaModel_fast_forward(
     # embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
+
+    # Mormalized from Gemma
+    if self.config.model_type == "gemma":
+        inputs_requires_grad = inputs_embeds.requires_grad
+        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
+        inputs_embeds *= math_sqrt(self.config.hidden_size)
+        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+    pass
 
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
@@ -646,7 +655,7 @@ def LlamaModel_fast_forward_inference(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
-        hidden_states = fast_mlp_inference(decoder_layer.mlp, hidden_states)
+        hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
@@ -812,7 +821,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
 
-    def forward(self, x, seq_len=None):
+    def forward(self, x, position_ids=None, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
@@ -886,20 +895,22 @@ class FastLlamaModel:
         device_map     = "sequential",
         rope_scaling   = None,
         fix_tokenizer  = True,
+        model_patcher  = None,
         **kwargs,
     ):
+        if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
-           f"==((====))==  Unsloth: Fast Llama patching release {__version__}\n"\
+           f"==((====))==  Unsloth: Fast {model_patcher.__name__[4:-5]} patching release {__version__}\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Xformers = {xformers_version}. FA = {HAS_FLASH_ATTENTION}.\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
-        FastLlamaModel.pre_patch()
+        model_patcher.pre_patch()
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -955,7 +966,7 @@ class FastLlamaModel:
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = FastLlamaModel.post_patch(model)
+        model = model_patcher.post_patch(model)
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
@@ -1159,6 +1170,14 @@ class FastLlamaModel:
                     quant_state.dtype = correct_dtype
                 pass
             pass
+            # Downcast RoPE embedding to correct data type
+            if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")) \
+                and (module.cos_cached.dtype != correct_dtype):
+                
+                module.cos_cached = module.cos_cached.to(correct_dtype)
+                module.sin_cached = module.sin_cached.to(correct_dtype)
+                pass
+            pass
         pass
 
         # Clear deleted GPU items
@@ -1307,6 +1326,16 @@ class FastLlamaModel:
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
             )
+        pass
+
+        # Get activation function
+        model_type = model.config.model_type
+
+        if   model_type == "llama":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "mistral": apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu
+        else:
+            raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
         pass
 
         model = prepare_model_for_kbit_training(
