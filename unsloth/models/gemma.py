@@ -108,9 +108,6 @@ class FastGemmaRotaryEmbedding(torch.nn.Module):
 
         print(freqs)
         print(self.cos_cached2)
-        print(freqs.to(torch.int64))
-        print(self.cos_cached2.to(torch.int64))
-        raise 1
 
         # return self.cos_cached[:,:length], self.sin_cached[:,:length]
         return self.cos_cached, self.sin_cached
@@ -581,7 +578,7 @@ class FastGemmaModel(FastLlamaModel):
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.gemma.modeling_gemma
-        transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = FastGemmaRotaryEmbedding
+        transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = LlamaRotaryEmbedding
         return
     pass
 
@@ -629,6 +626,13 @@ class FastGemmaModel(FastLlamaModel):
                 else:
                     # https://github.com/TimDettmers/bitsandbytes/pull/763/files
                     quant_state.dtype = correct_dtype
+                pass
+            pass
+            # Downcast RoPE embedding to correct data type
+            if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")) \
+                and (module.cos_cached.dtype != expected_dtype):
+                    module.cos_cached = module.cos_cached.to(expected_dtype)
+                    module.sin_cached = module.sin_cached.to(expected_dtype)
                 pass
             pass
         pass
