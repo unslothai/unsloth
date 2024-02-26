@@ -16,6 +16,7 @@ import triton
 MAX_FUSED_SIZE = 65536
 next_power_of_2 = triton.next_power_of_2
 
+ 
 def calculate_settings(n):
     BLOCK_SIZE = next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:
@@ -28,6 +29,11 @@ def calculate_settings(n):
     return BLOCK_SIZE, num_warps
 pass
 
+def calc_num_warps(block_size):
+    num_warps = 4
+    if block_size >= 2048:
+        num_warps = 8
+       
 
 import bitsandbytes as bnb
 get_ptr = bnb.functional.get_ptr
