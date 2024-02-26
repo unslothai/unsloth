@@ -25,6 +25,9 @@ from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER
 major, minor = transformers_version.split(".")[:2]
 major, minor = int(major), int(minor)
 SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
+SUPPORTS_GEMMA   = (major > 4) or (major == 4 and minor >= 38)
+if SUPPORTS_GEMMA:
+    from .gemma import FastGemmaModel
 del major, minor
 
 
@@ -101,6 +104,15 @@ class FastLanguageModel(FastLlamaModel):
         if   model_type == "llama":   dispatch_model = FastLlamaModel   
         elif model_type == "mistral": dispatch_model = FastMistralModel
         elif model_type == "mixtral": dispatch_model = FastMixtralModel
+        elif model_type == "gemma":
+            if not SUPPORTS_GEMMA:
+                raise RuntimeError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support Gemma.\n"\
+                    f"The minimum required version is 4.38.\n"\
+                    f'Try `pip install --upgrade "transformers>=4.38"`\n'\
+                    f"to obtain the latest transformers build, then restart this session."\
+                )
+            dispatch_model = FastGemmaModel
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\
@@ -117,12 +129,17 @@ class FastLanguageModel(FastLlamaModel):
             device_map     = device_map,
             rope_scaling   = rope_scaling,
             fix_tokenizer  = fix_tokenizer,
+            model_patcher  = dispatch_model,
             *args, **kwargs,
         )
 
-        # in case the model supports tagging, add the unsloth tag.
+        # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
-            model.add_model_tags(["unsloth"])
+            model.add_model_tags(["unsloth",])
+        pass
+        if hasattr(tokenizer, "add_model_tags"):
+            tokenizer.add_model_tags(["unsloth",])
+        pass
 
         if load_in_4bit:
             # Fix up bitsandbytes config
@@ -145,7 +162,7 @@ class FastLanguageModel(FastLlamaModel):
 
         if is_peft:
             # Now add PEFT adapters
-            model = PeftModel.from_pretrained(model, old_model_name)
+            model = PeftModel.from_pretrained(model, old_model_name, token = token)
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
         pass

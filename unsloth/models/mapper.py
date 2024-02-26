@@ -42,6 +42,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/tinyllama",
         "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
     ),
+    "unsloth/tinyllama-chat-bnb-4bit" : (
+        "unsloth/tinyllama-chat",
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    ),
     "unsloth/mistral-7b-instruct-v0.1-bnb-4bit" : (
         "mistralai/Mistral-7B-Instruct-v0.1",
     ),
@@ -69,6 +73,22 @@ __INT_TO_FLOAT_MAPPER = \
     ),
     "unsloth/solar-10.7b-bnb-4bit" : (
         "upstage/SOLAR-10.7B-v1.0",
+    ),
+    "unsloth/gemma-7b-bnb-4bit" : (
+        "unsloth/gemma-7b",
+        "google/gemma-7b",
+    ),
+    "unsloth/gemma-2b-bnb-4bit" : (
+        "unsloth/gemma-2b",
+        "google/gemma-2b",
+    ),
+    "unsloth/gemma-7b-it-bnb-4bit" : (
+        "unsloth/gemma-7b-it",
+        "google/gemma-7b-it",
+    ),
+    "unsloth/gemma-2b-bnb-4bit" : (
+        "unsloth/gemma-2b-it",
+        "google/gemma-2b-it",
     ),
 }
 

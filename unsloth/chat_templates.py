@@ -217,6 +217,35 @@ alpaca_eos_token = "eos_token"
 CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token,)
 
 
+# https://huggingface.co/google/gemma-7b-it
+# Notice we must use |trim for lstrip and rstrip. <start_of_turn> maps to 106.
+# <end_of_turn> maps to 107. user and model are normal 1 word tokens.
+gemma_template = \
+    "{% for message in messages %}"\
+        "{% if message['role'] == 'user' %}"\
+            "{{'<start_of_turn>user\n' + message['content'] | trim + '<end_of_turn>\n'}}"\
+        "{% elif message['role'] == 'assistant' %}"\
+            "{{'<start_of_turn>model\n' + message['content'] | trim + '<end_of_turn>\n' }}"\
+        "{% else %}"\
+            "{{ '<start_of_turn>system\n' + message['content'] | trim + '<end_of_turn>\n' }}"\
+        "{% endif %}"\
+    "{% endfor %}"\
+    "{% if add_generation_prompt %}"\
+        "{{ '<start_of_turn>model\n' }}"\
+    "{% endif %}"
+gemma_eos_token = "<end_of_turn>"
+CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token,)
+
+
+# Gemma with ChatML instead
+gemma_chatml_template = chatml_template
+gemma_chatml_eos_token = (
+    {"<start_of_turn>" : "<|im_start|>", "<end_of_turn>" : "<|im_end|>"},
+    "<|im_end|>",
+)
+CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token,)
+
+
 def get_chat_template(
     tokenizer,
     chat_template = "chatml",
@@ -229,7 +258,7 @@ def get_chat_template(
 
     old_padding_side = tokenizer.padding_side
 
-    if type(chat_template) in (list, tuple):
+    if type(chat_template) in (list, tuple,):
         chat_template, stop_word = chat_template
         assert(type(chat_template) is str)
         assert(type(stop_word) is str)
@@ -238,7 +267,38 @@ def get_chat_template(
 
         chat_template, stop_word = CHAT_TEMPLATES[chat_template]
 
-        if stop_word != "eos_token":
+        if type(stop_word) in (list, tuple,):
+            token_mapping, stop_word = stop_word
+            assert(type(token_mapping) is dict)
+        else:
+            token_mapping = None
+
+        assert(type(stop_word) is str)
+
+        # token_mapping = {"<start_of_turn>" : "<|im_start|>", "<end_of_turn>" : "<|im_end|>"}
+        # For Gemma :)
+        if token_mapping is not None:
+
+            string_vocab = tokenizer._tokenizer.to_str()
+
+            for old_token, new_token in token_mapping.items():
+                old_count = string_vocab.count(f'"{old_token}"')
+                new_count = string_vocab.count(f'"{new_token}"')
+                if new_count != 0:
+                    print(f"{new_token} is already a token. Skipping.")
+                elif old_count == 0:
+                    raise RuntimeError(f"{old_token} was not part of the tokenizer!")
+                else:
+                    string_vocab = string_vocab.replace(f'"{old_token}"', f'"{new_token}"')
+                pass
+            pass
+
+            logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
+            string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
+            new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
+            tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+
+        elif stop_word != "eos_token":
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
 
             # Replaces the old EOS token with a new one.
@@ -252,6 +312,7 @@ def get_chat_template(
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
             tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
         pass
+
     else:
         raise TypeError(
             f"Unsloth: `chat_template` must be a tuple of (your_template, eos_token,) or one of\n"\
@@ -318,6 +379,7 @@ def test_chat_templates():
         {"role": "user", "content": "  No it's 100% 5! "},
     ]
 
+    # Zephyr
     from transformers import AutoTokenizer
     template = zephyr_template
     correct_tokenizer = AutoTokenizer.from_pretrained("HuggingFaceH4/zephyr-7b-beta")
@@ -326,6 +388,7 @@ def test_chat_templates():
     our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
     assert(correct_prompt == our_prompt)
 
+    # Chatml
     template = chatml_template
     correct_tokenizer = AutoTokenizer.from_pretrained("teknium/OpenHermes-2.5-Mistral-7B")
     correct_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
@@ -333,6 +396,7 @@ def test_chat_templates():
     our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
     assert(correct_prompt == our_prompt)
 
+    # Mistral
     template = mistral_template
     correct_tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2")
     correct_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
@@ -340,6 +404,7 @@ def test_chat_templates():
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     assert(correct_prompt == our_prompt)
 
+    # Llama
     template = llama_template
     correct_tokenizer = AutoTokenizer.from_pretrained("unsloth/llama-2-7b-chat")
     correct_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
@@ -347,6 +412,7 @@ def test_chat_templates():
     our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
     assert(correct_prompt == our_prompt)
 
+    # Vicuna
     try:
         from fastchat.conversation import get_conv_template
     except:
@@ -381,4 +447,11 @@ def test_chat_templates():
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     # We add </s> ourselves
     assert(correct_prompt == our_prompt.replace("</s>", ""))
+
+    # Gemma
+    correct_tokenizer = AutoTokenizer.from_pretrained("unsloth/gemma-7b-it")
+    correct_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
+    correct_tokenizer.chat_template = gemma_template
+    our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
+    assert(our_prompt == correct_prompt)
 pass
