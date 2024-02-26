@@ -369,6 +369,7 @@ def unsloth_save_model(
 
     # Switch to our fast saving modules if it's a slow PC!
     n_cpus = psutil.cpu_count(logical = False)
+    if n_cpus is None: n_cpus = 1
 
     if safe_serialization is None:
         safe_serialization = True
@@ -669,7 +670,9 @@ def save_to_gguf(
         pass
     pass
 
-    n_cpus = psutil.cpu_count()*2
+    n_cpus = psutil.cpu_count()
+    if n_cpus is None: n_cpus = 1
+    n_cpus *= 2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
     
     final_location = f"./{model_directory}-unsloth.{first_conversion.upper()}.gguf"

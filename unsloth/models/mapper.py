@@ -74,6 +74,22 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/solar-10.7b-bnb-4bit" : (
         "upstage/SOLAR-10.7B-v1.0",
     ),
+    "unsloth/gemma-7b-bnb-4bit" : (
+        "unsloth/gemma-7b",
+        "google/gemma-7b",
+    ),
+    "unsloth/gemma-2b-bnb-4bit" : (
+        "unsloth/gemma-2b",
+        "google/gemma-2b",
+    ),
+    "unsloth/gemma-7b-it-bnb-4bit" : (
+        "unsloth/gemma-7b-it",
+        "google/gemma-7b-it",
+    ),
+    "unsloth/gemma-2b-bnb-4bit" : (
+        "unsloth/gemma-2b-it",
+        "google/gemma-2b-it",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
