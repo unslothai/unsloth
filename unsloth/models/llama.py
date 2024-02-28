@@ -1173,7 +1173,7 @@ class FastLlamaModel:
             # Downcast RoPE embedding to correct data type
             if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")) \
                 and (module.cos_cached.dtype != correct_dtype):
-
+                
                 module.cos_cached = module.cos_cached.to(correct_dtype)
                 module.sin_cached = module.sin_cached.to(correct_dtype)
                 pass
@@ -1215,8 +1215,6 @@ class FastLlamaModel:
                 "Unsloth: Your model already has LoRA adapters. No need to run this again!"
             )
         pass
-
-        if loftq_config is None: loftq_config = {}
 
         import inspect
         signature = str(inspect.signature(LoraConfig))
