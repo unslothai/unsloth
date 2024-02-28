@@ -240,61 +240,30 @@ pass
 
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
-def LoraLayer_update_layer(self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights,
-    use_rslora = False):
-    # This code works for linear layers, override for other layer types
-    if r <= 0:
-        raise ValueError(f"`r` should be a positive integer value but the value passed is {r}")
-
-    self.r[adapter_name] = r
-    self.lora_alpha[adapter_name] = lora_alpha
-    if lora_dropout > 0.0:
-        lora_dropout_layer = torch.nn.Dropout(p=lora_dropout)
-    else:
-        lora_dropout_layer = torch.nn.Identity()
-
-    self.lora_dropout.update(torch.nn.ModuleDict({adapter_name: lora_dropout_layer}))
-    # Actual trainable parameters
-    self.lora_A[adapter_name] = torch.nn.Linear(self.in_features, r, bias=False)
-    self.lora_B[adapter_name] = torch.nn.Linear(r, self.out_features, bias=False)
-    if use_rslora:
-        self.scaling[adapter_name] = lora_alpha / math.sqrt(r)
-    else:
-        self.scaling[adapter_name] = lora_alpha / r
-
-    if init_lora_weights == "loftq":
-        # We manually check for PEFT
-        if not hasattr(self, "loftq_init"):
-            import peft
-            raise RuntimeError(
-                f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
-                "Please install PEFT 0.7.2 or higher.\n"\
-                "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
-            )
-        pass
-        self.loftq_init(adapter_name)
-
-    elif init_lora_weights:
-        self.reset_lora_parameters(adapter_name, init_lora_weights)
-
-    # check weight and qweight (for GPTQ)
-    for weight_name in ("weight", "qweight"):
-        weight = getattr(self.get_base_layer(), weight_name, None)
-        if weight is not None:
-            # [INCORRECT code]
-            # 
-            # the layer is already completely initialized, this is an update
-            # if weight.dtype.is_floating_point or weight.dtype.is_complex:
-            #     self.to(weight.device, dtype=weight.dtype)
-            # else:
-            #     self.to(weight.device)
-            self.to(weight.device, non_blocking = True)
-            break
-    self.set_adapter(self.active_adapters)
-pass
-
-# Fix up incorrect downcasting of LoRA weights
 from peft.tuners.lora.layer import LoraLayer
-LoraLayer.update_layer = LoraLayer_update_layer
-from peft.tuners.lora import LoraLayer
-LoraLayer.update_layer = LoraLayer_update_layer
+import inspect, re
+try:
+    source = inspect.getsource(LoraLayer.update_layer)
+    text = "if weight is not None:\n"
+    start = source.find(text) + len(text)
+    end = source.find("self.to(weight.device)", start)
+    spaces = re.findall(r"^([ ]{1,})break", source, flags = re.MULTILINE)[0]
+    source = source.replace(source[start : end], spaces)
+    spaces = len(re.match(r"[\s]{1,}", source).group(0))
+    lines = source.split("\n")
+    source = "\n".join(x[spaces:] for x in lines)
+    source = re.sub("([^\.])nn\.", r"\1torch.nn.", source)
+    source = source.replace("def update_layer", "def LoraLayer_update_layer")
+    exec(source, globals())
+
+    # Fix up incorrect downcasting of LoRA weights
+    from peft.tuners.lora.layer import LoraLayer
+    LoraLayer.update_layer = LoraLayer_update_layer
+    from peft.tuners.lora import LoraLayer
+    LoraLayer.update_layer = LoraLayer_update_layer
+except:
+    logger.warning_once(
+        "Unsloth unsuccessfully patched LoraLayer.update_layer. Please file a bug report.\n"\
+        "Luckily, your training run will still work in the meantime!"
+    )
+pass
