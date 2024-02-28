@@ -1216,6 +1216,8 @@ class FastLlamaModel:
             )
         pass
 
+        if loftq_config is None: loftq_config = {}
+
         import inspect
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
