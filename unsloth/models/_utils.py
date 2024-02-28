@@ -242,21 +242,28 @@ pass
 # For mixed precision, we need it to be in float32 not float16.
 from peft.tuners.lora.layer import LoraLayer
 import inspect, re
-source = inspect.getsource(LoraLayer.update_layer)
-text = "if weight is not None:\n"
-start = source.find(text) + len(text)
-end = source.find("self.to(weight.device)", start)
-spaces = re.findall(r"^([ ]{1,})break", source, flags = re.MULTILINE)[0]
-source = source.replace(source[start : end], spaces)
-spaces = len(re.match(r"[\s]{1,}", source).group(0))
-lines = source.split("\n")
-source = "\n".join(x[spaces:] for x in lines)
-source = re.sub("([^\.])nn\.", r"\1torch.nn.", source)
-source = source.replace("def update_layer", "def LoraLayer_update_layer")
-exec(source, globals())
+try:
+    source = inspect.getsource(LoraLayer.update_layer)
+    text = "if weight is not None:\n"
+    start = source.find(text) + len(text)
+    end = source.find("self.to(weight.device)", start)
+    spaces = re.findall(r"^([ ]{1,})break", source, flags = re.MULTILINE)[0]
+    source = source.replace(source[start : end], spaces)
+    spaces = len(re.match(r"[\s]{1,}", source).group(0))
+    lines = source.split("\n")
+    source = "\n".join(x[spaces:] for x in lines)
+    source = re.sub("([^\.])nn\.", r"\1torch.nn.", source)
+    source = source.replace("def update_layer", "def LoraLayer_update_layer")
+    exec(source, globals())
 
-# Fix up incorrect downcasting of LoRA weights
-from peft.tuners.lora.layer import LoraLayer
-LoraLayer.update_layer = LoraLayer_update_layer
-from peft.tuners.lora import LoraLayer
-LoraLayer.update_layer = LoraLayer_update_layer
+    # Fix up incorrect downcasting of LoRA weights
+    from peft.tuners.lora.layer import LoraLayer
+    LoraLayer.update_layer = LoraLayer_update_layer
+    from peft.tuners.lora import LoraLayer
+    LoraLayer.update_layer = LoraLayer_update_layer
+except:
+    logger.warning_once(
+        "Unsloth unsuccessfully patched LoraLayer.update_layer. Please file a bug report.\n"\
+        "Luckily, your training run will still work in the meantime!"
+    )
+pass
