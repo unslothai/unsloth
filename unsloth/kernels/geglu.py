@@ -138,3 +138,57 @@ def geglu_approx_forward_kernel(gate, up):
     _approx_forward_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE = 1024,)
     return out
 pass
+
+
+@triton.jit
+def _approx_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
+    """
+    f = 1/2 * e * (1 + tanh( sqrt(2/pi) * x * (1 + 0.044715 * x^2 ) ))
+    h = f * up
+
+    df/de (with help from https://arxiv.org/pdf/2305.12073.pdf :))
+    df/de = 1/2 * [1 + tanh( sqrt(2/pi) * x * (1 + 0.044715 * x^2 ) )] +
+            1/2 * sech^2 [   sqrt(2/pi) * x * (1 + 0.044715 * x^2 )  ] * \
+                           ( sqrt(2/pi) * x * (1 + 0.044715 * x^2 * 3 ) )
+
+    Notice sech^2(x) = 1 - tanh^2(x)
+    So reuse tanh( sqrt(2/pi) * x * (1 + 0.044715 * x^2 ) )
+
+    See https://www.desmos.com/calculator/nqprfoni6x
+    """
+    block_idx = tl.program_id(0)
+    offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    DW_row = tl.load(DW + offsets, mask = mask, other = 0)#.to(tl.float32)
+    e_row  = tl.load(e  + offsets, mask = mask, other = 0).to(tl.float32)
+    g_row  = tl.load(g  + offsets, mask = mask, other = 0)#.to(tl.float32)
+
+    # See https://www.desmos.com/calculator/nqprfoni6x
+    s = 0.7978845608028654 # math.sqrt(2 / math.pi)
+    a = s * e_row # a = sqrt(2 / pi) * x
+    b = a * 0.044715 * e_row * e_row # b = a * 0.044715 * x^2
+    T = 1.0 + tl.math.tanh(a + b)
+    T2 = 0.5 * T
+    # Q = -T * (T - 2.0) * (a + 3.0 * b)
+    Q2 = -T2 * (T - 2.0) * (a + 3.0 * b)
+    df_de = T2 + Q2 # 1/2 * (T + Q)
+
+    # f = 1/2 * e * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) ))
+    f_row = T2 * e_row
+    f_row = f_row.to(DW_row.dtype)
+    # h = f * g
+    h_row  =  f_row * g_row
+    # df = DW * f
+    df_row = DW_row * f_row
+    # dg = DW * g
+    dg_row = DW_row * g_row
+
+    de_row = dg_row.to(tl.float32) * df_de
+    de_row = de_row.to(DW_row.dtype)
+
+    # Store derivatives in buffers
+    tl.store(DW + offsets, h_row,  mask = mask) # h  = f * g
+    tl.store(e  + offsets, df_row, mask = mask) # df = DW * f
+    tl.store(g  + offsets, de_row, mask = mask) # de
+pass
