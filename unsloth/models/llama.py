@@ -511,7 +511,12 @@ def LlamaModel_fast_forward(
     # Mormalized from Gemma
     if self.config.model_type == "gemma":
         inputs_requires_grad = inputs_embeds.requires_grad
-        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
+        if not inputs_embeds.is_leaf:
+            inputs_embeds = inputs_embeds.detach()
+            inputs_requires_grad = True
+        elif inputs_requires_grad:
+            inputs_embeds.requires_grad_(False)
+        pass
         inputs_embeds *= math_sqrt(self.config.hidden_size)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
@@ -522,7 +527,12 @@ def LlamaModel_fast_forward(
         # Careful for inference the attention_mask is size (1, kv_seq_len)
         # Whilst the input_embeds is size (1, 1, 4096)
         inputs_requires_grad = inputs_embeds.requires_grad
-        if inputs_requires_grad: inputs_embeds.requires_grad_(False)
+        if not inputs_embeds.is_leaf:
+            inputs_embeds = inputs_embeds.detach()
+            inputs_requires_grad = True
+        elif inputs_requires_grad:
+            inputs_embeds.requires_grad_(False)
+        pass
         inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
