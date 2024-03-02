@@ -25,7 +25,8 @@ from .geglu import (
 from .fast_lora import (
 	get_lora_parameters,
 	apply_lora_mlp_swiglu,
-	apply_lora_mlp_geglu,
+	apply_lora_mlp_geglu_exact,
+	apply_lora_mlp_geglu_approx,
 	apply_lora_qkv,
 	apply_lora_o,
 )
