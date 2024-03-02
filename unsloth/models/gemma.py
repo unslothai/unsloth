@@ -48,7 +48,7 @@ def fast_geglu_inference(self, X):
 
     gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
     up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
-    gate = torch.nn.functional.gelu(gate)
+    gate = torch.nn.functional.gelu(gate, approximate = "tanh")
     gate *= up
 
     # X = self.down_proj(gate)
