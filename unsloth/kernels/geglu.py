@@ -38,7 +38,7 @@ def _exact_forward_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
 pass
 
 
-def geglu_forward_kernel(gate, up):
+def geglu_exact_forward_kernel(gate, up):
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = "cuda")
@@ -95,7 +95,7 @@ def _exact_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
 pass
 
 
-def geglu_backward_kernel(DW, e, g):
+def geglu_exact_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
@@ -171,7 +171,7 @@ def _approx_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     T = 1.0 + tl.math.tanh(a + b)
     T2 = 0.5 * T
     # Q = -T * (T - 2.0) * (a + 3.0 * b)
-    Q2 = -T2 * (T - 2.0) * (a + 3.0 * b)
+    Q2 = -T2 * (T - 2.0) * (a + 3.0 * b) 
     df_de = T2 + Q2 # 1/2 * (T + Q)
 
     # f = 1/2 * e * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) ))
@@ -191,4 +191,13 @@ def _approx_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     tl.store(DW + offsets, h_row,  mask = mask) # h  = f * g
     tl.store(e  + offsets, df_row, mask = mask) # df = DW * f
     tl.store(g  + offsets, de_row, mask = mask) # de
+pass
+
+
+def geglu_approx_backward_kernel(DW, e, g):
+    batch_seq_len, hd = e.shape
+    n_elements = e.numel()
+    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
+    _approx_backward_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
+    return DW, e, g
 pass
