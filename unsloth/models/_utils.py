@@ -25,7 +25,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import math
 
-__version__ = "2024.2"
+__version__ = "2024.3"
 
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()
