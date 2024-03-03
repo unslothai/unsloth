@@ -170,7 +170,7 @@ def _approx_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     b = a * 0.044715 * e_row * e_row # b = a * 0.044715 * x^2
     T = 1.0 + tl.math.tanh(a + b)
     T2 = 0.5 * T
-    # Q = -T * (T - 2.0) * (a + 3.0 * b)
+    # Q = 0.5 * -T * (T - 2.0) * (a + 3.0 * b)
     Q2 = -T2 * (T - 2.0) * (a + 3.0 * b) 
     df_de = T2 + Q2 # 1/2 * (T + Q)
 
