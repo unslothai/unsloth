@@ -183,8 +183,8 @@ def apply_lora_mlp_swiglu(self, X):
 pass
 
 
-from .geglu import geglu_forward_kernel, geglu_backward_kernel
-def apply_lora_mlp_geglu(self, X):
+from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
+def apply_lora_mlp_geglu_exact(self, X):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -192,7 +192,21 @@ def apply_lora_mlp_geglu(self, X):
                          gateW, gateW_quant, gateA, gateB, gateS,
                          upW,     upW_quant, upA,   upB,   upS,
                          downW, downW_quant, downA, downB, downS,
-                         geglu_forward_kernel, geglu_backward_kernel,)
+                         geglu_exact_forward_kernel, geglu_exact_backward_kernel,)
+    return out
+pass
+
+
+from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
+def apply_lora_mlp_geglu_approx(self, X):
+    gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
+    upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
+    downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
+    out = LoRA_MLP.apply(X,
+                         gateW, gateW_quant, gateA, gateB, gateS,
+                         upW,     upW_quant, upA,   upB,   upS,
+                         downW, downW_quant, downA, downB, downS,
+                         geglu_approx_forward_kernel, geglu_approx_backward_kernel,)
     return out
 pass
 
