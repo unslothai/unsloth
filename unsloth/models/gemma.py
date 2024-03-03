@@ -48,7 +48,7 @@ def fast_geglu_inference(self, X):
 
     gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
     up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
-    gate = torch.nn.functional.gelu(gate)
+    gate = torch.nn.functional.gelu(gate, approximate = "tanh")
     gate *= up
 
     # X = self.down_proj(gate)
@@ -70,7 +70,7 @@ def GemmaDecoderLayer_fast_forward(
     padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ):
-    if False:#past_key_value is not None:
+    if past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
 
         # Self Attention
@@ -267,6 +267,9 @@ class FastGemmaModel(FastLlamaModel):
         # Patch RMS Layernorm
         for name, module in model.named_modules():
             if isinstance(module, GemmaRMSNorm):
+                # Must be in float32
+                # https://github.com/keras-team/keras-nlp/blob/v0.8.2/keras_nlp/models/gemma/rms_normalization.py#L36
+                module = module.to(torch.float32)
                 module.weight += 1.0 # return output * (1 + self.weight)
                 if not hasattr(module, "variance_epsilon"):
                     module.variance_epsilon = module.eps # Gemma doesn't use variance_epsilon

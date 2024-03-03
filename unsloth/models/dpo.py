@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from transformers.utils.notebook import (
-    IntervalStrategy,
-    NotebookTrainingTracker,
-    NotebookProgressCallback,
-)
+try:
+    from transformers.utils.notebook import (
+        IntervalStrategy,
+        NotebookTrainingTracker,
+        NotebookProgressCallback,
+    )
+    HAS_NOTEBOOK = True
+except:
+    HAS_NOTEBOOK = False
+pass
 
 DPOTrainer_metrics = [
     "rewards/chosen",
@@ -101,13 +106,15 @@ pass
 
 
 def PatchDPOTrainer():
-    from transformers.trainer import is_in_notebook
-    if is_in_notebook():
-        # Patch DPO notebook printing
-        NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line
-        from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
-        DEFAULT_PROGRESS_CALLBACK.on_train_begin = NotebookProgressCallback_on_train_begin
-        DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log
+    if HAS_NOTEBOOK:
+        from transformers.trainer import is_in_notebook
+        if is_in_notebook():
+            # Patch DPO notebook printing
+            NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line
+            from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
+            DEFAULT_PROGRESS_CALLBACK.on_train_begin = NotebookProgressCallback_on_train_begin
+            DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log
+        pass
     pass
 pass
 
