@@ -26,6 +26,7 @@ from transformers.models.phi.modeling_phi import (
     PhiDecoderLayer,
     PhiModel,
     PhiForCausalLM,
+    PhiMLP
 )
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask, _prepare_4d_causal_attention_mask_for_sdpa
@@ -145,7 +146,6 @@ def Phi2FastModelForward(
             )
 
         hidden_states = layer_outputs[0]
-        gamma = torch.ones(hidden_states.size(-1), device=hidden_states.device) #TODO: fix me.
 
 
         if use_cache:
@@ -154,7 +154,8 @@ def Phi2FastModelForward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
 
-    hidden_states = fast_layernorm_inference(hidden_states, gamma)
+    hidden_states = self.final_layernorm(hidden_states)
+    #hidden_states = fast_layernorm_inference(hidden_states, eps=1e-5)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
@@ -201,10 +202,10 @@ def Phi2DecoderLayer_fast_forward(
     """
 
     residual = hidden_states
-    gamma = torch.ones(residual.size(-1), device=hidden_states.device) #TODO: fix me.
-
-    hidden_states = fast_layernorm_inference(hidden_states, gamma)
-
+    #print(self.input_layernorm.bias)
+    hidden_states = fast_layernorm_inference(hidden_states, beta = self.input_layernorm.bias, gamma=self.input_layernorm.weight, eps=1e-5)
+    #hidden_states = self.input_layernorm(hidden_states)
+    #print("OFOOF", self.input_layernorm.weight)
     # Self Attention
     attn_outputs, self_attn_weights, present_key_value = self.self_attn(
         hidden_states=hidden_states,
@@ -457,6 +458,8 @@ class FastPhi2Model(FastLlamaModel):
            f"\        /    Pytorch version: {torch.__version__}. CUDA Toolkit = {torch.version.cuda}\n"\
            f' "-____-"     bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. Platform = {platform_system}\n'
         logger.warning_once(statistics)
+
+        model_config = AutoConfig.from_pretrained(model_name, token = token)
         FastPhi2Model.pre_patch()
 
         if dtype is None:
@@ -469,7 +472,7 @@ class FastPhi2Model(FastLlamaModel):
 
         # RoPE scaling
         model_max_seq_length = \
-            AutoConfig.from_pretrained(model_name, token = token).max_position_embeddings
+            model_config.max_position_embeddings
 
         if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
             rope_scaling = max_seq_length / model_max_seq_length

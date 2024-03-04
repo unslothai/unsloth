@@ -14,7 +14,6 @@
 
 
 import gc
-import random
 from contextlib import contextmanager
 
 import os
@@ -26,8 +25,8 @@ import torch._dynamo as dynamo
 
 @contextmanager
 def set_seed(seed: int = 0):
-    np.random.seed(42)
-    torch.manual_seed(42)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True)
@@ -38,7 +37,7 @@ def set_seed(seed: int = 0):
 def reset_dyno_state():
     cache_limit = dynamo.config.cache_size_limit
     try:
-        dynamo.config.cache_size_limit = 512
+        dynamo.config.cache_size_limit = 8192
         dynamo.reset()
         torch.cuda.synchronize()
         gc.collect()

@@ -5,11 +5,17 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from .utils import calc_num_warps
-# todo, make this autotuneable
 
 GAMMA_BLOCK_SIZE = 64
 GAMMA_ROW_BLOCK_SIZE = 64
+
+def calc_num_warps(block_size):
+    num_warps = 4
+    if block_size >= 2048:
+        num_warps = 8
+    if block_size >= 4096:
+        num_warps = 16
+    return num_warps
 
 @triton.jit
 def layernorm_kernel_forward_training(
@@ -18,11 +24,13 @@ def layernorm_kernel_forward_training(
     normed_ptr,
     input_ptr,
     gamma_ptr,
+    beta_ptr,
     input_row_stride,
     gamma_row_stride,
     output_row_stride,
     mean_centered_row_stride,
     normed_row_stride,
+    beta_row_stride,
     n_cols,
     stable,
     eps,
@@ -42,6 +50,10 @@ def layernorm_kernel_forward_training(
     row = tl.load(input_ptrs, mask=mask, other=0.)
     gammas = tl.load(gamma_ptrs, mask=mask, other=0.)
 
+    beta_row_start_ptr = beta_ptr + row_idx * beta_row_stride
+    beta_ptrs = beta_row_start_ptr + col_offsets
+    betas = tl.load(beta_ptrs, mask=mask, other=0.)
+
     if stable:
         row_max = tl.max(tl.where(mask, row, float('-inf')), axis = 0)
         row /= row_max
@@ -52,8 +64,8 @@ def layernorm_kernel_forward_training(
     inv_var = 1. / tl.sqrt(row_var + eps)
     normed = row_mean_centered * inv_var
 
-    output = normed * gammas
-
+    output = normed * gammas + betas  # Apply bias after scaling
+    
     output_row_start_ptr = output_ptr + row_idx * output_row_stride
     output_ptrs = output_row_start_ptr + col_offsets
     tl.store(output_ptrs, output, mask=mask)
@@ -71,9 +83,11 @@ def layernorm_kernel_forward_inference(
     output_ptr,
     input_ptr,
     gamma_ptr,
+    beta_ptr,
     input_row_stride,
     gamma_row_stride,
     output_row_stride,
+    beta_row_stride,
     n_cols,
     stable,
     eps,
@@ -93,6 +107,10 @@ def layernorm_kernel_forward_inference(
     row = tl.load(input_ptrs, mask=mask, other=0.)
     gammas = tl.load(gamma_ptrs, mask=mask, other=0.)
 
+    beta_row_start_ptr = beta_ptr + row_idx * beta_row_stride
+    beta_ptrs = beta_row_start_ptr + col_offsets
+    betas = tl.load(beta_ptrs, mask=mask, other=0.)
+
     if stable:
         row_max = tl.max(tl.where(mask, row, float('-inf')), axis = 0)
         row /= row_max
@@ -103,7 +121,7 @@ def layernorm_kernel_forward_inference(
     inv_var = 1. / tl.sqrt(row_var + eps)
     normed = row_mean_centered * inv_var
 
-    output = normed * gammas
+    output = normed * gammas + betas
 
     output_row_start_ptr = output_ptr + row_idx * output_row_stride
     output_ptrs = output_row_start_ptr + col_offsets
@@ -186,13 +204,14 @@ def layernorm_gamma_kernel_backward(
 
 class _layernorm(autograd.Function):
     @classmethod
-    def forward(cls, ctx, x, gamma, eps, stable):
+    def forward(ctx, x, gamma, beta, eps, stable): 
         shape = x.shape
         dim = shape[-1]
         x = x.view(-1, dim)
         n_rows, n_cols = x.shape
 
         expanded_gamma = gamma[None, :].expand(n_rows, -1)
+        expanded_beta = beta[None, :].expand(n_rows, -1) 
 
         BLOCK_SIZE = triton.next_power_of_2(n_cols)
         num_warps = calc_num_warps(BLOCK_SIZE)
@@ -211,26 +230,30 @@ class _layernorm(autograd.Function):
                 normed,
                 x,
                 expanded_gamma,
+                expanded_beta,
                 x.stride(0),
                 expanded_gamma.stride(0),
                 out.stride(0),
                 scaled_x.stride(0),
                 normed.stride(0),
+                expanded_beta.stride(0),
                 n_cols,
                 stable,
                 eps,
                 num_warps = num_warps,
                 BLOCK_SIZE = BLOCK_SIZE,
             )
-            ctx.save_for_backward(scaled_x, gamma, out)
+            ctx.save_for_backward(scaled_x, gamma, beta, out)
         else:
             layernorm_kernel_forward_inference[(n_rows,)](
                 out,
                 x,
                 expanded_gamma,
+                expanded_beta,
                 x.stride(0),
                 expanded_gamma.stride(0),
                 out.stride(0),
+                expanded_beta.stride(0),
                 n_cols,
                 stable,
                 eps,
@@ -246,7 +269,7 @@ class _layernorm(autograd.Function):
         dim = shape[-1]
         dy = dy.view(-1, dim)
 
-        scaled_x, gamma, normed = ctx.saved_tensors
+        scaled_x, gamma, beta, normed = ctx.saved_tensors
 
         n_rows, n_cols = dy.shape
 
@@ -254,6 +277,8 @@ class _layernorm(autograd.Function):
         num_row_programs = triton.cdiv(n_rows, GAMMA_ROW_BLOCK_SIZE)
 
         dgamma = torch.empty((num_row_programs, n_cols), device = device)
+        # Gradient w.r.t. bias is the sum of gradients dy across the normalized dimension
+        dbias = dy.sum(dim=0)
 
         layernorm_gamma_kernel_backward[(num_col_programs, num_row_programs)](
             dgamma,
@@ -291,12 +316,11 @@ class _layernorm(autograd.Function):
         )
 
         dx = dx.view(*shape)
-        return dx, dgamma, None, None
+        return dx, dgamma, dbias, None, None
 
-
-def fast_layernorm_inference(x, gamma, eps = 1e-5, use_triton = False, stable = False):
+def fast_layernorm_inference(x, gamma: torch.Tensor, beta: torch.Tensor, eps = 1e-5, use_triton = False, stable = False):
     if use_triton:
-        out = _layernorm.apply(x, gamma, eps, stable)
+        out = _layernorm.apply(x, gamma, beta, eps, stable)
     else:
         if stable:
             x = x / torch.amax(x, dim = -1, keepdim = True)
