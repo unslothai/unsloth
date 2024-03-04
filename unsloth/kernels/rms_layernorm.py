@@ -43,8 +43,8 @@ def _rms_layernorm_forward(
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0)#.to(tl.float32)
 
-    row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
-    inv_var = 1.0 / tl.math.sqrt(row_var + eps)
+    row_var = tl.mean(X_row * X_row, axis = 0)
+    inv_var = tl.math.rsqrt(row_var + eps)
     tl.store(r, inv_var)
     normed = X_row * inv_var
     normed = normed.to(W_row.dtype) # Exact copy from HF
