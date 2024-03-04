@@ -261,6 +261,53 @@ def GemmaForCausalLM_fast_forward(
 pass
 
 
+# Follows line by line https://github.com/google-deepmind/gemma/blob/main/gemma/positional_embeddings.py#L45
+# Formulates cos and sin differently from Llama!
+class GemmaFixedRotaryEmbedding(torch.nn.Module):
+    # Fixes https://github.com/huggingface/transformers/pull/28837
+    # https://github.com/microsoft/DeepSpeed/issues/4932
+    # The precision of RoPE buffers is not correct, so we cast to int64.
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+
+        # Build here to make `torch.jit.trace` work.
+        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
+    pass
+
+    def _set_cos_sin_cache(self, seq_len, device, dtype):
+        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
+        # in FP32. They are applied (multiplied) in FP32 as well.
+        self.max_seq_len_cached = seq_len
+
+        # The difference is we do division explicity instead of t * (1/x) ie we do t/x.
+        freq_exponents = (2.0 / self.dim) * (
+            torch.arange(dim // 2, dtype = torch.int64, device = "cpu").float()
+        )
+        timescale = self.base**freq_exponents
+        positions = torch.arange(self.max_seq_len_cached, device = "cpu", dtype = torch.int64).float()
+        radians_new = positions[..., None] / timescale[None, None, :]
+        
+        emb = torch.cat((radians_new, radians_new), dim=-1)
+        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+    pass
+
+    def forward(self, x, position_ids=None, seq_len=None):
+        # x: [bs, num_attention_heads, seq_len, head_size]
+        if seq_len > self.max_seq_len_cached:
+            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
+
+        return (
+            self.cos_cached[:seq_len].to(dtype=x.dtype),
+            self.sin_cached[:seq_len].to(dtype=x.dtype),
+        )
+    pass
+pass
+
+
 class FastGemmaModel(FastLlamaModel):
 
     @staticmethod
@@ -278,7 +325,7 @@ class FastGemmaModel(FastLlamaModel):
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.gemma.modeling_gemma
-        transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = LlamaRotaryEmbedding
+        transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding = GemmaFixedRotaryEmbedding
         return
     pass
 
