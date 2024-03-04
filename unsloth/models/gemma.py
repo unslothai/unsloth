@@ -284,12 +284,12 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
         # The difference is we do division explicity instead of t * (1/x) ie we do t/x.
         freq_exponents = (2.0 / self.dim) * (
-            torch.arange(dim // 2, dtype = torch.int64, device = "cpu").float()
+            torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
         timescale = self.base**freq_exponents
         positions = torch.arange(self.max_seq_len_cached, device = "cpu", dtype = torch.int64).float()
         radians_new = positions[..., None] / timescale[None, None, :]
-        
+
         emb = torch.cat((radians_new, radians_new), dim=-1)
         self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
