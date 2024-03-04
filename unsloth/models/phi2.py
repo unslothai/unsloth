@@ -15,7 +15,9 @@
 from .llama import *
 from ._utils import __version__
 from ..kernels.relu import relu_kernel
-from ..kernels.layernorm import fast_layernorm_inference
+
+from ..kernels.layernorm import layer_norm_fn
+from ..kernels.gelu import gelu_forward_triton
 
 from torch.nn import CrossEntropyLoss
 from torch import nn
@@ -39,6 +41,12 @@ except:
     PhiFlashAttention2 = PhiAttention
 pass
 
+def fast_mlp_inference(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        hidden_states = self.fc1(hidden_states)
+        hidden_states = self.activation_fn(hidden_states)
+        #hidden_states = gelu_forward_triton(hidden_states)
+        hidden_states = self.fc2(hidden_states)
+        return hidden_states
 
 def Phi2FastModelForward(
     self,
@@ -154,8 +162,7 @@ def Phi2FastModelForward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
 
-    hidden_states = self.final_layernorm(hidden_states)
-    #hidden_states = fast_layernorm_inference(hidden_states, eps=1e-5)
+    hidden_states = layer_norm_fn(x=hidden_states, weight=self.final_layernorm.weight, bias=self.final_layernorm.bias, eps=1e-5)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
@@ -202,10 +209,8 @@ def Phi2DecoderLayer_fast_forward(
     """
 
     residual = hidden_states
-    #print(self.input_layernorm.bias)
-    hidden_states = fast_layernorm_inference(hidden_states, beta = self.input_layernorm.bias, gamma=self.input_layernorm.weight, eps=1e-5)
-    #hidden_states = self.input_layernorm(hidden_states)
-    #print("OFOOF", self.input_layernorm.weight)
+    hidden_states = layer_norm_fn(x=hidden_states, weight=self.input_layernorm.weight, bias=self.input_layernorm.bias, eps=1e-5)
+
     # Self Attention
     attn_outputs, self_attn_weights, present_key_value = self.self_attn(
         hidden_states=hidden_states,
@@ -431,7 +436,7 @@ class FastPhi2Model(FastLlamaModel):
         PhiModel            .forward = Phi2FastModelForward
         PhiForCausalLM      .forward = Phi2ForCausalLM_fast_forward
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
-
+        PhiMLP              .forward = fast_mlp_inference
         pass 
     
     @staticmethod
@@ -461,7 +466,7 @@ class FastPhi2Model(FastLlamaModel):
 
         model_config = AutoConfig.from_pretrained(model_name, token = token)
         FastPhi2Model.pre_patch()
-
+        print(model_config)
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:

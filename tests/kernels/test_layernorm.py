@@ -107,12 +107,13 @@ if __name__ == "__main__":
         torch.manual_seed(0)
         batch_size, num_features = 64, 128
         x = torch.randn(batch_size, num_features, device='cuda')
+        bias = torch.randn(num_features, device='cuda')
+
         gamma = torch.randn(num_features, device='cuda')
-        beta = torch.randn(num_features, device='cuda')
         eps = 1e-5
         
         try:
-            output = fast_layernorm_inference(x, (num_features,), eps=eps, use_triton=True)
+            output = fast_layernorm_inference(x, beta = bias, gamma=gamma, eps=1e-5, use_triton=True)
             print("Output shape:", output.shape)
         except Exception as e:
             print("Error during manual test:", str(e))
