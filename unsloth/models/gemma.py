@@ -291,6 +291,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         radians_new = positions[..., None] / timescale[None, None, :]
 
         emb = torch.cat((radians_new, radians_new), dim=-1)
+        print(emb.shape)
         self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
