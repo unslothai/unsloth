@@ -289,9 +289,9 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         timescale = self.base**freq_exponents
         positions = torch.arange(self.max_seq_len_cached, device = "cpu", dtype = torch.int64).float()
         radians_new = positions[..., None] / timescale[None, None, :]
-
+        radians_new = radians_new.squeeze(0)
+        
         emb = torch.cat((radians_new, radians_new), dim=-1)
-        print(emb.shape)
         self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
