@@ -313,7 +313,6 @@ def get_chat_template(
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
             tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
         pass
-
     else:
         raise TypeError(
             f"Unsloth: `chat_template` must be a tuple of (your_template, eos_token,) or one of\n"\

@@ -14,6 +14,8 @@
 
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
+from .phi2 import FastPhi2Model 
+
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -99,10 +101,11 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         model_type = model_config.model_type
-
-        if   model_type == "llama":   dispatch_model = FastLlamaModel
-        elif model_type == "mistral": dispatch_model = FastMistralModel
+        if   model_type == "llama"      :   dispatch_model = FastLlamaModel
+        elif model_type == "mistral"    :   dispatch_model = FastMistralModel
+        elif model_type == "phi"        :   dispatch_model = FastPhi2Model
         elif model_type == "gemma":
+            
             if not SUPPORTS_GEMMA:
                 raise RuntimeError(
                     f"Unsloth: Your transformers version of {transformers_version} does not support Gemma.\n"\
