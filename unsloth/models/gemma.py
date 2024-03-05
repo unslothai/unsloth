@@ -85,7 +85,7 @@ def GemmaDecoderLayer_fast_forward(
 ):
     if past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
-        out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, dtype = "cuda")
+        out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda")
 
         # Self Attention
         residual = hidden_states
