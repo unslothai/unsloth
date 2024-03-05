@@ -52,8 +52,12 @@ def _rms_layernorm_forward(
     normed = normed.to(W_row.dtype) # Exact copy from HF
 
     # For Gemma - cannot do += 1 since float16 - maybe use FMADD
-    if not ADD_ONE: output = normed * W_row
-    else:           output = normed * (W_row + 1.0)
+    if not ADD_ONE:
+        output = normed * W_row
+    else:
+        # Error analysis shows we need to do +1 in float32 then downcast to float16
+        output = normed * (W_row.to(tl.float32) + 1.0).to(W_row.dtype)
+    pass
 
     tl.store(Y + col_offsets, output, mask = mask)
 pass
@@ -93,8 +97,11 @@ def _rms_layernorm_backward(
     normed = X_row * inv_var
 
     # For Gemma - cannot do += 1 since float16 - maybe use FMADD
-    if not ADD_ONE: dY_W = dY_row * W_row
-    else:           dY_W = dY_row * (W_row + 1.0)
+    if not ADD_ONE:
+        dY_W = dY_row * W_row
+    else:
+        dY_W = dY_row * (W_row + 1.0)
+    pass
 
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
