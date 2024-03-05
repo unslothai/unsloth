@@ -519,7 +519,11 @@ def LlamaModel_fast_forward(
         elif inputs_requires_grad:
             inputs_embeds.requires_grad_(False)
         pass
-        inputs_embeds *= math_sqrt(self.config.hidden_size)
+        # Match Gemma exactly by casting to bfloat16 / float16
+        # inputs_embeds *= math_sqrt(self.config.hidden_size)
+        # Ie 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
+        # &  2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
+        inputs_embeds *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
 
@@ -621,7 +625,7 @@ def LlamaModel_fast_forward(
             all_self_attns += (layer_outputs[1],)
     pass
     
-    hidden_states = fast_rms_layernorm(self.norm, hidden_states, add_one = IS_GEMMA)
+    hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:

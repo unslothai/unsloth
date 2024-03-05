@@ -58,16 +58,15 @@ def fast_geglu_inference(self, X):
 pass
 
 
-def fast_rms_layernorm_inference_add_one(self, X, out_weight = None):
-    old_dtype = X.dtype
+def fast_rms_layernorm_inference_gemma(self, X, out_weight):
     XX = X.to(torch.float32)
     variance = XX.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
-    X = XX.to(old_dtype) # Must preserve due to residual
-    out_weight = torch.add(self.weight, 1.0, out = out_weight)
-    X *= out_weight
-    return X
+    out_weight[:] = self.weight
+    out_weight += 1.0
+    XX *= out_weight
+    return XX.to(X.dtype)
 pass
 
 
@@ -86,10 +85,11 @@ def GemmaDecoderLayer_fast_forward(
 ):
     if past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
+        out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, dtype = "cuda")
 
         # Self Attention
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_add_one(self.input_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_inference_gemma(self.input_layernorm, hidden_states, out_weight)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             self.self_attn,
             hidden_states,
@@ -101,12 +101,12 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_add_one(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_inference_gemma(self.post_attention_layernorm, hidden_states, out_weight)
         hidden_states = fast_geglu_inference(self.mlp, hidden_states)
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, add_one = True)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
         # hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
@@ -122,7 +122,7 @@ def GemmaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, add_one = True)
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
         # hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
@@ -151,16 +151,18 @@ def GemmaModel_fast_forward_inference(
 ):
     # Fix out of bounds tokenization
     input_ids = input_ids[:,:self.max_seq_length]
-    out_weight = torch.empty_like(self.layers[0].input_layernorm.weight)
+    out_weight = torch.empty_like(self.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda")
 
     hidden_states = self.embed_tokens(input_ids)
-    hidden_states *= math_sqrt(self.config.hidden_size)
+    # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
+    # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
+    inputs_embeds *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
         # Self Attention
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_add_one(decoder_layer.input_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states,
@@ -171,13 +173,13 @@ def GemmaModel_fast_forward_inference(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_add_one(decoder_layer.post_attention_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weight)
         hidden_states = fast_geglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference_add_one(self.norm, hidden_states, out_weight)
+    hidden_states = fast_rms_layernorm_inference_gemma(self.norm, hidden_states, out_weight)
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
