@@ -67,7 +67,7 @@ def fast_rms_layernorm_inference_add_one(self, X, out_weight = None):
     X = XX.to(old_dtype) # Must preserve due to residual
     out_weight = torch.add(self.weight, 1.0, out = out_weight)
     X *= out_weight
-    return XXX
+    return X
 pass
 
 
@@ -155,7 +155,7 @@ def GemmaModel_fast_forward_inference(
 
     hidden_states = self.embed_tokens(input_ids)
     hidden_states *= math_sqrt(self.config.hidden_size)
-    
+
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
         # Self Attention
