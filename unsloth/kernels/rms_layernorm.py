@@ -161,6 +161,6 @@ pass
 def fast_rms_layernorm(layernorm, X, add_one = False):
     W   = layernorm.weight
     eps = layernorm.variance_epsilon
-    out = Fast_RMS_Layernorm.apply(X, W, eps, add_one = add_one)
+    out = Fast_RMS_Layernorm.apply(X, W, eps, add_one)
     return out
 pass
