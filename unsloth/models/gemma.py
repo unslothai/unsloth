@@ -156,8 +156,8 @@ def GemmaModel_fast_forward_inference(
     hidden_states = self.embed_tokens(input_ids)
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-    # inputs_embeds *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
-    inputs_embeds *= math_sqrt(self.config.hidden_size)
+    # hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
+    hidden_states *= math_sqrt(self.config.hidden_size)
     
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
