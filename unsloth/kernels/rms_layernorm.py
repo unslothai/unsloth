@@ -18,6 +18,7 @@ import torch
 from .utils import calculate_settings
 
 
+@triton.heuristics({"ADD_ONE": lambda args: args["ADD_ONE"],})
 @triton.jit
 def _rms_layernorm_forward(
     Y, Y_row_stride,
@@ -25,7 +26,8 @@ def _rms_layernorm_forward(
     W, W_row_stride,
     r, r_row_stride,
     n_cols, eps,
-    BLOCK_SIZE : tl.constexpr
+    ADD_ONE: tl.constexpr,
+    BLOCK_SIZE : tl.constexpr,
 ):
     """
         Fast RMS Layernorm kernel
@@ -48,11 +50,16 @@ def _rms_layernorm_forward(
     tl.store(r, inv_var)
     normed = X_row * inv_var
     normed = normed.to(W_row.dtype) # Exact copy from HF
-    output = normed * W_row
+
+    # For Gemma - cannot do += 1 since float16 - maybe use FMADD
+    if not ADD_ONE: output = normed * W_row
+    else:           output = normed * (W_row + 1.0)
+
     tl.store(Y + col_offsets, output, mask = mask)
 pass
 
 
+@triton.heuristics({"ADD_ONE": lambda args: args["ADD_ONE"],})
 @triton.jit
 def _rms_layernorm_backward(
     dY, dY_row_stride,
@@ -61,6 +68,7 @@ def _rms_layernorm_backward(
     r,   r_row_stride,
     dW, dW_row_stride,
     n_cols, eps,
+    ADD_ONE: tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
 ):
     """
@@ -84,7 +92,10 @@ def _rms_layernorm_backward(
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
 
-    dY_W = dY_row * W_row
+    # For Gemma - cannot do += 1 since float16 - maybe use FMADD
+    if not ADD_ONE: dY_W = dY_row * W_row
+    else:           dY_W = dY_row * (W_row + 1.0)
+
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
     tl.store(dY + col_offsets, output, mask = mask)
@@ -93,7 +104,7 @@ pass
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, eps):
+    def forward(ctx, X, W, eps, add_one = False):
         shape = X.shape
         dim = shape[-1]
         X = X.view(-1, dim)
@@ -109,12 +120,14 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             W, W.stride(0),
             r, r.stride(0),
             n_cols, eps,
+            ADD_ONE = add_one,
             BLOCK_SIZE = BLOCK_SIZE,
             num_warps  = num_warps,
         )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
+        ctx.ADD_ONE    = add_one
         ctx.save_for_backward(X, W, r)
         return Y.view(*shape)
     pass
@@ -135,18 +148,19 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             r,  r .stride(0),
             dW, dW.stride(0),
             n_cols, ctx.eps,
+            ADD_ONE    = ctx.ADD_ONE,
             BLOCK_SIZE = ctx.BLOCK_SIZE,
             num_warps  = ctx.num_warps,
         )
         dX = dY.view(*shape)
-        return dX, None, None
+        return dX, None, None, None
     pass
 pass
 
 
-def fast_rms_layernorm(layernorm, X):
+def fast_rms_layernorm(layernorm, X, add_one = False):
     W   = layernorm.weight
     eps = layernorm.variance_epsilon
-    out = Fast_RMS_Layernorm.apply(X, W, eps)
+    out = Fast_RMS_Layernorm.apply(X, W, eps, add_one = add_one)
     return out
 pass
