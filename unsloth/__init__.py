@@ -99,10 +99,14 @@ except:
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
-        raise ImportError("Unsloth: CUDA is not linked properly.\n"\
-                          "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
-                          "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"\
-                          "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.")
+        warnings.warn(
+            "Unsloth: CUDA is not linked properly.\n"\
+            "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"\
+            "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
+            "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"\
+            "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
+            "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
+        )
 pass
 
 from .models import *
