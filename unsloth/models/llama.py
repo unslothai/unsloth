@@ -208,6 +208,7 @@ def LlamaAttention_fast_forward_inference(
 pass
 
 
+torch_nn_functional_silu = torch.nn.functional.silu
 def fast_swiglu_inference(self, X):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
@@ -217,7 +218,7 @@ def fast_swiglu_inference(self, X):
 
     gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
     up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
-    gate = torch.nn.functional.silu(gate, inplace = True)
+    gate = torch_nn_functional_silu(gate, inplace = True)
     gate *= up
 
     # X = self.down_proj(gate)
@@ -509,7 +510,8 @@ def LlamaModel_fast_forward(
         inputs_embeds = self.embed_tokens(input_ids)
 
     # Mormalized from Gemma
-    if self.config.model_type == "gemma":
+    IS_GEMMA = self.config.model_type == "gemma"
+    if IS_GEMMA:
         inputs_requires_grad = inputs_embeds.requires_grad
         if not inputs_embeds.is_leaf:
             inputs_embeds = inputs_embeds.detach()
@@ -517,7 +519,12 @@ def LlamaModel_fast_forward(
         elif inputs_requires_grad:
             inputs_embeds.requires_grad_(False)
         pass
-        inputs_embeds *= math_sqrt(self.config.hidden_size)
+        # Match Gemma exactly by casting to bfloat16 / float16
+        # inputs_embeds *= math_sqrt(self.config.hidden_size)
+        # Ie 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
+        # &  2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
+        inputs_embeds *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
+        # inputs_embeds *= math_sqrt(self.config.hidden_size)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
 
@@ -619,7 +626,7 @@ def LlamaModel_fast_forward(
             all_self_attns += (layer_outputs[1],)
     pass
     
-    hidden_states = fast_rms_layernorm(self.norm, hidden_states)
+    hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
 
     # add hidden states from the last decoder layer
     if output_hidden_states:
@@ -681,91 +688,94 @@ def LlamaModel_fast_forward_inference(
 pass
 
 
-def LlamaForCausalLM_fast_forward(
-    self,
-    input_ids: torch.LongTensor = None,
-    causal_mask: Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
-    attention_mask: Optional[torch.Tensor] = None,
-    position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[List[torch.FloatTensor]] = None,
-    inputs_embeds: Optional[torch.FloatTensor] = None,
-    labels: Optional[torch.LongTensor] = None,
-    use_cache: Optional[bool] = None,
-    output_attentions: Optional[bool] = None,
-    output_hidden_states: Optional[bool] = None,
-    return_dict: Optional[bool] = None,
-    *args, **kwargs,
-) -> Union[Tuple, CausalLMOutputWithPast]:
+def CausalLM_fast_forward(fast_forward_inference):
+    def _CausalLM_fast_forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        causal_mask: Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        *args, **kwargs,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-    if causal_mask is None and past_key_values is None:
-        causal_mask = xformers.attn_bias.LowerTriangularMask()
+        if causal_mask is None and past_key_values is None:
+            causal_mask = xformers.attn_bias.LowerTriangularMask()
 
-    output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-    output_hidden_states = (
-        output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-    )
-    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-    # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    self.model._has_no_labels = labels is None
-
-    if past_key_values is not None and \
-        hasattr(self.model.layers[0].self_attn, "paged_attention"):
-        outputs = LlamaModel_fast_forward_inference(
-            self.model,
-            input_ids,
-            past_key_values,
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-    else:
-        outputs = self.model(
-            input_ids=input_ids,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-    pass
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-    hidden_states = outputs[0]
-    bsz, q_len, hd = hidden_states.shape
-    if bsz == 1 and q_len == 1:
-        logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
-        logits = logits.unsqueeze(0).unsqueeze(0)
-    else:
-        logits = self.lm_head(hidden_states)
-    pass
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        self.model._has_no_labels = labels is None
 
-    loss = None
-    if labels is not None:
-        shift_logits = logits
-        if not hasattr(self, "extra_ignored_labels"):
-            # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda")
+        if past_key_values is not None and \
+            hasattr(self.model.layers[0].self_attn, "paged_attention"):
+            outputs = fast_forward_inference(
+                self.model,
+                input_ids,
+                past_key_values,
+            )
+        else:
+            outputs = self.model(
+                input_ids=input_ids,
+                causal_mask=causal_mask,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
         pass
-        
-        shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-        loss = fast_cross_entropy_loss(
-            logits = shift_logits,
-            labels = shift_labels,
+
+        hidden_states = outputs[0]
+        bsz, q_len, hd = hidden_states.shape
+        if bsz == 1 and q_len == 1:
+            logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+            logits = logits.unsqueeze(0).unsqueeze(0)
+        else:
+            logits = self.lm_head(hidden_states)
+        pass
+
+        loss = None
+        if labels is not None:
+            shift_logits = logits
+            if not hasattr(self, "extra_ignored_labels"):
+                # Fixes https://github.com/unslothai/unsloth/issues/10
+                self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda")
+            pass
+            
+            shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+            loss = fast_cross_entropy_loss(
+                logits = shift_logits,
+                labels = shift_labels,
+            )
+        pass
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
         )
     pass
-
-    if not return_dict:
-        output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
-
-    return CausalLMOutputWithPast(
-        loss=loss,
-        logits=logits,
-        past_key_values=outputs.past_key_values,
-        hidden_states=outputs.hidden_states,
-        attentions=outputs.attentions,
-    )
+    return _CausalLM_fast_forward
 pass
 
 
@@ -880,7 +890,7 @@ class FastLlamaModel:
         LlamaFlashAttention2.forward = LlamaAttention_fast_forward
         LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         LlamaModel          .forward = LlamaModel_fast_forward
-        LlamaForCausalLM    .forward = LlamaForCausalLM_fast_forward
+        LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
 
         # Solves https://github.com/unslothai/unsloth/issues/168

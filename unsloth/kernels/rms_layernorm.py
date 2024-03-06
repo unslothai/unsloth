@@ -53,6 +53,7 @@ def _rms_layernorm_forward(
 pass
 
 
+@triton.heuristics({"GEMMA": lambda args: args["GEMMA"],})
 @triton.jit
 def _rms_layernorm_backward(
     dY, dY_row_stride,
@@ -61,6 +62,7 @@ def _rms_layernorm_backward(
     r,   r_row_stride,
     dW, dW_row_stride,
     n_cols, eps,
+    GEMMA      : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
 ):
     """
@@ -84,16 +86,51 @@ def _rms_layernorm_backward(
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
 
-    dY_W = dY_row * W_row
+    if GEMMA: dY_W = dY_row * (W_row + 1.0)
+    else:     dY_W = dY_row * W_row
+
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
     tl.store(dY + col_offsets, output, mask = mask)
 pass
 
 
+@triton.jit
+def _gemma_rms_layernorm_forward(
+    Y, Y_row_stride,
+    X, X_row_stride,
+    W, W_row_stride,
+    r, r_row_stride,
+    n_cols, eps,
+    BLOCK_SIZE : tl.constexpr,
+):
+    # Copies https://github.com/google-deepmind/gemma/blob/main/gemma/layers.py#L31
+    # and https://github.com/keras-team/keras-nlp/blob/v0.8.2/keras_nlp/models/gemma/rms_normalization.py#L33
+    # exactly. Essentially all in float32!
+    row_idx = tl.program_id(0)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    mask = col_offsets < n_cols
+
+    Y += row_idx * Y_row_stride
+    X += row_idx * X_row_stride
+    r += row_idx * r_row_stride
+
+    X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
+    W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
+
+    row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
+    inv_var = 1.0 / tl.sqrt(row_var + eps) # Must be 1/sqrt to match Deepmind's impl
+    tl.store(r, inv_var)
+    normed = X_row * inv_var
+    output = normed * (W_row + 1.0)
+
+    tl.store(Y + col_offsets, output, mask = mask)
+pass
+
+
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, eps):
+    def forward(ctx, X, W, eps, gemma = False):
         shape = X.shape
         dim = shape[-1]
         X = X.view(-1, dim)
@@ -103,7 +140,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda")
         r = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
 
-        _rms_layernorm_forward[(n_rows,)](
+        fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
+        fx[(n_rows,)](
             Y, Y.stride(0),
             X, X.stride(0),
             W, W.stride(0),
@@ -115,6 +153,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
+        ctx.GEMMA = gemma
         ctx.save_for_backward(X, W, r)
         return Y.view(*shape)
     pass
@@ -135,18 +174,19 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             r,  r .stride(0),
             dW, dW.stride(0),
             n_cols, ctx.eps,
+            GEMMA      = ctx.GEMMA,
             BLOCK_SIZE = ctx.BLOCK_SIZE,
             num_warps  = ctx.num_warps,
         )
         dX = dY.view(*shape)
-        return dX, None, None
+        return dX, None, None, None
     pass
 pass
 
 
-def fast_rms_layernorm(layernorm, X):
+def fast_rms_layernorm(layernorm, X, gemma = False):
     W   = layernorm.weight
     eps = layernorm.variance_epsilon
-    out = Fast_RMS_Layernorm.apply(X, W, eps)
+    out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
     return out
 pass
