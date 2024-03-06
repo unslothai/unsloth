@@ -369,6 +369,7 @@ def unsloth_save_model(
 
     # Switch to our fast saving modules if it's a slow PC!
     n_cpus = psutil.cpu_count(logical = False)
+    if n_cpus is None: n_cpus = psutil.cpu_count()
     if n_cpus is None: n_cpus = 1
 
     if safe_serialization is None:
