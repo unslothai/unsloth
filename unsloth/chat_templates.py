@@ -257,6 +257,10 @@ def get_chat_template(
         assert("Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
     pass
 
+    if tokenizer.__class__.__name__.startswith("Gemma") and chat_template == "chatml":
+        chat_template = "gemma_chatml"
+    pass
+
     old_padding_side = tokenizer.padding_side
 
     if type(chat_template) in (list, tuple,):
