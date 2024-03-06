@@ -156,9 +156,8 @@ def GemmaModel_fast_forward_inference(
     hidden_states = self.embed_tokens(input_ids)
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-    # hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
-    hidden_states *= math_sqrt(self.config.hidden_size)
-    
+    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
+
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
         # Self Attention
@@ -221,9 +220,12 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         radians_new = positions[..., None] / timescale[None, None, :]
         radians_new = radians_new.squeeze(0)
 
-        emb = torch.cat((radians_new, radians_new), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        emb = torch.cat((radians_new, radians_new), dim = -1)
+        # We must do RoPE in float32!
+        cos = emb.cos().to(device = device, non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = device, non_blocking = True)#, dtype = dtype)
+        self.register_buffer("cos_cached", cos, persistent = False)
+        self.register_buffer("sin_cached", sin, persistent = False)
     pass
 
     def forward(self, x, position_ids=None, seq_len=None):
@@ -307,13 +309,14 @@ class FastGemmaModel(FastLlamaModel):
                 pass
             pass
             # Downcast RoPE embedding to correct data type
-            if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")) \
-                and (module.cos_cached.dtype != correct_dtype):
+            # RoPE must be done in float32 for Gemma
+            # if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")) \
+            #     and (module.cos_cached.dtype != correct_dtype):
 
-                module.cos_cached = module.cos_cached.to(correct_dtype)
-                module.sin_cached = module.sin_cached.to(correct_dtype)
-                pass
-            pass
+            #     module.cos_cached = module.cos_cached.to(correct_dtype)
+            #     module.sin_cached = module.sin_cached.to(correct_dtype)
+            #     pass
+            # pass
         pass
 
         # Add 1 to weight

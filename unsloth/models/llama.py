@@ -523,8 +523,8 @@ def LlamaModel_fast_forward(
         # inputs_embeds *= math_sqrt(self.config.hidden_size)
         # Ie 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
         # &  2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-        # inputs_embeds *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
-        inputs_embeds *= math_sqrt(self.config.hidden_size)
+        inputs_embeds *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
+        # inputs_embeds *= math_sqrt(self.config.hidden_size)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
 

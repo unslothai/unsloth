@@ -39,14 +39,16 @@ def _rope_embedding(
     half_head_dim = head_dim // 2
     mask = col_offsets < half_head_dim
 
-    Q1   = tl.load(Q + row_position*Q_row_stride + head_position*head_dim + \
-                   half_head_dim*0 + col_offsets, mask = mask, other = 0)
-    Q2   = tl.load(Q + row_position*Q_row_stride + head_position*head_dim + \
-                   half_head_dim*1 + col_offsets, mask = mask, other = 0)
     sin1 = tl.load(sin + (row_position % seqlen)*sin_row_stride + \
                    half_head_dim*0 + col_offsets, mask = mask, other = 0)
     cos1 = tl.load(cos + (row_position % seqlen)*cos_row_stride + \
                    half_head_dim*0 + col_offsets, mask = mask, other = 0)
+
+    # For Gemma - sometimes RoPE must be done in float32 and not bfloat16
+    Q1   = tl.load(Q + row_position*Q_row_stride + head_position*head_dim + \
+                   half_head_dim*0 + col_offsets, mask = mask, other = 0).to(sin1.dtype)
+    Q2   = tl.load(Q + row_position*Q_row_stride + head_position*head_dim + \
+                   half_head_dim*1 + col_offsets, mask = mask, other = 0).to(sin1.dtype)
 
     if BACKWARD_PASS:
         # See our blog post for more info.
@@ -54,9 +56,11 @@ def _rope_embedding(
     pass
 
     tl.store(Q + row_position*Q_row_stride + head_position*head_dim + \
-             half_head_dim*0 + col_offsets, Q1*cos1 - Q2*sin1, mask = mask)
+             half_head_dim*0 + col_offsets,
+             Q1*cos1 - Q2*sin1, mask = mask)
     tl.store(Q + row_position*Q_row_stride + head_position*head_dim + \
-             half_head_dim*1 + col_offsets, Q2*cos1 + Q1*sin1, mask = mask)
+             half_head_dim*1 + col_offsets,
+             Q2*cos1 + Q1*sin1, mask = mask)
 pass
 
 
