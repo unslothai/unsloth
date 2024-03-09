@@ -916,6 +916,7 @@ class FastLlamaModel:
         rope_scaling   = None,
         fix_tokenizer  = True,
         model_patcher  = None,
+        tokenizer_name = None,
         **kwargs,
     ):
         if model_patcher is None: model_patcher = FastLlamaModel
@@ -978,13 +979,16 @@ class FastLlamaModel:
             max_position_embeddings = max_position_embeddings,
             **kwargs,
         )
+
+        # Counteract saved tokenizers
+        tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
+            tokenizer_name,
             model_max_length = max_position_embeddings,
             padding_side     = "right",
             token            = token,
         )
-
+        
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = model_patcher.post_patch(model)
 

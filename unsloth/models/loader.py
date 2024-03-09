@@ -18,7 +18,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER
-
+import os
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 major, minor = transformers_version.split(".")[:2]
@@ -118,6 +118,16 @@ class FastLanguageModel(FastLlamaModel):
             )
         pass
 
+        # Check if this is local model since the tokenizer gets overwritten
+        if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
+            os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
+            os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
+
+            tokenizer_name = old_model_name
+        else:
+            tokenizer_name = None
+        pass
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name     = model_name,
             max_seq_length = max_seq_length,
@@ -128,6 +138,7 @@ class FastLanguageModel(FastLlamaModel):
             rope_scaling   = rope_scaling,
             fix_tokenizer  = fix_tokenizer,
             model_patcher  = dispatch_model,
+            tokenizer_name = tokenizer_name,
             *args, **kwargs,
         )
 
