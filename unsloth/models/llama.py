@@ -985,7 +985,9 @@ class FastLlamaModel:
             token            = token,
         )
 
+        print(tokenizer)
         model, tokenizer = patch_tokenizer(model, tokenizer)
+        print(tokenizer)
         model = model_patcher.post_patch(model)
 
         # Patch up QKV / O and MLP
