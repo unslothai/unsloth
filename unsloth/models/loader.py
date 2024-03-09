@@ -18,7 +18,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER
-
+import os
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 major, minor = transformers_version.split(".")[:2]
@@ -79,14 +79,12 @@ class FastLanguageModel(FastLlamaModel):
     ):
         old_model_name = model_name
         model_name = _get_model_name(model_name, load_in_4bit)
-        print(model_name)
 
         # First check if it's a normal model via AutoConfig
         is_peft = False
         try:
             model_config = AutoConfig.from_pretrained(model_name, token = token)
             is_peft = False
-            print(model_config)
         except:
             try:
                 # Most likely a PEFT model
@@ -98,7 +96,6 @@ class FastLanguageModel(FastLlamaModel):
             model_name = _get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
             model_config = AutoConfig.from_pretrained(model_name, token = token)
             is_peft = True
-            print(model_config)
         pass
 
         model_type = model_config.model_type
@@ -121,7 +118,16 @@ class FastLanguageModel(FastLlamaModel):
             )
         pass
 
-        print(model_name)
+        # Check if this is local model since the tokenizer gets overwritten
+        if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
+            os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
+            os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
+
+            tokenizer_name = old_model_name
+        else:
+            tokenizer_name = None
+        pass
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name     = model_name,
             max_seq_length = max_seq_length,
@@ -132,6 +138,7 @@ class FastLanguageModel(FastLlamaModel):
             rope_scaling   = rope_scaling,
             fix_tokenizer  = fix_tokenizer,
             model_patcher  = dispatch_model,
+            tokenizer_name = tokenizer_name,
             *args, **kwargs,
         )
 
