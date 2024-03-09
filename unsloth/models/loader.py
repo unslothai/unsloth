@@ -118,6 +118,7 @@ class FastLanguageModel(FastLlamaModel):
             )
         pass
 
+        print(model_name)
         model, tokenizer = dispatch_model.from_pretrained(
             model_name     = model_name,
             max_seq_length = max_seq_length,
