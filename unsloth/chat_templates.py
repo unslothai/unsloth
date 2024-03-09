@@ -221,6 +221,7 @@ CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token,)
 # Notice we must use |trim for lstrip and rstrip. <start_of_turn> maps to 106.
 # <end_of_turn> maps to 107. user and model are normal 1 word tokens.
 gemma_template = \
+    "{{ bos_token }}"\
     "{% for message in messages %}"\
         "{% if message['role'] == 'user' %}"\
             "{{'<start_of_turn>user\n' + message['content'] | trim + '<end_of_turn>\n'}}"\
@@ -238,7 +239,7 @@ CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token,)
 
 
 # Gemma with ChatML instead
-gemma_chatml_template = chatml_template
+gemma_chatml_template = "{{ bos_token }}" + chatml_template
 gemma_chatml_eos_token = (
     {"<start_of_turn>" : "<|im_start|>", "<end_of_turn>" : "<|im_end|>"},
     "<|im_end|>",
@@ -254,6 +255,10 @@ def get_chat_template(
 ):
     if map_eos_token is False:
         assert("Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
+    pass
+
+    if tokenizer.__class__.__name__.startswith("Gemma") and chat_template == "chatml":
+        chat_template = "gemma_chatml"
     pass
 
     old_padding_side = tokenizer.padding_side
