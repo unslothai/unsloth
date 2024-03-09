@@ -79,12 +79,14 @@ class FastLanguageModel(FastLlamaModel):
     ):
         old_model_name = model_name
         model_name = _get_model_name(model_name, load_in_4bit)
+        print(model_name)
 
         # First check if it's a normal model via AutoConfig
         is_peft = False
         try:
             model_config = AutoConfig.from_pretrained(model_name, token = token)
             is_peft = False
+            print(model_config)
         except:
             try:
                 # Most likely a PEFT model
@@ -96,6 +98,7 @@ class FastLanguageModel(FastLlamaModel):
             model_name = _get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
             model_config = AutoConfig.from_pretrained(model_name, token = token)
             is_peft = True
+            print(model_config)
         pass
 
         model_type = model_config.model_type
