@@ -298,8 +298,12 @@ def get_chat_template(
                 pass
             pass
 
-            logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
-            string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
+            if not stop_word in token_mapping.values():
+                # Do not map 107 = <|im_end|> and 1 = <|im_end|>. This will reduce the vocab size by 1
+                logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
+                string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
+            pass
+
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
             tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
 
