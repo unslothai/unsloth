@@ -97,7 +97,7 @@ def _merge_lora(layer, name):
             # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
             # W += sAB
             # W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
-            W.addmm_(A.t(), B.t(), alpha = s)
+            W.addmm_(A.t().to(W.dtype), B.t().to(W.dtype), alpha = s)
             # if not torch.isfinite(W).all():
             maximum_element = torch.max(W.min().abs(), W.max())
             if not torch.isfinite(maximum_element).item():
