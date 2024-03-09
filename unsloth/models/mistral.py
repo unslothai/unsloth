@@ -294,6 +294,7 @@ class FastMistralModel(FastLlamaModel):
         rope_scaling   = None, # Mistral does not support RoPE scaling
         fix_tokenizer  = True,
         model_patcher  = None,
+        tokenizer_name = None,
         **kwargs,
     ):
         if model_patcher is None: model_patcher = FastMistralModel
@@ -354,8 +355,11 @@ class FastMistralModel(FastLlamaModel):
             # rope_scaling      = rope_scaling,
             **kwargs,
         )
+
+        # Counteract saved tokenizers
+        tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
+            tokenizer_name,
             model_max_length = max_position_embeddings,
             padding_side     = "right",
             token            = token,
