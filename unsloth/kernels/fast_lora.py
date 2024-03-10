@@ -28,14 +28,16 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         reshape = False
     pass
 
+    W.addmm_(A.to(dtype), B.to(dtype), alpha = s)
+
     out = torch.matmul(X, W, out = out)
     if W_quant is not None: del W
 
-    if A is not None:
-        # LoRA is enabled
-        A, B = A.t(), B.t()
-        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
-    pass
+    # if A is not None:
+    #     # LoRA is enabled
+    #     A, B = A.t(), B.t()
+    #     out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+    # pass
     
     return out.view(batch, seq_len, -1) if reshape else out
 pass
