@@ -1480,9 +1480,9 @@ class FastLlamaModel:
                     ((gate_proj.base_layer if hasattr(gate_proj, "base_layer") else gate_proj).bias is None) and \
                     ((  up_proj.base_layer if hasattr(  up_proj, "base_layer") else   up_proj).bias is None) and \
                     ((down_proj.base_layer if hasattr(down_proj, "base_layer") else down_proj).bias is None) and \
-                    (not hasattr(gate_proj, "lora_magnitude_vector")) and \
-                    (not hasattr(  up_proj, "lora_magnitude_vector")) and \
-                    (not hasattr(down_proj, "lora_magnitude_vector")):
+                    ((gate_proj.lora_magnitude_vector if hasattr(gate_proj, "lora_magnitude_vector") else None) is None) and \
+                    ((  up_proj.lora_magnitude_vector if hasattr(  up_proj, "lora_magnitude_vector") else None) is None) and \
+                    ((down_proj.lora_magnitude_vector if hasattr(down_proj, "lora_magnitude_vector") else None) is None):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
                     layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
@@ -1504,9 +1504,9 @@ class FastLlamaModel:
                     ((q_proj.base_layer if hasattr(q_proj, "base_layer") else q_proj).bias is None) and \
                     ((k_proj.base_layer if hasattr(k_proj, "base_layer") else k_proj).bias is None) and \
                     ((v_proj.base_layer if hasattr(v_proj, "base_layer") else v_proj).bias is None) and \
-                    (not hasattr(q_proj, "lora_magnitude_vector")) and \
-                    (not hasattr(k_proj, "lora_magnitude_vector")) and \
-                    (not hasattr(v_proj, "lora_magnitude_vector")):
+                    ((q_proj.lora_magnitude_vector if hasattr(q_proj, "lora_magnitude_vector") else None) is None) and \
+                    ((k_proj.lora_magnitude_vector if hasattr(k_proj, "lora_magnitude_vector") else None) is None) and \
+                    ((v_proj.lora_magnitude_vector if hasattr(v_proj, "lora_magnitude_vector") else None) is None):
 
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -1521,7 +1521,7 @@ class FastLlamaModel:
                 o_proj = layer.self_attn.o_proj
                 if hasattr(o_proj, "lora_A") and \
                     ((o_proj.base_layer if hasattr(o_proj, "base_layer") else o_proj).bias is None) and \
-                    (not hasattr(o_proj, "lora_magnitude_vector")):
+                    ((o_proj.lora_magnitude_vector if hasattr(o_proj, "lora_magnitude_vector") else None) is None):
 
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
