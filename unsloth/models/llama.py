@@ -705,8 +705,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-        if False: #past_key_values is not None and \
-            hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        if False: #past_key_values is not None and hasattr(self.model.layers[0].self_attn, "paged_attention"):
             outputs = fast_forward_inference(
                 self.model,
                 input_ids,
@@ -723,7 +722,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
-            
+
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
