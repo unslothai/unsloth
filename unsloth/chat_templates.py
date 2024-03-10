@@ -253,13 +253,15 @@ def get_chat_template(
     mapping = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
     map_eos_token = True,
 ):
+    old_tokenizer = tokenizer
+
     if map_eos_token is False:
         assert("Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
     pass
 
-    # if tokenizer.__class__.__name__.startswith("Gemma") and chat_template == "chatml":
-    #     chat_template = "gemma_chatml"
-    # pass
+    if tokenizer.__class__.__name__.startswith("Gemma") and chat_template == "chatml":
+        chat_template = "gemma_chatml"
+    pass
 
     old_padding_side = tokenizer.padding_side
 
@@ -339,6 +341,17 @@ def get_chat_template(
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
     tokenizer.padding_side  = old_padding_side
     tokenizer.chat_template = chat_template
+
+    # Also fix up other tokens
+    old_pad_token = getattr(old_tokenizer, "pad_token", None)
+    old_bos_token = getattr(old_tokenizer, "bos_token", None)
+    old_unk_token = getattr(old_tokenizer, "unk_token", None)
+    new_pad_token = getattr(tokenizer,     "pad_token", None)
+    new_bos_token = getattr(tokenizer,     "bos_token", None)
+    new_unk_token = getattr(tokenizer,     "unk_token", None)
+    if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
+    if old_bos_token != new_bos_token: tokenizer.bos_token = old_bos_token
+    if old_unk_token != new_unk_token: tokenizer.unk_token = old_unk_token
 
     #stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
