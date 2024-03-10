@@ -203,7 +203,11 @@ def unsloth_save_model(
 
         print("Unsloth: Merging 4bit and LoRA weights to 4bit...")
         print("This might take 5 minutes...")
-        model = model.merge_and_unload()
+
+        # Counteract no LoRA adapters!
+        if hasattr(model, "merge_and_unload"):
+            model = model.merge_and_unload()
+        pass
         print("Done.")
     pass
 
