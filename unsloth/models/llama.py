@@ -705,7 +705,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-        if False: #past_key_values is not None and hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        if past_key_values is not None and hasattr(self.model.layers[0].self_attn, "paged_attention"):
             outputs = fast_forward_inference(
                 self.model,
                 input_ids,
