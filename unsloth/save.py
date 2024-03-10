@@ -90,13 +90,13 @@ def _merge_lora(layer, name):
             W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
-        W = W.to(torch.float32).t()
-        # W = W.t()
+        # W = W.to(torch.float32).t()
+        W = W.t()
 
         if A is not None:
-            # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
-            # W += sAB
-            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            sAB = (A.t().to(W.dtype) @ (s * B.t().to(W.dtype)))
+            W += sAB
+            # W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
             # W.addmm_(A.t().to(W.dtype), B.t().to(W.dtype), alpha = s)
             # if not torch.isfinite(W).all():
             maximum_element = torch.max(W.min().abs(), W.max())
