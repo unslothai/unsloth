@@ -25,7 +25,7 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
     mask = offsets < n_elements
 
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row = tl.load(g + offsets, mask = mask, other = 0)#.to(tl.float32)
+    g_row = tl.load(g + offsets, mask = mask, other = 0).to(tl.float32)
 
     # f = e * sigmoid(e)
     f_row = e_row * tl.sigmoid(e_row) # e_row / (1 + tl.exp(-e_row))
@@ -63,9 +63,9 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
 
-    DW_row = tl.load(DW + offsets, mask = mask, other = 0)#.to(tl.float32)
+    DW_row = tl.load(DW + offsets, mask = mask, other = 0).to(tl.float32)
     e_row  = tl.load(e  + offsets, mask = mask, other = 0).to(tl.float32)
-    g_row  = tl.load(g  + offsets, mask = mask, other = 0)#.to(tl.float32)
+    g_row  = tl.load(g  + offsets, mask = mask, other = 0).to(tl.float32)
 
     # e = e.float()
     # se = 1.0 / (1.0 + torch.exp(-e))
