@@ -28,17 +28,14 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         reshape = False
     pass
 
-    A, B = A.t(), B.t()
-    W.addmm_(A.to(dtype), B.to(dtype), alpha = s)
-
     out = torch.matmul(X, W, out = out)
     if W_quant is not None: del W
 
-    # if A is not None:
-    #     # LoRA is enabled
-    #     A, B = A.t(), B.t()
-    #     out += (X @ A.to(dtype)) @ (s * B.to(dtype))
-    # pass
+    if A is not None:
+        # LoRA is enabled
+        A, B = A.t(), B.t()
+        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+    pass
     
     return out.view(batch, seq_len, -1) if reshape else out
 pass
@@ -151,16 +148,14 @@ class LoRA_MLP(torch.autograd.Function):
         # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
         upW = fast_dequantize(upW.t(), upW_quant)
-        upW.addmm_(upA.to(dtype), upB.to(dtype), alpha = upS)
         dX = torch.matmul(df, upW.t(), out = X)
         del upW
-        # dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
+        dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
-        gateW.addmm_(gateA.to(dtype), gateB.to(dtype), alpha = gateS)
         dX += de @ gateW.t()
         del gateW
-        # dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
+        dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
 
         # gateW, gateW_quant, gateA, gateB, gateS,
         #  upW,    upW_quant,   upA,   upB,   upS,
@@ -308,24 +303,21 @@ class LoRA_QKV(torch.autograd.Function):
         # Combine derivatives to find dX
         # dQ
         QW = fast_dequantize(QW.t(), QW_quant)
-        QW.addmm_(QA.to(dtype), QB.to(dtype), alpha = QS)
         dX = torch.matmul(dQ, QW.t(), out = X)
         del QW
-        # dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
+        dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
 
         # dK
         KW = fast_dequantize(KW.t(), KW_quant)
-        KW.addmm_(KA.to(dtype), KB.to(dtype), alpha = KS)
         dX += dK @ KW.t()
         del KW
-        # dX += dK @ KB.to(dtype).t() @ (KS * KA.to(dtype).t())
+        dX += dK @ KB.to(dtype).t() @ (KS * KA.to(dtype).t())
 
         # dV
         VW = fast_dequantize(VW.t(), VW_quant)
-        VW.addmm_(VA.to(dtype), VB.to(dtype), alpha = VS)
         dX += dV @ VW.t()
         del VW
-        # dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
+        dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
 
         # QW, QW_quant, QA, QB, QS,
         # KW, KW_quant, KA, KB, KS,
@@ -411,10 +403,9 @@ class LoRA_W(torch.autograd.Function):
 
         # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
-        W.addmm_(A.to(dtype), B.to(dtype), alpha = S)
         dX = dY @ W.t()
         del W
-        # dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
+        dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
 
         # W, W_quant, A, B, S
         return dX.view(batch, seq_len, hd), \
