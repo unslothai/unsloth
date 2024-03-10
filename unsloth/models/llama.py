@@ -511,21 +511,29 @@ def LlamaModel_fast_forward(
 
     # Mormalized from Gemma
     IS_GEMMA = self.config.model_type == "gemma"
+
     if IS_GEMMA:
-        inputs_requires_grad = inputs_embeds.requires_grad
-        if not inputs_embeds.is_leaf:
-            inputs_embeds = inputs_embeds.detach()
-            inputs_requires_grad = True
-        elif inputs_requires_grad:
-            inputs_embeds.requires_grad_(False)
-        pass
         # Match Gemma exactly by casting to bfloat16 / float16
         # inputs_embeds *= math_sqrt(self.config.hidden_size)
         # Ie 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
         # &  2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-        inputs_embeds *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
-        # inputs_embeds *= math_sqrt(self.config.hidden_size)
-        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+        normalizer = torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
+
+        if self.embed_tokens.weight.requires_grad:
+            # Careful we must not do an inplace op!
+            inputs_embeds = inputs_embeds * normalizer
+        else:
+            inputs_requires_grad = inputs_embeds.requires_grad
+            if not inputs_embeds.is_leaf:
+                inputs_embeds = inputs_embeds.detach()
+                inputs_requires_grad = True
+            elif inputs_requires_grad:
+                inputs_embeds.requires_grad_(False)
+            pass
+            inputs_embeds *= scalar
+            # inputs_embeds *= math_sqrt(self.config.hidden_size)
+            if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+        pass
     pass
 
     # Fix up attention mask by setting elements to 0
