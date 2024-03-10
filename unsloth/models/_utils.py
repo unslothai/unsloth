@@ -95,7 +95,7 @@ def prepare_model_for_kbit_training(
 
     # Freeze all parameters except LoRA
     for name, param in model.named_parameters():
-        if ".lora_A." in name or ".lora_B." in name:
+        if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
             param.requires_grad_(True)
         else:
             param.requires_grad_(False)
