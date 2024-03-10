@@ -28,6 +28,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         reshape = False
     pass
 
+    A, B = A.t(), B.t()
     W.addmm_(A.to(dtype), B.to(dtype), alpha = s)
 
     out = torch.matmul(X, W, out = out)
