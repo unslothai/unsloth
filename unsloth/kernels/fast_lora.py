@@ -308,21 +308,21 @@ class LoRA_QKV(torch.autograd.Function):
         # Combine derivatives to find dX
         # dQ
         QW = fast_dequantize(QW.t(), QW_quant)
-        QW.addmm_(QA.to(dtype), QA.to(dtype), alpha = QS)
+        QW.addmm_(QA.to(dtype), QB.to(dtype), alpha = QS)
         dX = torch.matmul(dQ, QW.t(), out = X)
         del QW
         # dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
 
         # dK
         KW = fast_dequantize(KW.t(), KW_quant)
-        KW.addmm_(KB.to(dtype), KA.to(dtype), alpha = KS)
+        KW.addmm_(KA.to(dtype), KB.to(dtype), alpha = KS)
         dX += dK @ KW.t()
         del KW
         # dX += dK @ KB.to(dtype).t() @ (KS * KA.to(dtype).t())
 
         # dV
         VW = fast_dequantize(VW.t(), VW_quant)
-        VW.addmm_(VB.to(dtype), VA.to(dtype), alpha = VS)
+        VW.addmm_(VA.to(dtype), VB.to(dtype), alpha = VS)
         dX += dV @ VW.t()
         del VW
         # dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
