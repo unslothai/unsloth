@@ -703,7 +703,7 @@ def save_to_gguf(
           f"The output location will be {final_location}\n"\
           "This will take 3 minutes...")
 
-    command = f"python llama.cpp/convert.py {model_directory} "\
+    command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
         f"--outfile {final_location} --vocab-type hfft "\
         f"--outtype {first_conversion} --concurrency {n_cpus}"
 
