@@ -129,7 +129,7 @@ kaggle = [
 ]
 kaggle-new = [
     "unsloth[huggingface]",
-    "unsloth[cu121onlytorch220]",
+    "unsloth[cu121onlytorch212]",
     "bitsandbytes",
 ]
 conda = [
