@@ -127,6 +127,11 @@ cu121-torch220 = [
 kaggle = [
     "unsloth[huggingface]",
 ]
+kaggle-new = [
+    "unsloth[huggingface]",
+    "unsloth[cu121onlytorch220]",
+    "bitsandbytes",
+]
 conda = [
     "unsloth[huggingface]",
 ]
