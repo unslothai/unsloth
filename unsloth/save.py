@@ -645,7 +645,7 @@ def save_to_gguf(
     if   model_type == "llama":   use_fast_convert = True
     elif model_type == "mistral": use_fast_convert = True
     pass
-    logger.warning_once("Unsloth: Converting {model_type} model. Can use fast conversion = {use_fast_convert}.")
+    logger.warning_once(f"Unsloth: Converting {model_type} model. Can use fast conversion = {use_fast_convert}.")
 
     if   quantization_method == "not_quantized":  quantization_method = "f16"
     elif quantization_method == "fast_quantized": quantization_method = "q8_0"
@@ -718,7 +718,7 @@ def save_to_gguf(
           f"The output location will be {final_location}\n"\
           "This will take 3 minutes...")
 
-    if use_convert: 
+    if use_fast_convert: 
         command = f"python llama.cpp/convert.py {model_directory} "\
             f"--outfile {final_location} --vocab-type hfft "\
             f"--outtype {first_conversion} --concurrency {n_cpus}"
