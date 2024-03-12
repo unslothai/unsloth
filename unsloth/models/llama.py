@@ -509,7 +509,10 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # Mormalized from Gemma
+    # Downcast to the correct dtype ie float32 to float16
+    inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
+
+    # Normalized from Gemma
     IS_GEMMA = self.config.model_type == "gemma"
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
@@ -665,6 +668,7 @@ def LlamaModel_fast_forward_inference(
     input_ids = input_ids[:,:self.max_seq_length]
 
     hidden_states = self.embed_tokens(input_ids)
+    hidden_states = hidden_states.to(self.config.torch_dtype)
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
@@ -1334,6 +1338,7 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_lm_head = True
+                model.model.embed_tokens.to(torch.float32, non_blocking = True)
 
             elif module == "embed_tokens":
                 logger.warning_once(
@@ -1341,6 +1346,7 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_embed_tokens = True
+                model.lm_head.to(torch.float32, non_blocking = True)
 
             else:
                 assert(module in accepted_modules)
