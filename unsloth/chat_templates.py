@@ -242,10 +242,11 @@ CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token,)
 
 
 # Gemma with ChatML instead
+# We find using <eos> is still more appropriate!
 gemma_chatml_template = "{{ bos_token }}" + chatml_template
 gemma_chatml_eos_token = (
-    {"<start_of_turn>" : "<|im_start|>", "<end_of_turn>" : "<|im_end|>"},
-    "<|im_end|>",
+    {"<start_of_turn>" : "<|im_start|>", }, # "<end_of_turn>" : "<|im_end|>"},
+    "eos_token", # "<|im_end|>",
 )
 CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token,)
 
