@@ -84,7 +84,13 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
-## 💾 Installation Instructions
+## Simple Installation
+
+```bash
+./install.sh
+```
+## 💾 Manual Installation Instructions
+
 ### Conda Installation
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
 ```bash
