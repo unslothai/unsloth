@@ -134,15 +134,6 @@ kaggle-new = [
 conda = [
     "unsloth[huggingface]",
 ]
-colab = [
-    "unsloth[cu121]",
-]
-colab-ampere = [
-    "unsloth[cu121]",
-    "packaging",
-    "ninja",
-    "flash-attn",
-]
 colab-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes",
@@ -165,6 +156,15 @@ colab-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch220]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
+colab = [
+    "unsloth[colab-ampere-torch220]",
+]
+colab-ampere = [
+    "unsloth[colab-ampere-torch220]",
     "packaging",
     "ninja",
     "flash-attn",
