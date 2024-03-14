@@ -15,12 +15,15 @@
 __all__ = [
     "get_chat_template",
     "test_chat_templates",
+    "fix_sentencepiece_tokenizer",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
 from torch import LongTensor, FloatTensor
 from transformers.models.llama.modeling_llama import logger
 from .models._utils import patch_tokenizer
+import os
+import shutil
 
 CHAT_TEMPLATES = {}
 
@@ -247,6 +250,62 @@ gemma_chatml_eos_token = (
 CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token,)
 
 
+def fix_sentencepiece_tokenizer(
+    old_tokenizer,
+    new_tokenizer,
+    token_mapping,
+    temporary_location = "_unsloth_sentencepiece_temp",
+):
+    # From https://github.com/google/sentencepiece/issues/121
+    # We need to manually edit the sentencepiece tokenizer!
+    try:
+        import sentencepiece.sentencepiece_model_pb2 as sentencepiece_model_pb2
+    except:
+        if not os.path.exists(temporary_location):
+            os.system("git clone https://github.com/google/sentencepiece.git unsloth_sentencepiece_temp")
+            os.system(f"cd {temporary_location}/src && protoc --python_out=. sentencepiece_model.proto")
+            shutil.rmtree(temporary_location)
+        pass
+        import sentencepiece.sentencepiece_model_pb2 as sentencepiece_model_pb2
+    pass
+
+    if not os.path.exists(temporary_location):
+        os.makedirs(temporary_location)
+    pass
+
+    # First save the old tokenizer
+    old_tokenizer.save_pretrained(temporary_location)
+
+    from sentencepiece import SentencePieceProcessor
+    tokenizer_file = sentencepiece_model_pb2.ModelProto()
+    tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
+
+    # Now save the new tokenizer
+    new_tokenizer.save_pretrained(temporary_location)
+
+    # Now correct the old tokenizer's .model file
+    for old_token, new_token in token_mapping.items():
+        ids = old_tokenizer([old_token], add_special_tokens = False).input_ids
+        ids = ids[0]
+        assert(len(ids) == 1)
+        ids = ids[0]
+        tokenizer_piece = tokenizer_file.pieces[ids]
+        assert(tokenizer_piece.piece == old_token)
+        tokenizer_piece.piece = new_token
+    pass
+
+    # And now write it
+    with open(f"{temporary_location}/tokenizer.model", "wb") as file:
+        file.write(tokenizer_file.SerializeToString())
+    pass
+
+    # And load it!
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(temporary_location, eos_token = new_tokenizer.eos_token)
+    return tokenizer
+pass
+
+
 def get_chat_template(
     tokenizer,
     chat_template = "chatml",
@@ -309,7 +368,10 @@ def get_chat_template(
             pass
 
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
-            tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+            new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+
+            # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
+            new_tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
 
         elif stop_word != "eos_token":
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
