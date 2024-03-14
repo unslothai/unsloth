@@ -287,7 +287,11 @@ def fix_sentencepiece_tokenizer(
     for old_token, new_token in token_mapping.items():
         ids = old_tokenizer([old_token], add_special_tokens = False).input_ids
         ids = ids[0]
-        assert(len(ids) == 1)
+        if (len(ids) != 1):
+            # Skip this token!
+            print(f"Skip mapping {old_token} to {new_token} since {new_token} is already in the tokenizer!")
+            continue
+        pass
         ids = ids[0]
         tokenizer_piece = tokenizer_file.pieces[ids]
         assert(tokenizer_piece.piece == old_token)
@@ -349,11 +353,13 @@ def get_chat_template(
 
             string_vocab = tokenizer._tokenizer.to_str()
 
+            skipped = 0
             for old_token, new_token in token_mapping.items():
                 old_count = string_vocab.count(f'"{old_token}"')
                 new_count = string_vocab.count(f'"{new_token}"')
                 if new_count != 0:
                     print(f"{new_token} is already a token. Skipping.")
+                    skipped += 1
                 elif old_count == 0:
                     raise RuntimeError(f"{old_token} was not part of the tokenizer!")
                 else:
@@ -367,11 +373,14 @@ def get_chat_template(
                 string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
             pass
 
-            new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
-            new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+            if skipped != len(token_mapping):
+                new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
+                new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
 
-            # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
-            tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
+                # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
+                tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
+            else:
+                pass
 
         elif stop_word != "eos_token":
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
