@@ -32,17 +32,24 @@ include-package-data = false
 exclude = ["images*"]
 
 [project.optional-dependencies]
-huggingface = [
+huggingface-no-deps = [
+    "tyro",
     "transformers>=4.38.2",
     "datasets>=2.16.0",
     "sentencepiece",
-    "accelerate>=0.26.1",
-    "trl>=0.7.9",
-    "peft>=0.7.1",
     "tqdm",
     "psutil",
     "wheel>=0.42.0",
     "numpy",
+]
+huggingface-deps =[
+    "accelerate>=0.26.1",
+    "trl>=0.7.9",
+    "peft>=0.7.1",
+]
+huggingface = [
+    "unsloth[huggingface-no-deps]",
+    "unsloth[huggingface-deps"],
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
@@ -160,8 +167,24 @@ colab-ampere-torch220 = [
     "ninja",
     "flash-attn",
 ]
-colab = [
-    "unsloth[colab-ampere-torch220]",
+colab-1 = [
+    "unsloth[huggingface-no-deps]",
+]
+colab-2 = [
+    "xformers",
+    "bitsandbytes",
+    "unsloth[huggingface-deps]",
+]
+colab-ampere-1 = [
+    "unsloth[huggingface-no-deps]",
+]
+colab-ampere-2 = [
+    "xformers",
+    "bitsandbytes",
+    "packaging",
+    "ninja",
+    "flash-attn",
+    "unsloth[huggingface-deps]",
 ]
 colab-ampere = [
     "unsloth[colab-ampere-torch220]",
