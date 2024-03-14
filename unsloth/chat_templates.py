@@ -371,7 +371,7 @@ def get_chat_template(
             new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
 
             # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
-            new_tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
+            tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
 
         elif stop_word != "eos_token":
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
