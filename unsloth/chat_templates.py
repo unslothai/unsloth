@@ -259,8 +259,10 @@ def get_chat_template(
         assert("Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
     pass
 
-    if tokenizer.__class__.__name__.startswith("Gemma") and chat_template == "chatml":
-        chat_template = "gemma_chatml"
+    IS_GEMMA = False
+    if tokenizer.__class__.__name__.startswith("Gemma"):
+        if chat_template == "chatml": chat_template = "gemma_chatml"
+        IS_GEMMA = True
     pass
 
     old_padding_side = tokenizer.padding_side
@@ -337,6 +339,12 @@ def get_chat_template(
         .replace("'content'",   "'" + mapping["content"]   + "'")\
         .replace("'user'",      "'" + mapping["user"]      + "'")\
         .replace("'assistant'", "'" + mapping["assistant"] + "'")
+
+    # Careful on Gemma
+    # bos_token is a must or else losses become too high
+    if IS_GEMMA and not chat_template.startswith("{{ bos_token }}"):
+        chat_template = "{{ bos_token }}" + chat_template
+    pass
 
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
     tokenizer.padding_side  = old_padding_side

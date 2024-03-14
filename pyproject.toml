@@ -33,17 +33,17 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface = [
+    "tyro",
     "transformers>=4.38.2",
     "datasets>=2.16.0",
     "sentencepiece",
-    "accelerate>=0.26.1",
-    "trl>=0.7.9",
-    "peft>=0.7.1",
     "tqdm",
     "psutil",
     "wheel>=0.42.0",
     "numpy",
-    "triton",
+    "accelerate>=0.26.1",
+    "trl>=0.7.9",
+    "peft>=0.7.1",
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
@@ -128,17 +128,12 @@ cu121-torch220 = [
 kaggle = [
     "unsloth[huggingface]",
 ]
+kaggle-new = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+]
 conda = [
     "unsloth[huggingface]",
-]
-colab = [
-    "unsloth[cu121]",
-]
-colab-ampere = [
-    "unsloth[cu121]",
-    "packaging",
-    "ninja",
-    "flash-attn",
 ]
 colab-torch211 = [
     "unsloth[huggingface]",
@@ -162,6 +157,29 @@ colab-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch220]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
+colab-new = [
+    "tyro",
+    "transformers>=4.38.2",
+    "datasets>=2.16.0",
+    "sentencepiece",
+    "tqdm",
+    "psutil",
+    "wheel>=0.42.0",
+    "numpy",
+]
+colab-no-deps = [
+    "accelerate>=0.26.1",
+    "trl>=0.7.9",
+    "peft>=0.7.1",
+    "xformers",
+    "bitsandbytes",
+]
+colab-ampere = [
+    "unsloth[colab-ampere-torch220]",
     "packaging",
     "ninja",
     "flash-attn",

@@ -154,6 +154,7 @@ def GemmaModel_fast_forward_inference(
     out_weight = torch.empty_like(self.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda")
 
     hidden_states = self.embed_tokens(input_ids)
+    hidden_states = hidden_states.to(self.config.torch_dtype)
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
     hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
