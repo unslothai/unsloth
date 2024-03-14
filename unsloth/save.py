@@ -632,6 +632,7 @@ pass
 
 
 def save_to_gguf(
+    model_type           : str,
     model_directory      : str = "unsloth_finetuned_model",
     quantization_method  : str = "fast_quantized",
     first_conversion     : str = "f16",
@@ -639,10 +640,18 @@ def save_to_gguf(
 ):
     from transformers.models.llama.modeling_llama import logger
 
+    # Careful convert.py is only for Llama / Mistral based archs
+    use_fast_convert = False
+    if   model_type == "llama":   use_fast_convert = True
+    elif model_type == "mistral": use_fast_convert = True
+    pass
+    logger.warning_once(f"Unsloth: Converting {model_type} model. Can use fast conversion = {use_fast_convert}.")
+
     if   quantization_method == "not_quantized":  quantization_method = "f16"
     elif quantization_method == "fast_quantized": quantization_method = "q8_0"
     elif quantization_method == "quantized":      quantization_method = "q4_k_m"
     elif quantization_method is None:             quantization_method = "q8_0"
+    pass
 
     if quantization_method not in ALLOWED_QUANTS.keys():
         error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
@@ -692,6 +701,12 @@ def save_to_gguf(
         pass
     pass
 
+    # Non llama/mistral needs can only use f32 or f16
+    if not use_fast_convert and (first_conversion != "f16" or first_conversion != "f32"):
+        logger.warning_once("Unsloth: We must use f16 for non Llama and Mistral models.")
+        first_conversion = "f16"
+    pass
+
     n_cpus = psutil.cpu_count()
     if n_cpus is None: n_cpus = 1
     n_cpus *= 2
@@ -703,9 +718,15 @@ def save_to_gguf(
           f"The output location will be {final_location}\n"\
           "This will take 3 minutes...")
 
-    command = f"python llama.cpp/convert.py {model_directory} "\
-        f"--outfile {final_location} --vocab-type hfft "\
-        f"--outtype {first_conversion} --concurrency {n_cpus}"
+    if use_fast_convert:
+        command = f"python llama.cpp/convert.py {model_directory} "\
+            f"--outfile {final_location} --vocab-type hfft "\
+            f"--outtype {first_conversion} --concurrency {n_cpus}"
+    else:
+        command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
+            f"--outfile {final_location} "\
+            f"--outtype {first_conversion}"
+    pass
 
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
         for line in sp.stdout:
@@ -1054,7 +1075,8 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, first_conversion, makefile)
+    model_type = self.config.model_type
+    file_location = save_to_gguf(model_type, new_save_directory, quantization_method, first_conversion, makefile)
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -1154,7 +1176,8 @@ def unsloth_push_to_hub_gguf(
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, first_conversion, makefile)
+    model_type = self.config.model_type
+    file_location = save_to_gguf(model_type, new_save_directory, quantization_method, first_conversion, makefile)
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
