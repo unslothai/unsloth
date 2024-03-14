@@ -84,12 +84,15 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
-## Simple Installation
+## 💾 Simple Installation Instructions
 
 ```bash
 ./install.sh
 ```
+
 ## 💾 Manual Installation Instructions
+<details>
+<summary>Details</summary>
 
 ### Conda Installation
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
@@ -150,6 +153,7 @@ pip install "unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/u
 ```bash
 pip install --upgrade pip
 ```
+</details>
 
 ## 📜 Documentation
 - Go to our [Wiki page](https://github.com/unslothai/unsloth/wiki) for saving to GGUF, checkpointing, evaluation and more!
