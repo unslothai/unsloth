@@ -47,10 +47,6 @@ huggingface-deps = [
     "trl>=0.7.9",
     "peft>=0.7.1",
 ]
-huggingface = [
-    "unsloth[huggingface-no-deps]",
-    "unsloth[huggingface-deps"],
-]
 
 [project.urls]
 homepage = "http://www.unsloth.ai"
