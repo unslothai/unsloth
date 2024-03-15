@@ -17,22 +17,16 @@ import importlib
 
 # Currently only supports 1 GPU, or else seg faults will occur.
 if "CUDA_VISIBLE_DEVICES" in os.environ:
-    device = os.environ["CUDA_VISIBLE_DEVICES"]
-    if not device.isdigit():
+    devices = os.environ["CUDA_VISIBLE_DEVICES"]
+    # check if there are multiple cuda devices set in env
+    if not devices.isdigit():
+        first_id = devices.split(',')[0]
         warnings.warn(
-            f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {device} "\
-             "but we require 'CUDA_VISIBLE_DEVICES=0'\n"\
-             "We shall set it ourselves."
+            f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {devices} \n"\
+            "Multiple CUDA devices detected but we require a single device.\n"\
+            f"We will override CUDA_VISIBLE_DEVICES to first device: {first_id}."
         )
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    elif "CUDA_DEVICE_ORDER" not in os.environ:
-        warnings.warn(
-            f"Unsloth: 'CUDA_DEVICE_ORDER' is not set "\
-             "but we require 'CUDA_DEVICE_ORDER=PCI_BUS_ID'\n"\
-             "We shall set it ourselves."
-        )
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(first_id)
 else:
     # warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
