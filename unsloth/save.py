@@ -593,10 +593,11 @@ def install_llama_cpp_old(version = -10):
     pass
 
     # Clone a specific commit
+    # Also don't use the GPU!
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df && "\
-        f"make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
+        f"make clean make all -j{psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     for command in commands:
