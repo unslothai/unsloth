@@ -23,8 +23,17 @@ get_gpu_type () {
 # Function to install packages via Conda
 conda_install_packages () {
     conda create --name unsloth_env python=3.10 -y
+    CONDA_BASE=$(conda info --base)
+    CONDA_SH="$CONDA_BASE/etc/profile.d/conda.sh"
+    if [[ -f "$CONDA_SH" ]]; then
+        echo "Sourcing Conda from $CONDA_SH"
+        source "$CONDA_SH"
+    else
+        echo "Unable to locate conda.sh at $CONDA_SH. Please ensure Conda is properly installed."
+        exit 1
+    fi
     conda activate unsloth_env
-    conda install pytorch cudatoolkit torchvision torchaudio pytorch-cuda=${CUDA_TAG} -c pytorch -c nvidia -y
+    conda install pytorch cudatoolkit=${CUDA_TAG} torchvision torchaudio pytorch-cuda=${CUDA_TAG} -c pytorch -c nvidia -y
     conda install xformers -c xformers -y
     pip install bitsandbytes
     pip install "unsloth[conda] @ git+https://github.com/unslothai/unsloth.git"
@@ -33,7 +42,7 @@ conda_install_packages () {
 # Function to install packages via Pip
 pip_install_packages () {
     pip install --upgrade --force-reinstall --no-cache-dir torch==${PYTORCH_CORE_VERSION}+${CUDA_TAG} triton --index-url https://download.pytorch.org/whl/${CUDA_TAG}
-    if [[ "$PYTORCH_VERSION_TAG" == "210" ]]; then
+    if [[ "$PYTORCH_VERSION_TAG" == "torch210" ]]; then
         pip install "unsloth[${CUDA_TAG}${GPU_TYPE:+-$GPU_TYPE}] @ git+https://github.com/unslothai/unsloth.git"
     else
         pip install "unsloth[${CUDA_TAG}${GPU_TYPE:+-$GPU_TYPE}-$PYTORCH_VERSION_TAG] @ git+https://github.com/unslothai/unsloth.git"
@@ -49,13 +58,12 @@ if type conda &> /dev/null; then
     echo "CUDA version detected: $CUDA_VERSION"
     
     # Choose the right tag for pytorch-cuda
-    if [[ "$CUDA_VERSION" == "11.8" ]]; then
+    # TODO: This is janky, we should find a better way to do this
+    cuda_version_value=$(echo "$CUDA_VERSION" | bc)
+    if [ "$(echo "$cuda_version_value < 12" | bc -l)" -eq 1 ]; then
         CUDA_TAG="11.8"
-    elif [[ "$CUDA_VERSION" == "12.1" ]]; then
-        CUDA_TAG="12.1"
     else
-        echo "Unsupported CUDA version for Conda installation. Exiting."
-        exit 1
+        CUDA_TAG="12.1"
     fi
 
     conda_install_packages
@@ -71,7 +79,7 @@ else
         PYTORCH_VERSION=$(get_pytorch_version)
         echo "PyTorch version detected: $PYTORCH_VERSION"
         GPU_TYPE=$(get_gpu_type)
-        if [[ $GPU_TYPE == "ampere"]]; then
+        if [[ $GPU_TYPE == "ampere" ]]; then
             echo "Ampere or newer architecture detected. Proceeding with ampere specific installation."
         else
             echo "Older GPU architecture detected. Proceeding with non-ampere specific installation."
