@@ -129,8 +129,8 @@ kaggle = [
     "unsloth[huggingface]",
 ]
 kaggle-new = [
-    "xformers @ https://download.pytorch.org/whl/cu121",
     "unsloth[huggingface]",
+    "bitsandbytes",
 ]
 conda = [
     "unsloth[huggingface]",
