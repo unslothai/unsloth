@@ -86,12 +86,12 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 ## 💾 Installation Instructions
 ### Conda Installation
-Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
+Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs. Currently only `torch=2.2.0` is supported.
 ```bash
 conda create --name unsloth_env python=3.10
 conda activate unsloth_env
 
-conda install pytorch cudatoolkit torchvision torchaudio pytorch-cuda=<12.1/11.8> -c pytorch -c nvidia
+conda install pytorch==2.2.0 cudatoolkit torchvision torchaudio pytorch-cuda=<12.1/11.8> -c pytorch -c nvidia
 
 conda install xformers -c xformers
 
