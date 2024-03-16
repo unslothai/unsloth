@@ -603,7 +603,7 @@ def install_llama_cpp_old(version = -10):
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
     pass
     # Check if successful
@@ -626,7 +626,7 @@ def install_llama_cpp_blocking():
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
     pass
 pass
@@ -731,7 +731,7 @@ def save_to_gguf(
 
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
         for line in sp.stdout:
-            print(line.decode("utf-8"), flush = True, end = "")
+            print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         if sp.returncode is not None and sp.returncode != 0:
             raise subprocess.CalledProcessError(sp.returncode, sp.args)
     pass
@@ -761,7 +761,7 @@ def save_to_gguf(
         # quantize uses stderr
         with subprocess.Popen(command, shell = True, stderr = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stderr:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
             if sp.returncode is not None and sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, sp.args)
         pass
