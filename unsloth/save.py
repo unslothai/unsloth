@@ -730,7 +730,10 @@ def save_to_gguf(
         install_llama_cpp_blocking()
     pass
     # Check if successful. If not install 10th latest release
-    if error != 0 or not os.path.exists("llama.cpp/quantize"): install_llama_cpp_old(-10)
+    if error != 0 or not os.path.exists("llama.cpp/quantize"):
+        print(f"Unsloth: llama.cpp error code = {error}.")
+        install_llama_cpp_old(-10)
+    pass
 
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
@@ -768,9 +771,7 @@ def save_to_gguf(
             f"--outtype {first_conversion} --concurrency {n_cpus}"
     else:
         # Need to fix convert-hf-to-gguf.py for some models!
-        print("Fixing Gemma")
         _fix_gemma_gguf()
-        print("Fixed!")
 
         command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
             f"--outfile {final_location} "\
