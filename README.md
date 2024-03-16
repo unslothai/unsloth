@@ -150,9 +150,9 @@ pip install --no-deps packaging ninja einops flash-attn xformers trl peft accele
 
 # Pre Ampere RTX 2080, T4, GTX 1080 GPUs:
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-!pip install --no-deps xformers trl peft accelerate bitsandbytes
+pip install --no-deps xformers trl peft accelerate bitsandbytes
 ```
-7. To troubleshoot installs try (all must succeed). Xformer should mostly all be available.
+7. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
 ```bash
 nvcc
 python -m xformers.info
