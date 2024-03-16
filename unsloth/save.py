@@ -643,7 +643,7 @@ def _fix_gemma_gguf():
 
     gemma_end   = text.find("self.gguf_writer.add_tensor(new_name, data)", gemma_start)
     if gemma_end == -1: return
-    
+
     gemma_text = text[gemma_start : gemma_end]
     bad_text = \
 """         data = data.astype(np.float32)
@@ -768,7 +768,9 @@ def save_to_gguf(
             f"--outtype {first_conversion} --concurrency {n_cpus}"
     else:
         # Need to fix convert-hf-to-gguf.py for some models!
+        print("Fixing Gemma")
         _fix_gemma_gguf()
+        print("Fixed!")
 
         command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
             f"--outfile {final_location} "\
