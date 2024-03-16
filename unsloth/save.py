@@ -632,6 +632,49 @@ def install_llama_cpp_blocking():
 pass
 
 
+def _fix_gemma_gguf():
+    # Fixes Gemma saving to GGUF to float32 instead of float16!
+    with open("llama.cpp/convert-hf-to-gguf.py", "r") as file:
+        text = file.read()
+    pass
+
+    gemma_start = text.find("class GemmaModel(Model):")
+    if gemma_start == -1: return
+
+    gemma_end   = text.find("self.gguf_writer.add_tensor(new_name, data)", gemma_start)
+    if gemma_end == -1: return
+    
+    gemma_text = text[gemma_start : gemma_end]
+    bad_text = \
+"""         data = data.astype(np.float32)
+
+            # if f16 desired, convert any float32 2-dim weight tensors to float16
+            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
+                data = data.astype(np.float16)"""
+    good_text = \
+"""         # if f32 desired, convert any float16 to float32
+            if self.ftype == 0 and data_dtype == np.float16:
+                data = data.astype(np.float32)
+
+            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
+            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
+                data = data.astype(np.float32)
+
+            # if f16 desired, convert any float32 2-dim weight tensors to float16
+            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
+                data = data.astype(np.float16)"""
+    find_bad = gemma_text.find(bad_text)
+    if find_bad == -1: return
+
+    gemma_text = gemma_text[:find_bad] + good_text + gemma_text[find_bad + len(bad_text):]
+    text = text[:gemma_start] + gemma_text + text[gemma_end:]
+
+    with open("llama.cpp/convert-hf-to-gguf.py", "w+") as file:
+        file.write(text)
+    pass
+pass
+
+
 def save_to_gguf(
     model_type           : str,
     model_directory      : str = "unsloth_finetuned_model",
@@ -724,6 +767,9 @@ def save_to_gguf(
             f"--outfile {final_location} --vocab-type hfft "\
             f"--outtype {first_conversion} --concurrency {n_cpus}"
     else:
+        # Need to fix convert-hf-to-gguf.py for some models!
+        _fix_gemma_gguf()
+
         command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
             f"--outfile {final_location} "\
             f"--outtype {first_conversion}"
