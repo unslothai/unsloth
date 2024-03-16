@@ -18,9 +18,9 @@ import importlib
 # Currently only supports 1 GPU, or else seg faults will occur.
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     devices = os.environ["CUDA_VISIBLE_DEVICES"]
-    # check if there are multiple cuda devices set in env
+    # Check if there are multiple cuda devices set in env
     if not devices.isdigit():
-        first_id = devices.split(',')[0]
+        first_id = devices.split(",")[0]
         warnings.warn(
             f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {devices} \n"\
             "Multiple CUDA devices detected but we require a single device.\n"\
@@ -33,20 +33,29 @@ else:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 pass
 
+# Reduce VRAM usage by reducing fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 try:
     import torch
 except:
     raise ImportError("Pytorch is not installed. Go to https://pytorch.org/.\n"\
                       "We have some installation instructions on our Github page.")
 
-# We support torch 2.1 and 2.1.1
+# We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
 torch_version = torch.__version__.split(".")
 major_torch, minor_torch = torch_version[0], torch_version[1]
 major_torch, minor_torch = int(major_torch), int(minor_torch)
-if (major_torch != 2):# or (major_torch == 2 and minor_torch < 1):
-    raise ImportError("Unsloth only supports Pytorch 2.1 for now. Please update your Pytorch to 2.1.\n"\
+if (major_torch < 2):
+    raise ImportError("Unsloth only supports Pytorch 2 for now. Please update your Pytorch to 2.1.\n"\
                       "We have some installation instructions on our Github page.")
+elif (major_torch == 2) and (minor_torch < 2):
+    # Disable expandable_segments
+    del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+    # Must reimport Pytorch!
+    importlib.reload(torch)
+pass
 
 
 # Try loading bitsandbytes and triton
