@@ -593,16 +593,17 @@ def install_llama_cpp_old(version = -10):
     pass
 
     # Clone a specific commit
+    # Also don't use the GPU!
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df && "\
-        f"make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
+        f"make clean make all -j{psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
     pass
     # Check if successful
@@ -625,8 +626,51 @@ def install_llama_cpp_blocking():
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
+    pass
+pass
+
+
+def _fix_gemma_gguf():
+    # Fixes Gemma saving to GGUF to float32 instead of float16!
+    with open("llama.cpp/convert-hf-to-gguf.py", "rb") as file:
+        text = file.read()
+    pass
+
+    gemma_start = text.find(b"class GemmaModel(Model):")
+    if gemma_start == -1: return
+
+    gemma_end   = text.find(b"self.gguf_writer.add_tensor(new_name, data)", gemma_start)
+    if gemma_end == -1: return
+
+    gemma_text = text[gemma_start : gemma_end]
+    bad_text = \
+b"""         data = data.astype(np.float32)
+
+            # if f16 desired, convert any float32 2-dim weight tensors to float16
+            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
+                data = data.astype(np.float16)"""
+    good_text = \
+b"""         # if f32 desired, convert any float16 to float32
+            if self.ftype == 0 and data_dtype == np.float16:
+                data = data.astype(np.float32)
+
+            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
+            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
+                data = data.astype(np.float32)
+
+            # if f16 desired, convert any float32 2-dim weight tensors to float16
+            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
+                data = data.astype(np.float16)"""
+    find_bad = gemma_text.find(bad_text)
+    if find_bad == -1: return
+
+    gemma_text = gemma_text[:find_bad] + good_text + gemma_text[find_bad + len(bad_text):]
+    text = text[:gemma_start] + gemma_text + text[gemma_end:]
+
+    with open("llama.cpp/convert-hf-to-gguf.py", "w+b") as file:
+        file.write(text)
     pass
 pass
 
@@ -686,7 +730,10 @@ def save_to_gguf(
         install_llama_cpp_blocking()
     pass
     # Check if successful. If not install 10th latest release
-    if error != 0 or not os.path.exists("llama.cpp/quantize"): install_llama_cpp_old(-10)
+    if error != 0 or not os.path.exists("llama.cpp/quantize"):
+        print(f"Unsloth: llama.cpp error code = {error}.")
+        install_llama_cpp_old(-10)
+    pass
 
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
@@ -723,6 +770,9 @@ def save_to_gguf(
             f"--outfile {final_location} --vocab-type hfft "\
             f"--outtype {first_conversion} --concurrency {n_cpus}"
     else:
+        # Need to fix convert-hf-to-gguf.py for some models!
+        _fix_gemma_gguf()
+
         command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
             f"--outfile {final_location} "\
             f"--outtype {first_conversion}"
@@ -730,7 +780,7 @@ def save_to_gguf(
 
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
         for line in sp.stdout:
-            print(line.decode("utf-8"), flush = True, end = "")
+            print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         if sp.returncode is not None and sp.returncode != 0:
             raise subprocess.CalledProcessError(sp.returncode, sp.args)
     pass
@@ -760,7 +810,7 @@ def save_to_gguf(
         # quantize uses stderr
         with subprocess.Popen(command, shell = True, stderr = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stderr:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
             if sp.returncode is not None and sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, sp.args)
         pass
