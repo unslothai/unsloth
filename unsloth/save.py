@@ -634,25 +634,25 @@ pass
 
 def _fix_gemma_gguf():
     # Fixes Gemma saving to GGUF to float32 instead of float16!
-    with open("llama.cpp/convert-hf-to-gguf.py", "r") as file:
+    with open("llama.cpp/convert-hf-to-gguf.py", "rb") as file:
         text = file.read()
     pass
 
-    gemma_start = text.find("class GemmaModel(Model):")
+    gemma_start = text.find(b"class GemmaModel(Model):")
     if gemma_start == -1: return
 
-    gemma_end   = text.find("self.gguf_writer.add_tensor(new_name, data)", gemma_start)
+    gemma_end   = text.find(b"self.gguf_writer.add_tensor(new_name, data)", gemma_start)
     if gemma_end == -1: return
 
     gemma_text = text[gemma_start : gemma_end]
     bad_text = \
-"""         data = data.astype(np.float32)
+b"""         data = data.astype(np.float32)
 
             # if f16 desired, convert any float32 2-dim weight tensors to float16
             if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
                 data = data.astype(np.float16)"""
     good_text = \
-"""         # if f32 desired, convert any float16 to float32
+b"""         # if f32 desired, convert any float16 to float32
             if self.ftype == 0 and data_dtype == np.float16:
                 data = data.astype(np.float32)
 
@@ -669,7 +669,7 @@ def _fix_gemma_gguf():
     gemma_text = gemma_text[:find_bad] + good_text + gemma_text[find_bad + len(bad_text):]
     text = text[:gemma_start] + gemma_text + text[gemma_end:]
 
-    with open("llama.cpp/convert-hf-to-gguf.py", "w+") as file:
+    with open("llama.cpp/convert-hf-to-gguf.py", "w+b") as file:
         file.write(text)
     pass
 pass
