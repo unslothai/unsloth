@@ -1384,11 +1384,13 @@ class FastLlamaModel:
 
         # Now patch lm_head and embed_tokens
         if train_embed_tokens:
+            print("Unsloth: Casting embed_tokens to float32")
             model.model.model.embed_tokens.to(torch.float32)
             model.model.model.embed_tokens.requires_grad_(True)
         pass
 
         if train_lm_head:
+            print("Unsloth: Casting lm_head to float32")
             model.model.lm_head.to(torch.float32)
             model.model.lm_head.requires_grad_(True)
         pass
