@@ -684,6 +684,9 @@ def save_to_gguf(
 ):
     from transformers.models.llama.modeling_llama import logger
 
+    if quantization_method.startswith("iq2"):
+        raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
+
     # Careful convert.py is only for Llama / Mistral based archs
     use_fast_convert = False
     if   model_type == "llama":   use_fast_convert = True
@@ -743,8 +746,11 @@ def save_to_gguf(
         if   first_conversion == "f32" : pass
         elif first_conversion == "f16" : pass
         elif first_conversion == "q8_0":
-            logger.warning_once("Unsloth: We must use f16 for quantization first.")
-            first_conversion = "f16"
+            logger.warning_once(
+                "Unsloth: Using q8_0 for the `first_conversion` will lose a bit of accuracy, "\
+                "but saves disk space!"
+            )
+            # first_conversion = "f16"
         pass
     pass
 
