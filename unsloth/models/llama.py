@@ -758,6 +758,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             logits = self.lm_head(hidden_states)
         pass
+        logits = logits.to(self.config.torch_dtype)
 
         loss = None
         if labels is not None:
@@ -928,6 +929,7 @@ class FastLlamaModel:
         fix_tokenizer  = True,
         model_patcher  = None,
         tokenizer_name = None,
+        trust_remote_code = False,
         **kwargs,
     ):
         if model_patcher is None: model_patcher = FastLlamaModel
@@ -988,6 +990,7 @@ class FastLlamaModel:
             token                   = token,
             rope_scaling            = rope_scaling,
             max_position_embeddings = max_position_embeddings,
+            trust_remote_code       = trust_remote_code,
             **kwargs,
         )
 
@@ -995,9 +998,10 @@ class FastLlamaModel:
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = max_position_embeddings,
-            padding_side     = "right",
-            token            = token,
+            model_max_length  = max_position_embeddings,
+            padding_side      = "right",
+            token             = token,
+            trust_remote_code = trust_remote_code,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
