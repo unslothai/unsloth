@@ -178,6 +178,9 @@ colab-no-deps = [
     "xformers",
     "bitsandbytes",
 ]
+colab = [
+    "unsloth[cu121]",
+]
 colab-ampere = [
     "unsloth[colab-ampere-torch220]",
     "packaging",
