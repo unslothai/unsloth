@@ -53,8 +53,6 @@ if (major_torch < 2):
 elif (major_torch == 2) and (minor_torch < 2):
     # Disable expandable_segments
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
-    # Must reimport Pytorch!
-    importlib.reload(torch)
 pass
 
 
