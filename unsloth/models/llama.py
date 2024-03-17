@@ -505,11 +505,10 @@ def LlamaModel_fast_forward(
             position_ids = position_ids.repeat((batch_size, 1))
     pass
 
-    # embed positions
+    # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # Downcast to the correct dtype ie float32 to float16
     inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
 
     # Normalized from Gemma
@@ -759,6 +758,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             logits = self.lm_head(hidden_states)
         pass
+        logits = logits.to(self.config.torch_dtype)
 
         loss = None
         if labels is not None:
@@ -929,6 +929,7 @@ class FastLlamaModel:
         fix_tokenizer  = True,
         model_patcher  = None,
         tokenizer_name = None,
+        trust_remote_code = False,
         **kwargs,
     ):
         if model_patcher is None: model_patcher = FastLlamaModel
@@ -989,6 +990,7 @@ class FastLlamaModel:
             token                   = token,
             rope_scaling            = rope_scaling,
             max_position_embeddings = max_position_embeddings,
+            trust_remote_code       = trust_remote_code,
             **kwargs,
         )
 
@@ -996,9 +998,10 @@ class FastLlamaModel:
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = max_position_embeddings,
-            padding_side     = "right",
-            token            = token,
+            model_max_length  = max_position_embeddings,
+            padding_side      = "right",
+            token             = token,
+            trust_remote_code = trust_remote_code,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -1338,7 +1341,6 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_lm_head = True
-                model.model.embed_tokens.to(torch.float32, non_blocking = True)
 
             elif module == "embed_tokens":
                 logger.warning_once(
@@ -1346,7 +1348,6 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_embed_tokens = True
-                model.lm_head.to(torch.float32, non_blocking = True)
 
             else:
                 assert(module in accepted_modules)
@@ -1388,9 +1389,17 @@ class FastLlamaModel:
 
         # Now patch lm_head and embed_tokens
         if train_embed_tokens:
-            model.model.model.embed_tokens.requires_grad_(True)
+            print("Unsloth: Casting embed_tokens to float32")
+            assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
+            model.model.model.embed_tokens.modules_to_save.default.to(torch.float32)
+            model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
+        pass
+
         if train_lm_head:
-            model.model.lm_head.requires_grad_(True)
+            print("Unsloth: Casting lm_head to float32")
+            assert(hasattr(model.model.lm_head, "modules_to_save"))
+            model.model.lm_head.modules_to_save.default.to(torch.float32)
+            model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
         return model

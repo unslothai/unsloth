@@ -74,6 +74,7 @@ class FastLanguageModel(FastLlamaModel):
         device_map     = "sequential",
         rope_scaling   = None,
         fix_tokenizer  = True,
+        trust_remote_code = False,
         use_gradient_checkpointing = True,
         *args, **kwargs,
     ):
@@ -139,6 +140,7 @@ class FastLanguageModel(FastLlamaModel):
             fix_tokenizer  = fix_tokenizer,
             model_patcher  = dispatch_model,
             tokenizer_name = tokenizer_name,
+            trust_remote_code = trust_remote_code,
             *args, **kwargs,
         )
 
