@@ -87,7 +87,6 @@ class LoRA_MLP(torch.autograd.Function):
                 downW, downW_quant, downA, downB, downS,
                 _forward_function, _backward_function,):
         dtype = X.dtype
-        print("Forward ", dtype)
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
         g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
@@ -123,7 +122,6 @@ class LoRA_MLP(torch.autograd.Function):
         e  = e .view(-1, e .shape[-1])
         g  = g .view(-1, g .shape[-1])
         dtype = X.dtype
-        print("Backward ", dtype)
 
         DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
         DW, e, g = _backward_function(DW, e, g)
