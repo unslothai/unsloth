@@ -1336,7 +1336,6 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_lm_head = True
-                model.model.embed_tokens.to(torch.float32, non_blocking = True)
 
             elif module == "embed_tokens":
                 logger.warning_once(
@@ -1344,7 +1343,6 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_embed_tokens = True
-                model.lm_head.to(torch.float32, non_blocking = True)
 
             else:
                 assert(module in accepted_modules)
@@ -1386,8 +1384,12 @@ class FastLlamaModel:
 
         # Now patch lm_head and embed_tokens
         if train_embed_tokens:
+            model.model.model.embed_tokens.to(torch.float32)
             model.model.model.embed_tokens.requires_grad_(True)
+        pass
+
         if train_lm_head:
+            model.model.lm_head.to(torch.float32)
             model.model.lm_head.requires_grad_(True)
         pass
 
