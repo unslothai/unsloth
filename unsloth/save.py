@@ -437,7 +437,7 @@ def unsloth_save_model(
         # We free up 4GB of space
         logger.warning_once(
             "Unsloth: Kaggle only allows 20GB of disk space. We need to delete the downloaded\n"\
-            "model which will save 4GB of disk space, allowing you to save to Kaggle."
+            "model which will save 4GB of disk space, allowing you to save on Kaggle."
         )
         _free_cached_model(internal_model)
     pass
@@ -504,8 +504,6 @@ def unsloth_save_model(
 
     # Update model tag
     if push_to_hub:
-        print(save_pretrained_settings)
-        print(username)
         _ = upload_to_huggingface(
             model, save_pretrained_settings["save_directory"], token,
             "finetuned", "trl", file_location = None,
@@ -515,7 +513,12 @@ def unsloth_save_model(
 
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
-        print(tokenizer_save_settings)
+
+        save_location = tokenizer_save_settings["save_directory"]
+        if username != save_location:
+            tokenizer_save_settings["save_directory"] = f"{username}/{save_location.lstrip('/')}"
+        pass
+
         tokenizer.save_pretrained(**tokenizer_save_settings)
         print(" Done.")
     else:
@@ -536,7 +539,10 @@ def unsloth_save_model(
     model.config = new_config
 
     # Save!
-    print(save_pretrained_settings)
+    save_location = save_pretrained_settings["save_directory"]
+    if username != save_location:
+        save_pretrained_settings["save_directory"] = f"{username}/{save_location.lstrip('/')}"
+    pass
     internal_model.save_pretrained(**save_pretrained_settings)
 
     # Revert config back
