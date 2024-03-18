@@ -528,13 +528,16 @@ def unsloth_save_model(
 
     # First check if we're pushing to an organization!
     save_directory = save_pretrained_settings["save_directory"]
-    new_save_directory, new_username = _determine_username(save_directory, username, token)
 
-    if token is not None:
-        from huggingface_hub import whoami
-        actual_username = whoami(token = token)["name"]
-    else:
-        actual_username = username
+    if save_pretrained_settings["push_to_hub"]:
+        new_save_directory, new_username = _determine_username(save_directory, username, token)
+
+        if token is not None:
+            from huggingface_hub import whoami
+            actual_username = whoami(token = token)["name"]
+        else:
+            actual_username = username
+    pass
 
     # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
