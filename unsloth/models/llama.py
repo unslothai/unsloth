@@ -894,6 +894,16 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
 pass
 
 
+def _wrap_fast_inference(generate, device_type, dtype):
+    # Wraps inference with bfloat16 / float16
+    @torch.inference_mode
+    def _fast_generate(*args, **kwargs):
+        with torch.autocast(device_type = device_type, dtype = dtype):
+            return generate(*args, **kwargs)
+    return _fast_generate
+pass
+
+
 class FastLlamaModel:
 
     @staticmethod
@@ -1582,6 +1592,15 @@ class FastLlamaModel:
             internal_model.gradient_checkpointing = False
             internal_model.training = False
         pass
+
+        # Also check if lm_head / embeddings are trained
+        lm_head = getattr(model, "model", model).lm_head.weight
+        device_type = lm_head.device.type
+        dtype = model.config.torch_dtype
+
+        # Wrap model.generate
+        model._unwrapped_old_generate = model.generate
+        model.generate = _wrap_fast_inference(model.generate, device_type, dtype)
     pass
 
 
@@ -1602,5 +1621,14 @@ class FastLlamaModel:
             internal_model.gradient_checkpointing = use_gradient_checkpointing
             internal_model.training = True
         pass
+
+        # Also revert model.generate
+        if hasattr(model, "_unwrapped_old_generate"):
+            model.generate = model._unwrapped_old_generate
+            del model._unwrapped_old_generate
+        pass
     pass
 pass
+
+
+
