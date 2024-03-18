@@ -143,7 +143,7 @@ pass
 from math import sqrt as math_sqrt
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.inference_mode
+# @torch.inference_mode
 def GemmaModel_fast_forward_inference(
     self,
     input_ids,
