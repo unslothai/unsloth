@@ -657,7 +657,7 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.inference_mode
+# @torch.inference_mode
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
@@ -753,7 +753,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
         if bsz == 1 and q_len == 1:
-            logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+            lm_head = self.lm_head.weight
+            logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         else:
             logits = self.lm_head(hidden_states)
@@ -890,6 +891,16 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
+pass
+
+
+def _wrap_fast_inference(generate, device_type, dtype):
+    # Wraps inference with bfloat16 / float16
+    @torch.inference_mode
+    def _fast_generate(*args, **kwargs):
+        with torch.autocast(device_type = device_type, dtype = dtype):
+            return generate(*args, **kwargs)
+    return _fast_generate
 pass
 
 
@@ -1581,6 +1592,15 @@ class FastLlamaModel:
             internal_model.gradient_checkpointing = False
             internal_model.training = False
         pass
+
+        # Also check if lm_head / embeddings are trained
+        lm_head = getattr(model, "model", model).lm_head.weight
+        device_type = lm_head.device.type
+        dtype = model.config.torch_dtype
+
+        # Wrap model.generate
+        model._unwrapped_old_generate = model.generate
+        model.generate = _wrap_fast_inference(model.generate, device_type, dtype)
     pass
 
 
@@ -1601,5 +1621,14 @@ class FastLlamaModel:
             internal_model.gradient_checkpointing = use_gradient_checkpointing
             internal_model.training = True
         pass
+
+        # Also revert model.generate
+        if hasattr(model, "_unwrapped_old_generate"):
+            model.generate = model._unwrapped_old_generate
+            del model._unwrapped_old_generate
+        pass
     pass
 pass
+
+
+
