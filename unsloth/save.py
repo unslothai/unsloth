@@ -540,6 +540,7 @@ def unsloth_save_model(
 
     # Save!
     save_location = save_pretrained_settings["save_directory"]
+    print("USERNAME = ", username, "SAVE_LOCATION = ", save_location)
     if username != save_location:
         save_pretrained_settings["save_directory"] = f"{username}/{save_location.lstrip('/')}"
     pass
