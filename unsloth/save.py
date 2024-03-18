@@ -511,18 +511,26 @@ def unsloth_save_model(
         )
     pass
 
+    # First check if we're pushing to an organization!
+    save_directory = save_pretrained_settings["save_directory"]
+    new_save_directory, new_username = _determine_username(save_directory, username)
+
+    # Check if pushing to an organization
+    if save_pretrained_settings["push_to_hub"] and (username != new_username):
+        print(f"Unsloth: Saving to organization with name {new_username}")
+        # We upload everything at the end!
+        tokenizer_save_settings["push_to_hub"] = False
+        tokenizer_save_settings["save_directory"] = new_save_directory
+    pass
+
+    # Save tokenizer
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
-
-        save_location = tokenizer_save_settings["save_directory"]
-        if username != save_location:
-            tokenizer_save_settings["save_directory"] = f"{username}/{save_location.lstrip('/')}"
-        pass
-
         tokenizer.save_pretrained(**tokenizer_save_settings)
         print(" Done.")
     else:
         print()
+    pass
 
     print("Unsloth: Saving model... This might take 5 minutes for Llama-7b...")
 
@@ -539,12 +547,33 @@ def unsloth_save_model(
     model.config = new_config
 
     # Save!
-    save_location = save_pretrained_settings["save_directory"]
-    print("USERNAME = ", username, "SAVE_LOCATION = ", save_location)
-    if username != save_location:
-        save_pretrained_settings["save_directory"] = f"{username}/{save_location.lstrip('/')}"
+
+    # Check if pushing to an organization
+    if save_pretrained_settings["push_to_hub"] and (username != new_username):
+        # Pushing to organization!
+        # Sadly .save_pretrained doesn't work :(
+        # We first save it via .save_pretrained, then upload manually!
+        save_pretrained_settings["save_directory"] = new_save_directory
+        internal_model.save_pretrained(**save_pretrained_settings)
+
+        # Now manually go through each file and upload them manually!
+        filenames = os.listdir(new_save_directory)
+
+        from huggingface_hub import HfApi
+        hf_api = HfApi(token = save_pretrained_settings["token"])
+
+        for file in filenames:
+            hf_api.upload_file(
+                path_or_fileobj = f"{new_save_directory}/{file}",
+                path_in_repo    = f"{new_save_directory}/{file}",
+                repo_id         = new_save_directory,
+                repo_type       = "model",
+                commit_message  = "(Trained with Unsloth)",
+            )
+        pass
+    else:
+        internal_model.save_pretrained(**save_pretrained_settings)
     pass
-    internal_model.save_pretrained(**save_pretrained_settings)
 
     # Revert config back
     original_model = model
@@ -996,17 +1025,8 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
 
-def upload_to_huggingface(
-    model,
-    save_directory,
-    token,
-    method,
-    extra = "",
-    file_location = None,
-    old_username = None,
-    private = None,
-):
-    # Check for username
+
+def _determine_username(save_directory, old_username = None):
     username = ""
     save_directory = save_directory.lstrip("./")
     if "/" not in save_directory:
@@ -1022,6 +1042,21 @@ def upload_to_huggingface(
     else:
         username = save_directory.split("/")[0]
     pass
+    return save_directory, username
+pass
+
+
+def upload_to_huggingface(
+    model,
+    save_directory,
+    token,
+    method,
+    extra = "",
+    file_location = None,
+    old_username = None,
+    private = None,
+):
+    save_directory, username = _determine_username(save_directory, old_username)
 
     from huggingface_hub import create_repo
     try:
