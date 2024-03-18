@@ -579,6 +579,7 @@ def unsloth_save_model(
         # Sadly .save_pretrained doesn't work :(
         # We first save it via .save_pretrained, then upload manually!
         save_pretrained_settings["save_directory"] = new_save_directory
+        save_pretrained_settings["push_to_hub"] = False
         internal_model.save_pretrained(**save_pretrained_settings)
 
         # Now manually go through each file and upload them manually!
