@@ -352,7 +352,6 @@ def unsloth_save_model(
         print("Unsloth: Saving model...", end = "")
         if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
 
-        print(save_pretrained_settings)
         model.save_pretrained(**save_pretrained_settings)
 
         if push_to_hub and hasattr(model, "config"):
@@ -505,6 +504,8 @@ def unsloth_save_model(
 
     # Update model tag
     if push_to_hub:
+        print(save_pretrained_settings)
+        print(username)
         _ = upload_to_huggingface(
             model, save_pretrained_settings["save_directory"], token,
             "finetuned", "trl", file_location = None,
@@ -514,6 +515,7 @@ def unsloth_save_model(
 
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
+        print(tokenizer_save_settings)
         tokenizer.save_pretrained(**tokenizer_save_settings)
         print(" Done.")
     else:
@@ -534,6 +536,7 @@ def unsloth_save_model(
     model.config = new_config
 
     # Save!
+    print(save_pretrained_settings)
     internal_model.save_pretrained(**save_pretrained_settings)
 
     # Revert config back
