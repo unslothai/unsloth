@@ -1219,6 +1219,7 @@ def unsloth_save_pretrained_gguf(
             python_install.wait()
             install_llama_cpp_blocking(use_cuda = False)
             new_save_directory, old_username = unsloth_save_model(**arguments)
+            makefile = None
         else:
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
@@ -1239,6 +1240,7 @@ def unsloth_save_pretrained_gguf(
                 python_install.wait()
                 install_llama_cpp_blocking(use_cuda = False)
                 new_save_directory, old_username = unsloth_save_model(**arguments)
+                makefile = None
             else:
                 git_clone = install_llama_cpp_clone_non_blocking()
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
@@ -1337,6 +1339,7 @@ def unsloth_push_to_hub_gguf(
             python_install.wait()
             install_llama_cpp_blocking(use_cuda = False)
             new_save_directory, old_username = unsloth_save_model(**arguments)
+            makefile = None
         else:
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
@@ -1357,6 +1360,7 @@ def unsloth_push_to_hub_gguf(
                 python_install.wait()
                 install_llama_cpp_blocking(use_cuda = False)
                 new_save_directory, old_username = unsloth_save_model(**arguments)
+                makefile = None
             else:
                 git_clone = install_llama_cpp_clone_non_blocking()
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
