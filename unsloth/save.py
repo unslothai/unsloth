@@ -517,9 +517,15 @@ def unsloth_save_model(
     save_directory = save_pretrained_settings["save_directory"]
     new_save_directory, new_username = _determine_username(save_directory, username, token)
 
+    if token is not None:
+        from huggingface_hub import whoami
+        actual_username = whoami(token = token)["name"]
+    else:
+        actual_username = username
+
     # Check if pushing to an organization
-    if save_pretrained_settings["push_to_hub"] and (username != new_username):
-        print(f"Unsloth: Saving to organization with name {new_username}")
+    if save_pretrained_settings["push_to_hub"] and (username != actual_username):
+        print(f"Unsloth: Saving to organization with address {new_save_directory}")
         # We upload everything at the end!
         tokenizer_save_settings["push_to_hub"] = False
         tokenizer_save_settings["save_directory"] = new_save_directory
@@ -551,7 +557,8 @@ def unsloth_save_model(
     # Save!
 
     # Check if pushing to an organization
-    if save_pretrained_settings["push_to_hub"] and (username != new_username):
+    if save_pretrained_settings["push_to_hub"] and (username != actual_username):
+        print(f"Unsloth: Saving to organization with address {new_save_directory}")
         # Pushing to organization!
         # Sadly .save_pretrained doesn't work :(
         # We first save it via .save_pretrained, then upload manually!
