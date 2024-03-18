@@ -319,9 +319,7 @@ def get_chat_template(
 ):
     old_tokenizer = tokenizer
 
-    if map_eos_token is False:
-        assert("Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
-    pass
+    assert(map_eos_token, "Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
 
     IS_GEMMA = False
     if tokenizer.__class__.__name__.startswith("Gemma"):
