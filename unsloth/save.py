@@ -176,6 +176,19 @@ def unsloth_save_model(
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
+    # First check for a token!
+    if push_to_hub:
+        from huggingface_hub import whoami
+        try: 
+            username = whoami(token = token)["name"]
+        except:
+            raise RuntimeError(
+                "Unsloth: Please supply a token!\n"\
+                "Go to https://huggingface.co/settings/tokens"
+            )
+        pass
+    pass
+
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
         commit_message += " (Trained with Unsloth)"
@@ -571,15 +584,14 @@ def unsloth_save_model(
         from huggingface_hub import HfApi
         hf_api = HfApi(token = save_pretrained_settings["token"])
 
-        for file in filenames:
-            hf_api.upload_file(
-                path_or_fileobj = f"{new_save_directory}/{file}",
-                path_in_repo    = f"{new_save_directory}/{file}",
-                repo_id         = new_save_directory,
-                repo_type       = "model",
-                commit_message  = "(Trained with Unsloth)",
-            )
-        pass
+        hf_api.upload_folder(
+            folder_path = new_save_directory,
+            path_in_repo = ".",
+            repo_id = new_save_directory,
+            repo_type = "model",
+            commit_message  = "(Trained with Unsloth)",
+            ignore_patterns = "*.md",
+        )
     else:
         internal_model.save_pretrained(**save_pretrained_settings)
     pass
