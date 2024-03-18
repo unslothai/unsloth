@@ -588,6 +588,7 @@ def unsloth_save_model(
         from huggingface_hub import HfApi
         hf_api = HfApi(token = save_pretrained_settings["token"])
 
+        print("Unsloth: Uploading all files... Please wait!")
         hf_api.upload_folder(
             folder_path = new_save_directory,
             path_in_repo = ".",
