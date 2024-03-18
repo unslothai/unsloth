@@ -66,9 +66,9 @@ ALLOWED_QUANTS = \
     "q5_1"    : "Even higher accuracy, resource usage and slower inference.",
     "q5_k_s"  : "Uses Q5_K for all tensors",
     "q6_k"    : "Uses Q8_K for all tensors",
-    "iq2_xxs" : "2.06 bpw quantization",
-    "iq2_xs"  : "2.31 bpw quantization",
-    "iq3_xxs" : "3.06 bpw quantization",
+    # "iq2_xxs" : "2.06 bpw quantization", # Not supported sadly
+    # "iq2_xs"  : "2.31 bpw quantization",
+    # "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
 }
 
@@ -78,6 +78,27 @@ def print_quantization_methods():
     pass
 pass
 
+
+def _free_cached_model(model):
+    from huggingface_hub import scan_cache_dir
+    cached_repos = list(scan_cache_dir().repos)
+
+    # Go through every cached repo, and delete the one that matches the model we want to save.
+    # Can save 4GB of disk space - useful for Kaggle systems.
+    for cached_repo in cached_repos:
+        if cached_repo.repo_id == model.config._name_or_path:
+            remove_cache_commit = list(cached_repo.revisions)[0].commit_hash
+            delete_strategy = scan_cache_dir().delete_revisions(remove_cache_commit,)
+
+            logger.warning_once(
+                "Unsloth: Will remove a cached repo with size " + \
+                delete_strategy.expected_freed_size_str,
+            )
+
+            delete_strategy.execute()
+        pass
+    pass
+pass
 
 
 def _merge_lora(layer, name):
@@ -331,6 +352,7 @@ def unsloth_save_model(
         print("Unsloth: Saving model...", end = "")
         if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
 
+        print(save_pretrained_settings)
         model.save_pretrained(**save_pretrained_settings)
 
         if push_to_hub and hasattr(model, "config"):
@@ -409,6 +431,16 @@ def unsloth_save_model(
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
+    pass
+
+    # Check if Kaggle, since only 20GB of Disk space allowed.
+    if "KAGGLE_CONTAINER_NAME" in os.environ:
+        # We free up 4GB of space
+        logger.warning_once(
+            "Unsloth: Kaggle only allows 20GB of disk space. We need to delete the downloaded\n"\
+            "model which will save 4GB of disk space, allowing you to save to Kaggle."
+        )
+        _free_cached_model(internal_model)
     pass
 
     # HF also uses a OrderedDict
