@@ -687,13 +687,16 @@ def install_llama_cpp_old(version = -10):
 pass
 
 
-def install_llama_cpp_blocking():
+def install_llama_cpp_blocking(use_cuda = True):
+    use_cuda = "LLAMA_CUBLAS=1" if use_cuda else ""
+
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
+        f"cd llama.cpp && make clean && {use_cuda} make all -j{psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
+    
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
