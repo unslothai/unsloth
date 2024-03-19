@@ -588,7 +588,7 @@ def unsloth_save_model(
         from huggingface_hub import HfApi
         hf_api = HfApi(token = save_pretrained_settings["token"])
 
-        print("Unsloth: Uploading all files... Please wait!")
+        print("Unsloth: Uploading all files... Please wait...")
         hf_api.upload_folder(
             folder_path = new_save_directory,
             path_in_repo = ".",
@@ -598,6 +598,9 @@ def unsloth_save_model(
             ignore_patterns = "*.md",
         )
     else:
+        for key, value in save_pretrained_settings.items():
+            if key == "state_dict": continue
+            print(key, value)
         internal_model.save_pretrained(**save_pretrained_settings)
     pass
 

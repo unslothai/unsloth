@@ -26,6 +26,7 @@ from transformers import AutoTokenizer
 from platform import system as platform_system
 platform_system = platform_system()
 import math
+import numpy as np
 
 __version__ = "2024.3"
 
@@ -268,4 +269,89 @@ except:
         "Unsloth unsuccessfully patched LoraLayer.update_layer. Please file a bug report.\n"\
         "Luckily, your training run will still work in the meantime!"
     )
+pass
+
+
+def _calculate_n_gradient_checkpoints(
+    n_layers : int,
+    method   : Optional[Union[str, int]] = "sqrt",
+) -> List[int]:
+    assert(type(n_layers) is int and n_layers > 0)
+
+    if method is None: method = "sqrt"
+
+    if method == "sqrt":
+        n_checkpoints = int(n_layers**0.5)
+    elif type(method) is int and method > 0:
+        n_checkpoints = int(np.ceil(n_layers / method))
+    else:
+        raise ValueError("method must be 'sqrt' or an int >0 and <= n_layers.")
+
+    size = n_layers // n_checkpoints
+    sizes = np.full(n_checkpoints, size, dtype = int)
+    leftovers = n_layers % n_checkpoints
+    # We append leftovers from the right
+    for k in range(leftovers):
+        sizes[n_checkpoints-1-k] += 1
+    boundaries = np.hstack((0, np.cumsum(sizes)))
+    boundaries = boundaries.tolist()
+    return boundaries
+pass
+
+
+def calculate_n_gradient_checkpoints(
+    n_layers              : int,
+    layers_per_checkpoint : Optional[Union[str, int]] = "sqrt",
+) -> List[int]:
+    assert(type(n_layers) is int and n_layers > 0)
+
+    if layers_per_checkpoint is None or layers_per_checkpoint == 1:
+        return None
+
+    boundaries = _calculate_n_gradient_checkpoints(n_layers, layers_per_checkpoint)
+
+    assert(boundaries[0] == 0 and boundaries[-1] == n_layers)
+    assert(min(boundaries) == 0 and max(boundaries) == n_layers)
+    assert(np.diff(boundaries).min() >= 0)
+    return boundaries
+pass
+
+
+def prepare_n_gradient_checkpoints(
+    model                 : Any,
+    layers_per_checkpoint : Optional[Union[str, int]] = "sqrt",
+    use_reentrant         : Optional[bool] = True,
+) -> None:
+    """
+    Calculates where to place the gradient checkpoints given n_layers.
+
+    Args:
+        model: Any LlamaModel with layers.
+        layers_per_checkpoint (`Union[str, int]`, *optional*):
+            Can either be `sqrt` or an integer for how many layers per checkpoint you want.
+            The more, the less memory usage, but can be slower. Default is `sqrt`.
+            Choose 1 for Pytorch gradient checkpointing. 2 to wrap 2 layers in 1 module etc.
+        use_reentrant (`bool`, *optional*):
+            https://github.com/pytorch/pytorch/blob/main/torch/utils/checkpoint.py#L354
+            Optimal gradient checkpointing algorithm `use_reentrant=False` which will
+            be the default in future Pytorch versions doesn't seem to work??
+    """
+    _model = None
+    if hasattr(model, "layers"):
+        _model = model
+    elif hasattr(model, "model"):
+        if hasattr(model.model, "layers"):
+            _model = model.model
+    if _model is None:
+        raise TypeError("`model` or `model.model` does not have attribute `layers`. Are you sure this is a model?")
+    pass
+
+    if use_reentrant is False:
+        use_reentrant = True
+    pass
+
+    n_layers = len(_model.layers)
+    boundaries = calculate_n_gradient_checkpoints(n_layers, layers_per_checkpoint)
+    _model._gradient_checkpointing_boundaries    = boundaries
+    _model._gradient_checkpointing_use_reentrant = use_reentrant
 pass
