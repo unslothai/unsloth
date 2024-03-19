@@ -593,7 +593,17 @@ def LlamaModel_fast_forward(
     all_self_attns = () if output_attentions else None
     next_decoder_cache = () if use_cache else None
 
-    for idx, decoder_layer in enumerate(self.layers):
+    # Gradient checkpointing methods (ie sqrt)
+    if hasattr(self, "_gradient_checkpointing_boundaries"):
+        boundaries = self._gradient_checkpointing_boundaries
+    else:
+        boundaries = None
+    pass
+
+    # Find which layers to do gradient checkpointing
+    n_layers = len(self.layers)
+    
+    for idx, decoder_layer in enumerate(n_layers):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
