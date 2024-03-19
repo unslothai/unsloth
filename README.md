@@ -59,7 +59,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
 - Works on **Linux** and **Windows** via WSL.
 - Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
-- Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for **30x faster training**!
+- Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for up to **30x faster training**!
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" height="50" align="center" />
 
 
@@ -100,13 +100,11 @@ Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 
 conda create --name unsloth_env python=3.10
 conda activate unsloth_env
 
-conda install pytorch cudatoolkit torchvision torchaudio pytorch-cuda=<12.1/11.8> -c pytorch -c nvidia
+conda install pytorch-cuda=<12.1/11.8> pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers
 
-conda install xformers -c xformers
+pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
 
-pip install bitsandbytes
-
-pip install "unsloth[conda] @ git+https://github.com/unslothai/unsloth.git"
+pip install --no-deps trl peft accelerate bitsandbytes
 ```
 
 ### Pip Installation
@@ -153,8 +151,23 @@ pip install "unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/u
 ```bash
 pip install --upgrade pip
 ```
-</details>
+6. For Pytorch 2.2.1:
+```bash
+# RTX 3090, 4090 Ampere GPUs:
+pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes
 
+# Pre Ampere RTX 2080, T4, GTX 1080 GPUs:
+pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install --no-deps xformers trl peft accelerate bitsandbytes
+```
+7. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
+```bash
+nvcc
+python -m xformers.info
+python -m bitsandbytes
+```
+</details>
 ## 📜 Documentation
 - Go to our [Wiki page](https://github.com/unslothai/unsloth/wiki) for saving to GGUF, checkpointing, evaluation and more!
 - We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!

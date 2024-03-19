@@ -225,11 +225,13 @@ def MistralForCausalLM_fast_forward(
     hidden_states = outputs[0]
     bsz, q_len, hd = hidden_states.shape
     if bsz == 1 and q_len == 1:
-        logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+        lm_head = self.lm_head.weight
+        logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
         logits = logits.unsqueeze(0).unsqueeze(0)
     else:
         logits = self.lm_head(hidden_states)
     pass
+    logits = logits.to(self.config.torch_dtype)
 
     loss = None
     if labels is not None:
@@ -295,6 +297,7 @@ class FastMistralModel(FastLlamaModel):
         fix_tokenizer  = True,
         model_patcher  = None,
         tokenizer_name = None,
+        trust_remote_code = False,
         **kwargs,
     ):
         if model_patcher is None: model_patcher = FastMistralModel
@@ -353,6 +356,7 @@ class FastMistralModel(FastLlamaModel):
             quantization_config = bnb_config,
             token               = token,
             # rope_scaling      = rope_scaling,
+            trust_remote_code   = trust_remote_code,
             **kwargs,
         )
 
@@ -360,9 +364,10 @@ class FastMistralModel(FastLlamaModel):
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = max_position_embeddings,
-            padding_side     = "right",
-            token            = token,
+            model_max_length  = max_position_embeddings,
+            padding_side      = "right",
+            token             = token,
+            trust_remote_code = trust_remote_code,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
