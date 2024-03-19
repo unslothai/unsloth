@@ -574,9 +574,6 @@ def unsloth_save_model(
 
     # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
-        for key, value in save_pretrained_settings.items():
-            if key == "state_dict": continue
-            print(key, value)
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
         # Pushing to organization!
         # Sadly .save_pretrained doesn't work :(
@@ -601,9 +598,6 @@ def unsloth_save_model(
             ignore_patterns = "*.md",
         )
     else:
-        for key, value in save_pretrained_settings.items():
-            if key == "state_dict": continue
-            print(key, value)
         internal_model.save_pretrained(**save_pretrained_settings)
     pass
 
