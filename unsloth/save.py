@@ -24,6 +24,7 @@ from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 import subprocess
 import psutil
+import re
 
 __all__ = [
     "print_quantization_methods",
@@ -176,19 +177,6 @@ def unsloth_save_model(
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
-    # First check for a token!
-    if push_to_hub:
-        from huggingface_hub import whoami
-        try: 
-            username = whoami(token = token)["name"]
-        except:
-            raise RuntimeError(
-                "Unsloth: Please supply a token!\n"\
-                "Go to https://huggingface.co/settings/tokens"
-            )
-        pass
-    pass
-
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
         commit_message += " (Trained with Unsloth)"
@@ -215,7 +203,19 @@ def unsloth_save_model(
     for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
         del save_pretrained_settings[deletion]
     pass
-    import re
+
+    # First check for a token!
+    if push_to_hub:
+        from huggingface_hub import whoami
+        try: 
+            username = whoami(token = token)["name"]
+        except:
+            raise RuntimeError(
+                "Unsloth: Please supply a token!\n"\
+                "Go to https://huggingface.co/settings/tokens"
+            )
+        pass
+    pass
 
     assert(maximum_memory_usage > 0 and maximum_memory_usage <= 0.95)
 
@@ -588,7 +588,7 @@ def unsloth_save_model(
         from huggingface_hub import HfApi
         hf_api = HfApi(token = save_pretrained_settings["token"])
 
-        print("Unsloth: Uploading all files... Please wait!")
+        print("Unsloth: Uploading all files... Please wait...")
         hf_api.upload_folder(
             folder_path = new_save_directory,
             path_in_repo = ".",
