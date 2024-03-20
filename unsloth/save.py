@@ -24,6 +24,7 @@ from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 import subprocess
 import psutil
+import re
 
 __all__ = [
     "print_quantization_methods",
@@ -32,6 +33,8 @@ __all__ = [
     "patch_saving_functions",
 ]
 
+# Check Kaggle
+IS_A_KAGGLE_ENVIRONMENT = "KAGGLE_CONTAINER_NAME" in os.environ
 
 LLAMA_WEIGHTS = (
     "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
@@ -66,9 +69,9 @@ ALLOWED_QUANTS = \
     "q5_1"    : "Even higher accuracy, resource usage and slower inference.",
     "q5_k_s"  : "Uses Q5_K for all tensors",
     "q6_k"    : "Uses Q8_K for all tensors",
-    "iq2_xxs" : "2.06 bpw quantization",
-    "iq2_xs"  : "2.31 bpw quantization",
-    "iq3_xxs" : "3.06 bpw quantization",
+    # "iq2_xxs" : "2.06 bpw quantization", # Not supported sadly
+    # "iq2_xs"  : "2.31 bpw quantization",
+    # "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
 }
 
@@ -78,6 +81,27 @@ def print_quantization_methods():
     pass
 pass
 
+
+def _free_cached_model(model):
+    from huggingface_hub import scan_cache_dir
+    cached_repos = list(scan_cache_dir().repos)
+
+    # Go through every cached repo, and delete the one that matches the model we want to save.
+    # Can save 4GB of disk space - useful for Kaggle systems.
+    for cached_repo in cached_repos:
+        if cached_repo.repo_id == model.config._name_or_path:
+            remove_cache_commit = list(cached_repo.revisions)[0].commit_hash
+            delete_strategy = scan_cache_dir().delete_revisions(remove_cache_commit,)
+
+            logger.warning_once(
+                "Unsloth: Will remove a cached repo with size " + \
+                delete_strategy.expected_freed_size_str,
+            )
+
+            delete_strategy.execute()
+        pass
+    pass
+pass
 
 
 def _merge_lora(layer, name):
@@ -90,12 +114,14 @@ def _merge_lora(layer, name):
             W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
-        W = W.to(torch.float32).t()
+        # W = W.to(torch.float32).t()
+        W = W.t()
 
         if A is not None:
             # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
             # W += sAB
-            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            # W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            W.addmm_(A.t().to(W.dtype), B.t().to(W.dtype), alpha = s)
             # if not torch.isfinite(W).all():
             maximum_element = torch.max(W.min().abs(), W.max())
             if not torch.isfinite(maximum_element).item():
@@ -177,7 +203,19 @@ def unsloth_save_model(
     for deletion in ("model", "tokenizer", "save_method", "temporary_location", "maximum_memory_usage"):
         del save_pretrained_settings[deletion]
     pass
-    import re
+
+    # First check for a token!
+    if push_to_hub:
+        from huggingface_hub import whoami
+        try: 
+            username = whoami(token = token)["name"]
+        except:
+            raise RuntimeError(
+                "Unsloth: Please supply a token!\n"\
+                "Go to https://huggingface.co/settings/tokens"
+            )
+        pass
+    pass
 
     assert(maximum_memory_usage > 0 and maximum_memory_usage <= 0.95)
 
@@ -201,7 +239,11 @@ def unsloth_save_model(
 
         print("Unsloth: Merging 4bit and LoRA weights to 4bit...")
         print("This might take 5 minutes...")
-        model = model.merge_and_unload()
+
+        # Counteract no LoRA adapters!
+        if hasattr(model, "merge_and_unload"):
+            model = model.merge_and_unload()
+        pass
         print("Done.")
     pass
 
@@ -405,6 +447,16 @@ def unsloth_save_model(
         os.makedirs(temporary_location)
     pass
 
+    # Check if Kaggle, since only 20GB of Disk space allowed.
+    if IS_A_KAGGLE_ENVIRONMENT:
+        # We free up 4GB of space
+        logger.warning_once(
+            "Unsloth: Kaggle only allows 20GB of disk space. We need to delete the downloaded\n"\
+            "model which will save 4GB of disk space, allowing you to save on Kaggle."
+        )
+        _free_cached_model(internal_model)
+    pass
+
     # HF also uses a OrderedDict
     from collections import OrderedDict
     state_dict = OrderedDict()
@@ -474,12 +526,35 @@ def unsloth_save_model(
         )
     pass
 
+    # First check if we're pushing to an organization!
+    save_directory = save_pretrained_settings["save_directory"]
+
+    if save_pretrained_settings["push_to_hub"]:
+        new_save_directory, new_username = _determine_username(save_directory, username, token)
+
+        if token is not None:
+            from huggingface_hub import whoami
+            actual_username = whoami(token = token)["name"]
+        else:
+            actual_username = username
+    pass
+
+    # Check if pushing to an organization
+    if save_pretrained_settings["push_to_hub"] and (username != actual_username):
+        print(f"Unsloth: Saving to organization with address {new_save_directory}")
+        # We upload everything at the end!
+        tokenizer_save_settings["push_to_hub"] = False
+        tokenizer_save_settings["save_directory"] = new_save_directory
+    pass
+
+    # Save tokenizer
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
         tokenizer.save_pretrained(**tokenizer_save_settings)
         print(" Done.")
     else:
         print()
+    pass
 
     print("Unsloth: Saving model... This might take 5 minutes for Llama-7b...")
 
@@ -496,7 +571,35 @@ def unsloth_save_model(
     model.config = new_config
 
     # Save!
-    internal_model.save_pretrained(**save_pretrained_settings)
+
+    # Check if pushing to an organization
+    if save_pretrained_settings["push_to_hub"] and (username != actual_username):
+        print(f"Unsloth: Saving to organization with address {new_save_directory}")
+        # Pushing to organization!
+        # Sadly .save_pretrained doesn't work :(
+        # We first save it via .save_pretrained, then upload manually!
+        save_pretrained_settings["save_directory"] = new_save_directory
+        save_pretrained_settings["push_to_hub"] = False
+        internal_model.save_pretrained(**save_pretrained_settings)
+
+        # Now manually go through each file and upload them manually!
+        filenames = os.listdir(new_save_directory)
+
+        from huggingface_hub import HfApi
+        hf_api = HfApi(token = save_pretrained_settings["token"])
+
+        print("Unsloth: Uploading all files... Please wait...")
+        hf_api.upload_folder(
+            folder_path = new_save_directory,
+            path_in_repo = ".",
+            repo_id = new_save_directory,
+            repo_type = "model",
+            commit_message  = "(Trained with Unsloth)",
+            ignore_patterns = "*.md",
+        )
+    else:
+        internal_model.save_pretrained(**save_pretrained_settings)
+    pass
 
     # Revert config back
     original_model = model
@@ -571,17 +674,33 @@ def install_llama_cpp_old(version = -10):
     latest = releases[-1]
     version = releases[version].split(" ")[0]
 
+    # Check if the llama.cpp exists
+    if os.path.exists("llama.cpp"):
+        print(
+            "**[WARNING]** You have a llama.cpp old directory which is broken.\n"\
+            "Unsloth will DELETE the broken directory and install a new one.\n"\
+            "Press CTRL + C / cancel this if this is wrong. We shall wait 10 seconds.\n"
+        )
+        import time
+        for i in range(10):
+            print(f"**[WARNING]** Deleting llama.cpp directory... {10-i} seconds left.")
+            time.sleep(1)
+        import shutil
+        shutil.rmtree("llama.cpp")
+    pass
+
     # Clone a specific commit
+    # Also don't use the GPU!
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df && "\
-        f"make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
+        f"make clean make all -j{psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
     pass
     # Check if successful
@@ -594,23 +713,70 @@ def install_llama_cpp_old(version = -10):
 pass
 
 
-def install_llama_cpp_blocking():
+def install_llama_cpp_blocking(use_cuda = True):
+    use_cuda = "LLAMA_CUBLAS=1" if use_cuda else ""
+
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j{psutil.cpu_count()*2}",
+        f"cd llama.cpp && make clean && {use_cuda} make all -j{psutil.cpu_count()*2}",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
+
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
     pass
 pass
 
 
+def _fix_gemma_gguf():
+    # Fixes Gemma saving to GGUF to float32 instead of float16!
+    with open("llama.cpp/convert-hf-to-gguf.py", "rb") as file:
+        text = file.read()
+    pass
+
+    gemma_start = text.find(b"class GemmaModel(Model):")
+    if gemma_start == -1: return
+
+    gemma_end   = text.find(b"self.gguf_writer.add_tensor(new_name, data)", gemma_start)
+    if gemma_end == -1: return
+
+    gemma_text = text[gemma_start : gemma_end]
+    bad_text = \
+b"""         data = data.astype(np.float32)
+
+            # if f16 desired, convert any float32 2-dim weight tensors to float16
+            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
+                data = data.astype(np.float16)"""
+    good_text = \
+b"""         # if f32 desired, convert any float16 to float32
+            if self.ftype == 0 and data_dtype == np.float16:
+                data = data.astype(np.float32)
+
+            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
+            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
+                data = data.astype(np.float32)
+
+            # if f16 desired, convert any float32 2-dim weight tensors to float16
+            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
+                data = data.astype(np.float16)"""
+    find_bad = gemma_text.find(bad_text)
+    if find_bad == -1: return
+
+    gemma_text = gemma_text[:find_bad] + good_text + gemma_text[find_bad + len(bad_text):]
+    text = text[:gemma_start] + gemma_text + text[gemma_end:]
+
+    with open("llama.cpp/convert-hf-to-gguf.py", "w+b") as file:
+        file.write(text)
+    pass
+pass
+
+
 def save_to_gguf(
+    model_type           : str,
     model_directory      : str = "unsloth_finetuned_model",
     quantization_method  : str = "fast_quantized",
     first_conversion     : str = "f16",
@@ -618,10 +784,21 @@ def save_to_gguf(
 ):
     from transformers.models.llama.modeling_llama import logger
 
+    if quantization_method.startswith("iq2"):
+        raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
+
+    # Careful convert.py is only for Llama / Mistral based archs
+    use_fast_convert = False
+    if   model_type == "llama":   use_fast_convert = True
+    elif model_type == "mistral": use_fast_convert = True
+    pass
+    logger.warning_once(f"Unsloth: Converting {model_type} model. Can use fast conversion = {use_fast_convert}.")
+
     if   quantization_method == "not_quantized":  quantization_method = "f16"
     elif quantization_method == "fast_quantized": quantization_method = "q8_0"
     elif quantization_method == "quantized":      quantization_method = "q4_k_m"
     elif quantization_method is None:             quantization_method = "q8_0"
+    pass
 
     if quantization_method not in ALLOWED_QUANTS.keys():
         error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
@@ -656,7 +833,10 @@ def save_to_gguf(
         install_llama_cpp_blocking()
     pass
     # Check if successful. If not install 10th latest release
-    if error != 0 or not os.path.exists("llama.cpp/quantize"): install_llama_cpp_old(-10)
+    if error != 0 or not os.path.exists("llama.cpp/quantize"):
+        print(f"Unsloth: llama.cpp error code = {error}.")
+        install_llama_cpp_old(-10)
+    pass
 
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
@@ -666,9 +846,18 @@ def save_to_gguf(
         if   first_conversion == "f32" : pass
         elif first_conversion == "f16" : pass
         elif first_conversion == "q8_0":
-            logger.warning_once("Unsloth: We must use f16 for quantization first.")
-            first_conversion = "f16"
+            logger.warning_once(
+                "Unsloth: Using q8_0 for the `first_conversion` will lose a bit of accuracy, "\
+                "but saves disk space!"
+            )
+            # first_conversion = "f16"
         pass
+    pass
+
+    # Non llama/mistral needs can only use f32 or f16
+    if not use_fast_convert and (first_conversion != "f16" or first_conversion != "f32"):
+        logger.warning_once("Unsloth: We must use f16 for non Llama and Mistral models.")
+        first_conversion = "f16"
     pass
 
     n_cpus = psutil.cpu_count()
@@ -682,13 +871,22 @@ def save_to_gguf(
           f"The output location will be {final_location}\n"\
           "This will take 3 minutes...")
 
-    command = f"python llama.cpp/convert.py {model_directory} "\
-        f"--outfile {final_location} --vocab-type hfft "\
-        f"--outtype {first_conversion} --concurrency {n_cpus}"
+    if use_fast_convert:
+        command = f"python llama.cpp/convert.py {model_directory} "\
+            f"--outfile {final_location} --vocab-type hfft "\
+            f"--outtype {first_conversion} --concurrency {n_cpus}"
+    else:
+        # Need to fix convert-hf-to-gguf.py for some models!
+        _fix_gemma_gguf()
+
+        command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
+            f"--outfile {final_location} "\
+            f"--outtype {first_conversion}"
+    pass
 
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
         for line in sp.stdout:
-            print(line.decode("utf-8"), flush = True, end = "")
+            print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         if sp.returncode is not None and sp.returncode != 0:
             raise subprocess.CalledProcessError(sp.returncode, sp.args)
     pass
@@ -718,7 +916,7 @@ def save_to_gguf(
         # quantize uses stderr
         with subprocess.Popen(command, shell = True, stderr = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stderr:
-                print(line.decode("utf-8"), flush = True, end = "")
+                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
             if sp.returncode is not None and sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, sp.args)
         pass
@@ -856,17 +1054,8 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 [<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)
 """
 
-def upload_to_huggingface(
-    model,
-    save_directory,
-    token,
-    method,
-    extra = "",
-    file_location = None,
-    old_username = None,
-    private = None,
-):
-    # Check for username
+
+def _determine_username(save_directory, old_username, token):
     username = ""
     save_directory = save_directory.lstrip("./")
     if "/" not in save_directory:
@@ -882,6 +1071,21 @@ def upload_to_huggingface(
     else:
         username = save_directory.split("/")[0]
     pass
+    return save_directory, username
+pass
+
+
+def upload_to_huggingface(
+    model,
+    save_directory,
+    token,
+    method,
+    extra = "",
+    file_location = None,
+    old_username = None,
+    private = None,
+):
+    save_directory, username = _determine_username(save_directory, old_username, token)
 
     from huggingface_hub import create_repo
     try:
@@ -1009,18 +1213,15 @@ def unsloth_save_pretrained_gguf(
 
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
-        git_clone = install_llama_cpp_clone_non_blocking()
-        python_install = install_python_non_blocking(["gguf", "protobuf"])
-        git_clone.wait()
-        makefile  = install_llama_cpp_make_non_blocking()
-        new_save_directory, old_username = unsloth_save_model(**arguments)
-        python_install.wait()
-    else:
-        try:
+
+        if IS_A_KAGGLE_ENVIRONMENT:
+            # Kaggle is weird - no blocking installs, and no CUDA?
+            python_install = install_python_non_blocking(["gguf", "protobuf"])
+            python_install.wait()
+            install_llama_cpp_blocking(use_cuda = False)
             new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
-        except:
-            # Retry by recloning llama.cpp
+        else:
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
@@ -1028,12 +1229,35 @@ def unsloth_save_pretrained_gguf(
             new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
+    else:
+        try:
+            new_save_directory, old_username = unsloth_save_model(**arguments)
+            makefile = None
+        except:
+            # Retry by recloning llama.cpp
+            if IS_A_KAGGLE_ENVIRONMENT:
+                # Kaggle is weird - no blocking installs, and no CUDA?
+                python_install = install_python_non_blocking(["gguf", "protobuf"])
+                python_install.wait()
+                install_llama_cpp_blocking(use_cuda = False)
+                new_save_directory, old_username = unsloth_save_model(**arguments)
+                makefile = None
+            else:
+                git_clone = install_llama_cpp_clone_non_blocking()
+                python_install = install_python_non_blocking(["gguf", "protobuf"])
+                git_clone.wait()
+                makefile  = install_llama_cpp_make_non_blocking()
+                new_save_directory, old_username = unsloth_save_model(**arguments)
+                python_install.wait()
+            pass
+        pass
     pass
 
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, first_conversion, makefile)
+    model_type = self.config.model_type
+    file_location = save_to_gguf(model_type, new_save_directory, quantization_method, first_conversion, makefile)
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -1109,31 +1333,51 @@ def unsloth_push_to_hub_gguf(
 
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
-        git_clone = install_llama_cpp_clone_non_blocking()
-        python_install = install_python_non_blocking(["gguf", "protobuf"])
-        git_clone.wait()
-        makefile  = install_llama_cpp_make_non_blocking()
-        new_save_directory, old_username = unsloth_save_model(**arguments)
-        python_install.wait()
+
+        if IS_A_KAGGLE_ENVIRONMENT:
+            # Kaggle is weird - no blocking installs, and no CUDA?
+            python_install = install_python_non_blocking(["gguf", "protobuf"])
+            python_install.wait()
+            install_llama_cpp_blocking(use_cuda = False)
+            new_save_directory, old_username = unsloth_save_model(**arguments)
+            makefile = None
+        else:
+            git_clone = install_llama_cpp_clone_non_blocking()
+            python_install = install_python_non_blocking(["gguf", "protobuf"])
+            git_clone.wait()
+            makefile  = install_llama_cpp_make_non_blocking()
+            new_save_directory, old_username = unsloth_save_model(**arguments)
+            python_install.wait()
+        pass
     else:
         try:
             new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         except:
             # Retry by recloning llama.cpp
-            git_clone = install_llama_cpp_clone_non_blocking()
-            python_install = install_python_non_blocking(["gguf", "protobuf"])
-            git_clone.wait()
-            makefile = install_llama_cpp_make_non_blocking()
-            new_save_directory, old_username = unsloth_save_model(**arguments)
-            python_install.wait()
+            if IS_A_KAGGLE_ENVIRONMENT:
+                # Kaggle is weird - no blocking installs, and no CUDA?
+                python_install = install_python_non_blocking(["gguf", "protobuf"])
+                python_install.wait()
+                install_llama_cpp_blocking(use_cuda = False)
+                new_save_directory, old_username = unsloth_save_model(**arguments)
+                makefile = None
+            else:
+                git_clone = install_llama_cpp_clone_non_blocking()
+                python_install = install_python_non_blocking(["gguf", "protobuf"])
+                git_clone.wait()
+                makefile  = install_llama_cpp_make_non_blocking()
+                new_save_directory, old_username = unsloth_save_model(**arguments)
+                python_install.wait()
+            pass
         pass
     pass
 
     for _ in range(3):
         gc.collect()
 
-    file_location = save_to_gguf(new_save_directory, quantization_method, first_conversion, makefile)
+    model_type = self.config.model_type
+    file_location = save_to_gguf(model_type, new_save_directory, quantization_method, first_conversion, makefile)
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(

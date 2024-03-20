@@ -17,27 +17,24 @@ import importlib
 
 # Currently only supports 1 GPU, or else seg faults will occur.
 if "CUDA_VISIBLE_DEVICES" in os.environ:
-    device = os.environ["CUDA_VISIBLE_DEVICES"]
-    if not device.isdigit():
+    devices = os.environ["CUDA_VISIBLE_DEVICES"]
+    # Check if there are multiple cuda devices set in env
+    if not devices.isdigit():
+        first_id = devices.split(",")[0]
         warnings.warn(
-            f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {device} "\
-             "but we require 'CUDA_VISIBLE_DEVICES=0'\n"\
-             "We shall set it ourselves."
+            f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {devices} \n"\
+            "Multiple CUDA devices detected but we require a single device.\n"\
+            f"We will override CUDA_VISIBLE_DEVICES to first device: {first_id}."
         )
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    elif "CUDA_DEVICE_ORDER" not in os.environ:
-        warnings.warn(
-            f"Unsloth: 'CUDA_DEVICE_ORDER' is not set "\
-             "but we require 'CUDA_DEVICE_ORDER=PCI_BUS_ID'\n"\
-             "We shall set it ourselves."
-        )
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(first_id)
 else:
     # warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 pass
+
+# Reduce VRAM usage by reducing fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 try:
     import torch
@@ -45,14 +42,18 @@ except:
     raise ImportError("Pytorch is not installed. Go to https://pytorch.org/.\n"\
                       "We have some installation instructions on our Github page.")
 
-# We support torch 2.1 and 2.1.1
+# We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
 torch_version = torch.__version__.split(".")
 major_torch, minor_torch = torch_version[0], torch_version[1]
 major_torch, minor_torch = int(major_torch), int(minor_torch)
-if (major_torch != 2):# or (major_torch == 2 and minor_torch < 1):
-    raise ImportError("Unsloth only supports Pytorch 2.1 for now. Please update your Pytorch to 2.1.\n"\
+if (major_torch < 2):
+    raise ImportError("Unsloth only supports Pytorch 2 for now. Please update your Pytorch to 2.1.\n"\
                       "We have some installation instructions on our Github page.")
+elif (major_torch == 2) and (minor_torch < 2):
+    # Disable expandable_segments
+    del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+pass
 
 
 # Try loading bitsandbytes and triton

@@ -505,32 +505,44 @@ def LlamaModel_fast_forward(
             position_ids = position_ids.repeat((batch_size, 1))
     pass
 
-    # embed positions
+    # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # Mormalized from Gemma
+    inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
+
+    # Normalized from Gemma
     IS_GEMMA = self.config.model_type == "gemma"
+    train_embed_tokens = self.embed_tokens.weight.requires_grad
+
     if IS_GEMMA:
-        inputs_requires_grad = inputs_embeds.requires_grad
-        if not inputs_embeds.is_leaf:
-            inputs_embeds = inputs_embeds.detach()
-            inputs_requires_grad = True
-        elif inputs_requires_grad:
-            inputs_embeds.requires_grad_(False)
-        pass
         # Match Gemma exactly by casting to bfloat16 / float16
         # inputs_embeds *= math_sqrt(self.config.hidden_size)
         # Ie 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
         # &  2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-        inputs_embeds *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
-        # inputs_embeds *= math_sqrt(self.config.hidden_size)
-        if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+        normalizer = torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
+
+        if train_embed_tokens:
+            # Careful we must not do an inplace op!
+            inputs_embeds = inputs_embeds * normalizer
+        else:
+            inputs_requires_grad = inputs_embeds.requires_grad
+            if not inputs_embeds.is_leaf:
+                inputs_embeds = inputs_embeds.detach()
+                inputs_requires_grad = True
+            elif inputs_requires_grad:
+                inputs_embeds.requires_grad_(False)
+            pass
+            inputs_embeds *= normalizer
+            # inputs_embeds *= math_sqrt(self.config.hidden_size)
+            if inputs_requires_grad: inputs_embeds.requires_grad_(True)
+        pass
     pass
 
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
-    if self._has_no_labels and (attention_mask is not None) and (past_key_values is None):
+    if self._has_no_labels and (attention_mask is not None) and (past_key_values is None) and \
+        (not train_embed_tokens):
         # Careful for inference the attention_mask is size (1, kv_seq_len)
         # Whilst the input_embeds is size (1, 1, 4096)
         inputs_requires_grad = inputs_embeds.requires_grad
@@ -580,6 +592,13 @@ def LlamaModel_fast_forward(
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
     next_decoder_cache = () if use_cache else None
+
+    # Gradient checkpointing methods (ie sqrt)
+    if hasattr(self, "_gradient_checkpointing_boundaries"):
+        boundaries = self._gradient_checkpointing_boundaries
+    else:
+        boundaries = None
+    pass
 
     for idx, decoder_layer in enumerate(self.layers):
         if output_hidden_states:
@@ -645,7 +664,7 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.inference_mode
+# @torch.inference_mode
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
@@ -655,6 +674,7 @@ def LlamaModel_fast_forward_inference(
     input_ids = input_ids[:,:self.max_seq_length]
 
     hidden_states = self.embed_tokens(input_ids)
+    hidden_states = hidden_states.to(self.config.torch_dtype)
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
@@ -705,26 +725,24 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-        if causal_mask is None and past_key_values is None:
-            causal_mask = xformers.attn_bias.LowerTriangularMask()
-
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        self.model._has_no_labels = labels is None
-
-        if past_key_values is not None and \
-            hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        if past_key_values is not None and hasattr(self.model.layers[0].self_attn, "paged_attention"):
             outputs = fast_forward_inference(
                 self.model,
                 input_ids,
                 past_key_values,
             )
         else:
+            causal_mask = xformers.attn_bias.LowerTriangularMask()
+    
+            output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+            output_hidden_states = (
+                output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            )
+            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+            # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+            self.model._has_no_labels = labels is None
+
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
@@ -742,11 +760,13 @@ def CausalLM_fast_forward(fast_forward_inference):
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
         if bsz == 1 and q_len == 1:
-            logits = torch.mv(self.lm_head.weight, hidden_states.ravel())
+            lm_head = self.lm_head.weight
+            logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         else:
             logits = self.lm_head(hidden_states)
         pass
+        logits = logits.to(self.config.torch_dtype)
 
         loss = None
         if labels is not None:
@@ -881,6 +901,16 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
 pass
 
 
+def _wrap_fast_inference(generate, device_type, dtype):
+    # Wraps inference with bfloat16 / float16
+    @torch.inference_mode
+    def _fast_generate(*args, **kwargs):
+        with torch.autocast(device_type = device_type, dtype = dtype):
+            return generate(*args, **kwargs)
+    return _fast_generate
+pass
+
+
 class FastLlamaModel:
 
     @staticmethod
@@ -916,6 +946,8 @@ class FastLlamaModel:
         rope_scaling   = None,
         fix_tokenizer  = True,
         model_patcher  = None,
+        tokenizer_name = None,
+        trust_remote_code = False,
         **kwargs,
     ):
         if model_patcher is None: model_patcher = FastLlamaModel
@@ -976,13 +1008,18 @@ class FastLlamaModel:
             token                   = token,
             rope_scaling            = rope_scaling,
             max_position_embeddings = max_position_embeddings,
+            trust_remote_code       = trust_remote_code,
             **kwargs,
         )
+
+        # Counteract saved tokenizers
+        tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            model_max_length = max_position_embeddings,
-            padding_side     = "right",
-            token            = token,
+            tokenizer_name,
+            model_max_length  = max_position_embeddings,
+            padding_side      = "right",
+            token             = token,
+            trust_remote_code = trust_remote_code,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -1224,6 +1261,7 @@ class FastLlamaModel:
         random_state        = 3407,
         max_seq_length      = 2048, # not used anymore
         use_rslora          = False,
+        modules_to_save     = None,
         init_lora_weights   = True,
         loftq_config        = {},
         **kwargs,
@@ -1310,15 +1348,45 @@ class FastLlamaModel:
         accepted_modules = frozenset(("q_proj", "k_proj", "v_proj", "o_proj",
                                       "gate_proj", "up_proj", "down_proj",),)
         model.config.update({"unsloth_version" : __version__})
+
+        train_lm_head = False
+        train_embed_tokens = False
+        final_modules = []
         for module in target_modules:
-            assert(module in accepted_modules)
+            if module == "lm_head":
+                logger.warning_once(
+                    "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`."\
+                    "We shall do it for you!"
+                )
+                train_lm_head = True
+
+            elif module == "embed_tokens":
+                logger.warning_once(
+                    "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`."\
+                    "We shall do it for you!"
+                )
+                train_embed_tokens = True
+
+            else:
+                assert(module in accepted_modules)
+                final_modules.append(module)
+        pass
+
+        # Check modules_to_save
+        if modules_to_save is not None:
+            for module in modules_to_save:
+                if module == "lm_head":
+                    train_lm_head = True
+                elif module == "embed_tokens":
+                    train_embed_tokens = True
+            pass
         pass
 
         # Get LoRA
         arguments = dict(
             r                   = r,
             lora_alpha          = lora_alpha,
-            target_modules      = target_modules,
+            target_modules      = final_modules,
             lora_dropout        = lora_dropout,
             bias                = bias,
             task_type           = TaskType.CAUSAL_LM,
@@ -1326,6 +1394,7 @@ class FastLlamaModel:
             init_lora_weights   = init_lora_weights,
             loftq_config        = loftq_config,
             use_rslora          = use_rslora,
+            modules_to_save     = modules_to_save,
             **kwargs,
         )
         if not SUPPORTS_LOFTQ:  del arguments["loftq_config"]
@@ -1335,6 +1404,22 @@ class FastLlamaModel:
         model = _get_peft_model(model, lora_config)
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+
+        # Now patch lm_head and embed_tokens
+        if train_embed_tokens:
+            print("Unsloth: Casting embed_tokens to float32")
+            assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
+            model.model.model.embed_tokens.modules_to_save.default.to(torch.float32)
+            model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
+        pass
+
+        if train_lm_head:
+            print("Unsloth: Casting lm_head to float32")
+            assert(hasattr(model.model.lm_head, "modules_to_save"))
+            model.model.lm_head.modules_to_save.default.to(torch.float32)
+            model.model.lm_head.modules_to_save.default.requires_grad_(True)
+        pass
+
         return model
     pass
 
@@ -1425,9 +1510,12 @@ class FastLlamaModel:
                 if  hasattr(gate_proj, "lora_A") and \
                     hasattr(  up_proj, "lora_A") and \
                     hasattr(down_proj, "lora_A") and \
-                    (gate_proj.base_layer if hasattr(gate_proj, "base_layer") else gate_proj).bias is None and \
-                    (  up_proj.base_layer if hasattr(  up_proj, "base_layer") else   up_proj).bias is None and \
-                    (down_proj.base_layer if hasattr(down_proj, "base_layer") else down_proj).bias is None:
+                    (getattr(gate_proj, "base_layer", gate_proj).bias is None) and \
+                    (getattr(  up_proj, "base_layer",   up_proj).bias is None) and \
+                    (getattr(down_proj, "base_layer", down_proj).bias is None) and \
+                    (getattr(gate_proj, "lora_magnitude_vector", None) is None) and \
+                    (getattr(  up_proj, "lora_magnitude_vector", None) is None) and \
+                    (getattr(down_proj, "lora_magnitude_vector", None) is None):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
                     layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
@@ -1446,9 +1534,12 @@ class FastLlamaModel:
                 if  hasattr(q_proj, "lora_A") and \
                     hasattr(k_proj, "lora_A") and \
                     hasattr(v_proj, "lora_A") and \
-                    (q_proj.base_layer if hasattr(q_proj, "base_layer") else q_proj).bias is None and \
-                    (k_proj.base_layer if hasattr(k_proj, "base_layer") else k_proj).bias is None and \
-                    (v_proj.base_layer if hasattr(v_proj, "base_layer") else v_proj).bias is None:
+                    (getattr(q_proj, "base_layer", q_proj).bias is None) and \
+                    (getattr(q_proj, "base_layer", k_proj).bias is None) and \
+                    (getattr(q_proj, "base_layer", v_proj).bias is None) and \
+                    (getattr(q_proj, "lora_magnitude_vector", None) is None) and \
+                    (getattr(k_proj, "lora_magnitude_vector", None) is None) and \
+                    (getattr(v_proj, "lora_magnitude_vector", None) is None):
 
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -1462,7 +1553,8 @@ class FastLlamaModel:
                 # O attention patching
                 o_proj = layer.self_attn.o_proj
                 if hasattr(o_proj, "lora_A") and \
-                    (o_proj.base_layer if hasattr(o_proj, "base_layer") else o_proj).bias is None:
+                    (getattr(o_proj, "base_layer", o_proj).bias is None) and \
+                    (getattr(o_proj, "lora_magnitude_vector", None) is None):
 
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
@@ -1507,6 +1599,19 @@ class FastLlamaModel:
             internal_model.gradient_checkpointing = False
             internal_model.training = False
         pass
+
+        # Also check if lm_head / embeddings are trained
+        internal_model = model
+        while not hasattr(internal_model, "lm_head"):
+            internal_model = internal_model.model
+        pass
+        lm_head = internal_model.lm_head.weight
+        device_type = lm_head.device.type
+        dtype = model.config.torch_dtype
+
+        # Wrap model.generate
+        model._unwrapped_old_generate = model.generate
+        model.generate = _wrap_fast_inference(model.generate, device_type, dtype)
     pass
 
 
@@ -1527,5 +1632,14 @@ class FastLlamaModel:
             internal_model.gradient_checkpointing = use_gradient_checkpointing
             internal_model.training = True
         pass
+
+        # Also revert model.generate
+        if hasattr(model, "_unwrapped_old_generate"):
+            model.generate = model._unwrapped_old_generate
+            del model._unwrapped_old_generate
+        pass
     pass
 pass
+
+
+
