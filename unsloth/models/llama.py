@@ -599,7 +599,7 @@ def LlamaModel_fast_forward(
     else:
         boundaries = None
     pass
-    
+
     for idx, decoder_layer in enumerate(self.layers):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
@@ -1601,7 +1601,11 @@ class FastLlamaModel:
         pass
 
         # Also check if lm_head / embeddings are trained
-        lm_head = getattr(model, "model", model).lm_head.weight
+        internal_model = model
+        while not hasattr(internal_model, "lm_head"):
+            internal_model = internal_model.model
+        pass
+        lm_head = internal_model.lm_head.weight
         device_type = lm_head.device.type
         dtype = model.config.torch_dtype
 
