@@ -147,11 +147,7 @@ pip install "unsloth[cu121-torch220] @ git+https://github.com/unslothai/unsloth.
 pip install "unsloth[cu118-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
 ```
-5. If you get errors, try the below first, then go back to step 1:
-```bash
-pip install --upgrade pip
-```
-6. For Pytorch 2.2.1:
+5. For Pytorch 2.2.1:
 ```bash
 # RTX 3090, 4090 Ampere GPUs:
 pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
@@ -161,12 +157,17 @@ pip install --no-deps packaging ninja einops flash-attn xformers trl peft accele
 pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
 pip install --no-deps xformers trl peft accelerate bitsandbytes
 ```
-7. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
+6. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
 ```bash
 nvcc
 python -m xformers.info
 python -m bitsandbytes
 ```
+7. If you get errors, try the below first, then go back to step 1:
+```bash
+pip install --upgrade pip
+```
+
 </details>
 ## 📜 Documentation
 - Go to our [Wiki page](https://github.com/unslothai/unsloth/wiki) for saving to GGUF, checkpointing, evaluation and more!

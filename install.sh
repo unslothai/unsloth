@@ -46,7 +46,7 @@ pip_install_packages () {
         pip install "unsloth[${CUDA_TAG}${GPU_TYPE:+-$GPU_TYPE}] @ git+https://github.com/unslothai/unsloth.git"
     elif [[ "$PYTORCH_VERSION_TAG" == "torch221" ]]; then
         pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
-        if [[ "$CUDA_TAG"="cu118" ]]; then
+        if [[ "$CUDA_TAG" == "cu118" ]]; then
             pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes
         else
             pip install --no-deps xformers trl peft accelerate bitsandbytes
