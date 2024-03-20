@@ -102,7 +102,7 @@ conda activate unsloth_env
 
 conda install pytorch-cuda=<12.1/11.8> pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers
 
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
 
 pip install --no-deps trl peft accelerate bitsandbytes
 ```
@@ -154,11 +154,11 @@ pip install --upgrade pip
 6. For Pytorch 2.2.1:
 ```bash
 # RTX 3090, 4090 Ampere GPUs:
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
 pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes
 
 # Pre Ampere RTX 2080, T4, GTX 1080 GPUs:
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
 pip install --no-deps xformers trl peft accelerate bitsandbytes
 ```
 7. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
