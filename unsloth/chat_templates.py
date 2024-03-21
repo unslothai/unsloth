@@ -22,6 +22,7 @@ from transformers import StoppingCriteria, StoppingCriteriaList
 from torch import LongTensor, FloatTensor
 from transformers.models.llama.modeling_llama import logger
 from .models._utils import patch_tokenizer
+from .save import patch_saving_functions
 import os
 import shutil
 
@@ -433,8 +434,11 @@ def get_chat_template(
     if old_bos_token != new_bos_token: tokenizer.bos_token = old_bos_token
     if old_unk_token != new_unk_token: tokenizer.unk_token = old_unk_token
 
-    #stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
+    # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
+    # Patch saving functions
+    tokenizer = patch_saving_functions(tokenizer)
+    
     return tokenizer#, stopping_criteria
 pass
 
