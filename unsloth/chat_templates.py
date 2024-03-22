@@ -318,17 +318,20 @@ def get_chat_template(
     mapping = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
     map_eos_token = True,
 ):
+    assert(type(map_eos_token) is bool)
     old_tokenizer = tokenizer
-
-    if map_eos_token is False:
-        assert("Unsloth: Can only map new tokens to EOS for now. Adding new tokens is not yet supported.")
-    pass
 
     IS_GEMMA = False
     if tokenizer.__class__.__name__.startswith("Gemma"):
         if chat_template == "chatml": chat_template = "gemma_chatml"
         IS_GEMMA = True
     pass
+
+    # We first check if the tokenizer is a fast one. If not, convert it
+    is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
+    # if not is_fast_tokenizer:
+    # from transformers.convert_slow_tokenizer import convert_slow_tokenizer
+    # For now, we just raise a warning!
 
     old_padding_side = tokenizer.padding_side
 
@@ -349,9 +352,17 @@ def get_chat_template(
 
         assert(type(stop_word) is str)
 
-        # token_mapping = {"<start_of_turn>" : "<|im_start|>", "<end_of_turn>" : "<|im_end|>"}
-        # For Gemma :)
-        if token_mapping is not None:
+        # Check fast tokenizer
+        if not is_fast_tokenizer:
+            logger.warning_once(
+                f"Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
+                "Please log a Github issue if you want this as a new feature!\n"\
+                "Your chat template will still work, but it won't edit tokens."
+            )
+
+        elif token_mapping is not None:
+            # token_mapping = {"<start_of_turn>" : "<|im_start|>", "<end_of_turn>" : "<|im_end|>"}
+            # For Gemma :)
 
             string_vocab = tokenizer._tokenizer.to_str()
 
@@ -369,7 +380,7 @@ def get_chat_template(
                 pass
             pass
 
-            if not stop_word in token_mapping.values():
+            if map_eos_token and (not stop_word in token_mapping.values()):
                 # Do not map 107 = <|im_end|> and 1 = <|im_end|>. This will reduce the vocab size by 1
                 logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
                 string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
@@ -377,14 +388,19 @@ def get_chat_template(
 
             if skipped != len(token_mapping):
                 new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
-                new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+
+                if map_eos_token:
+                    new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+                else:
+                    new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer)
+                pass
 
                 # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
                 tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
             else:
                 pass
 
-        elif stop_word != "eos_token":
+        elif map_eos_token and (stop_word != "eos_token"):
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
 
             # Replaces the old EOS token with a new one.
@@ -438,7 +454,7 @@ def get_chat_template(
 
     # Patch saving functions
     tokenizer = patch_saving_functions(tokenizer)
-    
+
     return tokenizer#, stopping_criteria
 pass
 
