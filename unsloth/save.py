@@ -716,15 +716,22 @@ pass
 
 
 def install_llama_cpp_blocking(use_cuda = True):
-    use_cuda = "LLAMA_CUBLAS=1" if use_cuda else ""
+    use_cuda = "LLAMA_CUBLAS=1 " if use_cuda else ""
 
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && {use_cuda} make all -j{psutil.cpu_count()*2}",
-        "pip install gguf protobuf",
     ]
+    
+    if IS_A_KAGGLE_ENVIRONMENT:
+        print("Kaggle llama.cpp install")
+        commands.append("make clean -C llama.cpp")
+        commands.append(f"{use_cuda}make all -j{psutil.cpu_count()*2} -C llama.cpp")
+    else:
+        commands.append(f"cd llama.cpp && make clean && {use_cuda}make all -j{psutil.cpu_count()*2}")
+    
+    commands.append("pip install gguf protobuf")
+    
     if os.path.exists("llama.cpp"): return
-
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
             for line in sp.stdout:
