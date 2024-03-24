@@ -15,7 +15,6 @@
 __all__ = [
     "get_chat_template",
     "test_chat_templates",
-    "fix_sentencepiece_tokenizer",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
