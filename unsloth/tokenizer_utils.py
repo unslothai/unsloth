@@ -275,6 +275,6 @@ def load_correct_tokenizer(
     if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         return fast_tokenizer
     else:
-        return slow_tokenizer
+        return convert_to_fast_tokenizer(slow_tokenizer)
     pass
 pass
