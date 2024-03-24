@@ -29,7 +29,6 @@ def try_fix_tokenizer(tokenizer, prepend = True):
     if hasattr(tokenizer, "_tokenizer"):
         converted_tokenizer = tokenizer._tokenizer
     else:
-        from transformers.convert_slow_tokenizer import convert_slow_tokenizer
         converted_tokenizer = convert_slow_tokenizer(tokenizer)
     pass
 
@@ -46,9 +45,9 @@ def try_fix_tokenizer(tokenizer, prepend = True):
     token_names = [x for x in dir_names if x.endswith("_token") and x.count("_") == 1]
 
     for token_name in token_names:
-        token = eval(f"tokenizer.{token_name}")
+        token = getattr(tokenizer, token_name, None)
         if token is None: continue
-        token_id = eval(f"tokenizer.{token_name}_id")
+        token_id = getattr(tokenizer, token_name + "_id", None)
 
         # Locate the token's id mapping in the string
         find_text = f'"id":{token_id},"content":"'
@@ -125,10 +124,7 @@ def convert_to_fast_tokenizer(
         "tokenizer_object" : try_fix_tokenizer(slow_tokenizer, prepend = True),
         "tokenizer_file"   : slow_tokenizer.vocab_file,
     }
-    for arg in args:
-        try: kwargs[arg] = eval(f"slow_tokenizer.{arg}")
-        except: continue
-    pass
+    for arg in args: kwargs[arg] = getattr(slow_tokenizer, arg, None)
     fast_tokenizer = FastTokenizer( **kwargs )
 
     # Check if they're similar!
@@ -173,7 +169,7 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     # Get eos_token, bos_token etc
     dir_names = dir(slow_tokenizer)
     special_tokens = list(filter(None, (
-        eval(f"slow_tokenizer.{x}") for x in dir_names
+        getattr(slow_tokenizer, x) for x in dir_names
         if x.endswith("_token") and x.count("_") == 1
     )))
     all_special_tokens = list(set(special_tokens + slow_tokenizer.all_special_tokens))
