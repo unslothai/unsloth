@@ -90,6 +90,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-2b-it",
         "google/gemma-2b-it",
     ),
+    "unsloth/mistral-7b-v0.2-bnb-4bit" : (
+        "unsloth/mistral-7b-v0.2",
+        "alpindale/Mistral-7B-v0.2-hf",
+    )
 }
 
 INT_TO_FLOAT_MAPPER = {}
