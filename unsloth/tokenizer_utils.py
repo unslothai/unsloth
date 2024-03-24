@@ -19,8 +19,8 @@ import re
 import os
 
 __all__ = [
-	"load_correct_tokenizer",
-	"fix_sentencepiece_tokenizer",
+    "load_correct_tokenizer",
+    "fix_sentencepiece_tokenizer",
 ]
 
 
@@ -120,11 +120,9 @@ def convert_to_fast_tokenizer(
     args2 = [x for x in args2 if not x.endswith("_file")]
     args = list(set(args + args2))
 
-    kwargs = {
-        "tokenizer_object" : try_fix_tokenizer(slow_tokenizer, prepend = True),
-        "tokenizer_file"   : slow_tokenizer.vocab_file,
-    }
+    kwargs = {}
     for arg in args: kwargs[arg] = getattr(slow_tokenizer, arg, None)
+    kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = True)
     fast_tokenizer = FastTokenizer( **kwargs )
 
     # Check if they're similar!
@@ -248,7 +246,7 @@ pass
 
 def load_correct_tokenizer(
     tokenizer_name,
-    model_max_length,
+    model_max_length = None,
     padding_side = "right",
     token = None,
     trust_remote_code = False,
@@ -278,3 +276,4 @@ def load_correct_tokenizer(
         return convert_to_fast_tokenizer(slow_tokenizer)
     pass
 pass
+
