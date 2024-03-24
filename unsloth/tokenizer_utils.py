@@ -76,7 +76,6 @@ pass
 
 
 def get_sorted_dict(dictionary):
-	# Get sorted dict by values 0, 1, 2, ...
     sorted_keys = sorted(dictionary.values())
     inverted_dictionary = { value : key for key, value in dictionary.items() }
 
@@ -164,7 +163,9 @@ def convert_to_fast_tokenizer(
 
     # Now load it!
     fast_tokenizer = AutoTokenizer.from_pretrained(new_location)
-    return fast_tokenizer
+    if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
+        return fast_tokenizer
+    return slow_tokenizer
 pass
 
 
