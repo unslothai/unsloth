@@ -267,12 +267,8 @@ def get_chat_template(
         IS_GEMMA = True
     pass
 
-    # We first check if the tokenizer is a fast one. If not, convert it
+    # We first check if the tokenizer is a fast one. If not, we cannot convert this!
     is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
-    # if not is_fast_tokenizer:
-    # from transformers.convert_slow_tokenizer import convert_slow_tokenizer
-    # For now, we just raise a warning!
-
     old_padding_side = tokenizer.padding_side
 
     if type(chat_template) in (list, tuple,):
@@ -297,7 +293,7 @@ def get_chat_template(
             logger.warning_once(
                 f"Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
                 "Please log a Github issue if you want this as a new feature!\n"\
-                "Your chat template will still work, but it won't edit tokens."
+                "Your chat template will still work, but it won't add or edit tokens."
             )
 
         elif token_mapping is not None:
