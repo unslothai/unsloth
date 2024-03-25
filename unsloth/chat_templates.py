@@ -26,8 +26,8 @@ import shutil
 from .tokenizer_utils import (
     load_correct_tokenizer,
     fix_sentencepiece_tokenizer,
-    patch_tokenizer,
 )
+from .models._utils import patch_tokenizer
 
 CHAT_TEMPLATES = {}
 
