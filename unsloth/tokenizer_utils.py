@@ -17,6 +17,7 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
+from transformers.models.llama.modeling_llama import logger
 
 __all__ = [
     "load_correct_tokenizer",
