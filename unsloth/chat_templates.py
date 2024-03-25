@@ -322,6 +322,7 @@ def get_chat_template(
             if map_eos_token and (not stop_word in token_mapping.values()):
                 # Do not map 107 = <|im_end|> and 1 = <|im_end|>. This will reduce the vocab size by 1
                 logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
+                print(1)
                 string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
             pass
 
@@ -340,6 +341,7 @@ def get_chat_template(
                 pass
 
         elif map_eos_token and (stop_word != "eos_token"):
+            print(2)
             logger.warning_once(f"Unsloth: Will map {stop_word} to EOS = {tokenizer.eos_token}.")
 
             # Replaces the old EOS token with a new one.
