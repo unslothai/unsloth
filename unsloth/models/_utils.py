@@ -60,8 +60,6 @@ from xformers import __version__ as xformers_version
 
 __all__ = [
     "prepare_model_for_kbit_training",
-    "patch_tokenizer",
-    "check_tokenizer",
     "xformers",
     "xformers_attention",
     "xformers_version",
@@ -70,11 +68,6 @@ __all__ = [
     "platform_system",
 ]
 
-
-IGNORED_TOKENIZER_CHECKING = frozenset((
-    "CodeLlamaTokenizerFast",
-    "CodeLlamaTokenizer",
-))
 
 def prepare_model_for_kbit_training(
     model                      : Any,
@@ -117,127 +110,6 @@ def prepare_model_for_kbit_training(
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     return model
-pass
-
-
-def patch_tokenizer(model, tokenizer):
-    if model is not None:
-        model.config.update({"unsloth_version" : __version__})
-    if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
-        # Fixes https://github.com/unslothai/unsloth/issues/5
-        if hasattr(tokenizer, "unk_token"):
-            tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token})
-            tokenizer.pad_token = tokenizer.unk_token
-        else:
-            name = model.config._name_or_path if model is not None else "Model"
-            logger.warning_one(
-                f"{name} does not have a padding or unknown token!\n"\
-                f"Will use the EOS token of id {tokenizer.eos_token_id} as padding."
-            )
-            assert(hasattr(tokenizer, "eos_token"))
-            tokenizer.add_special_tokens({"pad_token" : tokenizer.eos_token})
-            tokenizer.pad_token = tokenizer.eos_token
-        if model is not None:
-            config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
-    pass
-    return model, tokenizer
-pass
-
-
-def check_tokenizer(
-    model,
-    tokenizer,
-    model_name = "unsloth/llama-2-7b-bnb-4bit",
-    model_max_length = 4096,
-    padding_side = "right",
-    token = None,
-    _reload = True,
-):
-    # Checks tokenizer for out of bounds ids.
-    # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
-    # where <sep> had token id=32002.
-    # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
-    # Seems like the Fast tokenizer in Rust breaks things!
-
-    # We ignore some of them!
-    if tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
-        return tokenizer
-    pass
-
-    max_embedding_size = model.model.embed_tokens.weight.shape[0]
-    added_tokens_fast = tokenizer.added_tokens_decoder
-    added_tokens_fast = {index : str(value) for index, value in added_tokens_fast.items()}
-    sorted_keys = sorted(added_tokens_fast)
-    added_tokens_fast = {key : added_tokens_fast[key] for key in sorted_keys}
-
-    for j, index in enumerate(added_tokens_fast.keys()):
-        if index >= max_embedding_size:
-            bad_indices = list(added_tokens_fast.keys  ())[j:]
-            bad_tokens  = list(added_tokens_fast.values())[j:]
-
-            if not _reload:
-                # Try removing the token
-                added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
-                special_tokens = tokenizer.special_tokens_map
-                import itertools
-                special_tokens = frozenset(
-                    itertools.chain.from_iterable(
-                        [x] if type(x) is str else x for x in special_tokens.values()
-                    )
-                )
-                can_be_removed1 = [x for x in bad_tokens if x not in special_tokens]
-                can_be_removed2 = [x for x in can_be_removed1 if x in tokenizer._added_tokens_encoder.keys()]
-
-                # Check of extra tokens can in fact we removed!
-
-                if  (len(can_be_removed1) == len(bad_tokens)) and \
-                    (len(can_be_removed2) == len(bad_tokens)):
-                    # Yes it can be fixed!
-                    for bad_token in can_be_removed1:
-                        remove_id = tokenizer._added_tokens_encoder[bad_token]
-                        del tokenizer._added_tokens_decoder[remove_id]
-                        del tokenizer._added_tokens_encoder[bad_token]
-                    pass
-                    # Confirm 1 more time!
-                    if max(tokenizer.added_tokens_decoder.keys()) < max_embedding_size:
-                        logger.warning_once(
-                            f"Unsloth loaded a broken tokenizer `{model_name}`, but managed to repair it!\n"\
-                            f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"\
-                            "We removed these bad tokens. If you think this is incorrect, fix your tokenizer first."
-                        )
-                        return tokenizer
-                    pass
-                pass
-
-                # :( Failure
-                raise RuntimeError(
-                    f"Unsloth tried to load `{model_name}`, but cannot succeed.\n"\
-                    f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"\
-                    f"Fix your tokenizer since it'll perform out of bounds memory accesses."
-                )
-            pass
-            
-            # Try slow tokenizer which can fix things!
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                model_max_length = model_max_length,
-                padding_side = padding_side,
-                token = token,
-                use_fast = False,
-            )
-            return check_tokenizer(
-                model = model,
-                tokenizer = tokenizer,
-                model_name = model_name,
-                model_max_length = model_max_length,
-                padding_side = padding_side,
-                token = token,
-                _reload = False,
-            )
-            break
-        pass
-    pass
-    return tokenizer
 pass
 
 

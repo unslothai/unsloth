@@ -26,7 +26,7 @@ from transformers.modeling_attn_mask_utils import (
 from ..kernels import *
 from ._utils import *
 from ._utils import __version__
-from ..tokenizer_utils import load_correct_tokenizer
+from ..tokenizer_utils import *
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func
 

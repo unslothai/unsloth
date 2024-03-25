@@ -20,11 +20,14 @@ __all__ = [
 from transformers import StoppingCriteria, StoppingCriteriaList
 from torch import LongTensor, FloatTensor
 from transformers.models.llama.modeling_llama import logger
-from .models._utils import patch_tokenizer
 from .save import patch_saving_functions
 import os
 import shutil
-from .tokenizer_utils import load_correct_tokenizer, fix_sentencepiece_tokenizer
+from .tokenizer_utils import (
+    load_correct_tokenizer,
+    fix_sentencepiece_tokenizer,
+    patch_tokenizer,
+)
 
 CHAT_TEMPLATES = {}
 
