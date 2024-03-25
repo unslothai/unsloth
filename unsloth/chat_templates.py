@@ -349,11 +349,13 @@ def get_chat_template(
             # This is a HACK!
             # Idea from https://huggingface.co/cognitivecomputations/dolphin-2.6-mistral-7b-dpo-laser
             string_vocab = tokenizer._tokenizer.to_str()
-            string_vocab = string_vocab.replace(tokenizer.eos_token, stop_word)
+            old_eos_token = tokenizer.eos_token
+            string_vocab = string_vocab.replace(old_eos_token, stop_word)
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
-            tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+            new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
 
             # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
+            token_mapping = { old_eos_token : stop_word, }
             tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
         pass
 
