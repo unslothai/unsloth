@@ -22,7 +22,6 @@ __all__ = [
     "load_correct_tokenizer",
     "fix_sentencepiece_tokenizer",
     "check_tokenizer",
-    "patch_tokenizer",
 ]
 
 
@@ -286,30 +285,6 @@ def load_correct_tokenizer(
 pass
 
 
-def patch_tokenizer(model, tokenizer):
-    if model is not None:
-        model.config.update({"unsloth_version" : __version__})
-    if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
-        # Fixes https://github.com/unslothai/unsloth/issues/5
-        if hasattr(tokenizer, "unk_token"):
-            tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token})
-            tokenizer.pad_token = tokenizer.unk_token
-        else:
-            name = model.config._name_or_path if model is not None else "Model"
-            logger.warning_one(
-                f"{name} does not have a padding or unknown token!\n"\
-                f"Will use the EOS token of id {tokenizer.eos_token_id} as padding."
-            )
-            assert(hasattr(tokenizer, "eos_token"))
-            tokenizer.add_special_tokens({"pad_token" : tokenizer.eos_token})
-            tokenizer.pad_token = tokenizer.eos_token
-        if model is not None:
-            config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
-    pass
-    return model, tokenizer
-pass
-
-
 def check_tokenizer(
     model,
     tokenizer,
@@ -377,7 +352,7 @@ def check_tokenizer(
                     pass
 
                     # Recheck!
-                    can_be_removed = len(try_removal) == len(bad_tokens)
+                    can_be_removed = (len(try_removal) == len(bad_tokens))
                     if can_be_removed: remove_generic = True
                     can_be_removed1 = bad_tokens
                 pass
@@ -389,7 +364,7 @@ def check_tokenizer(
                         del tokenizer._added_tokens_decoder[remove_id]
                         del tokenizer._added_tokens_encoder[bad_token]
 
-                        if remove_generic and try_removal[j] == bad_token:
+                        if remove_generic and (try_removal[j] == bad_token):
                             # Remove sep token for example
                             setattr(tokenizer, try_mapper[j], None)
                             setattr(tokenizer, try_mapper[j] + "_id", None)

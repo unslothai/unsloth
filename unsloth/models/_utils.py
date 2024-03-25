@@ -66,6 +66,7 @@ __all__ = [
     "__version__",
     "HAS_FLASH_ATTENTION",
     "platform_system",
+    "patch_tokenizer",
 ]
 
 
@@ -110,6 +111,30 @@ def prepare_model_for_kbit_training(
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     return model
+pass
+
+
+def patch_tokenizer(model, tokenizer):
+    if model is not None:
+        model.config.update({"unsloth_version" : __version__})
+    if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
+        # Fixes https://github.com/unslothai/unsloth/issues/5
+        if hasattr(tokenizer, "unk_token"):
+            tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token})
+            tokenizer.pad_token = tokenizer.unk_token
+        else:
+            name = model.config._name_or_path if model is not None else "Model"
+            logger.warning_one(
+                f"{name} does not have a padding or unknown token!\n"\
+                f"Will use the EOS token of id {tokenizer.eos_token_id} as padding."
+            )
+            assert(hasattr(tokenizer, "eos_token"))
+            tokenizer.add_special_tokens({"pad_token" : tokenizer.eos_token})
+            tokenizer.pad_token = tokenizer.eos_token
+        if model is not None:
+            config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
+    pass
+    return model, tokenizer
 pass
 
 
