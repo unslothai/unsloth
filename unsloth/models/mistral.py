@@ -362,7 +362,7 @@ class FastMistralModel(FastLlamaModel):
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer = load_correct_tokenizer(
             tokenizer_name,
             model_max_length  = max_position_embeddings,
             padding_side      = "right",
