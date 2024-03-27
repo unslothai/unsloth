@@ -76,6 +76,7 @@ class FastLanguageModel(FastLlamaModel):
         fix_tokenizer  = True,
         trust_remote_code = False,
         use_gradient_checkpointing = True,
+        new_token_num = 0,
         *args, **kwargs,
     ):
         old_model_name = model_name
@@ -144,6 +145,10 @@ class FastLanguageModel(FastLlamaModel):
             *args, **kwargs,
         )
 
+        # Add support for newly added tokens.
+        model.config.vocab_size = model.config.vocab_size + new_token_num
+        model.resize_token_embeddings(model.config.vocab_size)
+        
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(["unsloth",])
