@@ -26,6 +26,7 @@ from transformers.modeling_attn_mask_utils import (
 from ..kernels import *
 from ._utils import *
 from ._utils import __version__
+from ..tokenizer_utils import *
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func
 
@@ -1014,8 +1015,8 @@ class FastLlamaModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name,
+        tokenizer = load_correct_tokenizer(
+            tokenizer_name    = tokenizer_name,
             model_max_length  = max_position_embeddings,
             padding_side      = "right",
             token             = token,
