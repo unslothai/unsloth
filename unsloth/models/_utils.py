@@ -27,6 +27,8 @@ from platform import system as platform_system
 platform_system = platform_system()
 import math
 import numpy as np
+import os
+import psutil
 
 __version__ = "2024.3"
 
@@ -67,6 +69,7 @@ __all__ = [
     "HAS_FLASH_ATTENTION",
     "platform_system",
     "patch_tokenizer",
+    "get_statistics",
 ]
 
 
@@ -166,6 +169,42 @@ except:
         "Unsloth unsuccessfully patched LoraLayer.update_layer. Please file a bug report.\n"\
         "Luckily, your training run will still work in the meantime!"
     )
+pass
+
+
+def get_statistics():
+    # We log some basic stats about which environment is being used.
+    # We simply download a README.md file from HF - all data is made public.
+    # This is simply so we can check if some envs are broken or not.
+    try:
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
+        n_cpus = psutil.cpu_count(logical = False)
+
+        keynames = "\n" + "\n".join(os.environ.keys())
+        statistics = None
+        if   "\nCOLAB_"  in keynames and n_cpus == 1: statistics = "colab"
+        elif "\nCOLAB_"  in keynames: statistics = "colabpro"
+        elif "\nKAGGLE_" in keynames: statistics = "kaggle"
+        elif "\nRUNPOD_" in keynames: statistics = "runpod"
+        elif "\nAWS_"    in keynames: statistics = "aws"
+        elif "\nAZURE_"  in keynames: statistics = "azure"
+        elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
+        elif "\nINVOCATION_ID" in keynames: statistics = "lambda"
+
+        if statistics is not None:
+            disabled = False
+            if not are_progress_bars_disabled():
+                disable_progress_bars()
+                disabled = True
+            pass
+            hf_hub_download(f"unslothai/statistics-{statistics}", "README.md", force_download = True)
+            if disabled:
+                enable_progress_bars()
+            pass
+        pass
+    except:
+        pass
 pass
 
 
