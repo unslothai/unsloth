@@ -964,6 +964,7 @@ class FastLlamaModel:
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
         model_patcher.pre_patch()
+        get_statistics()
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
