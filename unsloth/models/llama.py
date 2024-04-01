@@ -74,7 +74,7 @@ pass
 
 
 from math import sqrt as math_sqrt
-KV_CACHE_INCREMENT = 128 # KV Cache update size
+KV_CACHE_INCREMENT = 256 # KV Cache update size
 
 def LlamaAttention_fast_forward_inference(
     self,
@@ -82,6 +82,7 @@ def LlamaAttention_fast_forward_inference(
     past_key_value: Optional[Tuple[torch.Tensor]],
     position_ids,
     do_prefill = False,
+    attention_mask = None,
 ):
     """
         https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
@@ -200,6 +201,7 @@ def LlamaAttention_fast_forward_inference(
     # Attention
     A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
     A *= self.scalar
+    if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
     A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
@@ -387,6 +389,7 @@ def LlamaDecoderLayer_fast_forward(
             past_key_value,
             position_ids,
             do_prefill = do_prefill,
+            attention_mask = attention_mask,
         )
         hidden_states += residual
 
@@ -418,13 +421,8 @@ def LlamaDecoderLayer_fast_forward(
     pass
 
     outputs = (hidden_states,)
-
-    if output_attentions:
-        outputs += (self_attn_weights,)
-
-    if use_cache:
-        outputs += (present_key_value,)
-
+    if output_attentions: outputs += (self_attn_weights,)
+    if use_cache: outputs += (present_key_value,)
     return outputs
 pass
 
@@ -670,12 +668,30 @@ def LlamaModel_fast_forward_inference(
     self,
     input_ids,
     past_key_values,
+    attention_mask = None,
 ):
     # Fix out of bounds tokenization
     input_ids = input_ids[:,:self.max_seq_length]
 
     hidden_states = self.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
+    bsz, q_len, hd = hidden_states.shape
+    seq_len = past_key_values[0][0].shape[-2]
+    kv_seq_len = seq_len + 1
+
+    # Must use attention mask for batched processing
+    sliding_window = getattr(self.config, "sliding_window", None)
+    if (sliding_window is not None and kv_seq_len > sliding_window) or bsz != 1:
+        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+            sliding_window = sliding_window,
+        )
+    else:
+        attention_mask = None
+    pass
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.layers):
@@ -686,7 +702,9 @@ def LlamaModel_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states,
             past_key_values[idx],
-            None,
+            position_ids = None,
+            do_prefill = False,
+            attention_mask = attention_mask,
         )
         hidden_states += residual
 
@@ -731,6 +749,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 self.model,
                 input_ids,
                 past_key_values,
+                attention_mask = attention_mask,
             )
         else:
             causal_mask = xformers.attn_bias.LowerTriangularMask()

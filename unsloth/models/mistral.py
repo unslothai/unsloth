@@ -206,6 +206,7 @@ def MistralForCausalLM_fast_forward(
             self.model,
             input_ids,
             past_key_values,
+            attention_mask = attention_mask,
         )
     else:
         outputs = self.model(
