@@ -377,7 +377,7 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    if past_key_value is not None:
+    if use_cache: #past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
 
         # Self Attention
@@ -610,9 +610,8 @@ def LlamaModel_fast_forward(
     pass
 
     for idx, decoder_layer in enumerate(self.layers):
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
 
+        if output_hidden_states: all_hidden_states += (hidden_states,)
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         if self.gradient_checkpointing and self.training:
@@ -644,22 +643,15 @@ def LlamaModel_fast_forward(
                 use_cache=use_cache,
                 padding_mask=padding_mask,
             )
+        pass
 
         hidden_states = layer_outputs[0]
-
-        if use_cache:
-            next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
-
-        if output_attentions:
-            all_self_attns += (layer_outputs[1],)
+        if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
+        if output_attentions: all_self_attns += (layer_outputs[1],)
     pass
-    
     hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
 
-    # add hidden states from the last decoder layer
-    if output_hidden_states:
-        all_hidden_states += (hidden_states,)
-
+    if output_hidden_states: all_hidden_states += (hidden_states,)
     next_cache = next_decoder_cache if use_cache else None
     if not return_dict:
         return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
