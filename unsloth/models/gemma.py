@@ -45,10 +45,9 @@ def fast_geglu_inference(self, X):
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     mlp_size = self.config.intermediate_size
-    temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
 
-    gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
-    up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
+    gate = fast_linear_forward(self.gate_proj, X)
+    up   = fast_linear_forward(self.  up_proj, X)
     gate = torch_nn_functional_gelu(gate, approximate = "tanh")
     gate *= up
 
@@ -83,20 +82,30 @@ def GemmaDecoderLayer_fast_forward(
     padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ):
-    if past_key_value is not None:
+    if use_cache: #past_key_value is not None:
         do_prefill = not hasattr(self.self_attn, "paged_attention")
         out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda")
 
         # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(self.input_layernorm, hidden_states, out_weight)
-        hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
-            self.self_attn,
-            hidden_states,
-            past_key_value,
-            position_ids,
-            do_prefill = do_prefill,
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            causal_mask=causal_mask,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            padding_mask=padding_mask,
         )
+        # hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
+        #     self.self_attn,
+        #     hidden_states,
+        #     past_key_value,
+        #     position_ids,
+        #     do_prefill = do_prefill,
+        # )
         hidden_states += residual
 
         # Fully Connected
@@ -129,13 +138,8 @@ def GemmaDecoderLayer_fast_forward(
     pass
 
     outputs = (hidden_states,)
-
-    if output_attentions:
-        outputs += (self_attn_weights,)
-
-    if use_cache:
-        outputs += (present_key_value,)
-
+    if output_attentions: outputs += (self_attn_weights,)
+    if use_cache: outputs += (present_key_value,)
     return outputs
 pass
 
