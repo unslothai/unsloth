@@ -168,12 +168,12 @@ def LlamaAttention_fast_forward_inference(
     Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    # Kn = torch.cat([K1, Kn], dim = 2)
-    # Vn = torch.cat([V1, Vn], dim = 2)
-    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
-    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
-    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
-    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+    Kn = torch.cat([K1, Kn], dim = 2)
+    Vn = torch.cat([V1, Vn], dim = 2)
+    # self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    # self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    # Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    # Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
@@ -677,11 +677,10 @@ def LlamaModel_fast_forward_inference(
     hidden_states = hidden_states.to(self.config.torch_dtype)
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
-    kv_seq_len = seq_len + 1
 
     # Must use attention mask for batched processing
     sliding_window = getattr(self.config, "sliding_window", None)
-    if (sliding_window is not None and kv_seq_len > sliding_window) or bsz != 1:
+    if (sliding_window is not None and seq_len >= sliding_window) or (bsz != 1):
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
             (bsz, q_len),
