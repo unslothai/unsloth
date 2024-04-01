@@ -217,10 +217,9 @@ def fast_swiglu_inference(self, X):
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     mlp_size = self.config.intermediate_size
-    temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
 
-    gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
-    up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
+    gate = fast_linear_forward(self.gate_proj, X)
+    up   = fast_linear_forward(self.  up_proj, X)
     gate = torch_nn_functional_silu(gate, inplace = True)
     gate *= up
 
