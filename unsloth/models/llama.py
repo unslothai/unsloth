@@ -212,7 +212,7 @@ def LlamaAttention_fast_forward_inference(
     A *= self.scalar
     if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    A = torch.matmul(A, Vnn, out = Qn)
+    A = torch.matmul(A, Vnn)#, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
     A = fast_linear_forward(self.o_proj, A)#, out = self.temp_QA[1][:,:,:self.hidden_size])
