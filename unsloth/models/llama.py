@@ -234,7 +234,7 @@ def fast_swiglu_inference(self, X):
     gate *= up
 
     # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
+    down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
     return down
 pass
 
@@ -422,7 +422,9 @@ def LlamaDecoderLayer_fast_forward(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
+        print(hidden_states.shape, residual.shape)
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
+        print(hidden_states.shape, residual.shape)
         hidden_states += residual
     else:
         residual = hidden_states
