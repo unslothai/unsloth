@@ -182,8 +182,8 @@ pass
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
-
     bsz, q_len, in_dim = X.shape
+    if q_len != 1: return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
 
     if W_quant is None:
         out = torch.matmul(X, W.t(), out = out)
@@ -203,7 +203,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
             lora_A._fast_lora = lora_A.to(dtype)
             lora_B._fast_lora = lora_B.to(dtype)
         pass
-
+        
         if bsz == 1:
             out = out.view(out_dim)
             temp_lora = torch.mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
@@ -217,4 +217,29 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     pass
 
     return out
+pass
+
+
+def matmul_lora(X, W, W_quant, A, B, s, out = None):
+    dtype = X.dtype
+    W = fast_dequantize(W.t(), W_quant)
+
+    if X.dim() == 3:
+        batch, seq_len, d = X.shape
+        X = X.view(-1, X.shape[-1])
+        reshape = True
+    else:
+        reshape = False
+    pass
+
+    out = torch.matmul(X, W, out = out)
+    if W_quant is not None: del W
+
+    if A is not None:
+        # LoRA is enabled
+        A, B = A.t(), B.t()
+        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+    pass
+    
+    return out.view(batch, seq_len, -1) if reshape else out
 pass
