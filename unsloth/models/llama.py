@@ -709,6 +709,8 @@ def LlamaModel_fast_forward_inference(
             seq_len,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
+    else:
+        attention_mask = None
     pass
 
     next_decoder_cache = []
