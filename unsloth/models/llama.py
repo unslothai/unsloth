@@ -148,26 +148,26 @@ def LlamaAttention_fast_forward_inference(
         self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
     pass
 
-    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
+    Qn = fast_linear_forward(self.q_proj, Xn)#, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn)#, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn)#, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos = self.rotary_emb.cos_cached[seq_len]
-    sin = self.rotary_emb.sin_cached[seq_len]
-    h = self.half_head_dim
+    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    # cos = self.rotary_emb.cos_cached[seq_len]
+    # sin = self.rotary_emb.sin_cached[seq_len]
+    # h = self.half_head_dim
 
-    RH_Q = self.RH_Q
-    RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
-    Qn *= cos; Qn.addcmul_(RH_Q, sin);
+    # RH_Q = self.RH_Q
+    # RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
+    # Qn *= cos; Qn.addcmul_(RH_Q, sin);
 
-    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
-    RH_K[:,:,:,:h] = Kn[:,:,:,h:]; RH_K[:,:,:,h:] = Kn[:,:,:,:h]; torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h]);
-    Kn *= cos; Kn.addcmul_(RH_K, sin);
+    # RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    # RH_K[:,:,:,:h] = Kn[:,:,:,h:]; RH_K[:,:,:,h:] = Kn[:,:,:,:h]; torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h]);
+    # Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
     Kn = torch.cat([K1, Kn], dim = 2)
