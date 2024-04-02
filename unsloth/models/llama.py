@@ -74,7 +74,7 @@ pass
 
 
 from math import sqrt as math_sqrt
-KV_CACHE_INCREMENT = 128 # KV Cache update size
+KV_CACHE_INCREMENT = 256 # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
 
 def LlamaAttention_fast_forward_inference(
@@ -148,40 +148,40 @@ def LlamaAttention_fast_forward_inference(
         self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
     pass
 
-    Qn = fast_linear_forward(self.q_proj, Xn)#, out = self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn)#, out = self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn)#, out = self.temp_KV[1])
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    # cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
-    # sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
-    # h = self.half_head_dim
+    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
+    sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
+    h = self.half_head_dim
 
-    # RH_Q = self.RH_Q
-    # RH_Q[:,:,:,:h] = Qn[:,:,:,h:]
-    # RH_Q[:,:,:,h:] = Qn[:,:,:,:h]
-    # torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
-    # Qn *= cos
-    # Qn.addcmul_(RH_Q, sin)
+    RH_Q = self.RH_Q
+    RH_Q[:,:,:,:h] = Qn[:,:,:,h:]
+    RH_Q[:,:,:,h:] = Qn[:,:,:,:h]
+    torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
+    Qn *= cos
+    Qn.addcmul_(RH_Q, sin)
 
-    # RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
-    # RH_K[:,:,:,:h] = Kn[:,:,:,h:]
-    # RH_K[:,:,:,h:] = Kn[:,:,:,:h]
-    # torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
-    # Kn *= cos
-    # Kn.addcmul_(RH_K, sin)
+    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    RH_K[:,:,:,:h] = Kn[:,:,:,h:]
+    RH_K[:,:,:,h:] = Kn[:,:,:,:h]
+    torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
+    Kn *= cos
+    Kn.addcmul_(RH_K, sin)
     
     # New KV cache
-    Kn = torch.cat([K1, Kn], dim = 2)
-    Vn = torch.cat([V1, Vn], dim = 2)
-    # self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
-    # self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
-    # Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
-    # Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+    # Kn = torch.cat([K1, Kn], dim = 2)
+    # Vn = torch.cat([V1, Vn], dim = 2)
+    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
@@ -207,15 +207,15 @@ def LlamaAttention_fast_forward_inference(
     # pass
 
     # Attention
-    A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
-    # A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
-    # A *= self.scalar
-    # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
-    # A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    # A = torch.matmul(A, Vnn, out = Qn)
+    # A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
+    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
+    A *= self.scalar
+    if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
+    A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
+    A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A)#, out = self.temp_QA[1][:,:,:self.hidden_size])
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
     return A, (Kn, Vn)
 pass
 
