@@ -155,33 +155,33 @@ def LlamaAttention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
-    sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
-    h = self.half_head_dim
+    cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    # cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
+    # sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
+    # h = self.half_head_dim
 
-    RH_Q = self.RH_Q
-    RH_Q[:,:,:,:h] = Qn[:,:,:,h:]
-    RH_Q[:,:,:,h:] = Qn[:,:,:,:h]
-    torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
-    Qn *= cos
-    Qn.addcmul_(RH_Q, sin)
+    # RH_Q = self.RH_Q
+    # RH_Q[:,:,:,:h] = Qn[:,:,:,h:]
+    # RH_Q[:,:,:,h:] = Qn[:,:,:,:h]
+    # torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
+    # Qn *= cos
+    # Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
-    RH_K[:,:,:,:h] = Kn[:,:,:,h:]
-    RH_K[:,:,:,h:] = Kn[:,:,:,:h]
-    torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
-    Kn *= cos
-    Kn.addcmul_(RH_K, sin)
+    # RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
+    # RH_K[:,:,:,:h] = Kn[:,:,:,h:]
+    # RH_K[:,:,:,h:] = Kn[:,:,:,:h]
+    # torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
+    # Kn *= cos
+    # Kn.addcmul_(RH_K, sin)
     
     # New KV cache
-    # Kn = torch.cat([K1, Kn], dim = 2)
-    # Vn = torch.cat([V1, Vn], dim = 2)
-    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
-    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
-    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
-    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+    Kn = torch.cat([K1, Kn], dim = 2)
+    Vn = torch.cat([V1, Vn], dim = 2)
+    # self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    # self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    # Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    # Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
