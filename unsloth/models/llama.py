@@ -696,7 +696,13 @@ def LlamaModel_fast_forward_inference(
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
-        attention_mask = _prepare_4d_causal_attention_mask(attention_mask, (bsz, q_len), hidden_states, seq_len,)
+        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+            sliding_window = getattr(self.config, "sliding_window", None),
+        )
     pass
 
     next_decoder_cache = []
