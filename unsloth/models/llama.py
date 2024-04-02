@@ -74,7 +74,8 @@ pass
 
 
 from math import sqrt as math_sqrt
-KV_CACHE_INCREMENT = 256 # KV Cache update size
+KV_CACHE_INCREMENT = 128 # KV Cache update size
+torch_nn_functional_softmax = torch.nn.functional.softmax
 
 def LlamaAttention_fast_forward_inference(
     self,
@@ -139,6 +140,7 @@ def LlamaAttention_fast_forward_inference(
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
+        self.half_head_dim = head_dim // 2
     elif kv_seq_len >= self.paged_attention.shape[0]:
         self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
         self.paged_attention_K = self.paged_attention[:,0]
@@ -157,7 +159,7 @@ def LlamaAttention_fast_forward_inference(
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
     cos = self.rotary_emb.cos_cached[seq_len]
     sin = self.rotary_emb.sin_cached[seq_len]
-    h = head_dim // 2
+    h = self.half_head_dim
 
     RH_Q = self.RH_Q
     RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
@@ -168,12 +170,12 @@ def LlamaAttention_fast_forward_inference(
     Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    Kn = torch.cat([K1, Kn], dim = 2)
-    Vn = torch.cat([V1, Vn], dim = 2)
-    # self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
-    # self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
-    # Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
-    # Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+    # Kn = torch.cat([K1, Kn], dim = 2)
+    # Vn = torch.cat([V1, Vn], dim = 2)
+    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
@@ -202,7 +204,7 @@ def LlamaAttention_fast_forward_inference(
     A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
     A *= self.scalar
     if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
-    A[:] = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
+    A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
@@ -217,10 +219,11 @@ def fast_swiglu_inference(self, X):
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     mlp_size = self.config.intermediate_size
+    temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda")
 
-    gate = fast_linear_forward(self.gate_proj, X)
-    up   = fast_linear_forward(self.  up_proj, X)
-    gate = torch_nn_functional_silu(gate, inplace = True)
+    gate = fast_linear_forward(self.gate_proj, X, out = temp[0])
+    up   = fast_linear_forward(self.  up_proj, X, out = temp[1])
+    gate = torch.nn.functional.silu(gate, inplace = True)
     gate *= up
 
     # X = self.down_proj(gate)
@@ -238,6 +241,24 @@ def fast_rms_layernorm_inference(self, X):
     X = XX.to(old_dtype) # Must preserve due to residual
     X *= self.weight
     return X
+pass
+
+
+def fast_rms_layernorm_inference_gemma(self, X, out_weight = None):
+    XX = X.to(torch.float32)
+    variance = XX.square().mean(-1, keepdim = True)
+    variance += self.variance_epsilon
+    XX *= variance.rsqrt_()
+
+    if out_weight is None:
+        out_weight = self.weight + 1.0
+    else:
+        out_weight[:] = self.weight
+        out_weight += 1.0
+    pass
+
+    XX *= out_weight
+    return XX.to(X.dtype)
 pass
 
 
@@ -376,10 +397,7 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    if use_cache: #past_key_value is not None:
-        do_prefill = not hasattr(self.self_attn, "paged_attention")
-
-        # Self Attention
+    if use_cache:
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -392,14 +410,6 @@ def LlamaDecoderLayer_fast_forward(
             use_cache=use_cache,
             padding_mask=padding_mask,
         )
-        # hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
-        #     self.self_attn,
-        #     hidden_states,
-        #     past_key_value,
-        #     position_ids,
-        #     do_prefill = do_prefill,
-        #     attention_mask = attention_mask,
-        # )
         hidden_states += residual
 
         # Fully Connected
@@ -648,10 +658,18 @@ def LlamaModel_fast_forward(
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
         if output_attentions: all_self_attns += (layer_outputs[1],)
     pass
-    hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
+
+    # Final layernorm
+    if use_cache:
+        hidden_states = (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
+            (self.norm, hidden_states)
+    else:
+        hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
+    pass
 
     if output_hidden_states: all_hidden_states += (hidden_states,)
     next_cache = next_decoder_cache if use_cache else None
+
     if not return_dict:
         return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
     return BaseModelOutputWithPast(
@@ -664,51 +682,36 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-# @torch.inference_mode
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
     past_key_values,
+    position_ids,
     attention_mask = None,
 ):
-    # Fix out of bounds tokenization
     input_ids = input_ids[:,:self.max_seq_length]
-
-    hidden_states = self.embed_tokens(input_ids)
+    hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
-
-    # Must use attention mask for batched processing
-    sliding_window = getattr(self.config, "sliding_window", None)
-    if (sliding_window is not None and seq_len >= sliding_window) or (bsz != 1):
-        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-            attention_mask,
-            (bsz, q_len),
-            hidden_states,
-            seq_len,
-            sliding_window = sliding_window,
-        )
-    else:
-        attention_mask = None
+    if bsz != 1:
+        attention_mask = _prepare_4d_causal_attention_mask(attention_mask, (bsz, q_len), hidden_states, seq_len,)
     pass
 
     next_decoder_cache = []
-    for idx, decoder_layer in enumerate(self.layers):
-        # Self Attention
+    for idx, decoder_layer in enumerate(self.model.layers):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
-            hidden_states,
-            past_key_values[idx],
-            position_ids = None,
-            do_prefill = False,
+            hidden_states = hidden_states,
+            past_key_value = past_key_values[idx],
+            position_ids = position_ids,
             attention_mask = attention_mask,
+            do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
         )
         hidden_states += residual
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
@@ -716,13 +719,13 @@ def LlamaModel_fast_forward_inference(
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference(self.norm, hidden_states)
+    hidden_states = fast_rms_layernorm_inference(self.model.norm, hidden_states)
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
-        past_key_values   = next_decoder_cache,
-        hidden_states     = [],
-        attentions        = [],
+        past_key_values = next_decoder_cache,
+        hidden_states = [],
+        attentions = [],
     )
 pass
 
@@ -744,11 +747,12 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-        if False:#past_key_values is not None and hasattr(self.model.layers[0].self_attn, "paged_attention"):
+        if past_key_values is not None and hasattr(self.model.layers[0].self_attn, "paged_attention"):
             outputs = fast_forward_inference(
                 self.model,
                 input_ids,
                 past_key_values,
+                position_ids = position_ids,
                 attention_mask = attention_mask,
             )
         else:
