@@ -204,7 +204,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
             lora_B._fast_lora = lora_B.to(dtype)
         pass
 
-        if bsz == 1:
+        if bsz == 1 and q_len == 1:
             out = out.view(out_dim)
             temp_lora = torch.mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
             out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
