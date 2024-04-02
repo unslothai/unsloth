@@ -118,7 +118,7 @@ def fast_gemv(X, W, quant_state, out = None):
     if quant_state is None: return torch.matmul(X, W, out = out)
     # For fast X @ W where seq_len == 1
     # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
-    bsz, q_len, hd = X.shape
+    _, q_len, hd = X.shape
     # assert(q_len == 1)
 
     if type(quant_state) is not list:
@@ -142,10 +142,10 @@ def fast_gemv(X, W, quant_state, out = None):
     bout = shape[0]
 
     if out is None:
-        out = torch.empty((bsz, 1, bout,), dtype = dtype, device = "cuda")
-    else:
-        assert(out.shape == (bsz, 1, bout,))
-    pass
+        out = torch.empty((1, 1, bout,), dtype = dtype, device = "cuda")
+    # else:
+    #     assert(out.shape == (1, 1, bout,))
+    # pass
 
     n = 1
     m = shape[0]
@@ -171,15 +171,9 @@ def fast_gemv(X, W, quant_state, out = None):
     fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
         cgemm_4bit_inference_naive_bf16
 
-    ptr_W      = get_ptr(W)
-    ptr_absmax = get_ptr(absmax)
-    ptr_stats  = get_ptr(stats)
-    blocksize  = ctypes.c_int32(blocksize)
-
-    for row in range(bsz):
-        fx(m, n, k, get_ptr(X[row]), ptr_W, ptr_absmax, ptr_stats, get_ptr(out[row]),
-           lda, ldb, ldc, blocksize)
-    pass
+    blocksize = ctypes.c_int32(blocksize)
+    fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
+       lda, ldb, ldc, blocksize)
 
     return out
 pass
@@ -189,12 +183,11 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
 
-    bsz, _, in_dim = X.shape
+    bsz, q_len, in_dim = X.shape
 
     if W_quant is None:
         out = torch.matmul(X, W.t(), out = out)
-    elif bsz <= 2:
-        # Only batches of 2 are faster with Gemv
+    elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant)
