@@ -234,7 +234,7 @@ def fast_swiglu_inference(self, X):
     gate *= up
 
     # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
+    down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
     return down
 pass
 
