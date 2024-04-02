@@ -224,11 +224,11 @@ def fast_swiglu_inference(self, X):
 
     gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
     up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
-    gate = torch.nn.functional.silu(gate, inplace = True)
+    gate = torch_nn_functional_silu(gate, inplace = True)
     gate *= up
 
     # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
+    down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
     return down
 pass
 
@@ -749,6 +749,7 @@ def CausalLM_fast_forward(fast_forward_inference):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         if past_key_values is not None and hasattr(self.model.layers[0].self_attn, "paged_attention"):
+            print(True)
             outputs = fast_forward_inference(
                 self.model,
                 input_ids,
