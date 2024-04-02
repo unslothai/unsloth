@@ -148,9 +148,9 @@ def LlamaAttention_fast_forward_inference(
         self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
     pass
 
-    Qn = fast_linear_forward(self.q_proj, Xn)#, out = self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn)#, out = self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn)#, out = self.temp_KV[1])
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -208,14 +208,14 @@ def LlamaAttention_fast_forward_inference(
 
     # Attention
     # A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
-    A = torch.matmul(Qn, Knn.transpose(2, 3))#, out = self.attention[:,:,:,:cached_len])
+    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
     A *= self.scalar
     if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    A = torch.matmul(A, Vnn)#, out = Qn)
+    A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A)#, out = self.temp_QA[1][:,:,:self.hidden_size])
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
     return A, (Kn, Vn)
 pass
 
@@ -234,7 +234,7 @@ def fast_swiglu_inference(self, X):
     gate *= up
 
     # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate)#, out = up[:,:,:hd])
+    down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
     return down
 pass
 
@@ -689,7 +689,6 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
-@torch.compile(dynamic = True, mode = "reduce-overhead")
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,
