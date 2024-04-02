@@ -193,7 +193,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     if W_quant is None:
         out = torch.matmul(X, W.t(), out = out)
-    elif bsz <= 2:
+    elif bsz == 1:
         # Only batches of 2 are faster with Gemv
         out = fast_gemv(X, W, W_quant, out = out)
     else:
