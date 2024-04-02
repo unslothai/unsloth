@@ -689,6 +689,7 @@ pass
 
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
+@torch.compile(dynamic = True, mode = "reduce-overhead")
 def LlamaModel_fast_forward_inference(
     self,
     input_ids,

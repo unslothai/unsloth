@@ -63,6 +63,7 @@ def get_lora_parameters(proj):
 pass
 
 
+@torch._disable_dynamo
 def fast_dequantize(W, quant_state = None, out = None):
     if quant_state is None: return W
     if type(quant_state) is not list:
@@ -114,6 +115,7 @@ def fast_dequantize(W, quant_state = None, out = None):
 pass
 
 
+@torch._disable_dynamo
 def fast_gemv(X, W, quant_state, out = None):
     if quant_state is None: return torch.matmul(X, W, out = out)
     # For fast X @ W where seq_len == 1
