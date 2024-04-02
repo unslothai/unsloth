@@ -170,12 +170,12 @@ def LlamaAttention_fast_forward_inference(
     Kn *= cos; Kn.addcmul_(RH_K, sin);
     
     # New KV cache
-    # Kn = torch.cat([K1, Kn], dim = 2)
-    # Vn = torch.cat([V1, Vn], dim = 2)
-    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
-    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
-    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
-    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+    Kn = torch.cat([K1, Kn], dim = 2)
+    Vn = torch.cat([V1, Vn], dim = 2)
+    # self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    # self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    # Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    # Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
@@ -201,14 +201,14 @@ def LlamaAttention_fast_forward_inference(
     # pass
 
     # Attention
-    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
+    A = torch.matmul(Qn, Knn.transpose(2, 3))#, out = self.attention[:,:,:,:cached_len])
     A *= self.scalar
     if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
     A = torch.matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
+    A = fast_linear_forward(self.o_proj, A)#, out = self.temp_QA[1][:,:,:self.hidden_size])
     return A, (Kn, Vn)
 pass
 
