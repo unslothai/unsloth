@@ -750,7 +750,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         if past_key_values is not None:
             outputs = fast_forward_inference(
-                self.model,
+                self,
                 input_ids,
                 past_key_values,
                 position_ids = position_ids,

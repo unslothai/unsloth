@@ -202,7 +202,7 @@ def MistralForCausalLM_fast_forward(
 
     if past_key_values is not None:
         outputs = LlamaModel_fast_forward_inference(
-            self.model,
+            self,
             input_ids,
             past_key_values,
             position_ids = position_ids,
