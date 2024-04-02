@@ -422,9 +422,7 @@ def LlamaDecoderLayer_fast_forward(
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
-        print(hidden_states.shape, residual.shape)
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
-        print(hidden_states.shape, residual.shape)
         hidden_states += residual
     else:
         residual = hidden_states
