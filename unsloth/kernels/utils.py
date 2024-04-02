@@ -189,12 +189,11 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
 
-    bsz, _, in_dim = X.shape
+    bsz, q_len, in_dim = X.shape
 
     if W_quant is None:
         out = torch.matmul(X, W.t(), out = out)
-    elif bsz == 1:
-        # Only batches of 2 are faster with Gemv
+    elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant)
