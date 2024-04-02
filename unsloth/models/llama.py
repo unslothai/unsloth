@@ -161,10 +161,15 @@ def LlamaAttention_fast_forward_inference(
     cos = self.rotary_emb.cos_cached[position_ids]
     sin = self.rotary_emb.sin_cached[position_ids]
     h = self.half_head_dim
+    print(cos.shape)
+    print(Qn.shape)
 
     RH_Q = self.RH_Q
-    RH_Q[:,:,:,:h] = Qn[:,:,:,h:]; RH_Q[:,:,:,h:] = Qn[:,:,:,:h]; torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
-    Qn *= cos; Qn.addcmul_(RH_Q, sin);
+    RH_Q[:,:,:,:h] = Qn[:,:,:,h:];
+    RH_Q[:,:,:,h:] = Qn[:,:,:,:h];
+    torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h]);
+    Qn *= cos;
+    Qn.addcmul_(RH_Q, sin);
 
     RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
     RH_K[:,:,:,:h] = Kn[:,:,:,h:]; RH_K[:,:,:,h:] = Kn[:,:,:,:h]; torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h]);
