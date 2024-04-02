@@ -157,22 +157,22 @@ def LlamaAttention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos = self.rotary_emb.cos_cached[position_ids]
-    sin = self.rotary_emb.sin_cached[position_ids]
+    cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
+    sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
     RH_Q[:,:,:,:h] = Qn[:,:,:,h:]
     RH_Q[:,:,:,h:] = Qn[:,:,:,:h]
     torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
-    Qn *= cos.unsqueeze(1)
+    Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
     RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda")
     RH_K[:,:,:,:h] = Kn[:,:,:,h:]
     RH_K[:,:,:,h:] = Kn[:,:,:,:h]
     torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
-    Kn *= cos.unsqueeze(1)
+    Kn *= cos
     Kn.addcmul_(RH_K, sin)
     
     # New KV cache
