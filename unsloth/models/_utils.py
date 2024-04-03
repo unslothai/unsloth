@@ -70,12 +70,13 @@ __all__ = [
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
+    "Offloaded_Gradient_Checkpointer",
 ]
 
 
 def prepare_model_for_kbit_training(
     model                      : Any,
-    use_gradient_checkpointing : bool = True,
+    use_gradient_checkpointing : Optional = True,
     use_reentrant              : Optional[bool] = True,
 ) -> Any:
     """
@@ -101,8 +102,20 @@ def prepare_model_for_kbit_training(
             param.requires_grad_(False)
     pass
 
+    # Gradient checkpointing!
     if use_gradient_checkpointing:
         model.gradient_checkpointing_enable()
+
+    elif use_gradient_checkpointing == "offloaded":
+
+        # Saves VRAM!
+        original_model = model
+        while hasattr(original_model, "model"):
+            original_model._offloaded_gradient_checkpointing = True
+            original_model = original_model.model
+        pass
+        original_model._offloaded_gradient_checkpointing = True
+    pass
 
     # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
     if use_reentrant:
@@ -290,4 +303,42 @@ def prepare_n_gradient_checkpoints(
     boundaries = calculate_n_gradient_checkpoints(n_layers, layers_per_checkpoint)
     _model._gradient_checkpointing_boundaries    = boundaries
     _model._gradient_checkpointing_use_reentrant = use_reentrant
+pass
+
+
+class Offloaded_Gradient_Checkpointer(torch.autograd.Function):
+    """
+    Saves VRAM by smartly offloading to RAM.
+    Small hit to performance, since we mask the movement via non blocking calls.
+    [TODO] Load the backward pass earlier
+    """
+    @staticmethod
+    @torch.cuda.amp.custom_fwd
+    def forward(ctx, forward_function, hidden_states, *args):
+        ctx.forward_function = forward_function
+        saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
+        with torch.no_grad():
+            output = forward_function(hidden_states, *args)
+        # We currently only support gradients on 1 output tensor
+        if type(output) is not torch.Tensor:
+            output = output[0]
+        ctx.save_for_backward(saved_hidden_states)
+        ctx.args = args
+        return output
+    pass
+
+    @staticmethod
+    @torch.cuda.amp.custom_bwd
+    def backward(ctx, dY):
+        hidden_states, = ctx.saved_tensors
+        hidden_states = hidden_states.to("cuda", non_blocking = True).detach()
+        hidden_states.requires_grad = True
+        with torch.enable_grad():
+            output = ctx.forward_function(hidden_states, *ctx.args)
+        # We currently only support gradients on 1 output tensor
+        if type(output) is not torch.Tensor:
+            output = output[0]
+        torch.autograd.backward(output, dY)
+        return (None, hidden_states.grad,) + (None,)*len(ctx.args)
+    pass
 pass

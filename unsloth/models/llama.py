@@ -628,44 +628,26 @@ def LlamaModel_fast_forward(
         boundaries = None
     pass
 
+    # Check checkpointing method
+    gradient_checkpointing = False
+    offloaded_gradient_checkpointing = False
+
+    if (self.gradient_checkpointing and self.training and not use_cache):
+
+        gradient_checkpointing = True
+
+        if output_attentions is False and hasttar(self, "_offloaded_gradient_checkpointing"):
+            offloaded_gradient_checkpointing = True
+    pass
+
+    # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
 
         if output_hidden_states: all_hidden_states += (hidden_states,)
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
-        # if self.gradient_checkpointing and self.training:
-
-        #     def create_custom_forward(module):
-        #         def custom_forward(*inputs):
-        #             # None for past_key_value
-        #             return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
-
-        #         return custom_forward
-
-        #     layer_outputs = torch.utils.checkpoint.checkpoint(
-        #         create_custom_forward(decoder_layer),
-        #         hidden_states,
-        #         causal_mask,
-        #         attention_mask,
-        #         position_ids,
-        #         use_reentrant=True,
-        #         preserve_rng_state=False,
-        #     )
-        # else:
-        #     layer_outputs = decoder_layer(
-        #         hidden_states,
-        #         causal_mask=causal_mask,
-        #         attention_mask=attention_mask,
-        #         position_ids=position_ids,
-        #         past_key_value=past_key_value,
-        #         output_attentions=output_attentions,
-        #         use_cache=use_cache,
-        #         padding_mask=padding_mask,
-        #     )
-        # pass
-
-        if self.gradient_checkpointing and self.training:
-            hidden_states = Fast_Gradient_Checkpointer.apply(
+        if offloaded_gradient_checkpointing:
+            hidden_states = Offloaded_Gradient_Checkpointer.apply(
                 decoder_layer,
                 hidden_states,
                 causal_mask,
@@ -675,16 +657,26 @@ def LlamaModel_fast_forward(
                 output_attentions,
                 use_cache,
             )
-            # layer_outputs = self._gradient_checkpointing_func(
-            #     decoder_layer.__call__,
-            #     hidden_states,
-            #     causal_mask,
-            #     attention_mask,
-            #     position_ids,
-            #     past_key_values,
-            #     output_attentions,
-            #     use_cache,
-            # )
+
+        elif gradient_checkpointing:
+
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask)
+                return custom_forward
+            pass
+
+            layer_outputs = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(decoder_layer),
+                hidden_states,
+                causal_mask,
+                attention_mask,
+                position_ids,
+                use_reentrant = True,
+                preserve_rng_state = False,
+            )
+            hidden_states = layer_outputs[0]
+
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -696,8 +688,9 @@ def LlamaModel_fast_forward(
                 use_cache=use_cache,
                 padding_mask=padding_mask,
             )
+            hidden_states = layer_outputs[0]
+        pass
 
-        # hidden_states = layer_outputs[0]
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
         if output_attentions: all_self_attns += (layer_outputs[1],)
     pass
@@ -721,43 +714,6 @@ def LlamaModel_fast_forward(
         hidden_states=all_hidden_states,
         attentions=all_self_attns,
     )
-pass
-
-class Fast_Gradient_Checkpointer(torch.autograd.Function):
-    """
-    Allows CUDAGraphs to function by getting rid of fork_rng.
-    Also slightly faster.
-    Does not allow Dropout though.
-    """
-    @staticmethod
-    @torch.cuda.amp.custom_fwd
-    def forward(ctx, forward_function, hidden_states, *args):
-        ctx.forward_function = forward_function
-        saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
-        with torch.no_grad():
-            output = forward_function(hidden_states, *args)
-        # We currently only support gradients on 1 output tensor
-        if type(output) is not torch.Tensor:
-            output = output[0]
-        ctx.save_for_backward(saved_hidden_states)
-        ctx.args = args
-        return output
-    pass
-
-    @staticmethod
-    @torch.cuda.amp.custom_bwd
-    def backward(ctx, dY):
-        hidden_states, = ctx.saved_tensors
-        hidden_states = hidden_states.to("cuda", non_blocking = True).detach()
-        hidden_states.requires_grad = True
-        with torch.enable_grad():
-            output = ctx.forward_function(hidden_states, *ctx.args)
-        # We currently only support gradients on 1 output tensor
-        if type(output) is not torch.Tensor:
-            output = output[0]
-        torch.autograd.backward(output, dY)
-        return (None, hidden_states.grad,) + (None,)*len(ctx.args)
-    pass
 pass
 
 
