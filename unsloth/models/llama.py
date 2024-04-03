@@ -633,23 +633,47 @@ def LlamaModel_fast_forward(
         if output_hidden_states: all_hidden_states += (hidden_states,)
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
+        # if self.gradient_checkpointing and self.training:
+
+        #     def create_custom_forward(module):
+        #         def custom_forward(*inputs):
+        #             # None for past_key_value
+        #             return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
+
+        #         return custom_forward
+
+        #     layer_outputs = torch.utils.checkpoint.checkpoint(
+        #         create_custom_forward(decoder_layer),
+        #         hidden_states,
+        #         causal_mask,
+        #         attention_mask,
+        #         position_ids,
+        #         use_reentrant=True,
+        #         preserve_rng_state=False,
+        #     )
+        # else:
+        #     layer_outputs = decoder_layer(
+        #         hidden_states,
+        #         causal_mask=causal_mask,
+        #         attention_mask=attention_mask,
+        #         position_ids=position_ids,
+        #         past_key_value=past_key_value,
+        #         output_attentions=output_attentions,
+        #         use_cache=use_cache,
+        #         padding_mask=padding_mask,
+        #     )
+        # pass
+
         if self.gradient_checkpointing and self.training:
-
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    # None for past_key_value
-                    return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
-
-                return custom_forward
-
-            layer_outputs = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(decoder_layer),
+            layer_outputs = self._gradient_checkpointing_func(
+                decoder_layer.__call__,
                 hidden_states,
                 causal_mask,
                 attention_mask,
                 position_ids,
-                use_reentrant=True,
-                preserve_rng_state=False,
+                past_key_values,
+                output_attentions,
+                use_cache,
             )
         else:
             layer_outputs = decoder_layer(
@@ -662,7 +686,6 @@ def LlamaModel_fast_forward(
                 use_cache=use_cache,
                 padding_mask=padding_mask,
             )
-        pass
 
         hidden_states = layer_outputs[0]
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
