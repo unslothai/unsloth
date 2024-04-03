@@ -112,6 +112,9 @@ def prepare_model_for_kbit_training(
             original_model = original_model.model
         pass
         original_model._offloaded_gradient_checkpointing = True
+        
+        model.gradient_checkpointing_enable()
+
     elif use_gradient_checkpointing == True:
         model.gradient_checkpointing_enable()
     pass
