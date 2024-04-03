@@ -640,8 +640,6 @@ def LlamaModel_fast_forward(
             offloaded_gradient_checkpointing = True
     pass
 
-    print(self.)
-
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
 
