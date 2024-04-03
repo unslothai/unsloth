@@ -640,6 +640,8 @@ def LlamaModel_fast_forward(
             offloaded_gradient_checkpointing = True
     pass
 
+    print(self.)
+
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
 
@@ -647,7 +649,6 @@ def LlamaModel_fast_forward(
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         if offloaded_gradient_checkpointing:
-            print("Offload!")
             hidden_states = Offloaded_Gradient_Checkpointer.apply(
                 decoder_layer,
                 hidden_states,
@@ -660,8 +661,6 @@ def LlamaModel_fast_forward(
             )
 
         elif gradient_checkpointing:
-
-            print("Normal!")
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask)
