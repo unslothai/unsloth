@@ -733,13 +733,14 @@ class Fast_Gradient_Checkpointer(torch.autograd.Function):
     @torch.cuda.amp.custom_fwd
     def forward(ctx, forward_function, hidden_states, *args):
         ctx.forward_function = forward_function
-        ctx.save_for_backward(hidden_states)
-        ctx.args = args
+        saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
         with torch.no_grad():
             output = forward_function(hidden_states, *args)
         # We currently only support gradients on 1 output tensor
         if type(output) is not torch.Tensor:
             output = output[0]
+        ctx.save_for_backward(saved_hidden_states)
+        ctx.args = args
         return output
     pass
 
@@ -747,7 +748,7 @@ class Fast_Gradient_Checkpointer(torch.autograd.Function):
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY):
         hidden_states, = ctx.saved_tensors
-        hidden_states = hidden_states.detach()
+        hidden_states = hidden_states.to("cuda", non_blocking = True).detach()
         hidden_states.requires_grad = True
         with torch.enable_grad():
             output = ctx.forward_function(hidden_states, *ctx.args)
