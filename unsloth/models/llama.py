@@ -665,8 +665,8 @@ def LlamaModel_fast_forward(
         # pass
 
         if self.gradient_checkpointing and self.training:
-            layer_outputs = self._gradient_checkpointing_func(
-                decoder_layer.__call__,
+            hidden_states = Fast_Gradient_Checkpointer.apply(
+                decoder_layer,
                 hidden_states,
                 causal_mask,
                 attention_mask,
@@ -675,6 +675,16 @@ def LlamaModel_fast_forward(
                 output_attentions,
                 use_cache,
             )
+            # layer_outputs = self._gradient_checkpointing_func(
+            #     decoder_layer.__call__,
+            #     hidden_states,
+            #     causal_mask,
+            #     attention_mask,
+            #     position_ids,
+            #     past_key_values,
+            #     output_attentions,
+            #     use_cache,
+            # )
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -687,7 +697,7 @@ def LlamaModel_fast_forward(
                 padding_mask=padding_mask,
             )
 
-        hidden_states = layer_outputs[0]
+        # hidden_states = layer_outputs[0]
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
         if output_attentions: all_self_attns += (layer_outputs[1],)
     pass
@@ -711,6 +721,42 @@ def LlamaModel_fast_forward(
         hidden_states=all_hidden_states,
         attentions=all_self_attns,
     )
+pass
+
+class Fast_Gradient_Checkpointer(torch.autograd.Function):
+    """
+    Allows CUDAGraphs to function by getting rid of fork_rng.
+    Also slightly faster.
+    Does not allow Dropout though.
+    """
+    @staticmethod
+    @torch.cuda.amp.custom_fwd
+    def forward(ctx, forward_function, hidden_states, *args):
+        ctx.forward_function = forward_function
+        ctx.save_for_backward(hidden_states)
+        ctx.args = args
+        with torch.no_grad():
+            output = forward_function(hidden_states, *args)
+        # We currently only support gradients on 1 output tensor
+        if type(output) is not torch.Tensor:
+            output = output[0]
+        return output
+    pass
+
+    @staticmethod
+    @torch.cuda.amp.custom_bwd
+    def backward(ctx, dY):
+        hidden_states, = ctx.saved_tensors
+        hidden_states = hidden_states.detach()
+        hidden_states.requires_grad = True
+        with torch.enable_grad():
+            output = ctx.forward_function(hidden_states, *ctx.args)
+        # We currently only support gradients on 1 output tensor
+        if type(output) is not torch.Tensor:
+            output = output[0]
+        torch.autograd.backward(output, dY)
+        return (None, hidden_states.grad,) + (None,)*len(ctx.args)
+    pass
 pass
 
 
