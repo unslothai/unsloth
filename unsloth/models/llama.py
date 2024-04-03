@@ -636,7 +636,7 @@ def LlamaModel_fast_forward(
 
         gradient_checkpointing = True
 
-        if output_attentions is False and hasttar(self, "_offloaded_gradient_checkpointing"):
+        if output_attentions is False and hasattr(self, "_offloaded_gradient_checkpointing"):
             offloaded_gradient_checkpointing = True
     pass
 
