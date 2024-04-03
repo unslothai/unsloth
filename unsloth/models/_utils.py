@@ -103,10 +103,7 @@ def prepare_model_for_kbit_training(
     pass
 
     # Gradient checkpointing!
-    if use_gradient_checkpointing:
-        model.gradient_checkpointing_enable()
-
-    elif use_gradient_checkpointing == "offloaded":
+    if use_gradient_checkpointing == "offloaded":
 
         # Saves VRAM!
         original_model = model
@@ -115,6 +112,8 @@ def prepare_model_for_kbit_training(
             original_model = original_model.model
         pass
         original_model._offloaded_gradient_checkpointing = True
+    elif use_gradient_checkpointing == True:
+        model.gradient_checkpointing_enable()
     pass
 
     # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
