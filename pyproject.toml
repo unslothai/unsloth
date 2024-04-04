@@ -36,7 +36,7 @@ huggingface = [
     "tyro",
     "transformers>=4.38.2",
     "datasets>=2.16.0",
-    "sentencepiece",
+    "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
     "wheel>=0.42.0",
