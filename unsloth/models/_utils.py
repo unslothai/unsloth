@@ -319,12 +319,11 @@ class Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     def forward(ctx, forward_function, hidden_states, *args):
         ctx.forward_function = forward_function
         saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
+        print(hidden_states.device)
         with torch.no_grad():
             output = forward_function(hidden_states, *args)
-        # We currently only support gradients on 1 output tensor
-        if type(output) is not torch.Tensor:
-            output = output[0]
         ctx.save_for_backward(saved_hidden_states)
+        print(saved_hidden_states.device)
         ctx.args = args
         return output
     pass
@@ -333,13 +332,12 @@ class Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY):
         hidden_states, = ctx.saved_tensors
+        print(hidden_states.device)
         hidden_states = hidden_states.to("cuda", non_blocking = True).detach()
+        print(hidden_states.device)
         hidden_states.requires_grad = True
         with torch.enable_grad():
             output = ctx.forward_function(hidden_states, *ctx.args)
-        # We currently only support gradients on 1 output tensor
-        if type(output) is not torch.Tensor:
-            output = output[0]
         torch.autograd.backward(output, dY)
         return (None, hidden_states.grad,) + (None,)*len(ctx.args)
     pass
