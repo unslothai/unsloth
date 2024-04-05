@@ -33,9 +33,13 @@ __all__ = [
     "patch_saving_functions",
 ]
 
-# Check Kaggle
-IS_A_KAGGLE_ENVIRONMENT = "KAGGLE_CONTAINER_NAME" in os.environ
+# Check environments
+keynames = "\n" + "\n".join(os.environ.keys())
+IS_COLAB_ENVIRONMENT  = "\nCOLAB_"  in keynames
+IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
+del keynames
 
+# Weights
 LLAMA_WEIGHTS = (
     "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
     "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
@@ -449,12 +453,12 @@ def unsloth_save_model(
         os.makedirs(temporary_location)
     pass
 
-    # Check if Kaggle, since only 20GB of Disk space allowed.
-    if IS_A_KAGGLE_ENVIRONMENT:
+    # Check if Kaggle or Colab, since only 20GB of Disk space allowed.
+    if IS_A_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
         # We free up 4GB of space
         logger.warning_once(
-            "Unsloth: Kaggle only allows 20GB of disk space. We need to delete the downloaded\n"\
-            "model which will save 4GB of disk space, allowing you to save on Kaggle."
+            "Unsloth: Kaggle/Colab has limited disk space. We need to delete the downloaded\n"\
+            "model which will save 4-16GB of disk space, allowing you to save on Kaggle/Colab."
         )
         _free_cached_model(internal_model)
     pass

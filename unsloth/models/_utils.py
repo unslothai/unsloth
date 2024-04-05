@@ -194,6 +194,7 @@ def get_statistics():
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
+        import psutil
         n_cpus = psutil.cpu_count(logical = False)
 
         keynames = "\n" + "\n".join(os.environ.keys())
@@ -311,7 +312,7 @@ pass
 class Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     """
     Saves VRAM by smartly offloading to RAM.
-    Small hit to performance, since we mask the movement via non blocking calls.
+    Tiny hit to performance, since we mask the movement via non blocking calls.
     [TODO] Load the backward pass earlier
     """
     @staticmethod
