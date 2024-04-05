@@ -628,19 +628,42 @@ def LlamaModel_fast_forward(
         boundaries = None
     pass
 
+    # Check checkpointing method
+    gradient_checkpointing = False
+    offloaded_gradient_checkpointing = False
+
+    if (self.gradient_checkpointing and self.training and not use_cache):
+
+        gradient_checkpointing = True
+
+        if output_attentions is False and hasattr(self, "_offloaded_gradient_checkpointing"):
+            offloaded_gradient_checkpointing = True
+    pass
+
+    # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
 
         if output_hidden_states: all_hidden_states += (hidden_states,)
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
-        if self.gradient_checkpointing and self.training:
+        if offloaded_gradient_checkpointing:
+            hidden_states = Offloaded_Gradient_Checkpointer.apply(
+                decoder_layer,
+                hidden_states,
+                causal_mask,
+                attention_mask,
+                position_ids,
+                past_key_values,
+                output_attentions,
+                use_cache,
+            )
 
+        elif gradient_checkpointing:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
-                    # None for past_key_value
-                    return module(*inputs, past_key_value, output_attentions, padding_mask=padding_mask)
-
+                    return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask)
                 return custom_forward
+            pass
 
             layer_outputs = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(decoder_layer),
@@ -648,9 +671,11 @@ def LlamaModel_fast_forward(
                 causal_mask,
                 attention_mask,
                 position_ids,
-                use_reentrant=True,
-                preserve_rng_state=False,
+                use_reentrant = True,
+                preserve_rng_state = False,
             )
+            hidden_states = layer_outputs[0]
+
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -662,9 +687,9 @@ def LlamaModel_fast_forward(
                 use_cache=use_cache,
                 padding_mask=padding_mask,
             )
+            hidden_states = layer_outputs[0]
         pass
 
-        hidden_states = layer_outputs[0]
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
         if output_attentions: all_self_attns += (layer_outputs[1],)
     pass
@@ -801,12 +826,12 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
+        lm_head = self.lm_head.weight
         if bsz == 1 and q_len == 1:
-            lm_head = self.lm_head.weight
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         else:
-            logits = self.lm_head(hidden_states)
+            logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
         logits = logits.to(self.config.torch_dtype)
 
@@ -1402,6 +1427,8 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_lm_head = True
+                if modules_to_save is None: modules_to_save = ["lm_head"]
+                else: modules_to_save.append("lm_head")
 
             elif module == "embed_tokens":
                 logger.warning_once(
@@ -1409,6 +1436,8 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_embed_tokens = True
+                if modules_to_save is None: modules_to_save = ["embed_tokens"]
+                else: modules_to_save.append("embed_tokens")
 
             else:
                 assert(module in accepted_modules)

@@ -33,9 +33,13 @@ __all__ = [
     "patch_saving_functions",
 ]
 
-# Check Kaggle
-IS_A_KAGGLE_ENVIRONMENT = "KAGGLE_CONTAINER_NAME" in os.environ
+# Check environments
+keynames = "\n" + "\n".join(os.environ.keys())
+IS_COLAB_ENVIRONMENT  = "\nCOLAB_"  in keynames
+IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
+del keynames
 
+# Weights
 LLAMA_WEIGHTS = (
     "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
     "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
@@ -177,6 +181,9 @@ def unsloth_save_model(
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
+    if token is None and "HF_TOKEN" in os.environ:
+        token = os.environ["HF_TOKEN"]
+
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
         commit_message += " (Trained with Unsloth)"
@@ -291,6 +298,10 @@ def unsloth_save_model(
             tags               = tags,
         )
         if tokenizer is not None:
+            # Set padding side to left for inference
+            old_padding_side = tokenizer.padding_side
+            tokenizer.padding_side = "left"
+
             getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)\
             (
                 repo_id            = save_directory,
@@ -305,6 +316,9 @@ def unsloth_save_model(
                 commit_description = commit_description,
                 tags               = tags,
             )
+
+            # Revert back padding side
+            tokenizer.padding_side = old_padding_side
         pass
 
         if hasattr(model, "config"):
@@ -361,7 +375,16 @@ def unsloth_save_model(
 
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
+
+            # Set padding side to left for inference
+            old_padding_side = tokenizer.padding_side
+            tokenizer.padding_side = "left"
+
             tokenizer.save_pretrained(**tokenizer_save_settings)
+
+            # Revert back padding side
+            tokenizer.padding_side = old_padding_side
+
             print(" Done.")
         else:
             print()
@@ -449,12 +472,12 @@ def unsloth_save_model(
         os.makedirs(temporary_location)
     pass
 
-    # Check if Kaggle, since only 20GB of Disk space allowed.
-    if IS_A_KAGGLE_ENVIRONMENT:
+    # Check if Kaggle or Colab, since only 20GB of Disk space allowed.
+    if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
         # We free up 4GB of space
         logger.warning_once(
-            "Unsloth: Kaggle only allows 20GB of disk space. We need to delete the downloaded\n"\
-            "model which will save 4GB of disk space, allowing you to save on Kaggle."
+            "Unsloth: Kaggle/Colab has limited disk space. We need to delete the downloaded\n"\
+            "model which will save 4-16GB of disk space, allowing you to save on Kaggle/Colab."
         )
         _free_cached_model(internal_model)
     pass
@@ -462,7 +485,10 @@ def unsloth_save_model(
     # HF also uses a OrderedDict
     from collections import OrderedDict
     state_dict = OrderedDict()
-    state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data
+
+    torch_dtype = model.config.torch_dtype
+    # Check modules to save float32 dtype
+    state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data.to(torch_dtype)
 
     max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
 
@@ -495,7 +521,8 @@ def unsloth_save_model(
     pass
 
     state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
-    state_dict["lm_head.weight"]    = internal_model.lm_head.weight.data
+    # Check for modules_to_save float32 dtype
+    state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
 
     # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
     for key, value in state_dict.items():
@@ -552,7 +579,16 @@ def unsloth_save_model(
     # Save tokenizer
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
+
+        # Set padding side to left for inference
+        old_padding_side = tokenizer.padding_side
+        tokenizer.padding_side = "left"
+
         tokenizer.save_pretrained(**tokenizer_save_settings)
+
+        # Revert back padding side
+        tokenizer.padding_side = old_padding_side
+            
         print(" Done.")
     else:
         print()
@@ -1216,7 +1252,7 @@ def unsloth_save_pretrained_gguf(
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
-        if IS_A_KAGGLE_ENVIRONMENT:
+        if IS_KAGGLE_ENVIRONMENT:
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
@@ -1237,7 +1273,7 @@ def unsloth_save_pretrained_gguf(
             makefile = None
         except:
             # Retry by recloning llama.cpp
-            if IS_A_KAGGLE_ENVIRONMENT:
+            if IS_KAGGLE_ENVIRONMENT:
                 # Kaggle is weird - no blocking installs, and no CUDA?
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 python_install.wait()
@@ -1336,7 +1372,7 @@ def unsloth_push_to_hub_gguf(
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
-        if IS_A_KAGGLE_ENVIRONMENT:
+        if IS_KAGGLE_ENVIRONMENT:
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
@@ -1357,7 +1393,7 @@ def unsloth_push_to_hub_gguf(
             makefile = None
         except:
             # Retry by recloning llama.cpp
-            if IS_A_KAGGLE_ENVIRONMENT:
+            if IS_KAGGLE_ENVIRONMENT:
                 # Kaggle is weird - no blocking installs, and no CUDA?
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 python_install.wait()
