@@ -181,6 +181,9 @@ def unsloth_save_model(
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
+    if token is None and "HF_TOKEN" in os.environ:
+        token = os.environ["HF_TOKEN"]
+    
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
         commit_message += " (Trained with Unsloth)"
