@@ -183,7 +183,7 @@ def unsloth_save_model(
 ):
     if token is None and "HF_TOKEN" in os.environ:
         token = os.environ["HF_TOKEN"]
-    
+
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
         commit_message += " (Trained with Unsloth)"
@@ -457,7 +457,7 @@ def unsloth_save_model(
     pass
 
     # Check if Kaggle or Colab, since only 20GB of Disk space allowed.
-    if IS_A_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
+    if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
         # We free up 4GB of space
         logger.warning_once(
             "Unsloth: Kaggle/Colab has limited disk space. We need to delete the downloaded\n"\
@@ -469,7 +469,10 @@ def unsloth_save_model(
     # HF also uses a OrderedDict
     from collections import OrderedDict
     state_dict = OrderedDict()
-    state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data
+
+    torch_dtype = model.config.torch_dtype
+    # Check modules to save float32 dtype
+    state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data.to(torch_dtype)
 
     max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
 
@@ -502,7 +505,8 @@ def unsloth_save_model(
     pass
 
     state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
-    state_dict["lm_head.weight"]    = internal_model.lm_head.weight.data
+    # Check for modules_to_save float32 dtype
+    state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
 
     # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
     for key, value in state_dict.items():
@@ -1223,7 +1227,7 @@ def unsloth_save_pretrained_gguf(
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
-        if IS_A_KAGGLE_ENVIRONMENT:
+        if IS_KAGGLE_ENVIRONMENT:
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
@@ -1244,7 +1248,7 @@ def unsloth_save_pretrained_gguf(
             makefile = None
         except:
             # Retry by recloning llama.cpp
-            if IS_A_KAGGLE_ENVIRONMENT:
+            if IS_KAGGLE_ENVIRONMENT:
                 # Kaggle is weird - no blocking installs, and no CUDA?
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 python_install.wait()
@@ -1343,7 +1347,7 @@ def unsloth_push_to_hub_gguf(
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
-        if IS_A_KAGGLE_ENVIRONMENT:
+        if IS_KAGGLE_ENVIRONMENT:
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
@@ -1364,7 +1368,7 @@ def unsloth_push_to_hub_gguf(
             makefile = None
         except:
             # Retry by recloning llama.cpp
-            if IS_A_KAGGLE_ENVIRONMENT:
+            if IS_KAGGLE_ENVIRONMENT:
                 # Kaggle is weird - no blocking installs, and no CUDA?
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 python_install.wait()
