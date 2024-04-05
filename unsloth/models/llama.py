@@ -826,12 +826,12 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
+        lm_head = self.lm_head.weight
         if bsz == 1 and q_len == 1:
-            lm_head = self.lm_head.weight
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         else:
-            logits = self.lm_head(hidden_states)
+            logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
         logits = logits.to(self.config.torch_dtype)
 
