@@ -1427,6 +1427,8 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_lm_head = True
+                if modules_to_save is None: modules_to_save = ["lm_head"]
+                else: modules_to_save.append("lm_head")
 
             elif module == "embed_tokens":
                 logger.warning_once(
@@ -1434,6 +1436,8 @@ class FastLlamaModel:
                     "We shall do it for you!"
                 )
                 train_embed_tokens = True
+                if modules_to_save is None: modules_to_save = ["embed_tokens"]
+                else: modules_to_save.append("embed_tokens")
 
             else:
                 assert(module in accepted_modules)
