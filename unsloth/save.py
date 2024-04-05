@@ -298,6 +298,10 @@ def unsloth_save_model(
             tags               = tags,
         )
         if tokenizer is not None:
+            # Set padding side to left for inference
+            old_padding_side = tokenizer.padding_side
+            tokenizer.padding_side = "left"
+
             getattr(tokenizer, "original_push_to_hub", tokenizer.push_to_hub)\
             (
                 repo_id            = save_directory,
@@ -312,6 +316,9 @@ def unsloth_save_model(
                 commit_description = commit_description,
                 tags               = tags,
             )
+
+            # Revert back padding side
+            tokenizer.padding_side = old_padding_side
         pass
 
         if hasattr(model, "config"):
@@ -368,7 +375,16 @@ def unsloth_save_model(
 
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
+
+            # Set padding side to left for inference
+            old_padding_side = tokenizer.padding_side
+            tokenizer.padding_side = "left"
+
             tokenizer.save_pretrained(**tokenizer_save_settings)
+
+            # Revert back padding side
+            tokenizer.padding_side = old_padding_side
+
             print(" Done.")
         else:
             print()
@@ -563,7 +579,16 @@ def unsloth_save_model(
     # Save tokenizer
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
+
+        # Set padding side to left for inference
+        old_padding_side = tokenizer.padding_side
+        tokenizer.padding_side = "left"
+
         tokenizer.save_pretrained(**tokenizer_save_settings)
+
+        # Revert back padding side
+        tokenizer.padding_side = old_padding_side
+            
         print(" Done.")
     else:
         print()
