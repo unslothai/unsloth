@@ -186,9 +186,6 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
 pass
 
 
-global sentencepiece_model_pb2
-sentencepiece_model_pb2 = None
-
 def fix_sentencepiece_tokenizer(
     old_tokenizer,
     new_tokenizer,
@@ -197,19 +194,7 @@ def fix_sentencepiece_tokenizer(
 ):
     # From https://github.com/google/sentencepiece/issues/121
     # We need to manually edit the sentencepiece tokenizer!
-    global sentencepiece_model_pb2
-    if sentencepiece_model_pb2 is None:
-        try:
-            import sentencepiece.sentencepiece_model_pb2 as _sentencepiece_model_pb2
-            sentencepiece_model_pb2 = _sentencepiece_model_pb2
-        except:
-            if not os.path.exists(temporary_location):
-                os.system(f"git clone https://github.com/google/sentencepiece.git {temporary_location}")
-                os.system(f"cd {temporary_location}/src && protoc --python_out=. sentencepiece_model.proto")
-            pass
-            import sentencepiece.sentencepiece_model_pb2 as _sentencepiece_model_pb2
-            sentencepiece_model_pb2 = _sentencepiece_model_pb2
-        pass
+    from transformers.utils import sentencepiece_model_pb2
 
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
