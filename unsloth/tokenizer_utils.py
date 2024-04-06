@@ -389,6 +389,12 @@ def check_tokenizer(
                 )
             pass
             
+            if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
+                cache_dir = cache_dir
+            else:
+                cache_dir = None
+            pass
+
             # Try slow tokenizer which can fix things!
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
@@ -396,6 +402,7 @@ def check_tokenizer(
                 padding_side = padding_side,
                 token = token,
                 use_fast = False,
+                cache_dir = cache_dir,
             )
             return check_tokenizer(
                 model = model,
