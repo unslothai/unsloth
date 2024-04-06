@@ -171,6 +171,7 @@ colab-new = [
     "psutil",
     "wheel>=0.42.0",
     "numpy",
+    "protobuf<4.0.0",
 ]
 colab-no-deps = [
     "accelerate>=0.26.1",
@@ -178,6 +179,7 @@ colab-no-deps = [
     "peft>=0.7.1",
     "xformers",
     "bitsandbytes",
+    "protobuf<4.0.0",
 ]
 colab = [
     "unsloth[cu121]",
