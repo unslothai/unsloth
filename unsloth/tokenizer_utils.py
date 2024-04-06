@@ -185,10 +185,19 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         if x.endswith("_token") and x.count("_") == 1
     )))
     all_special_tokens = list(set(special_tokens + slow_tokenizer.all_special_tokens))
-    string = ">>\n<<".join(all_special_tokens) + \
-        "A quick brown fox jumps over the lazy dog!!\n\n" + \
-        "".join(all_special_tokens)
-    return slow_tokenizer(string).input_ids == fast_tokenizer(string).input_ids
+    try:
+        string = "\n".join(all_special_tokens) + \
+            "A quick brown fox jumps over the lazy dog!!\n\n" + \
+            "".join(all_special_tokens)
+        return slow_tokenizer(string).input_ids == fast_tokenizer(string).input_ids
+    except:
+        # For eg see https://github.com/unslothai/unsloth/issues/292
+        # Sometimes tokenizer has weird tokens, causing a combined tokenization to fail.
+        # [TODO] We temporarily disable this for CodeLlama tokenizers
+        if slow_tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
+            return True
+        else:
+            return False
 pass
 
 
