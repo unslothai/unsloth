@@ -202,8 +202,7 @@ def fix_sentencepiece_tokenizer(
 
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
-
-    from sentencepiece import SentencePieceProcessor
+    
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
 
