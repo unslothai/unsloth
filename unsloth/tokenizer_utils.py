@@ -234,6 +234,7 @@ def fix_sentencepiece_tokenizer(
             continue
         pass
         ids = ids[0]
+        # [TODO] Hack for Starling - try except
         try:
             tokenizer_piece = tokenizer_file.pieces[ids]
         except:
