@@ -684,7 +684,7 @@ pass
 
 
 def install_llama_cpp_make_non_blocking():
-    env = { **os.environ, "LLAMA_CUBLAS": "1", }
+    env = { **os.environ, "LLAMA_CUDA": "1", }
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
     os.system("make clean -C llama.cpp")
@@ -752,7 +752,7 @@ pass
 
 
 def install_llama_cpp_blocking(use_cuda = True):
-    use_cuda = "LLAMA_CUBLAS=1" if use_cuda else ""
+    use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
 
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
@@ -937,7 +937,7 @@ def save_to_gguf(
             "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
             "You must run this in the same folder as you're saving your model.\n"\
             "git clone https://github.com/ggerganov/llama.cpp\n"\
-            "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j\n"\
+            "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
             "Once that's done, redo the quantization."
         )
     pass
@@ -966,7 +966,7 @@ def save_to_gguf(
                 "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
                 "You must run this in the same folder as you're saving your model.\n"\
                 "git clone https://github.com/ggerganov/llama.cpp\n"\
-                "cd llama.cpp && make clean && LLAMA_CUBLAS=1 make all -j\n"\
+                "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
                 "Once that's done, redo the quantization."
             )
         pass
