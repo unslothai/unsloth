@@ -234,7 +234,10 @@ def fix_sentencepiece_tokenizer(
             continue
         pass
         ids = ids[0]
-        tokenizer_piece = tokenizer_file.pieces[ids]
+        try:
+            tokenizer_piece = tokenizer_file.pieces[ids]
+        except:
+            continue
         assert(tokenizer_piece.piece == old_token)
         tokenizer_piece.piece = new_token
     pass
@@ -399,7 +402,7 @@ def check_tokenizer(
             pass
             
             if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
-                cache_dir = cache_dir
+                cache_dir = "huggingface_tokenizers_cache"
             else:
                 cache_dir = None
             pass
