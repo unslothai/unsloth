@@ -183,6 +183,9 @@ def unsloth_save_model(
 ):
     if token is None and "HF_TOKEN" in os.environ:
         token = os.environ["HF_TOKEN"]
+    
+    if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+        token = os.environ["HUGGINGFACE_TOKEN"]
 
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
