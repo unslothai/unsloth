@@ -70,7 +70,7 @@ __all__ = [
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
-    "Offloaded_Gradient_Checkpointer",
+    "Unsloth_Offloaded_Gradient_Checkpointer",
 ]
 
 
@@ -103,7 +103,7 @@ def prepare_model_for_kbit_training(
     pass
 
     # Gradient checkpointing!
-    if use_gradient_checkpointing == "offloaded":
+    if use_gradient_checkpointing == "unsloth":
 
         # Saves VRAM!
         original_model = model
@@ -309,11 +309,10 @@ def prepare_n_gradient_checkpoints(
 pass
 
 
-class Offloaded_Gradient_Checkpointer(torch.autograd.Function):
+class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     """
     Saves VRAM by smartly offloading to RAM.
     Tiny hit to performance, since we mask the movement via non blocking calls.
-    [TODO] Load the backward pass earlier
     """
     @staticmethod
     @torch.cuda.amp.custom_fwd
