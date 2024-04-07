@@ -522,7 +522,7 @@ def unsloth_save_model(
 
     state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
     # Check for modules_to_save float32 dtype
-    
+
     # Check for tied weights
     if internal_model.model.embed_tokens.weight.data_ptr() != internal_model.lm_head.weight.data_ptr():
         state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
@@ -735,9 +735,9 @@ def install_llama_cpp_old(version = -10):
     # Also don't use the GPU!
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && git reset --hard {version} && git clean -df && "\
-        f"make clean make all -j{psutil.cpu_count()*2}",
-        "pip install gguf protobuf",
+        f"cd llama.cpp && git reset --hard {version} && git clean -df",
+        "make clean -C llama.cpp",
+        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
     ]
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
@@ -760,7 +760,8 @@ def install_llama_cpp_blocking(use_cuda = True):
 
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && {use_cuda} make all -j{psutil.cpu_count()*2}",
+        "make clean -C llama.cpp",
+        f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
