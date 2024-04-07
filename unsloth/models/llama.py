@@ -647,7 +647,7 @@ def LlamaModel_fast_forward(
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         if offloaded_gradient_checkpointing:
-            hidden_states = Offloaded_Gradient_Checkpointer.apply(
+            hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
                 decoder_layer,
                 hidden_states,
                 causal_mask,

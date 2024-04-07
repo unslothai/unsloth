@@ -93,7 +93,27 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/mistral-7b-v0.2-bnb-4bit" : (
         "unsloth/mistral-7b-v0.2",
         "alpindale/Mistral-7B-v0.2-hf",
-    )
+    ),
+    "unsloth/gemma-1.1-2b-it-bnb-4bit" : (
+        "unsloth/gemma-1.1-2b-it",
+        "google/gemma-1.1-2b-it",
+    ),
+    "unsloth/gemma-1.1-7b-it-bnb-4bit" : (
+        "unsloth/gemma-1.1-7b-it",
+        "google/gemma-1.1-7b-it",
+    ),
+    "unsloth/Starling-LM-7B-beta-bnb-4bit" : (
+        "unsloth/Starling-LM-7B-beta",
+        "Nexusflow/Starling-LM-7B-beta",
+    ),
+    "unsloth/Hermes-2-Pro-Mistral-7B-bnb-4bit" : (
+        "unsloth/Hermes-2-Pro-Mistral-7B",
+        "NousResearch/Hermes-2-Pro-Mistral-7B",
+    ),
+    "unsloth/OpenHermes-2.5-Mistral-7B-bnb-4bit" : (
+        "unsloth/OpenHermes-2.5-Mistral-7B",
+        "teknium/OpenHermes-2.5-Mistral-7B",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}

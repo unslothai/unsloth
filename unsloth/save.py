@@ -183,6 +183,9 @@ def unsloth_save_model(
 ):
     if token is None and "HF_TOKEN" in os.environ:
         token = os.environ["HF_TOKEN"]
+    
+    if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+        token = os.environ["HUGGINGFACE_TOKEN"]
 
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
@@ -522,7 +525,11 @@ def unsloth_save_model(
 
     state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
     # Check for modules_to_save float32 dtype
-    state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
+
+    # Check for tied weights
+    if internal_model.model.embed_tokens.weight.data_ptr() != internal_model.lm_head.weight.data_ptr():
+        state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
+    pass
 
     # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
     for key, value in state_dict.items():
@@ -731,9 +738,9 @@ def install_llama_cpp_old(version = -10):
     # Also don't use the GPU!
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && git reset --hard {version} && git clean -df && "\
-        f"make clean make all -j{psutil.cpu_count()*2}",
-        "pip install gguf protobuf",
+        f"cd llama.cpp && git reset --hard {version} && git clean -df",
+        "make clean -C llama.cpp",
+        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
     ]
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
@@ -756,7 +763,8 @@ def install_llama_cpp_blocking(use_cuda = True):
 
     commands = [
         "git clone https://github.com/ggerganov/llama.cpp",
-        f"cd llama.cpp && make clean && {use_cuda} make all -j{psutil.cpu_count()*2}",
+        "make clean -C llama.cpp",
+        f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
@@ -931,15 +939,26 @@ def save_to_gguf(
 
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
-        raise RuntimeError(
-            f"Unsloth: Quantization failed for {final_location}\n"\
-            "You might have to compile llama.cpp yourself, then run this again.\n"\
-            "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
-            "You must run this in the same folder as you're saving your model.\n"\
-            "git clone https://github.com/ggerganov/llama.cpp\n"\
-            "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
-            "Once that's done, redo the quantization."
-        )
+        if IS_KAGGLE_ENVIRONMENT:
+            raise RuntimeError(
+                f"Unsloth: Quantization failed for {final_location}\n"\
+                "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                "Kaggle only provides 20GB of disk space. Merging to 16bit for 7b models use 16GB of space.\n"\
+                "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+            )
+        else:
+            raise RuntimeError(
+                f"Unsloth: Quantization failed for {final_location}\n"\
+                "You might have to compile llama.cpp yourself, then run this again.\n"\
+                "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
+                "You must run this in the same folder as you're saving your model.\n"\
+                "git clone https://github.com/ggerganov/llama.cpp\n"\
+                "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
+                "Once that's done, redo the quantization."
+            )
+        pass
     pass
     print(f"Unsloth: Conversion completed! Output location: {final_location}")
 
@@ -961,14 +980,25 @@ def save_to_gguf(
 
         # Check if quantization succeeded!
         if not os.path.isfile(final_location):
-            raise RuntimeError(
-                "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
-                "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
-                "You must run this in the same folder as you're saving your model.\n"\
-                "git clone https://github.com/ggerganov/llama.cpp\n"\
-                "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
-                "Once that's done, redo the quantization."
-            )
+            if IS_KAGGLE_ENVIRONMENT:
+                raise RuntimeError(
+                    f"Unsloth: Quantization failed for {final_location}\n"\
+                    "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                    "Kaggle only provides 20GB of disk space. Merging to 16bit for 7b models use 16GB of space.\n"\
+                    "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                    "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                    "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+                )
+            else:
+                raise RuntimeError(
+                    "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
+                    "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
+                    "You must run this in the same folder as you're saving your model.\n"\
+                    "git clone https://github.com/ggerganov/llama.cpp\n"\
+                    "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
+                    "Once that's done, redo the quantization."
+                )
+            pass
         pass
 
         print(f"Unsloth: Conversion completed! Output location: {final_location}")
