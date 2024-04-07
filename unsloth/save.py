@@ -522,7 +522,11 @@ def unsloth_save_model(
 
     state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
     # Check for modules_to_save float32 dtype
-    state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
+    
+    # Check for tied weights
+    if internal_model.model.embed_tokens.weight.data_ptr() != internal_model.lm_head.weight.data_ptr():
+        state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
+    pass
 
     # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
     for key, value in state_dict.items():
