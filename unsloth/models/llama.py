@@ -1592,7 +1592,7 @@ class FastLlamaModel:
         # Get dropout and bias
         lora_dropout = model.peft_config[active_adapter].lora_dropout
         bias         = model.peft_config[active_adapter].bias
-        
+
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
@@ -1702,6 +1702,11 @@ class FastLlamaModel:
         lm_head = internal_model.lm_head.weight
         device_type = lm_head.device.type
         dtype = model.config.torch_dtype
+        
+        if type(dtype) is str:
+            if   dtype ==  "float16": dtype = torch.float16
+            elif dtype == "bfloat16": dtype = torch.bfloat16
+        pass
 
         # Wrap model.generate
         model._unwrapped_old_generate = model.generate
