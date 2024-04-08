@@ -814,7 +814,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             outputs = self.model(
                 input_ids=input_ids,
-                causal_mask=causal_mask,
+                # causal_mask=causal_mask,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
@@ -884,7 +884,7 @@ def PeftModelForCausalLM_fast_forward(
 ):
     return self.base_model(
         input_ids=input_ids,
-        causal_mask=causal_mask,
+        # causal_mask=causal_mask,
         attention_mask=attention_mask,
         inputs_embeds=inputs_embeds,
         labels=labels,
@@ -988,8 +988,8 @@ class FastLlamaModel:
         LlamaAttention      .forward = LlamaAttention_fast_forward
         LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
         LlamaFlashAttention2.forward = LlamaAttention_fast_forward
-        LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
-        LlamaModel          .forward = LlamaModel_fast_forward
+        # LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
+        # LlamaModel          .forward = LlamaModel_fast_forward
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
 
