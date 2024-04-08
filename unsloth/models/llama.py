@@ -19,7 +19,6 @@ from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
-    apply_rotary_pos_emb,
 )
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
@@ -306,10 +305,7 @@ def LlamaAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
-    Q = self.q_proj(hidden_states)
-    K = self.k_proj(hidden_states)
-    V = self.v_proj(hidden_states)
-    # Q, K, V = self.apply_qkv(self, hidden_states)
+    Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -318,24 +314,23 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    if False: #position_ids is None:
+    if position_ids is None:
         cos = self.rotary_emb.cos_cached
         sin = self.rotary_emb.sin_cached
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb(V, position_ids)
-        Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
-        # Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
+        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
+        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
-    # if past_key_value is not None:
-    #     K = torch.cat([past_key_value[0], K], dim = 2)
-    #     V = torch.cat([past_key_value[1], V], dim = 2)
-    # pass
-    # past_key_value = (K, V) if use_cache else None
+    if past_key_value is not None:
+        K = torch.cat([past_key_value[0], K], dim = 2)
+        V = torch.cat([past_key_value[1], V], dim = 2)
+    pass
+    past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if False: #(not HAS_FLASH_ATTENTION and attention_mask is None):
+    if (not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -357,30 +352,30 @@ def LlamaAttention_fast_forward(
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
-    elif False:#HAS_FLASH_ATTENTION and attention_mask is None:
+    elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
         A = flash_attn_func(Q, K, V, causal = True)
     else:
         # Grouped query attention
-        # if n_groups != 1:
-        #     K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-        #     V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-        #     K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        #     V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        # pass
+        if n_groups != 1:
+            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        pass
         # Must be contiguous or else results are False!
         # https://github.com/pytorch/pytorch/issues/112577
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = None, is_causal = True)
+        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
-    attn_output = self.o_proj(attn_output)
+    attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 pass
@@ -434,7 +429,7 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             causal_mask=causal_mask,
@@ -449,7 +444,7 @@ def LlamaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     pass
@@ -520,7 +515,7 @@ def LlamaModel_fast_forward(
     pass
 
     # We already handle KV cache position_ids ourselves.
-    if True:#(past_key_values_length != 0):
+    if False:#(past_key_values_length != 0):
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
@@ -704,7 +699,7 @@ def LlamaModel_fast_forward(
         hidden_states = (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
             (self.norm, hidden_states)
     else:
-        hidden_states = self.norm(hidden_states)
+        hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
     pass
 
     if output_hidden_states: all_hidden_states += (hidden_states,)
@@ -817,7 +812,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             outputs = self.model(
                 input_ids=input_ids,
-                # causal_mask=causal_mask,
+                causal_mask=causal_mask,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
@@ -830,15 +825,14 @@ def CausalLM_fast_forward(fast_forward_inference):
         pass
 
         hidden_states = outputs[0]
-        # bsz, q_len, hd = hidden_states.shape
-        # lm_head = self.lm_head.weight
-        # if bsz == 1 and q_len == 1:
-        #     logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
-        #     logits = logits.unsqueeze(0).unsqueeze(0)
-        # else:
-        #     logits = self.lm_head(hidden_states.to(lm_head.dtype))
-        # pass
-        logits = self.lm_head(hidden_states)
+        bsz, q_len, hd = hidden_states.shape
+        lm_head = self.lm_head.weight
+        if bsz == 1 and q_len == 1:
+            logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
+            logits = logits.unsqueeze(0).unsqueeze(0)
+        else:
+            logits = self.lm_head(hidden_states.to(lm_head.dtype))
+        pass
         logits = logits.to(self.config.torch_dtype)
 
         loss = None
@@ -887,7 +881,7 @@ def PeftModelForCausalLM_fast_forward(
 ):
     return self.base_model(
         input_ids=input_ids,
-        # causal_mask=causal_mask,
+        causal_mask=causal_mask,
         attention_mask=attention_mask,
         inputs_embeds=inputs_embeds,
         labels=labels,
@@ -991,8 +985,8 @@ class FastLlamaModel:
         LlamaAttention      .forward = LlamaAttention_fast_forward
         LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
         LlamaFlashAttention2.forward = LlamaAttention_fast_forward
-        # LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
-        # LlamaModel          .forward = LlamaModel_fast_forward
+        LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
+        LlamaModel          .forward = LlamaModel_fast_forward
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
 
@@ -1001,9 +995,9 @@ class FastLlamaModel:
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
-        # import transformers.models.llama.modeling_llama
-        # transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
-        # transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
+        import transformers.models.llama.modeling_llama
+        transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
+        transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
         return
     pass
 
@@ -1598,7 +1592,7 @@ class FastLlamaModel:
         # Get dropout and bias
         lora_dropout = model.peft_config[active_adapter].lora_dropout
         bias         = model.peft_config[active_adapter].bias
-
+        
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
@@ -1618,7 +1612,7 @@ class FastLlamaModel:
                     (getattr(down_proj, "lora_magnitude_vector", None) is None):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    # layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                    layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
                     n_mlp += 1
                 else:
                     logger.warning_once(
