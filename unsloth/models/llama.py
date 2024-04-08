@@ -19,6 +19,7 @@ from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
+    apply_rotary_pos_emb,
 )
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
@@ -319,8 +320,9 @@ def LlamaAttention_fast_forward(
         sin = self.rotary_emb.sin_cached
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
-        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
+        cos, sin = self.rotary_emb(V, position_ids)
+        Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
+        # Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
     if past_key_value is not None:
@@ -515,7 +517,7 @@ def LlamaModel_fast_forward(
     pass
 
     # We already handle KV cache position_ids ourselves.
-    if False:#(past_key_values_length != 0):
+    if True:#(past_key_values_length != 0):
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
