@@ -429,7 +429,7 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        hidden_states = self.input_layernorm(hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             causal_mask=causal_mask,
@@ -444,7 +444,7 @@ def LlamaDecoderLayer_fast_forward(
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     pass
@@ -699,7 +699,7 @@ def LlamaModel_fast_forward(
         hidden_states = (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
             (self.norm, hidden_states)
     else:
-        hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
+        hidden_states = self.norm(hidden_states)
     pass
 
     if output_hidden_states: all_hidden_states += (hidden_states,)
