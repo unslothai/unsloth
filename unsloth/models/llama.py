@@ -297,6 +297,7 @@ def LlamaAttention_fast_forward(
         del self.RH_Q
         del self.attention
     pass
+    print(1)
 
     bsz, q_len, _ = hidden_states.size()
 
