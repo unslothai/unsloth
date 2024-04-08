@@ -996,9 +996,9 @@ class FastLlamaModel:
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
-        import transformers.models.llama.modeling_llama
-        transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
-        transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
+        # import transformers.models.llama.modeling_llama
+        # transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
+        # transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
         return
     pass
 
