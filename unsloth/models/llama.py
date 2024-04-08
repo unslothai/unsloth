@@ -297,7 +297,6 @@ def LlamaAttention_fast_forward(
         del self.RH_Q
         del self.attention
     pass
-    print(1)
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -307,7 +306,10 @@ def LlamaAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
-    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q = self.q_proj(hidden_states)
+    K = self.k_proj(hidden_states)
+    V = self.v_proj(hidden_states)
+    # Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -326,11 +328,11 @@ def LlamaAttention_fast_forward(
         # Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
-    if past_key_value is not None:
-        K = torch.cat([past_key_value[0], K], dim = 2)
-        V = torch.cat([past_key_value[1], V], dim = 2)
-    pass
-    past_key_value = (K, V) if use_cache else None
+    # if past_key_value is not None:
+    #     K = torch.cat([past_key_value[0], K], dim = 2)
+    #     V = torch.cat([past_key_value[1], V], dim = 2)
+    # pass
+    # past_key_value = (K, V) if use_cache else None
 
     # Attention module
     if False: #(not HAS_FLASH_ATTENTION and attention_mask is None):
@@ -362,12 +364,12 @@ def LlamaAttention_fast_forward(
         A = flash_attn_func(Q, K, V, causal = True)
     else:
         # Grouped query attention
-        if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        pass
+        # if n_groups != 1:
+        #     K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+        #     V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+        #     K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        #     V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        # pass
         # Must be contiguous or else results are False!
         # https://github.com/pytorch/pytorch/issues/112577
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
@@ -378,7 +380,7 @@ def LlamaAttention_fast_forward(
         A = A.transpose(1, 2).contiguous()
     pass
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
-    attn_output = self.apply_o(self, attn_output)
+    attn_output = self.o_proj(attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 pass
