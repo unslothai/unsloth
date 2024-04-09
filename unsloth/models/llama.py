@@ -982,23 +982,23 @@ class FastLlamaModel:
 
     @staticmethod
     def pre_patch():
-        LlamaAttention      .forward = LlamaAttention_fast_forward
-        LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
-        LlamaFlashAttention2.forward = LlamaAttention_fast_forward
-        LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
-        LlamaModel          .forward = LlamaModel_fast_forward
-        LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        # LlamaAttention      .forward = LlamaAttention_fast_forward
+        # LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
+        # LlamaFlashAttention2.forward = LlamaAttention_fast_forward
+        # LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
+        # LlamaModel          .forward = LlamaModel_fast_forward
+        # LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
+        # PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
 
-        # Solves https://github.com/unslothai/unsloth/issues/168
-        # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
-        # https://github.com/huggingface/transformers/pull/27931
-        # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
-        import transformers.models.llama.modeling_llama
-        transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
-        transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
-        return
+        # # Solves https://github.com/unslothai/unsloth/issues/168
+        # # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
+        # # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
+        # # https://github.com/huggingface/transformers/pull/27931
+        # # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
+        # import transformers.models.llama.modeling_llama
+        # transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
+        # transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
+        # return
     pass
 
 
