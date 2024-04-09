@@ -95,11 +95,22 @@ def prepare_model_for_kbit_training(
     """
 
     # Freeze all parameters except LoRA
-    for name, param in model.named_parameters():
-        if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
-            param.requires_grad_(True)
-        else:
-            param.requires_grad_(False)
+    import re
+    with torch.inference_mode():
+        for name, param in model.named_parameters():
+            if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
+                param.requires_grad_(True)
+                # Also must be in float32!
+                if param.dtype != torch.float32:
+                    name = name.replace("base_model", "model", 1)
+                    layer_number = re.search(r"\.[\d]{1,}\.", name).group(0)
+                    name = name.replace(layer_number, f"[{layer_number[1:-1]}].")
+                    name = name.replace(".weight", "", 1)
+                    exec(f"{name}.to(torch.float32)")
+                pass
+            else:
+                param.requires_grad_(False)
+        pass
     pass
 
     # Gradient checkpointing!
