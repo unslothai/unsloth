@@ -122,10 +122,6 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/codegemma-7b",
         "google/codegemma-7b",
     ),
-    "unsloth/codegemma-2b-it-bnb-4bit" : (
-        "unsloth/codegemma-2b-it",
-        "google/codegemma-2b-it",
-    ),
     "unsloth/codegemma-7b-it-bnb-4bit" : (
         "unsloth/codegemma-7b-it",
         "google/codegemma-7b-it",
