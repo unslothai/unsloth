@@ -114,6 +114,22 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/OpenHermes-2.5-Mistral-7B",
         "teknium/OpenHermes-2.5-Mistral-7B",
     ),
+    "unsloth/codegemma-2b-bnb-4bit" : (
+        "unsloth/codegemma-2b",
+        "google/codegemma-2b",
+    ),
+    "unsloth/codegemma-7b-bnb-4bit" : (
+        "unsloth/codegemma-7b",
+        "google/codegemma-7b",
+    ),
+    "unsloth/codegemma-2b-it-bnb-4bit" : (
+        "unsloth/codegemma-2b-it",
+        "google/codegemma-2b-it",
+    ),
+    "unsloth/codegemma-7b-it-bnb-4bit" : (
+        "unsloth/codegemma-7b-it",
+        "google/codegemma-7b-it",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
