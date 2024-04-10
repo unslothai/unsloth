@@ -15,14 +15,17 @@
 import torch
 from typing import Optional, Tuple, List, Union
 from torch.nn.functional import scaled_dot_product_attention
-from transformers.models.llama.modeling_llama import (
-    logger,
-    BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
-)
-from transformers.modeling_attn_mask_utils import (
-    _prepare_4d_causal_attention_mask_for_sdpa,
-)
+from ..utils.imports import is_transformers_available, is_peft_available, is_bnb_available
+
+if is_transformers_available():
+    from transformers.models.llama.modeling_llama import (
+        logger,
+        BaseModelOutputWithPast,
+        CausalLMOutputWithPast,
+    )
+    from transformers.modeling_attn_mask_utils import (
+        _prepare_4d_causal_attention_mask_for_sdpa,
+    )
 from ..kernels import *
 from ._utils import *
 from ._utils import __version__
@@ -31,30 +34,35 @@ if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func
 
 # Final patching code
-from transformers.models.llama.modeling_llama import (
-    LlamaAttention,
-    LlamaDecoderLayer,
-    LlamaModel,
-    LlamaForCausalLM,
-)
-
-# For Pytorch 2.1.1
-try:
+if is_transformers_available():
     from transformers.models.llama.modeling_llama import (
-        LlamaSdpaAttention,
-        LlamaFlashAttention2,
+        LlamaAttention,
+        LlamaDecoderLayer,
+        LlamaModel,
+        LlamaForCausalLM,
     )
-except:
-    LlamaSdpaAttention   = LlamaAttention
-    LlamaFlashAttention2 = LlamaAttention
-pass
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
-from transformers import set_seed as transformers_set_seed
-from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+    # For Pytorch 2.1.1
+    try:
+        from transformers.models.llama.modeling_llama import (
+            LlamaSdpaAttention,
+            LlamaFlashAttention2,
+        )
+    except:
+        LlamaSdpaAttention   = LlamaAttention
+        LlamaFlashAttention2 = LlamaAttention
+    pass
+
+    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
+    from transformers import set_seed as transformers_set_seed
+
+if is_peft_available():
+    from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
+    from peft import PeftModelForCausalLM
+if is_bnb_available():
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+if is_peft_available():
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 

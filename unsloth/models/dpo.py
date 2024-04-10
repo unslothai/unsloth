@@ -11,16 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from ..utils.imports import is_transformers_available
 
-try:
-    from transformers.utils.notebook import (
-        IntervalStrategy,
-        NotebookTrainingTracker,
-        NotebookProgressCallback,
-    )
-    HAS_NOTEBOOK = True
-except:
-    HAS_NOTEBOOK = False
+HAS_NOTEBOOK = False
+if is_transformers_available():
+    try:
+        from transformers.utils.notebook import (
+            IntervalStrategy,
+            NotebookTrainingTracker,
+            NotebookProgressCallback,
+        )
+        HAS_NOTEBOOK = True
+    except:
+        pass
 pass
 
 DPOTrainer_metrics = [

@@ -14,9 +14,12 @@
 
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
-from transformers import AutoConfig
-from transformers import __version__ as transformers_version
-from peft import PeftConfig, PeftModel
+from ..utils.imports import is_transformers_available, is_peft_available
+if is_transformers_available():
+    from transformers import AutoConfig
+    from transformers import __version__ as transformers_version
+if is_peft_available():
+    from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER
 import os
 

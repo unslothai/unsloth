@@ -14,23 +14,25 @@
 
 from .llama import *
 from ._utils import __version__
+from ..utils.imports import is_transformers_available
 
-from transformers.models.mistral.modeling_mistral import (
-    MistralAttention,
-    MistralDecoderLayer,
-    MistralModel,
-    MistralForCausalLM,
-)
-# For Pytorch 2.1.1
-try:
+if is_transformers_available():
     from transformers.models.mistral.modeling_mistral import (
-        MistralSdpaAttention,
-        MistralFlashAttention2,
+        MistralAttention,
+        MistralDecoderLayer,
+        MistralModel,
+        MistralForCausalLM,
     )
-except:
-    MistralSdpaAttention   = MistralAttention
-    MistralFlashAttention2 = MistralAttention
-pass
+    # For Pytorch 2.1.1
+    try:
+        from transformers.models.mistral.modeling_mistral import (
+            MistralSdpaAttention,
+            MistralFlashAttention2,
+        )
+    except:
+        MistralSdpaAttention   = MistralAttention
+        MistralFlashAttention2 = MistralAttention
+    pass
 
 
 def MistralAttention_fast_forward(
