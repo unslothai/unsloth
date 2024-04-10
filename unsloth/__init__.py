@@ -57,7 +57,10 @@ pass
 
 
 # Try loading bitsandbytes and triton
-import bitsandbytes as bnb
+from .utils.imports import is_bnb_available
+
+if is_bnb_available():
+    import bitsandbytes as bnb
 import triton
 from triton.common.build import libcuda_dirs
 import os
@@ -65,49 +68,50 @@ import re
 import numpy as np
 import subprocess
 
-try:
-    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-    libcuda_dirs()
-except:
-    warnings.warn(
-        "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
-    )
-
-    if os.path.exists("/usr/lib64-nvidia"):
-        os.system("ldconfig /usr/lib64-nvidia")
-    elif os.path.exists("/usr/local"):
-        # Sometimes bitsandbytes cannot be linked properly in Runpod for example
-        possible_cudas = subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
-        find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
-        possible_cudas = [find_cuda.search(x) for x in possible_cudas]
-        possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
-
-        # Try linking cuda folder, or everything in local
-        if len(possible_cudas) == 0:
-            os.system(f"ldconfig /usr/local/")
-        else:
-            find_number = re.compile(r"([\d\.]{2,})")
-            latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
-            latest_cuda = possible_cudas[latest_cuda]
-            os.system(f"ldconfig /usr/local/{latest_cuda}")
-    pass
-
-    importlib.reload(bnb)
-    importlib.reload(triton)
+if is_bnb_available():
     try:
-        import bitsandbytes as bnb
-        from triton.common.build import libcuda_dirs
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
         warnings.warn(
-            "Unsloth: CUDA is not linked properly.\n"\
-            "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"\
-            "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
-            "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"\
-            "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
-            "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
+            "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
         )
+
+        if os.path.exists("/usr/lib64-nvidia"):
+            os.system("ldconfig /usr/lib64-nvidia")
+        elif os.path.exists("/usr/local"):
+            # Sometimes bitsandbytes cannot be linked properly in Runpod for example
+            possible_cudas = subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
+            find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
+            possible_cudas = [find_cuda.search(x) for x in possible_cudas]
+            possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
+
+            # Try linking cuda folder, or everything in local
+            if len(possible_cudas) == 0:
+                os.system(f"ldconfig /usr/local/")
+            else:
+                find_number = re.compile(r"([\d\.]{2,})")
+                latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
+                latest_cuda = possible_cudas[latest_cuda]
+                os.system(f"ldconfig /usr/local/{latest_cuda}")
+        pass
+
+        importlib.reload(bnb)
+        importlib.reload(triton)
+        try:
+            import bitsandbytes as bnb
+            from triton.common.build import libcuda_dirs
+            cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+            libcuda_dirs()
+        except:
+            warnings.warn(
+                "Unsloth: CUDA is not linked properly.\n"\
+                "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"\
+                "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
+                "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"\
+                "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
+                "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
+            )
 pass
 
 from .models import *

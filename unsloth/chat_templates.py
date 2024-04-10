@@ -17,9 +17,11 @@ __all__ = [
     "test_chat_templates",
 ]
 
-from transformers import StoppingCriteria, StoppingCriteriaList
+from .utils.imports import is_transformers_available
+if is_transformers_available():
+    from transformers import StoppingCriteria, StoppingCriteriaList
+    from transformers.models.llama.modeling_llama import logger
 from torch import LongTensor, FloatTensor
-from transformers.models.llama.modeling_llama import logger
 from .save import patch_saving_functions
 import os
 import shutil

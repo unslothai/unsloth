@@ -177,7 +177,7 @@ def MistralForCausalLM_fast_forward(
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     *args, **kwargs,
-) -> Union[Tuple, CausalLMOutputWithPast]:
+) -> Union[Tuple, "transformers.modeling_outputs.CausalLMOutputWithPast"]:
 
     if causal_mask is None and past_key_values is None:
         bsz, q_len = input_ids.shape

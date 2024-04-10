@@ -478,7 +478,7 @@ def LlamaModel_fast_forward(
     output_hidden_states: Optional[bool] = None,
     return_dict:          Optional[bool] = None,
     *args, **kwargs,
-) -> Union[Tuple, BaseModelOutputWithPast]:
+) -> Union[Tuple, "transformers.models.llama.modeling_llama.BaseModelOutputWithPast"]:
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     assert(output_attentions is False)
