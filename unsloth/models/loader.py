@@ -78,6 +78,12 @@ class FastLanguageModel(FastLlamaModel):
         use_gradient_checkpointing = True,
         *args, **kwargs,
     ):
+        if token is None and "HF_TOKEN" in os.environ:
+            token = os.environ["HF_TOKEN"]
+
+        if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+            token = os.environ["HUGGINGFACE_TOKEN"]
+
         old_model_name = model_name
         model_name = _get_model_name(model_name, load_in_4bit)
 

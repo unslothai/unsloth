@@ -48,7 +48,7 @@ def try_fix_tokenizer(tokenizer, prepend = True):
 
     tokenizer_string = converted_tokenizer.to_str()
 
-    # Llama does ▁apple. Sometimes this is wrong!!
+    # Llama does _apple. Sometimes this is wrong!!
     prepend_text = '{"type":"Prepend","prepend":"▁"},'
     if not prepend and prepend_text in tokenizer_string:
         tokenizer_string = tokenizer_string.replace(prepend_text, "", 1)
@@ -269,15 +269,26 @@ def load_correct_tokenizer(
         cache_dir = None
     pass
 
-    slow_tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name,
-        model_max_length  = model_max_length,
-        padding_side      = padding_side,
-        token             = token,
-        trust_remote_code = trust_remote_code,
-        use_fast          = False,
-        cache_dir         = cache_dir,
-    )
+    # Try loading the slow tokenizer. If it fails, then try Fast only
+    # Mainly to solve Deepseek models with no tokenizer.model file
+    slow_tokenizer = None
+    try:
+        slow_tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name,
+            model_max_length  = model_max_length,
+            padding_side      = padding_side,
+            token             = token,
+            trust_remote_code = trust_remote_code,
+            use_fast          = False,
+            cache_dir         = cache_dir,
+        )
+    except:
+        print(
+            f"Unsloth: {tokenizer_name} has no tokenizer.model file.\n"\
+            "Just informing you about this - this is not a critical error."
+        )
+    pass
+
     fast_tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name,
         model_max_length  = model_max_length,
@@ -286,14 +297,19 @@ def load_correct_tokenizer(
         trust_remote_code = trust_remote_code,
         cache_dir         = cache_dir,
     )
-    fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
-    fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
-    
-    # Confirm if slow and fast are equivalent!
-    if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-        return fast_tokenizer
+
+    if slow_tokenizer is not None:
+        fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
+        fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
+        
+        # Confirm if slow and fast are equivalent!
+        if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
+            return fast_tokenizer
+        else:
+            return convert_to_fast_tokenizer(slow_tokenizer)
+        pass
     else:
-        return convert_to_fast_tokenizer(slow_tokenizer)
+        return fast_tokenizer
     pass
 pass
 
@@ -408,25 +424,37 @@ def check_tokenizer(
                 cache_dir = None
             pass
 
-            # Try slow tokenizer which can fix things!
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                model_max_length = model_max_length,
-                padding_side = padding_side,
-                token = token,
-                use_fast = False,
-                cache_dir = cache_dir,
-            )
-            return check_tokenizer(
-                model = model,
-                tokenizer = tokenizer,
-                model_name = model_name,
-                model_max_length = model_max_length,
-                padding_side = padding_side,
-                token = token,
-                _reload = False,
-            )
-            break
+            # Sometimes slow tokenizer does not work like Deepseek
+            try:
+                # Try slow tokenizer which can fix things!
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_name,
+                    model_max_length = model_max_length,
+                    padding_side = padding_side,
+                    token = token,
+                    use_fast = False,
+                    cache_dir = cache_dir,
+                )
+                return check_tokenizer(
+                    model = model,
+                    tokenizer = tokenizer,
+                    model_name = model_name,
+                    model_max_length = model_max_length,
+                    padding_side = padding_side,
+                    token = token,
+                    _reload = False,
+                )
+                break
+            except:
+                # Tokenizer has out of bounds issues and we can't
+                # load the slow tokenizer version :(
+                logger.warning_once(
+                    "Unsloth: Tokenizer is most likely buggy, and Unsloth failed to repair it.\n"\
+                    "It will still work, but beware of out of bounds memory accesses.\n"\
+                    "Please file an issue on the model owner's repo about this issue."
+                )
+                return tokenizer
+            pass
         pass
     pass
     return convert_to_fast_tokenizer(tokenizer)

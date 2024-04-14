@@ -293,7 +293,7 @@ def get_chat_template(
 
         # Check fast tokenizer
         if not is_fast_tokenizer:
-            logger.warning_once(
+            print(
                 f"Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
                 "Please log a Github issue if you want this as a new feature!\n"\
                 "Your chat template will still work, but it won't add or edit tokens."
@@ -348,11 +348,31 @@ def get_chat_template(
             # But training the lm_head and embeddings are slow!
             # This is a HACK!
             # Idea from https://huggingface.co/cognitivecomputations/dolphin-2.6-mistral-7b-dpo-laser
+
+            old_bos_token = getattr(tokenizer, "bos_token", None)
+            old_eos_token = getattr(tokenizer, "eos_token", None)
+            old_pad_token = getattr(tokenizer, "pad_token", None)
+            old_unk_token = getattr(tokenizer, "unk_token", None)
+
             string_vocab = tokenizer._tokenizer.to_str()
-            old_eos_token = tokenizer.eos_token
-            string_vocab = string_vocab.replace(old_eos_token, stop_word)
+            # First check if new stop_word is in the tokenizer
+            if stop_word in string_vocab:
+                # We shall swap them around
+                temporary_stop_token = "<|:__TEMP//STOP//TOKEN__:|>"
+                string_vocab = string_vocab.replace(old_eos_token, temporary_stop_token)
+                string_vocab = string_vocab.replace(stop_word, old_eos_token)
+                string_vocab = string_vocab.replace(temporary_stop_token, stop_word)
+            else:
+                string_vocab = string_vocab.replace(old_eos_token, stop_word)
+            pass
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
-            new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+            new_tokenizer = tokenizer.__class__(
+                tokenizer_object = new_tokenizer,
+                bos_token = old_bos_token,
+                eos_token = stop_word,
+                unk_token = old_unk_token,
+                pad_token = old_pad_token,
+            )
 
             # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
             token_mapping = { old_eos_token : stop_word, }
