@@ -1013,23 +1013,19 @@ def save_to_gguf(
 pass
 
 
-def unsloth_save_pretrained_merged(
+def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
-    save_directory       : Union[str, os.PathLike],
-    tokenizer            = None,
-    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
-    push_to_hub          : bool = False,
-    token                : Optional[Union[str, bool]] = None,
-    is_main_process      : bool = True,
-    state_dict           : Optional[dict] = None,
-    save_function        : Callable = torch.save,
-    max_shard_size       : Union[int, str] = "5GB",
-    safe_serialization   : bool = True,
-    variant              : Optional[str] = None,
-    save_peft_format     : bool = True,
-    tags                 : List[str] = None,
-    temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,
+    tokenizer,
+    repo_id: str,
+    use_temp_dir: Optional[bool] = None,
+    commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
+    private: Optional[bool] = None,
+    token: Union[bool, str, None] = None,
+    create_pr: bool = False,
+    revision: str = None,
+    commit_description: str = "Convert LoRA to GGML format using Unsloth",
+    temporary_location: str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage: float = 0.85,
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
@@ -1638,17 +1634,14 @@ def patch_saving_functions(model):
             break
     pass
 
-    # Add saving methods to top level model
     if hasattr(model, "config"):
         # Counteract tokenizers
         model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
         model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
         model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
         model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
+        model.unsloth_convert_lora_to_ggml_and_push_to_hub = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub, model)
     pass
-
-    # Attach the unsloth_convert_lora_to_ggml_and_push_to_hub method to the model
-    model.unsloth_convert_lora_to_ggml_and_push_to_hub = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub, model)
 
     return model
 pass
