@@ -1519,7 +1519,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     print(f"Unsloth: Converting LoRA adapters at {lora_directory} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory} {output_file}"
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory} {output_file} llama"
 
     try:
         with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
