@@ -327,7 +327,7 @@ def unsloth_save_model(
         if hasattr(model, "config"):
             print(f"Saved {save_method} model to https://huggingface.co/" + save_directory)
         pass
-        return save_directory
+        return save_directory, None
     pass
 
     # Tokenizer has different saving arguments
@@ -402,7 +402,7 @@ def unsloth_save_model(
         pass
 
         print(" Done.")
-        return save_directory
+        return save_directory, None
     pass
 
     # If push_to_hub, we must remove the .../ part of a repo
