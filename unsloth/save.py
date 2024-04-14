@@ -1013,19 +1013,23 @@ def save_to_gguf(
 pass
 
 
-def unsloth_convert_lora_to_ggml_and_push_to_hub(
+def unsloth_save_pretrained_merged(
     self,
-    tokenizer,
-    repo_id: str,
-    use_temp_dir: Optional[bool] = None,
-    commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
-    private: Optional[bool] = None,
-    token: Union[bool, str, None] = None,
-    create_pr: bool = False,
-    revision: str = None,
-    commit_description: str = "Convert LoRA to GGML format using Unsloth",
-    temporary_location: str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage: float = 0.85,
+    save_directory       : Union[str, os.PathLike],
+    tokenizer            = None,
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+    is_main_process      : bool = True,
+    state_dict           : Optional[dict] = None,
+    save_function        : Callable = torch.save,
+    max_shard_size       : Union[int, str] = "5GB",
+    safe_serialization   : bool = True,
+    variant              : Optional[str] = None,
+    save_peft_format     : bool = True,
+    tags                 : List[str] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.85,
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
@@ -1537,10 +1541,8 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
         self, repo_id, token,
         "GGML converted LoRA", "ggml", output_file, None, private,
     )
-    link = f"{repo_id.lstrip('/')}"
+    link = f"{username}/{repo_id.lstrip('/')}"
     print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
-    print(f"\nUnsloth: Done! You can now use the GGML file in your Ollama configuration or somewhere else.")
-    print("This function was added by @Maheswar, ping him on our Discord or find him on HuggingFace @mahiatlinux if you like it!")
 
     
 def patch_saving_functions(model):
@@ -1628,20 +1630,18 @@ def patch_saving_functions(model):
             pass
         pass
 
-        if hasattr(original_model, "model"): 
-            original_model = original_model.model
-        else: 
-            break
+        if hasattr(original_model, "model"): original_model = original_model.model
+        else: break
     pass
 
+    # Add saving methods to top level model
     if hasattr(model, "config"):
         # Counteract tokenizers
         model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
         model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
         model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
         model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
-        model.unsloth_convert_lora_to_ggml_and_push_to_hub = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub, model)
+        model.push_to_hub_lora_ggml  = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub, model)
     pass
-
     return model
 pass
