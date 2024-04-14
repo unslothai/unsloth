@@ -1017,6 +1017,12 @@ class FastLlamaModel:
         trust_remote_code = False,
         **kwargs,
     ):
+        if token is None and "HF_TOKEN" in os.environ:
+            token = os.environ["HF_TOKEN"]
+
+        if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+            token = os.environ["HUGGINGFACE_TOKEN"]
+
         if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
@@ -1445,8 +1451,8 @@ class FastLlamaModel:
         for module in target_modules:
             if module == "lm_head":
                 logger.warning_once(
-                    "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`."\
-                    "We shall do it for you!"
+                    "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`. "\
+                    "Luckily, we shall do it for you!"
                 )
                 train_lm_head = True
                 if modules_to_save is None: modules_to_save = ["lm_head"]
@@ -1454,8 +1460,8 @@ class FastLlamaModel:
 
             elif module == "embed_tokens":
                 logger.warning_once(
-                    "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`."\
-                    "We shall do it for you!"
+                    "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
+                    "Luckily, we shall do it for you!"
                 )
                 train_embed_tokens = True
                 if modules_to_save is None: modules_to_save = ["embed_tokens"]
