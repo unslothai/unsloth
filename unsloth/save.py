@@ -1467,8 +1467,6 @@ pass
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
     repo_id: str,
-    lora_directory: str,
-    arch_name: str = "llama",
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
     private: Optional[bool] = None,
@@ -1496,15 +1494,15 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
 
     for _ in range(3):
         gc.collect()
-
+    model.save_pretrained("lora-to-ggml")
     model_type = self.config.model_type
-
+    lora_directory = "lora-to-ggml"
     output_file = os.path.join(lora_directory, "ggml-adapter-model.bin")
 
     print(f"Unsloth: Converting LoRA adapters at {lora_directory} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory} {output_file} {arch_name}"
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory} {output_file} llama"
 
     try:
         with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
