@@ -283,7 +283,7 @@ def load_correct_tokenizer(
             cache_dir         = cache_dir,
         )
     except:
-        logger.warning_once(
+        print(
             f"Unsloth: {tokenizer_name} has no tokenizer.model file.\n"\
             "Just informing you about this - this is not a critical error."
         )
