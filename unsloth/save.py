@@ -1483,12 +1483,12 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     tokenizer,
     repo_id: str,
     use_temp_dir: Optional[bool] = None,
-    commit_message: Optional[str] = None,
+    commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
     private: Optional[bool] = None,
     token: Union[bool, str, None] = None,
     create_pr: bool = False,
     revision: str = None,
-    commit_description: str = None,
+    commit_description: str = "Convert LoRA to GGML format using Unsloth",
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
 ):
@@ -1537,15 +1537,11 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     print(f"Unsloth: Conversion completed! Output file: {output_file}")
 
     print("Unsloth: Uploading GGML file to Hugging Face Hub...")
-    self.unsloth_push_to_hub(
-        repo_id=repo_id,
-        token=token,
-        commit_message=commit_message or "Converted LoRA to GGML with Unsloth",
-        private=private,
-        commit_description=commit_description or "Convert LoRA to GGML format using Unsloth",
+    username = upload_to_huggingface(
+        self, repo_id, token,
+        "GGML converted LoRA", "ggml", output_file, None, private,
     )
-
-    link = f"{repo_id.lstrip('/')}"
+    link = f"{username}/{repo_id.lstrip('/')}"
     print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
 
     
