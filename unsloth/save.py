@@ -1464,6 +1464,64 @@ def unsloth_push_to_hub_gguf(
 pass
 
 
+def unsloth_convert_lora_to_ggml_and_push_to_hub(
+    self,
+    repo_id: str,
+    lora_directory: str,
+    arch_name: str = "llama",
+    use_temp_dir: Optional[bool] = None,
+    commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
+    private: Optional[bool] = None,
+    token: Union[bool, str, None] = None,
+    create_pr: bool = False,
+    revision: str = None,
+    commit_description: str = "Convert LoRA to GGML format using Unsloth",
+    temporary_location: str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage: float = 0.85,
+):
+    if not os.path.exists("llama.cpp"):
+        if IS_KAGGLE_ENVIRONMENT:
+            python_install = install_python_non_blocking(["protobuf"])
+            python_install.wait()
+            install_llama_cpp_blocking(use_cuda=False)
+            makefile = None
+        else:
+            git_clone = install_llama_cpp_clone_non_blocking()
+            python_install = install_python_non_blocking(["protobuf"])
+            git_clone.wait()
+            makefile = install_llama_cpp_make_non_blocking()
+            python_install.wait()
+    else:
+        makefile = None
+
+    for _ in range(3):
+        gc.collect()
+
+    model_type = self.config.model_type
+
+    output_file = os.path.join(lora_directory, "ggml-adapter-model.bin")
+
+    print(f"Unsloth: Converting LoRA adapters at {lora_directory} to GGML format.")
+    print(f"The output file will be {output_file}")
+
+    command = f"python convert-lora-to-ggml.py {lora_directory} {arch_name}"
+
+    with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1) as sp:
+        for line in sp.stdout:
+            print(line.decode("utf-8", errors="replace"), flush=True, end="")
+        if sp.returncode is not None and sp.returncode != 0:
+            raise subprocess.CalledProcessError(sp.returncode, sp.args)
+
+    print(f"Unsloth: Conversion completed! Output file: {output_file}")
+
+    print("Unsloth: Uploading GGML file to Hugging Face Hub...")
+    username = upload_to_huggingface(
+        self, repo_id, token,
+        "GGML converted LoRA", "ggml", output_file, None, private,
+    )
+    link = f"{username}/{repo_id.lstrip('/')}"
+    print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
+
 def patch_saving_functions(model):
     import inspect
     import re
@@ -1560,6 +1618,7 @@ def patch_saving_functions(model):
         model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
         model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
         model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
+        model.push_to_hub_lora_ggml  = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub, model)
     pass
     return model
 pass
