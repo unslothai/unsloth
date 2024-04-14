@@ -1464,12 +1464,13 @@ def unsloth_push_to_hub_gguf(
 pass
 
 # Corrected function to save LoRA to a custom directory
-def save_lora_to_folder_for_ggml_conversion(model, lora_directory):
+def save_lora_to_folder_for_ggml_conversion(model, tokenizer, lora_directory):
     # Create the custom directory if it doesn't exist
     os.makedirs(lora_directory, exist_ok=True)
     # Call the unsloth_save_model function with the custom directory
     unsloth_save_model(
         model,
+        tokenizer,
         save_directory=lora_directory,
         save_method="lora",
         push_to_hub=False,
@@ -1478,7 +1479,8 @@ def save_lora_to_folder_for_ggml_conversion(model, lora_directory):
 # Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
-    repo_id: str,
+    repo_id,
+    tokenizer,
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
     private: Optional[bool] = None,
@@ -1508,7 +1510,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
         gc.collect()
 
     lora_directory = "lora-to-ggml"
-    save_lora_to_folder_for_ggml_conversion(self, lora_directory) # Pass model (self) and tokenizer to the function
+    save_lora_to_folder_for_ggml_conversion(self, tokenizer, lora_directory) # Pass model (self) and tokenizer to the function
 
     model_type = self.config.model_type
     output_file = os.path.join(lora_directory, "ggml-adapter-model.bin")
