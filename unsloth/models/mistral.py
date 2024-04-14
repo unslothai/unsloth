@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+import os
 from ._utils import __version__
 
 from transformers.models.mistral.modeling_mistral import (
@@ -301,6 +302,12 @@ class FastMistralModel(FastLlamaModel):
         trust_remote_code = False,
         **kwargs,
     ):
+        if token is None and "HF_TOKEN" in os.environ:
+            token = os.environ["HF_TOKEN"]
+
+        if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+            token = os.environ["HUGGINGFACE_TOKEN"]
+
         if model_patcher is None: model_patcher = FastMistralModel
         # Mistral does NOT support RoPE Scaling!
         if rope_scaling is not None:
