@@ -1480,12 +1480,12 @@ def save_lora_to_custom_dir(model, tokenizer, lora_directory):
 # Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
-    repo_id: str,
     tokenizer,
-    token: Union[bool, str, None] = None,
+    repo_id: str,
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = None,
     private: Optional[bool] = None,
+    token: Union[bool, str, None] = None,
     create_pr: bool = False,
     revision: str = None,
     commit_description: str = None,
