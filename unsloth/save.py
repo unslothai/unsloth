@@ -1464,14 +1464,12 @@ def unsloth_push_to_hub_gguf(
 pass
 
 # Corrected function to save LoRA to a custom directory
-def save_lora_to_custom_dir(model, tokenizer, lora_directory):
+def save_lora_to_folder_for_ggml_conversion(model, lora_directory):
     # Create the custom directory if it doesn't exist
     os.makedirs(lora_directory, exist_ok=True)
-
     # Call the unsloth_save_model function with the custom directory
     unsloth_save_model(
         model,
-        tokenizer,
         save_directory=lora_directory,
         save_method="lora",
         push_to_hub=False,
@@ -1480,7 +1478,6 @@ def save_lora_to_custom_dir(model, tokenizer, lora_directory):
 # Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
-    tokenizer, # Make sure tokenizer is passed to the method
     repo_id: str,
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
@@ -1511,7 +1508,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
         gc.collect()
 
     lora_directory = "lora-to-ggml"
-    save_lora_to_custom_dir(self, tokenizer, lora_directory) # Pass model (self) and tokenizer to the function
+    save_lora_to_folder_for_ggml_conversion(self, lora_directory) # Pass model (self) and tokenizer to the function
 
     model_type = self.config.model_type
     output_file = os.path.join(lora_directory, "ggml-adapter-model.bin")
@@ -1519,7 +1516,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     print(f"Unsloth: Converting LoRA adapters at {lora_directory} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory} {output_file} llama"
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory} {output_file}"
 
     try:
         with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
@@ -1543,7 +1540,8 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     )
     link = f"{username}/{repo_id.lstrip('/')}"
     print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
-
+    print(f"Unsloth: Done! You can now use the GGML file in your Ollama configuration or somewhere else.")
+    print("This function was added by @Maheswar, ping him on our Discord if you like it!")
     
 def patch_saving_functions(model):
     import inspect
