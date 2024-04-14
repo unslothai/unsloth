@@ -1463,7 +1463,8 @@ def unsloth_push_to_hub_gguf(
     print(f"Saved GGUF to https://huggingface.co/{link}")
 pass
 
-def save_lora_to_custom_dir(lora_directory):
+# Corrected function to save LoRA to a custom directory
+def save_lora_to_custom_dir(model, tokenizer, lora_directory):
     # Create the custom directory if it doesn't exist
     os.makedirs(lora_directory, exist_ok=True)
 
@@ -1475,8 +1476,11 @@ def save_lora_to_custom_dir(lora_directory):
         save_method="lora",
         push_to_hub=False,
     )
+
+# Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
+    tokenizer, # Make sure tokenizer is passed to the method
     repo_id: str,
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
@@ -1505,8 +1509,10 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
 
     for _ in range(3):
         gc.collect()
+
     lora_directory = "lora-to-ggml"
-    save_lora_to_custom_dir(lora_directory)
+    save_lora_to_custom_dir(self, tokenizer, lora_directory) # Pass model (self) and tokenizer to the function
+
     model_type = self.config.model_type
     output_file = os.path.join(lora_directory, "ggml-adapter-model.bin")
 
@@ -1537,6 +1543,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     )
     link = f"{username}/{repo_id.lstrip('/')}"
     print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
+
     
 def patch_saving_functions(model):
     import inspect
