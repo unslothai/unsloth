@@ -1504,13 +1504,20 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     print(f"Unsloth: Converting LoRA adapters at {lora_directory} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = f"python convert-lora-to-ggml.py {lora_directory} {arch_name}"
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory} {output_file} {arch_name}"
 
-    with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1) as sp:
-        for line in sp.stdout:
-            print(line.decode("utf-8", errors="replace"), flush=True, end="")
-        if sp.returncode is not None and sp.returncode != 0:
-            raise subprocess.CalledProcessError(sp.returncode, sp.args)
+    try:
+        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+            for line in sp.stdout:
+                print(line, end="", flush=True)
+            for line in sp.stderr:
+                print(line, end="", flush=True)
+            sp.wait()
+            if sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, command)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Conversion failed with return code {e.returncode}")
+        return
 
     print(f"Unsloth: Conversion completed! Output file: {output_file}")
 
@@ -1521,7 +1528,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     )
     link = f"{username}/{repo_id.lstrip('/')}"
     print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
-
+    
 def patch_saving_functions(model):
     import inspect
     import re
