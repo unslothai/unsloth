@@ -1632,8 +1632,10 @@ def patch_saving_functions(model):
             pass
         pass
 
-        if hasattr(original_model, "model"): original_model = original_model.model
-        else: break
+        if hasattr(original_model, "model"): 
+            original_model = original_model.model
+        else: 
+            break
     pass
 
     # Add saving methods to top level model
@@ -1643,7 +1645,10 @@ def patch_saving_functions(model):
         model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
         model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
         model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
-        model.push_to_hub_lora_ggml  = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub, model)
     pass
+
+    # Attach the unsloth_convert_lora_to_ggml_and_push_to_hub method to the model
+    model.unsloth_convert_lora_to_ggml_and_push_to_hub = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub, model)
+
     return model
 pass
