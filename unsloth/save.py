@@ -1466,7 +1466,7 @@ pass
 # Corrected function to save LoRA to a custom directory
 def save_lora_to_custom_dir(model, tokenizer, save_directory):
     # Create the custom directory if it doesn't exist
-    os.makedirs(lora_directory, exist_ok=True)
+    os.makedirs(save_directory, exist_ok=True)
 
     # Call the unsloth_save_model function with the custom directory
     unsloth_save_model(
