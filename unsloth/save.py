@@ -1546,10 +1546,10 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
     print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
 
-
 def unsloth_convert_lora_to_ggml_and_save_locally(
     self,
-    tokenizer,
+    save_directory: str, # Added parameter for the folder name 
+    tokenizer, 
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
 ):
@@ -1571,16 +1571,16 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     for _ in range(3):
         gc.collect()
 
-    lora_directory_local = "lora-to-ggml-local"
-    save_lora_to_custom_dir(self, tokenizer, lora_directory_local)
+    # Use the provided save_directory for local saving
+    save_lora_to_custom_dir(self, tokenizer, save_directory)
 
     model_type = self.config.model_type
-    output_file = os.path.join(lora_directory_local, "ggml-adapter-model.bin")
+    output_file = os.path.join(save_directory, "ggml-adapter-model.bin")
 
-    print(f"Unsloth: Converting auto-saved LoRA adapters at {lora_directory_local} to GGML format.")
+    print(f"Unsloth: Converting auto-saved LoRA adapters at {save_directory} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_local} {output_file} llama"
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
 
     try:
         with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
@@ -1597,8 +1597,6 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     print("Unsloth: Done.")
     print(f"Unsloth: Conversion completed! Output file: {output_file}")
     print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
-
-
 
 def patch_saving_functions(model):
     import inspect
