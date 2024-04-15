@@ -1541,9 +1541,10 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
         self, repo_id, token,
         "GGML converted LoRA", "ggml", output_file, None, private,
     )
-    link = f"{username}/{repo_id.lstrip('/')}"
+    link = f"{repo_id.lstrip('/')}"
+    print("Unsloth: Done.")
     print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
-
+    print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
     
 def patch_saving_functions(model):
     import inspect
