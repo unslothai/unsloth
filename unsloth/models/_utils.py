@@ -148,7 +148,7 @@ def patch_tokenizer(model, tokenizer):
         model.config.update({"unsloth_version" : __version__})
     if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
         # Fixes https://github.com/unslothai/unsloth/issues/5
-        if hasattr(tokenizer, "unk_token"):
+        if hasattr(tokenizer, "unk_token") and tokenizer.unk_token is not None:
             tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token})
             tokenizer.pad_token = tokenizer.unk_token
         else:
