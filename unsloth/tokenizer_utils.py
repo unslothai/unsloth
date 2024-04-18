@@ -299,9 +299,9 @@ def load_correct_tokenizer(
     )
 
     if slow_tokenizer is not None:
-        if hasattr(fast_tokenizer "add_bos_token") and hasattr(slow_tokenizer "add_bos_token"):
+        if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
-        if hasattr(fast_tokenizer "add_eos_token") and hasattr(slow_tokenizer "add_eos_token"):
+        if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
             fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
         
         # Confirm if slow and fast are equivalent!
