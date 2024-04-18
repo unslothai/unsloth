@@ -134,6 +134,9 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/llama-3-8b-Instruct",
         "meta-llama/Meta-Llama-3-8B-Instruct",
     ),
+    "unsloth/llama-3-70b-bnb-4bit" : (
+        "meta-llama/Meta-Llama-3-70B",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
