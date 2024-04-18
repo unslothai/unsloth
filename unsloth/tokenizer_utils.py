@@ -187,7 +187,7 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     all_special_tokens = list(set(special_tokens + slow_tokenizer.all_special_tokens))
     try:
         string = "\n".join(all_special_tokens) + \
-            "A quick brown fox jumps over the lazy dog!!\n\n" + \
+            "A quick brown fox jumps over the lazy dog!!\n\nHi</s>\n\n" + \
             "".join(all_special_tokens)
         return slow_tokenizer(string).input_ids == fast_tokenizer(string).input_ids
     except:

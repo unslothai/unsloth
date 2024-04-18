@@ -126,6 +126,14 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/codegemma-7b-it",
         "google/codegemma-7b-it",
     ),
+    "unsloth/llama-3-8b-bnb-4bit" : (
+        "unsloth/llama-3-8b",
+        "meta-llama/Meta-Llama-3-8B",
+    ),
+    "unsloth/llama-3-8b-Instruct-bnb-4bit" : (
+        "unsloth/llama-3-8b-Instruct",
+        "meta-llama/Meta-Llama-3-8B-Instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
