@@ -215,6 +215,11 @@ def fix_sentencepiece_tokenizer(
         os.makedirs(temporary_location)
     pass
 
+    # Check if tokenizer.model exists
+    if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
+        return new_tokenizer
+    pass
+
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
 
