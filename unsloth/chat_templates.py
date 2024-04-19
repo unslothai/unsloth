@@ -255,6 +255,20 @@ gemma_chatml_eos_token = (
 CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token,)
 
 
+# Llama-3
+# Weirdly \n\n is needed?
+llama3_template = \
+    "{{ bos_token }}"\
+    "{% for message in messages %}"\
+        "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+    "{% endfor %}"\
+    "{% if add_generation_prompt %}"\
+        "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"\
+    "{% endif %}"
+llama3_template_eos_token = "eos_token"
+CHAT_TEMPLATES["llama-3"] = (llama3_template, gemma_chatml_eos_token,)
+
+
 def get_chat_template(
     tokenizer,
     chat_template = "chatml",
@@ -540,4 +554,12 @@ def test_chat_templates():
     correct_tokenizer.chat_template = gemma_template
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     assert(our_prompt == correct_prompt)
+
+    # Llama-3
+    template = llama3_template
+    correct_tokenizer = AutoTokenizer.from_pretrained("unsloth/llama-3-8b-Instruct")
+    correct_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
+    correct_tokenizer.chat_template = template
+    our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
+    assert(correct_prompt == our_prompt)
 pass
