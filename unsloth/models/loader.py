@@ -12,22 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .llama import FastLlamaModel, logger
+from .llama import FastLlamaModel
 from .mistral import FastMistralModel
-from transformers import AutoConfig
-from transformers import __version__ as transformers_version
-from peft import PeftConfig, PeftModel
+from ..utils.imports import is_transformers_available, is_peft_available
+if is_transformers_available():
+    from transformers import AutoConfig
+    from transformers import __version__ as transformers_version
+    from .llama import logger
+if is_peft_available():
+    from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER
 import os
 
-# https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
-major, minor = transformers_version.split(".")[:2]
-major, minor = int(major), int(minor)
-SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
-SUPPORTS_GEMMA   = (major > 4) or (major == 4 and minor >= 38)
-if SUPPORTS_GEMMA:
-    from .gemma import FastGemmaModel
-del major, minor
+if is_transformers_available():
+    # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
+    major, minor = transformers_version.split(".")[:2]
+    major, minor = int(major), int(minor)
+    SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
+    SUPPORTS_GEMMA   = (major > 4) or (major == 4 and minor >= 38)
+    if SUPPORTS_GEMMA:
+        from .gemma import FastGemmaModel
+    del major, minor
 
 
 def _get_model_name(model_name, load_in_4bit = True):

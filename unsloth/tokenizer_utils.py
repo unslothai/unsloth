@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from transformers import AutoTokenizer
-from transformers.convert_slow_tokenizer import convert_slow_tokenizer
-from transformers import PreTrainedTokenizerFast
+from .utils.imports import is_transformers_available
+if is_transformers_available():
+    from transformers import AutoTokenizer
+    from transformers.convert_slow_tokenizer import convert_slow_tokenizer
+    from transformers.models.llama.modeling_llama import logger
+    from transformers import AutoTokenizer, convert_slow_tokenizer, PreTrainedTokenizerFast
 import re
 import os
-from transformers.models.llama.modeling_llama import logger
 
 __all__ = [
     "load_correct_tokenizer",

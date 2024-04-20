@@ -15,23 +15,25 @@
 from .llama import *
 import os
 from ._utils import __version__
+from ..utils.imports import is_transformers_available
 
-from transformers.models.mistral.modeling_mistral import (
-    MistralAttention,
-    MistralDecoderLayer,
-    MistralModel,
-    MistralForCausalLM,
-)
-# For Pytorch 2.1.1
-try:
+if is_transformers_available():
     from transformers.models.mistral.modeling_mistral import (
-        MistralSdpaAttention,
-        MistralFlashAttention2,
+        MistralAttention,
+        MistralDecoderLayer,
+        MistralModel,
+        MistralForCausalLM,
     )
-except:
-    MistralSdpaAttention   = MistralAttention
-    MistralFlashAttention2 = MistralAttention
-pass
+    # For Pytorch 2.1.1
+    try:
+        from transformers.models.mistral.modeling_mistral import (
+            MistralSdpaAttention,
+            MistralFlashAttention2,
+        )
+    except:
+        MistralSdpaAttention   = MistralAttention
+        MistralFlashAttention2 = MistralAttention
+    pass
 
 
 def MistralAttention_fast_forward(
@@ -176,7 +178,7 @@ def MistralForCausalLM_fast_forward(
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
     *args, **kwargs,
-) -> Union[Tuple, CausalLMOutputWithPast]:
+) -> Union[Tuple, "transformers.modeling_outputs.CausalLMOutputWithPast"]:
 
     if causal_mask is None and past_key_values is None:
         bsz, q_len = input_ids.shape

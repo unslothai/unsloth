@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
-from peft.tuners.lora import Linear as Peft_Linear
+from .utils.imports import is_bnb_available, is_peft_available, is_transformers_available
+
+if is_bnb_available():
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+if is_peft_available():
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+    from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import torch
 import os
 import pickle
 import gc
-from transformers.models.llama.modeling_llama import logger
+if is_transformers_available():
+    from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 import subprocess
 import psutil

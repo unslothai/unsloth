@@ -20,9 +20,21 @@ warnings.filterwarnings(action = "ignore", category = UserWarning, module = "hug
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "accelerate")
-import bitsandbytes as bnb
-from transformers.models.llama.modeling_llama import logger
-from transformers import AutoTokenizer
+
+from ..utils.imports import (
+    is_bnb_available,
+    is_transformers_available,
+    is_flash_attn_available,
+    is_peft_available,
+)
+
+# Optional imports
+if is_bnb_available():
+    import bitsandbytes as bnb
+if is_transformers_available():
+    from transformers.models.llama.modeling_llama import logger
+    from transformers import AutoTokenizer
+
 from platform import system as platform_system
 platform_system = platform_system()
 import math
@@ -33,28 +45,30 @@ import psutil
 __version__ = "2024.4"
 
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-major_version, minor_version = torch.cuda.get_device_capability()
-if major_version >= 8:
-    try:
-        from flash_attn import flash_attn_func
-        # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
+HAS_FLASH_ATTENTION = False
+if is_flash_attn_available():
+    major_version, minor_version = torch.cuda.get_device_capability()
+    if major_version >= 8:
         try:
-            from flash_attn.flash_attn_interface import flash_attn_cuda
-            HAS_FLASH_ATTENTION = True
+            from flash_attn import flash_attn_func
+            # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
+            try:
+                from flash_attn.flash_attn_interface import flash_attn_cuda
+                HAS_FLASH_ATTENTION = True
+            except:
+                logger.warning_once(
+                    "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
+                    "A possible explanation is you have a new CUDA version which isn't\n"\
+                    "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
+                    "We shall now use Xformers instead, which gets a 0.01% performance hit.\n"\
+                    "We found this negligible impact by benchmarking on 1x A100."
+                )
+                HAS_FLASH_ATTENTION = False
         except:
-            logger.warning_once(
-                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
-                "A possible explanation is you have a new CUDA version which isn't\n"\
-                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
-                "We shall now use Xformers instead, which gets a 0.01% performance hit.\n"\
-                "We found this negligible impact by benchmarking on 1x A100."
-            )
             HAS_FLASH_ATTENTION = False
-    except:
+    else:
+        # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
-else:
-    # Tri Dao's benchmark shows xformers is faster for now.
-    HAS_FLASH_ATTENTION = False
 pass
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
@@ -169,33 +183,34 @@ pass
 
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
-from peft.tuners.lora.layer import LoraLayer
-import inspect, re
-try:
-    source = inspect.getsource(LoraLayer.update_layer)
-    text = "if weight is not None:\n"
-    start = source.find(text) + len(text)
-    end = source.find("self.to(weight.device)", start)
-    spaces = re.findall(r"^([ ]{1,})break", source, flags = re.MULTILINE)[0]
-    source = source.replace(source[start : end], spaces)
-    spaces = len(re.match(r"[\s]{1,}", source).group(0))
-    lines = source.split("\n")
-    source = "\n".join(x[spaces:] for x in lines)
-    source = re.sub("([^\.])nn\.", r"\1torch.nn.", source)
-    source = source.replace("def update_layer", "def LoraLayer_update_layer")
-    exec(source, globals())
-
-    # Fix up incorrect downcasting of LoRA weights
+if is_peft_available():
+    import inspect, re
     from peft.tuners.lora.layer import LoraLayer
-    LoraLayer.update_layer = LoraLayer_update_layer
-    from peft.tuners.lora import LoraLayer
-    LoraLayer.update_layer = LoraLayer_update_layer
-except:
-    logger.warning_once(
-        "Unsloth unsuccessfully patched LoraLayer.update_layer. Please file a bug report.\n"\
-        "Luckily, your training run will still work in the meantime!"
-    )
-pass
+    try:
+        source = inspect.getsource(LoraLayer.update_layer)
+        text = "if weight is not None:\n"
+        start = source.find(text) + len(text)
+        end = source.find("self.to(weight.device)", start)
+        spaces = re.findall(r"^([ ]{1,})break", source, flags = re.MULTILINE)[0]
+        source = source.replace(source[start : end], spaces)
+        spaces = len(re.match(r"[\s]{1,}", source).group(0))
+        lines = source.split("\n")
+        source = "\n".join(x[spaces:] for x in lines)
+        source = re.sub("([^\.])nn\.", r"\1torch.nn.", source)
+        source = source.replace("def update_layer", "def LoraLayer_update_layer")
+        exec(source, globals())
+
+        # Fix up incorrect downcasting of LoRA weights
+        from peft.tuners.lora.layer import LoraLayer
+        LoraLayer.update_layer = LoraLayer_update_layer
+        from peft.tuners.lora import LoraLayer
+        LoraLayer.update_layer = LoraLayer_update_layer
+    except:
+        logger.warning_once(
+            "Unsloth unsuccessfully patched LoraLayer.update_layer. Please file a bug report.\n"\
+            "Luckily, your training run will still work in the meantime!"
+        )
+    pass
 
 
 def get_statistics():
