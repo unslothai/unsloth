@@ -36,7 +36,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - \* Kaggle has 2x T4s, but we use 1. Due to overhead, 1x T4 is 5x faster.
 
 ## 🦥 Unsloth.ai News
-- 📣 NEW! [Llama-3 8b](https://colab.research.google.com/drive/19lwcRk_ZQ_ZtX-qzFP3qZBBHZNcMD1hh?usp=sharing) now works! Llama-3 70b also works (just change the model name in the notebook).
+- 📣 NEW! [Llama-3 8b](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing) now works! Llama-3 70b also works (just change the model name in the notebook).
 - 📣 NEW! We cut memory usage by a [further 30%](https://unsloth.ai/blog/long-context) and now support fine-tuning of LLMs with [4x longer context windows](https://unsloth.ai/blog/long-context)! No change required if you're using our notebooks. To enable, simply change 1 line:
 ```python
 model = FastLanguageModel.get_peft_model(
