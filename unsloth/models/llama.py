@@ -1481,6 +1481,11 @@ class FastLlamaModel:
                     train_embed_tokens = True
             pass
         pass
+        
+        # First fix untrained tokens
+        if train_embed_tokens or train_lm_head:
+            fix_untrained_tokens(model, eps = 1e-16)
+        pass
 
         # Get LoRA
         arguments = dict(
