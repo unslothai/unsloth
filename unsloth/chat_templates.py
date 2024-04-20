@@ -266,7 +266,7 @@ llama3_template = \
         "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"\
     "{% endif %}"
 llama3_template_eos_token = "eos_token"
-CHAT_TEMPLATES["llama-3"] = (llama3_template, gemma_chatml_eos_token,)
+CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token,)
 
 
 def get_chat_template(
