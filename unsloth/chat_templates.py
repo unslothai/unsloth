@@ -436,7 +436,6 @@ def get_chat_template(
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
     tokenizer.padding_side  = old_padding_side
     tokenizer.chat_template = chat_template
-    print(tokenizer)
 
     # Also fix up other tokens
     old_pad_token = getattr(old_tokenizer, "pad_token", None)
