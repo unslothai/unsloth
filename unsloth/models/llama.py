@@ -1472,6 +1472,25 @@ class FastLlamaModel:
                 final_modules.append(module)
         pass
 
+        # Check if we added new tokens!
+        if hasattr(model, "_need_to_train_embeddings"):
+            if not train_lm_head or not train_embed_tokens:
+                print(
+                    "Unsloth: You added new tokens but did not specify if you wanted to "\
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
+                )
+                train_lm_head = True
+                train_embed_tokens = True
+                if "lm_head"      not in modules_to_save: modules_to_save.append("lm_head")
+                if "embed_tokens" not in modules_to_save: modules_to_save.append("embed_tokens")
+            pass
+        pass
+
+        # First fix untrained tokens
+        if train_embed_tokens or train_lm_head:
+            fix_untrained_tokens(model, eps = 1e-16)
+        pass
+
         # Check modules_to_save
         if modules_to_save is not None:
             for module in modules_to_save:
@@ -1482,23 +1501,6 @@ class FastLlamaModel:
             pass
         pass
 
-        # Check if we added new tokens!
-        if hasattr(model, "_need_to_train_embeddings"):
-            if not train_lm_head or not train_embed_tokens:
-                print(
-                    "Unsloth: You added new tokens but did not specify if you wanted to "\
-                    "train the lm_head and embed_tokens. We must turn it on for you."
-                )
-                train_lm_head = True
-                train_embed_tokens = True
-            pass
-        pass
-
-        # First fix untrained tokens
-        if train_embed_tokens or train_lm_head:
-            fix_untrained_tokens(model, eps = 1e-16)
-        pass
-        
         # Get LoRA
         arguments = dict(
             r                   = r,
