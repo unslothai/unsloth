@@ -1445,6 +1445,10 @@ class FastLlamaModel:
                                       "gate_proj", "up_proj", "down_proj",),)
         model.config.update({"unsloth_version" : __version__})
 
+        if type(modules_to_save) is tuple:
+            modules_to_save = list(modules_to_save)
+        pass
+
         train_lm_head = False
         train_embed_tokens = False
         final_modules = []
@@ -1472,6 +1476,29 @@ class FastLlamaModel:
                 final_modules.append(module)
         pass
 
+        # Check if we added new tokens!
+        if hasattr(model, "_need_to_train_embeddings"):
+            if not train_lm_head or not train_embed_tokens:
+                print(
+                    "Unsloth: You added new tokens but did not specify if you wanted to "\
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
+                )
+                train_lm_head = True
+                train_embed_tokens = True
+
+                if modules_to_save is None: modules_to_save = ["embed_tokens"]
+                else: modules_to_save.append("embed_tokens")
+
+                if modules_to_save is None: modules_to_save = ["lm_head"]
+                else: modules_to_save.append("lm_head")
+            pass
+        pass
+
+        # First fix untrained tokens
+        if train_embed_tokens or train_lm_head:
+            fix_untrained_tokens(model, eps = 1e-16)
+        pass
+
         # Check modules_to_save
         if modules_to_save is not None:
             for module in modules_to_save:
@@ -1479,7 +1506,14 @@ class FastLlamaModel:
                     train_lm_head = True
                 elif module == "embed_tokens":
                     train_embed_tokens = True
+                else:
+                    raise TypeError(
+                        f"Unsloth: Module = {module} is not allowed. Only 'lm_head' and 'embed_tokens' is allowed."
+                    )
             pass
+        pass
+        if isinstance(modules_to_save, (tuple, list)):
+            modules_to_save = list(set(modules_to_save))
         pass
 
         # Get LoRA

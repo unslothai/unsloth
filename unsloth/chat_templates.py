@@ -23,10 +23,7 @@ from transformers.models.llama.modeling_llama import logger
 from .save import patch_saving_functions
 import os
 import shutil
-from .tokenizer_utils import (
-    load_correct_tokenizer,
-    fix_sentencepiece_tokenizer,
-)
+from .tokenizer_utils import *
 from .models._utils import patch_tokenizer
 
 CHAT_TEMPLATES = {}
@@ -266,7 +263,7 @@ llama3_template = \
         "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"\
     "{% endif %}"
 llama3_template_eos_token = "eos_token"
-CHAT_TEMPLATES["llama-3"] = (llama3_template, gemma_chatml_eos_token,)
+CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token,)
 
 
 def get_chat_template(
@@ -287,6 +284,8 @@ def get_chat_template(
     # We first check if the tokenizer is a fast one. If not, we cannot convert this!
     is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
     old_padding_side = tokenizer.padding_side
+
+    same_padding_token = False
 
     if type(chat_template) in (list, tuple,):
         chat_template, stop_word = chat_template
@@ -342,10 +341,24 @@ def get_chat_template(
             if skipped != len(token_mapping):
                 new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
 
+                # Careful on pad_token
+                old_pad_token = tokenizer.pad_token
+                if old_pad_token == tokenizer.eos_token:
+                    old_pad_token = stop_word
+                    same_padding_token = True
+                pass
+
                 if map_eos_token:
-                    new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+                    new_tokenizer = tokenizer.__class__(
+                        tokenizer_object = new_tokenizer,
+                        eos_token = stop_word,
+                        pad_token = old_pad_token,
+                    )
                 else:
-                    new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer)
+                    new_tokenizer = tokenizer.__class__(
+                        tokenizer_object = new_tokenizer,
+                        pad_token = old_pad_token,
+                    )
                 pass
 
                 # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
@@ -380,6 +393,13 @@ def get_chat_template(
                 string_vocab = string_vocab.replace(old_eos_token, stop_word)
             pass
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
+
+            # Careful on pad_token
+            if old_pad_token == old_eos_token:
+                old_pad_token = stop_word
+                same_padding_token = True
+            pass
+
             new_tokenizer = tokenizer.__class__(
                 tokenizer_object = new_tokenizer,
                 bos_token = old_bos_token,
@@ -424,9 +444,11 @@ def get_chat_template(
     new_pad_token = getattr(tokenizer,     "pad_token", None)
     new_bos_token = getattr(tokenizer,     "bos_token", None)
     new_unk_token = getattr(tokenizer,     "unk_token", None)
-    if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
     if old_bos_token != new_bos_token: tokenizer.bos_token = old_bos_token
     if old_unk_token != new_unk_token: tokenizer.unk_token = old_unk_token
+    if not same_padding_token:
+        if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
+    pass
 
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
