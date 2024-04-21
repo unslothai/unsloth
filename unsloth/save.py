@@ -922,9 +922,16 @@ def save_to_gguf(
           f"The output location will be {final_location}\n"\
           "This will take 3 minutes...")
 
+    # We first check if tokenizer.model exists in the model_directory
+    if os.path.exists(f"{model_directory}/tokenizer.model"):
+        vocab_type = "hfft"
+    else:
+        vocab_type = "bpe"
+    pass
+
     if use_fast_convert:
         command = f"python llama.cpp/convert.py {model_directory} "\
-            f"--outfile {final_location} --vocab-type hfft "\
+            f"--outfile {final_location} --vocab-type {vocab_type} "\
             f"--outtype {first_conversion} --concurrency {n_cpus}"
     else:
         # Need to fix convert-hf-to-gguf.py for some models!
