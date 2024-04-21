@@ -71,7 +71,6 @@ __all__ = [
     "patch_tokenizer",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
-    "fix_untrained_tokens",
 ]
 
 
