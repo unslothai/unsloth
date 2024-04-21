@@ -1481,8 +1481,12 @@ class FastLlamaModel:
                 )
                 train_lm_head = True
                 train_embed_tokens = True
-                if "lm_head"      not in modules_to_save: modules_to_save.append("lm_head")
-                if "embed_tokens" not in modules_to_save: modules_to_save.append("embed_tokens")
+
+                if modules_to_save is None: modules_to_save = ["embed_tokens"]
+                else: modules_to_save.append("embed_tokens")
+
+                if modules_to_save is None: modules_to_save = ["lm_head"]
+                else: modules_to_save.append("lm_head")
             pass
         pass
 
@@ -1498,8 +1502,13 @@ class FastLlamaModel:
                     train_lm_head = True
                 elif module == "embed_tokens":
                     train_embed_tokens = True
+                else:
+                    raise TypeError(
+                        f"Unsloth: Module = {module} is not allowed. Only 'lm_head' and 'embed_tokens' is allowed."
+                    )
             pass
         pass
+        modules_to_save = list(set(modules_to_save))
 
         # Get LoRA
         arguments = dict(
