@@ -339,16 +339,22 @@ def get_chat_template(
             if skipped != len(token_mapping):
                 new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
 
+                # Careful on pad_token
+                old_pad_token = tokenizer.pad_token
+                if old_pad_token == tokenizer.eos_token:
+                    old_pad_token = stop_word
+                pass
+
                 if map_eos_token:
                     new_tokenizer = tokenizer.__class__(
                         tokenizer_object = new_tokenizer,
                         eos_token = stop_word,
-                        pad_token = tokenizer.pad_token,
+                        pad_token = old_pad_token,
                     )
                 else:
                     new_tokenizer = tokenizer.__class__(
                         tokenizer_object = new_tokenizer,
-                        pad_token = tokenizer.pad_token,
+                        pad_token = old_pad_token,
                     )
                 pass
 
@@ -384,6 +390,12 @@ def get_chat_template(
                 string_vocab = string_vocab.replace(old_eos_token, stop_word)
             pass
             new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
+
+            # Careful on pad_token
+            if old_pad_token == old_eos_token:
+                old_pad_token = stop_word
+            pass
+
             new_tokenizer = tokenizer.__class__(
                 tokenizer_object = new_tokenizer,
                 bos_token = old_bos_token,
