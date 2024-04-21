@@ -285,6 +285,8 @@ def get_chat_template(
     is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
     old_padding_side = tokenizer.padding_side
 
+    same_padding_token = False
+
     if type(chat_template) in (list, tuple,):
         chat_template, stop_word = chat_template
         assert(type(chat_template) is str)
@@ -343,6 +345,7 @@ def get_chat_template(
                 old_pad_token = tokenizer.pad_token
                 if old_pad_token == tokenizer.eos_token:
                     old_pad_token = stop_word
+                    same_padding_token = True
                 pass
 
                 if map_eos_token:
@@ -394,6 +397,7 @@ def get_chat_template(
             # Careful on pad_token
             if old_pad_token == old_eos_token:
                 old_pad_token = stop_word
+                same_padding_token = True
             pass
 
             new_tokenizer = tokenizer.__class__(
@@ -440,9 +444,11 @@ def get_chat_template(
     new_pad_token = getattr(tokenizer,     "pad_token", None)
     new_bos_token = getattr(tokenizer,     "bos_token", None)
     new_unk_token = getattr(tokenizer,     "unk_token", None)
-    if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
     if old_bos_token != new_bos_token: tokenizer.bos_token = old_bos_token
     if old_unk_token != new_unk_token: tokenizer.unk_token = old_unk_token
+    if same_padding_token:
+        if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
+    pass
 
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
