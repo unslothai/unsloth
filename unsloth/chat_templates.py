@@ -446,7 +446,7 @@ def get_chat_template(
     new_unk_token = getattr(tokenizer,     "unk_token", None)
     if old_bos_token != new_bos_token: tokenizer.bos_token = old_bos_token
     if old_unk_token != new_unk_token: tokenizer.unk_token = old_unk_token
-    if same_padding_token:
+    if not same_padding_token:
         if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
     pass
 
