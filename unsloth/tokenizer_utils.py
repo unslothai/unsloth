@@ -19,6 +19,7 @@ import re
 import os
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
+import torch
 
 __all__ = [
     "load_correct_tokenizer",
