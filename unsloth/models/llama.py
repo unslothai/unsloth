@@ -1445,6 +1445,10 @@ class FastLlamaModel:
                                       "gate_proj", "up_proj", "down_proj",),)
         model.config.update({"unsloth_version" : __version__})
 
+        if type(modules_to_save) is tuple:
+            modules_to_save = list(modules_to_save)
+        pass
+
         train_lm_head = False
         train_embed_tokens = False
         final_modules = []
@@ -1508,7 +1512,9 @@ class FastLlamaModel:
                     )
             pass
         pass
-        modules_to_save = list(set(modules_to_save))
+        if isinstance(modules_to_save, (tuple, list)):
+            modules_to_save = list(set(modules_to_save))
+        pass
 
         # Get LoRA
         arguments = dict(
