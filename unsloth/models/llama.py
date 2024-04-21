@@ -534,11 +534,8 @@ def LlamaModel_fast_forward(
     pass
 
     # Embed positions
-    print(input_ids)
-    print(input_ids.min(), input_ids.max())
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
-    print(inputs_embeds)
 
     inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
 
