@@ -351,34 +351,3 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     pass
 pass
 
-
-@torch.inference_mode
-def fix_untrained_tokens(model, eps = 1e-16):
-    """
-    Llama-3 for eg has untrained vectors in the base model.
-    These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
-    We reset them to the mean of the rest of the tokens
-    """
-    embedding_matrix = model.get_input_embeddings ().weight.data
-    lm_head_matrix   = model.get_output_embeddings().weight.data
-    where_untrained = torch.where(torch.amax(embedding_matrix, axis = 1) <= eps)[0]
-    n_untrained = where_untrained.shape[0]
-    n_trained = embedding_matrix.shape[0] - n_untrained
-    if n_untrained != 0:
-        logger.warning_once(
-            f"Unsloth: Not an error, but your model has {n_untrained} untrained tokens.\n"\
-            "We shall set them to the mean of the other trained tokens."
-        )
-    pass
-
-    # Fix embed_tokens
-    sum_columns  = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
-    mean_columns = (sum_columns / n_trained).to(embedding_matrix.dtype)
-    embedding_matrix[where_untrained] = mean_columns
-
-    # Fix lm_head
-    sum_columns  = torch.sum(lm_head_matrix, dtype = torch.float32, axis = 0)
-    mean_columns = (sum_columns / n_trained).to(lm_head_matrix.dtype)
-    lm_head_matrix[where_untrained] = mean_columns
-    return
-pass
