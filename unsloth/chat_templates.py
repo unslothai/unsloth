@@ -340,9 +340,16 @@ def get_chat_template(
                 new_tokenizer = tokenizer._tokenizer.from_str(string_vocab)
 
                 if map_eos_token:
-                    new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer, eos_token = stop_word)
+                    new_tokenizer = tokenizer.__class__(
+                        tokenizer_object = new_tokenizer,
+                        eos_token = stop_word,
+                        pad_token = tokenizer.pad_token,
+                    )
                 else:
-                    new_tokenizer = tokenizer.__class__(tokenizer_object = new_tokenizer)
+                    new_tokenizer = tokenizer.__class__(
+                        tokenizer_object = new_tokenizer,
+                        pad_token = tokenizer.pad_token,
+                    )
                 pass
 
                 # Must fix the sentence piece tokenizer since there's no tokenizer.model file!

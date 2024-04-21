@@ -259,7 +259,11 @@ def fix_sentencepiece_tokenizer(
 
     # And load it!
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(temporary_location, eos_token = new_tokenizer.eos_token)
+    tokenizer = AutoTokenizer.from_pretrained(
+        temporary_location,
+        eos_token = new_tokenizer.eos_token,
+        pad_token = new_tokenizer.pad_token,
+    )
     return tokenizer
 pass
 
