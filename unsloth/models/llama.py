@@ -1284,6 +1284,15 @@ class FastLlamaModel:
         # Add save modules
         patch_saving_functions(model)
 
+        # Save tokenizer for inference purposes
+        tokenizer.padding_side = "left" # Force inference
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model._saved_temp_tokenizer = tokenizer
+            internal_model = internal_model.model
+        pass
+        internal_model._saved_temp_tokenizer = tokenizer
+        
         return model, tokenizer
     pass
 
@@ -1554,6 +1563,18 @@ class FastLlamaModel:
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
+        # Patch tokenizer to pad to the right
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "_saved_temp_tokenizer"):
+                internal_model._saved_temp_tokenizer.padding_side = "right"
+            pass
+            internal_model = internal_model.model
+        pass
+        if hasattr(internal_model, "_saved_temp_tokenizer"):
+            internal_model._saved_temp_tokenizer.padding_side = "right"
+        pass
+
         return model
     pass
 
@@ -1751,6 +1772,18 @@ class FastLlamaModel:
         # Wrap model.generate
         model._unwrapped_old_generate = model.generate
         model.generate = _wrap_fast_inference(model.generate, device_type, dtype)
+
+        # Patch tokenizer to pad to the left
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "_saved_temp_tokenizer"):
+                internal_model._saved_temp_tokenizer.padding_side = "left"
+            pass
+            internal_model = internal_model.model
+        pass
+        if hasattr(internal_model, "_saved_temp_tokenizer"):
+            internal_model._saved_temp_tokenizer.padding_side = "left"
+        pass
     pass
 
 
@@ -1777,8 +1810,18 @@ class FastLlamaModel:
             model.generate = model._unwrapped_old_generate
             del model._unwrapped_old_generate
         pass
+
+        # Patch tokenizer to pad to the right
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "_saved_temp_tokenizer"):
+                internal_model._saved_temp_tokenizer.padding_side = "right"
+            pass
+            internal_model = internal_model.model
+        pass
+        if hasattr(internal_model, "_saved_temp_tokenizer"):
+            internal_model._saved_temp_tokenizer.padding_side = "right"
+        pass
     pass
 pass
-
-
 
