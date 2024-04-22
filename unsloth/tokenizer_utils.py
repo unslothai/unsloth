@@ -524,7 +524,7 @@ def add_new_tokens(
     tokenizer,
     new_tokens = [],
     method = "mean",
-    interpolation = 0.05,
+    interpolation = 0.5,
 ):
     """
     Smartly resizes the tokenizer and adds new tokens to the model.
