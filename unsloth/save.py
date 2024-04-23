@@ -532,9 +532,13 @@ def unsloth_save_model(
     # Check for modules_to_save float32 dtype
 
     # Check for tied weights
-    if internal_model.model.embed_tokens.weight.data_ptr() != internal_model.lm_head.weight.data_ptr():
-        state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
-    pass
+    if hasattr(internal_model, "lm_head"):
+        if internal_model.model.embed_tokens.weight.data_ptr() != internal_model.lm_head.weight.data_ptr():
+            state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
+        pass
+    elif hasattr(internal_model, "score"):
+        if internal_model.model.embed_tokens.weight.data_ptr() != internal_model.score.weight.data_ptr():
+            state_dict["score.weight"] = internal_model.score.weight.data.to(torch_dtype)
 
     # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
     for key, value in state_dict.items():
