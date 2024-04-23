@@ -689,7 +689,7 @@ pass
 
 
 def install_llama_cpp_clone_non_blocking():
-    full_command = ["git", "clone", "https://github.com/ggerganov/llama.cpp"]
+    full_command = ["git", "clone", "--recursive", "https://github.com/ggerganov/llama.cpp"]
     run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
@@ -742,7 +742,7 @@ def install_llama_cpp_old(version = -10):
     # Clone a specific commit
     # Also don't use the GPU!
     commands = [
-        "git clone https://github.com/ggerganov/llama.cpp",
+        "git clone --recursive https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df",
         "make clean -C llama.cpp",
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
@@ -767,7 +767,7 @@ def install_llama_cpp_blocking(use_cuda = True):
     use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
 
     commands = [
-        "git clone https://github.com/ggerganov/llama.cpp",
+        "git clone --recursive https://github.com/ggerganov/llama.cpp",
         "make clean -C llama.cpp",
         f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
         "pip install gguf protobuf",
@@ -966,7 +966,7 @@ def save_to_gguf(
                 "You might have to compile llama.cpp yourself, then run this again.\n"\
                 "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
                 "You must run this in the same folder as you're saving your model.\n"\
-                "git clone https://github.com/ggerganov/llama.cpp\n"\
+                "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
                 "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
                 "Once that's done, redo the quantization."
             )
@@ -1006,7 +1006,7 @@ def save_to_gguf(
                     "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
                     "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
                     "You must run this in the same folder as you're saving your model.\n"\
-                    "git clone https://github.com/ggerganov/llama.cpp\n"\
+                    "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
                     "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
                     "Once that's done, redo the quantization."
                 )
