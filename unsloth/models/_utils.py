@@ -162,6 +162,9 @@ def patch_tokenizer(model, tokenizer):
             tokenizer.pad_token = tokenizer.eos_token
         if model is not None:
             config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
+    elif model is not None:
+        if not hasattr(model, "pad_token_id") or model.pad_token_id is None:
+            model.config.update({"pad_token_id" : tokenizer.pad_token_id})
     pass
     return model, tokenizer
 pass

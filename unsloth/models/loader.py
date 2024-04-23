@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import FastLlamaModel, logger
+from .llama_seq import FastLlamaModelSequenceClassification
 from .mistral import FastMistralModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
@@ -76,6 +77,8 @@ class FastLanguageModel(FastLlamaModel):
         fix_tokenizer  = True,
         trust_remote_code = False,
         use_gradient_checkpointing = True,
+        sequence_classification = False,
+        num_labels = None,
         *args, **kwargs,
     ):
         if token is None and "HF_TOKEN" in os.environ:
@@ -107,7 +110,8 @@ class FastLanguageModel(FastLlamaModel):
 
         model_type = model_config.model_type
 
-        if   model_type == "llama":   dispatch_model = FastLlamaModel
+        if   model_type == "llama" and sequence_classification == True:   dispatch_model = FastLlamaModelSequenceClassification
+        elif model_type == "llama":   dispatch_model = FastLlamaModel
         elif model_type == "mistral": dispatch_model = FastMistralModel
         elif model_type == "gemma":
             if not SUPPORTS_GEMMA:
@@ -134,21 +138,38 @@ class FastLanguageModel(FastLlamaModel):
         else:
             tokenizer_name = None
         pass
-
-        model, tokenizer = dispatch_model.from_pretrained(
-            model_name     = model_name,
-            max_seq_length = max_seq_length,
-            dtype          = dtype,
-            load_in_4bit   = load_in_4bit,
-            token          = token,
-            device_map     = device_map,
-            rope_scaling   = rope_scaling,
-            fix_tokenizer  = fix_tokenizer,
-            model_patcher  = dispatch_model,
-            tokenizer_name = tokenizer_name,
-            trust_remote_code = trust_remote_code,
-            *args, **kwargs,
-        )
+        
+        if sequence_classification == True and num_labels is not None:
+            model, tokenizer = dispatch_model.from_pretrained(
+                model_name     = model_name,
+                max_seq_length = max_seq_length,
+                dtype          = dtype,
+                load_in_4bit   = load_in_4bit,
+                token          = token,
+                device_map     = device_map,
+                rope_scaling   = rope_scaling,
+                fix_tokenizer  = fix_tokenizer,
+                model_patcher  = dispatch_model,
+                tokenizer_name = tokenizer_name,
+                trust_remote_code = trust_remote_code,
+                num_labels     = num_labels,
+                *args, **kwargs,
+            )
+        else:
+            model, tokenizer = dispatch_model.from_pretrained(
+                model_name     = model_name,
+                max_seq_length = max_seq_length,
+                dtype          = dtype,
+                load_in_4bit   = load_in_4bit,
+                token          = token,
+                device_map     = device_map,
+                rope_scaling   = rope_scaling,
+                fix_tokenizer  = fix_tokenizer,
+                model_patcher  = dispatch_model,
+                tokenizer_name = tokenizer_name,
+                trust_remote_code = trust_remote_code,
+                *args, **kwargs,
+            )
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
