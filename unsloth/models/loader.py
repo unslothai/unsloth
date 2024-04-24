@@ -155,6 +155,35 @@ class FastLanguageModel(FastLlamaModel):
                 num_labels     = num_labels,
                 *args, **kwargs,
             )
+            def for_inference(model):
+                internal_model = model
+                internal_model.gradient_checkpointing = False
+                internal_model.training = False
+
+                while hasattr(internal_model, "model"):
+                    internal_model = internal_model.model
+                    internal_model.gradient_checkpointing = False
+                    internal_model.training = False
+                pass
+
+                # Also check if score / embeddings are trained
+                internal_model = model
+                while not hasattr(internal_model, "score"):
+                    internal_model = internal_model.model
+                pass
+                score = internal_model.score.weight
+                device_type = score.device.type
+                dtype = model.config.torch_dtype
+                
+                if type(dtype) is str:
+                    if   dtype ==  "float16": dtype = torch.float16
+                    elif dtype == "bfloat16": dtype = torch.bfloat16
+                pass
+
+                # Wrap model.generate
+                model._unwrapped_old_generate = model.generate
+                model.generate = _wrap_fast_inference(model.generate, device_type, dtype)
+            pass
         else:
             model, tokenizer = dispatch_model.from_pretrained(
                 model_name     = model_name,
