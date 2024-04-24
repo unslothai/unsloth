@@ -866,12 +866,12 @@ def Sequence_fast_forward(fast_forward_inference):
         pass
 
         if not return_dict:
-            output = (logits,) + outputs[1:]
+            output = (pooled_logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
         return SequenceClassifierOutputWithPast(
             loss=loss,
-            logits=logits,
+            logits=pooled_logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
