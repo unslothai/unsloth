@@ -559,6 +559,15 @@ class FastMistralModel(FastLlamaModel):
 
         # Add save modules
         patch_saving_functions(model)
+
+        # Save tokenizer for inference purposes
+        tokenizer.padding_side = "left" # Force inference
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model._saved_temp_tokenizer = tokenizer
+            internal_model = internal_model.model
+        pass
+        internal_model._saved_temp_tokenizer = tokenizer
         
         return model, tokenizer
     pass
