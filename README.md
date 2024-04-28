@@ -23,9 +23,10 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 | Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
 | **Llama 3 (8B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing)               | 2x faster | 60% less |
-| **Gemma (7B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
 | **Mistral (7B)**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 73% less |
+| **Gemma (7B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
 | **Llama 3 (8B)** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-8b-unsloth-notebook) | 5x faster\* | 73% less |
+| **ORPO**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 43% less |
 | **DPO - Zephyr**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 43% less |
 
 - Benchmarking compared to FA2 + Hugging Face combined.
@@ -35,6 +36,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 ## 🦥 Unsloth.ai News
 - 📣 NEW! [Llama-3 8b](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing) now works! Llama-3 70b also works (change the model name in the notebook).
+- 📣 NEW! [ORPO support](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing) is here!
 - 📣 NEW! We cut memory usage by a [further 30%](https://unsloth.ai/blog/long-context) and now support fine-tuning of LLMs with [4x longer context windows](https://unsloth.ai/blog/long-context)! No change required if you're using our notebooks. To enable, simply change 1 line:
 ```python
 model = FastLanguageModel.get_peft_model(
