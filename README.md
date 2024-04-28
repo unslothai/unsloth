@@ -10,7 +10,7 @@
 <a href="https://discord.gg/u54VK8m8tk"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="48"></a>
 <a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/buy me a coffee button.png" height="48"></a>
 
-### Finetune Mistral, Gemma, Llama 2-5x faster with 80% less memory!
+### Finetune Llama 3, Mistral & Gemma 2-5x faster with 80% less memory!
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
@@ -22,12 +22,11 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 | Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
-| **Llama-3 8b**      | [▶️ Start on Colab](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing)               | 2x faster | 60% less |
-| **Gemma 7b**      | [▶️ Start on Colab](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
-| **Mistral 7b**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 73% less |
-| **TinyLlama**  | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)              | 3.9x faster | 82% less |
-| **CodeLlama 34b** A100   | [▶️ Start on Colab](https://colab.research.google.com/drive/1y7A0AxE3y8gdj4AVkl2aZX47Xu3P1wJT?usp=sharing)              | 1.9x faster | 49% less |
-| **Mistral 7b** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook) | 5x faster\* | 73% less |
+| **Llama 3 (8B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing)               | 2x faster | 60% less |
+| **Mistral (7B)**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 73% less |
+| **Gemma (7B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
+| **Llama 3 (8B)** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-8b-unsloth-notebook) | 5x faster\* | 73% less |
+| **ORPO**     | [▶️ Start on Colab](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing)               | 1.9x faster | 43% less |
 | **DPO - Zephyr**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 43% less |
 
 - Benchmarking compared to FA2 + Hugging Face combined.
@@ -36,7 +35,8 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - \* Kaggle has 2x T4s, but we use 1. Due to overhead, 1x T4 is 5x faster.
 
 ## 🦥 Unsloth.ai News
-- 📣 NEW! [Llama-3 8b](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing) now works! Llama-3 70b also works (just change the model name in the notebook).
+- 📣 NEW! [Llama-3 8b](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing) now works! Llama-3 70b also works (change the model name in the notebook).
+- 📣 NEW! [ORPO support](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing) is here!
 - 📣 NEW! We cut memory usage by a [further 30%](https://unsloth.ai/blog/long-context) and now support fine-tuning of LLMs with [4x longer context windows](https://unsloth.ai/blog/long-context)! No change required if you're using our notebooks. To enable, simply change 1 line:
 ```python
 model = FastLanguageModel.get_peft_model(
@@ -46,8 +46,6 @@ model = FastLanguageModel.get_peft_model(
 ```
 - 📣 [CodeGemma](https://colab.research.google.com/drive/19lwcRk_ZQ_ZtX-qzFP3qZBBHZNcMD1hh?usp=sharing) now works along with [Gemma 7b](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing) and [Gemma 2b](https://colab.research.google.com/drive/15gGm7x_jTm017_Ic8e317tdIpDG53Mtu?usp=sharing)
 - 📣 [2x faster inference](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) added for all our models
-- 📣 [DPO support](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) is now included. [More info](#DPO) on DPO
-- 📣 We did a [blog](https://huggingface.co/blog/unsloth-trl) with 🤗Hugging Face and are in their official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)
 
 ## 🔗 Links and Resources
 | Type                            | Links                               |
@@ -182,18 +180,20 @@ max_seq_length = 2048 # Supports RoPE Scaling interally, so choose any!
 url = "https://huggingface.co/datasets/laion/OIG/resolve/main/unified_chip2.jsonl"
 dataset = load_dataset("json", data_files = {"train" : url}, split = "train")
 
-# 4bit pre quantized models we support - 4x faster downloading!
+# 4bit pre quantized models we support for 4x faster downloading + no OOMs.
 fourbit_models = [
     "unsloth/mistral-7b-bnb-4bit",
+    "unsloth/mistral-7b-instruct-v0.2-bnb-4bit",
     "unsloth/llama-2-7b-bnb-4bit",
-    "unsloth/llama-2-13b-bnb-4bit",
-    "unsloth/codellama-34b-bnb-4bit",
-    "unsloth/tinyllama-bnb-4bit",
-] # Go to https://huggingface.co/unsloth for more 4-bit models!
+    "unsloth/gemma-7b-bnb-4bit",
+    "unsloth/gemma-7b-it-bnb-4bit", # Instruct version of Gemma 7b
+    "unsloth/gemma-2b-bnb-4bit",
+    "unsloth/gemma-2b-it-bnb-4bit", # Instruct version of Gemma 2b
+    "unsloth/llama-3-8b-bnb-4bit", # [NEW] 15 Trillion token Llama-3
+] # More models at https://huggingface.co/unsloth
 
-# Load Llama model
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/mistral-7b-bnb-4bit", # Supports Llama, Mistral - replace this!
+    model_name = "unsloth/llama-3-8b-bnb-4bit",
     max_seq_length = max_seq_length,
     dtype = None,
     load_in_4bit = True,
@@ -208,7 +208,8 @@ model = FastLanguageModel.get_peft_model(
     lora_alpha = 16,
     lora_dropout = 0, # Supports any, but = 0 is optimized
     bias = "none",    # Supports any, but = "none" is optimized
-    use_gradient_checkpointing = True,
+    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
+    use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
     random_state = 3407,
     max_seq_length = max_seq_length,
     use_rslora = False,  # We support rank stabilized LoRA
@@ -272,7 +273,8 @@ model = FastLanguageModel.get_peft_model(
     lora_alpha = 64,
     lora_dropout = 0, # Supports any, but = 0 is optimized
     bias = "none",    # Supports any, but = "none" is optimized
-    use_gradient_checkpointing = True,
+    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
+    use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
     random_state = 3407,
     max_seq_length = max_seq_length,
 )
