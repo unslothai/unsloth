@@ -281,6 +281,17 @@ def get_chat_template(
         IS_GEMMA = True
     pass
 
+    # We add a check for Llama-3
+    # if chat_template == "llama-3":
+    #     tokenizer._using_llama3_template = True
+    # else:
+    #     llama3_tokens = set(["<|end_header_id|>", "<|eot_id|>", "<|start_header_id|>"])
+    #     check_llama3_tokens = llama3_tokens & set(str(x) for x in tokenizer.added_tokens_decoder.values())
+    #     if len(check_llama3_tokens) == len(llama3_tokens):
+    #         tokenizer._using_llama3_template = True
+    #     pass
+    # pass
+
     # We first check if the tokenizer is a fast one. If not, we cannot convert this!
     is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
     old_padding_side = tokenizer.padding_side

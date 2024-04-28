@@ -1543,8 +1543,12 @@ class FastLlamaModel:
         if not SUPPORTS_LOFTQ:  del arguments["loftq_config"]
         if not SUPPORTS_RSLORA: del arguments["use_rslora"]
 
+        _saved_temp_tokenizer = model._saved_temp_tokenizer
+
         lora_config = LoraConfig(**arguments)
         model = _get_peft_model(model, lora_config)
+        
+        model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
 
