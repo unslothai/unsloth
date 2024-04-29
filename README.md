@@ -20,23 +20,25 @@
 
 All notebooks are **beginner friendly**! Add your dataset, click "Run All", and you'll get a 2x faster finetuned model which can be exported to GGUF, vLLM or uploaded to Hugging Face.
 
-| Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
-|-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
-| **Llama 3 (8B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing)               | 2x faster | 60% less |
-| **Mistral (7B)**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 73% less |
-| **Gemma (7B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
-| **Llama 3 (8B)** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-8b-unsloth-notebook) | 5x faster\* | 73% less |
-| **ORPO**     | [▶️ Start on Colab](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing)               | 1.9x faster | 43% less |
-| **DPO - Zephyr**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 43% less |
+| Unsloth supports | Free Notebooks | Performance | Memory use |
+|-----------|---------|--------|----------|
+| **Llama 3 (8B)**      | [▶️ Start for free](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing)               | 2x faster | 60% less |
+| **Mistral (7B)**    | [▶️ Start for free](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 73% less |
+| **Gemma (7B)**      | [▶️ Start for free](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
+| **ORPO**     | [▶️ Start for free](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing)               | 1.9x faster | 43% less |
+| **DPO Zephyr**     | [▶️ Start for free](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 43% less |
+| **Phi-3 (3.8B)** | [▶️ Start for free](https://colab.research.google.com/drive/1NvkBmkHfucGO3Ve9s1NKZvMNlw5p83ym?usp=sharing)               | 2x faster | 50% less |
+| **TinyLlama**  | [▶️ Start for free](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)               | 3.9x faster | 74% less |
 
 - Benchmarking compared to FA2 + Hugging Face combined.
-- This [conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for ShareGPT ChatML / Vicuna templates.
-- This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for raw text. This [DPO notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) replicates Zephyr.
-- \* Kaggle has 2x T4s, but we use 1. Due to overhead, 1x T4 is 5x faster.
+- **Kaggle Notebooks** for [Llama-3 8b](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-8b-unsloth-notebook), [Gemma 7b](https://www.kaggle.com/code/danielhanchen/kaggle-gemma-7b-unsloth-notebook/), [Mistral 7b](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook)
+- This [conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for Llama-3. And ChatML for [Mistral 7b](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing).
+- This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for continued pretraining / raw text.
 
 ## 🦥 Unsloth.ai News
 - 📣 NEW! [Llama-3 8b](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing) now works! Llama-3 70b also works (change the model name in the notebook).
 - 📣 NEW! [ORPO support](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing) is here!
+- 📣 NEW! [Phi-3 3.8b support](https://colab.research.google.com/drive/1NvkBmkHfucGO3Ve9s1NKZvMNlw5p83ym?usp=sharing) is here!
 - 📣 NEW! We cut memory usage by a [further 30%](https://unsloth.ai/blog/long-context) and now support fine-tuning of LLMs with [4x longer context windows](https://unsloth.ai/blog/long-context)! No change required if you're using our notebooks. To enable, simply change 1 line:
 ```python
 model = FastLanguageModel.get_peft_model(
@@ -45,7 +47,7 @@ model = FastLanguageModel.get_peft_model(
 )
 ```
 - 📣 [CodeGemma](https://colab.research.google.com/drive/19lwcRk_ZQ_ZtX-qzFP3qZBBHZNcMD1hh?usp=sharing) now works along with [Gemma 7b](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing) and [Gemma 2b](https://colab.research.google.com/drive/15gGm7x_jTm017_Ic8e317tdIpDG53Mtu?usp=sharing)
-- 📣 [2x faster inference](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) added for all our models
+- 📣 [2x faster inference](https://colab.research.google.com/drive/1aqlNQi7MMJbynFDyOQteD2t0yVfjb9Zh?usp=sharing) added for all our models
 
 ## 🔗 Links and Resources
 | Type                            | Links                               |
@@ -190,6 +192,7 @@ fourbit_models = [
     "unsloth/gemma-2b-bnb-4bit",
     "unsloth/gemma-2b-it-bnb-4bit", # Instruct version of Gemma 2b
     "unsloth/llama-3-8b-bnb-4bit", # [NEW] 15 Trillion token Llama-3
+    "unsloth/Phi-3-mini-4k-instruct-bnb-4bit",
 ] # More models at https://huggingface.co/unsloth
 
 model, tokenizer = FastLanguageModel.from_pretrained(
