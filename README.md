@@ -32,7 +32,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 - Benchmarking compared to FA2 + Hugging Face combined.
 - **Kaggle Notebooks** for [▶️ Llama-3 8b](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-8b-unsloth-notebook), [▶️ Gemma 7b](https://www.kaggle.com/code/danielhanchen/kaggle-gemma-7b-unsloth-notebook/), [▶️ Mistral 7b](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook)
-- This [▶️ conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for ShareGPT ChatML / Vicuna templates.
+- This [▶️ conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for ShareGPT ChatML templates for Llama-3. For [▶️ conversational Mistral 7b](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing).
 - This [▶️ text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for continued pretraining / raw text. This [▶️ DPO notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) replicates Zephyr.
 
 ## 🦥 Unsloth.ai News
@@ -47,7 +47,7 @@ model = FastLanguageModel.get_peft_model(
 )
 ```
 - 📣 [▶️ CodeGemma](https://colab.research.google.com/drive/19lwcRk_ZQ_ZtX-qzFP3qZBBHZNcMD1hh?usp=sharing) now works along with [▶️ Gemma 7b](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing) and [▶️ Gemma 2b](https://colab.research.google.com/drive/15gGm7x_jTm017_Ic8e317tdIpDG53Mtu?usp=sharing)
-- 📣 [▶️ 2x faster inference](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) added for all our models
+- 📣 [▶️ 2x faster inference](https://colab.research.google.com/drive/1aqlNQi7MMJbynFDyOQteD2t0yVfjb9Zh?usp=sharing) added for all our models
 
 ## 🔗 Links and Resources
 | Type                            | Links                               |
