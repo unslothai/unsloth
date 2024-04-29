@@ -20,16 +20,16 @@
 
 All notebooks are **beginner friendly**! Add your dataset, click "Run All", and you'll get a 2x faster finetuned model which can be exported to GGUF, vLLM or uploaded to Hugging Face.
 
-| Unsloth supports          |    Free Notebooks                                                                                           | Performance | Memory use |
+| Unsloth supports          |    Notebooks                                                                                           | Performance | Memory use |
 |-----------------|--------------------------------------------------------------------------------------------------------------------------|-------------|----------|
-| **Llama 3 (8B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing)               | 2x faster | 60% less |
-| **Mistral (7B)**    | [▶️ Start on Colab](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 73% less |
-| **Gemma (7B)**      | [▶️ Start on Colab](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
+| **Llama 3 (8B)**      | [▶️ Start Free](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing)               | 2x faster | 60% less |
+| **Mistral (7B)**    | [▶️ Start Free](https://colab.research.google.com/drive/1Dyauq4kTZoLewQ1cApceUQVNcnnNTzg_?usp=sharing)               | 2.2x faster | 73% less |
+| **Gemma (7B)**      | [▶️ Start Free](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
 | **Llama 3 (8B)** 1xT4  | [▶️ Start on Kaggle](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-8b-unsloth-notebook) | 2x faster | 60% less |
-| **ORPO**     | [▶️ Start on Colab](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing)               | 1.9x faster | 43% less |
-| **DPO - Zephyr**     | [▶️ Start on Colab](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 43% less |
-| **Phi-3 (3.8B)**     | [▶️ Start on Colab](https://colab.research.google.com/drive/1NvkBmkHfucGO3Ve9s1NKZvMNlw5p83ym?usp=sharing)               | 3.9x faster | 74% less |
-| **TinyLlama (1.1B)**  | [▶️ Start on Colab](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)               | 1.9x faster | 43% less |
+| **ORPO**     | [▶️ Start Free](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing)               | 1.9x faster | 43% less |
+| **DPO - Zephyr**     | [▶️ Start Free](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 43% less |
+| **Phi-3 (3.8B)**     | [▶️ Start Free](https://colab.research.google.com/drive/1NvkBmkHfucGO3Ve9s1NKZvMNlw5p83ym?usp=sharing)               |  |  |
+| **TinyLlama (1.1B)**  | [▶️ Start Free](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)               | 3.9x faster | 74% less |
 
 - Benchmarking compared to FA2 + Hugging Face combined.
 - This [conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for ShareGPT ChatML / Vicuna templates.
