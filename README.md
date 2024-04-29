@@ -31,9 +31,9 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 | **TinyLlama**  | [▶️ Start free finetune](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)               | 3.9x faster | 74% less |
 
 - Benchmarking compared to FA2 + Hugging Face combined.
+- **Kaggle Notebooks** for [Llama-3 8b](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-8b-unsloth-notebook), [Gemma 7b](https://www.kaggle.com/code/danielhanchen/kaggle-gemma-7b-unsloth-notebook/), [Mistral 7b](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook)
 - This [conversational notebook](https://colab.research.google.com/drive/1Aau3lgPzeZKQ-98h69CCu1UJcvIBLmy2?usp=sharing) is useful for ShareGPT ChatML / Vicuna templates.
 - This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for raw text. This [DPO notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing) replicates Zephyr.
-- Other Kaggle Notebooks for [Gemma 7b](https://www.kaggle.com/code/danielhanchen/kaggle-gemma-7b-unsloth-notebook/), [Mistral 7b](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook)
 
 ## 🦥 Unsloth.ai News
 - 📣 NEW! [Llama-3 8b](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing) now works! Llama-3 70b also works (change the model name in the notebook).
