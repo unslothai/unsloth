@@ -27,7 +27,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 | **Gemma (7B)**      | [▶️ Start for free](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
 | **ORPO**     | [▶️ Start for free](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing)               | 1.9x faster | 43% less |
 | **DPO Zephyr**     | [▶️ Start for free](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing)               | 1.9x faster | 43% less |
-| **Phi-3 (3.8B)**     | [▶️ Start for free](https://colab.research.google.com/drive/1NvkBmkHfucGO3Ve9s1NKZvMNlw5p83ym?usp=sharing)               |  |  |
+| **Phi-3 (3.8B)** | [▶️ Start for free](https://colab.research.google.com/drive/1NvkBmkHfucGO3Ve9s1NKZvMNlw5p83ym?usp=sharing)               | 2x faster | 50% less |
 | **TinyLlama**  | [▶️ Start for free](https://colab.research.google.com/drive/1AZghoNBQaMDgWJpi4RbffGM1h6raLUj9?usp=sharing)               | 3.9x faster | 74% less |
 
 - Benchmarking compared to FA2 + Hugging Face combined.
