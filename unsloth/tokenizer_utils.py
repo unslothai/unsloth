@@ -637,14 +637,14 @@ def add_new_tokens(
 pass
 
 
+from inspect import getsource
+import trl.trainer.sft_trainer
+from trl.trainer.sft_trainer import *
+
 def fix_sft_trainer_tokenizer():
     """
         Fixes double adding BOS tokens like in llama-3
     """
-    from inspect import getsource
-    import trl.trainer.sft_trainer
-    from trl.trainer.sft_trainer import *
-
     for function_name, replacer in (
         ("_prepare_non_packed_dataloader", "def tokenize(element):",),
         ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
