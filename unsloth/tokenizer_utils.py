@@ -659,7 +659,7 @@ def fix_sft_trainer_tokenizer():
         "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
-        "has_bos_token_already = tokenizer.bos_token in test_text or tokenizer.bos_token in chat_template\n"\
+        "has_bos_token_already = test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template\n"\
         "add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
 
         check_text = check_text.split("\n")
