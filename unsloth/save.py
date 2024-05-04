@@ -118,14 +118,14 @@ def _merge_lora(layer, name):
             W = fast_dequantize(W, quant_state)
         else:
             dtype = W.dtype
-        # W = W.to(torch.float32).t()
-        W = W.t()
+        W = W.to(torch.float32).t()
+        # W = W.t()
 
         if A is not None:
             # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
             # W += sAB
-            # W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
-            W.addmm_(A.t().to(W.dtype), B.t().to(W.dtype), alpha = s)
+            W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
+            # W.addmm_(A.t().to(W.dtype), B.t().to(W.dtype), alpha = s)
             # if not torch.isfinite(W).all():
             maximum_element = torch.max(W.min().abs(), W.max())
             if not torch.isfinite(maximum_element).item():
@@ -696,12 +696,18 @@ pass
 
 
 def install_llama_cpp_make_non_blocking():
-    env = { **os.environ, "LLAMA_CUDA": "1", }
+    # https://github.com/ggerganov/llama.cpp/issues/7062
+    # Weirdly GPU conversion for GGUF breaks??
+    # env = { **os.environ, "LLAMA_CUDA": "1", }
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
     os.system("make clean -C llama.cpp")
     full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
-    run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
+
+    # https://github.com/ggerganov/llama.cpp/issues/7062
+    # Weirdly GPU conversion for GGUF breaks??
+    # run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
+    run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
 
@@ -764,12 +770,17 @@ pass
 
 
 def install_llama_cpp_blocking(use_cuda = True):
-    use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
+    # https://github.com/ggerganov/llama.cpp/issues/7062
+    # Weirdly GPU conversion for GGUF breaks??
+    # use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
 
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
         "make clean -C llama.cpp",
-        f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        # https://github.com/ggerganov/llama.cpp/issues/7062
+        # Weirdly GPU conversion for GGUF breaks??
+        # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
@@ -833,6 +844,12 @@ def save_to_gguf(
     first_conversion     : str = "f16",
     _run_installer = None, # Non blocking install of llama.cpp
 ):
+    logger.warning(
+        "WARNING: llama.cpp GGUF conversion is currently unstable, since llama.cpp is\n"\
+        "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
+        "Please be patient - GGUF saving should still work, but might not work as well."
+    )
+
     from transformers.models.llama.modeling_llama import logger
 
     if quantization_method.startswith("iq2"):
@@ -967,7 +984,7 @@ def save_to_gguf(
                 "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
                 "You must run this in the same folder as you're saving your model.\n"\
                 "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
-                "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
+                "cd llama.cpp && make clean && make all -j\n"\
                 "Once that's done, redo the quantization."
             )
         pass
@@ -1007,7 +1024,7 @@ def save_to_gguf(
                     "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
                     "You must run this in the same folder as you're saving your model.\n"\
                     "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
-                    "cd llama.cpp && make clean && LLAMA_CUDA=1 make all -j\n"\
+                    "cd llama.cpp && make clean && make all -j\n"\
                     "Once that's done, redo the quantization."
                 )
             pass

@@ -1503,10 +1503,16 @@ class FastLlamaModel:
             pass
         pass
 
+        # Check for Llama-3
+        # if hasattr(model._saved_temp_tokenizer, "_using_llama3_template"):
+        #     if not train_embed_tokens and not train_lm_head:
+        #         raise RuntimeError("")
+
         # First fix untrained tokens
-        if train_embed_tokens or train_lm_head:
-            fix_untrained_tokens(model, eps = 1e-16)
-        pass
+        # Wrong - can cause reserved tokens to pop out!!
+        # if train_embed_tokens or train_lm_head:
+        #     fix_untrained_tokens(model, eps = 1e-16)
+        # pass
 
         # Check modules_to_save
         if modules_to_save is not None:
@@ -1547,7 +1553,7 @@ class FastLlamaModel:
 
         lora_config = LoraConfig(**arguments)
         model = _get_peft_model(model, lora_config)
-        
+
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
