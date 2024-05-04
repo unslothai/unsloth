@@ -844,6 +844,12 @@ def save_to_gguf(
     first_conversion     : str = "f16",
     _run_installer = None, # Non blocking install of llama.cpp
 ):
+    logger.warning(
+        "WARNING: llama.cpp GGUF conversion is currently unstable, since llama.cpp is\n"\
+        "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
+        "Please be patient - GGUF saving should still work, but might not work as well."
+    )
+
     from transformers.models.llama.modeling_llama import logger
 
     if quantization_method.startswith("iq2"):
