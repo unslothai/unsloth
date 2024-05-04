@@ -519,6 +519,44 @@ pass
 
 
 @torch.inference_mode
+def mean_of_trained_tokens(model, eps = 1e-16):
+    """
+    Llama-3 for eg has untrained vectors in the base model.
+    These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
+    We reset them to the mean of the rest of the tokens
+    """
+    embedding_matrix = model.get_input_embeddings ().weight.data.clone()
+    lm_head_matrix   = model.get_output_embeddings().weight.data.clone()
+
+    # Get untrained tokens
+    indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
+    where_untrained = torch.where(indicator_untrained)[0]
+    n_untrained = where_untrained.shape[0]
+    n_trained = embedding_matrix.shape[0] - n_untrained
+    if n_untrained != 0:
+        print(
+            f"Unsloth: Not an error, but your model has {n_untrained} untrained tokens.\n"\
+            "We shall set them to the mean of the other trained tokens."
+        )
+    pass
+
+    # First set untrained to all 0s - sometimes it's not! 1e-23 for bfloat16
+    embedding_matrix[where_untrained] = 0
+    lm_head_matrix  [where_untrained] = 0
+
+    # Find sum
+    sum_embedding  = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
+    sum_lm_head    = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
+
+    # Find correct average by dividing by sum of trained tokens
+    mean_embedding = (sum_embedding / n_trained).to(embedding_matrix.dtype)
+    mean_lm_head   = (sum_lm_head   / n_trained).to(lm_head_matrix  .dtype)
+
+    return mean_embedding, mean_lm_head
+pass
+
+
+@torch.inference_mode
 def add_new_tokens(
     model,
     tokenizer,
@@ -547,7 +585,10 @@ def add_new_tokens(
     pass
 
     # Get mean of trained tokens
-    mean_embedding, mean_lm_head = fix_untrained_tokens(model)
+    # mean_embedding, mean_lm_head = fix_untrained_tokens(model)
+
+    # Weirdly be careful reserved tokens can pop out
+    mean_embedding, mean_lm_head = mean_of_trained_tokens(model)
     mean_embedding = mean_embedding.to(torch.float32)
     mean_lm_head   = mean_lm_head  .to(torch.float32)
 
