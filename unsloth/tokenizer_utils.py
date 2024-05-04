@@ -25,7 +25,6 @@ __all__ = [
     "load_correct_tokenizer",
     "fix_sentencepiece_tokenizer",
     "check_tokenizer",
-    "fix_untrained_tokens",
     "add_new_tokens",
 ]
 
@@ -636,3 +635,44 @@ def add_new_tokens(
     
     return
 pass
+
+
+def fix_sft_trainer_tokenizer():
+    """
+        Fixes double adding BOS tokens like in llama-3
+    """
+    from inspect import getsource
+    import trl.trainer.sft_trainer
+    from trl.trainer.sft_trainer import *
+
+    for function_name, replacer in (
+        ("_prepare_non_packed_dataloader", "def tokenize(element):",),
+        ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
+    ):
+        function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
+        where = function.find("def")
+        function = function.split("\n")
+        function = "\n".join(x[where:] for x in function)
+
+        check_text = \
+        "\n"\
+        "print(1)\n"\
+        "test_text = dataset[0][dataset_text_field] if not use_formatting_func else formatting_func(dataset[0])\n"\
+        "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
+        "chat_template = '' if chat_template is None else chat_template\n"\
+        "has_bos_token_already = tokenizer.bos_token in test_text or tokenizer.bos_token in chat_template\n"\
+        "add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
+
+        check_text = check_text.split("\n")
+        check_text = "\n".join(" "*where + x for x in check_text)
+
+        function = function.replace(replacer, check_text + replacer)
+        exec(function, globals())
+
+        # Replace TRL's SFTTrainer
+        exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
+    pass
+pass
+
+# Fixes double adding BOS tokens like in llama-3
+fix_sft_trainer_tokenizer()
