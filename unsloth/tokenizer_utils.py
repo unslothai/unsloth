@@ -647,7 +647,7 @@ def fix_sft_trainer_tokenizer():
     """
     for function_name, replacer in (
         ("_prepare_non_packed_dataloader", "def tokenize(element):",),
-        ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
+        # ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
     ):
         function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
         where = function.find("def")
