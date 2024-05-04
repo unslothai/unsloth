@@ -656,8 +656,7 @@ def fix_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "print(1)\n"\
-        "test_text = dataset[0][dataset_text_field] if not use_formatting_func else formatting_func(dataset[0])\n"\
+        "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = tokenizer.bos_token in test_text or tokenizer.bos_token in chat_template\n"\
