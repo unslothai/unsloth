@@ -25,6 +25,7 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
 import subprocess
 import psutil
 import re
+from transformers.models.llama.modeling_llama import logger
 
 __all__ = [
     "print_quantization_methods",
@@ -845,12 +846,10 @@ def save_to_gguf(
     _run_installer = None, # Non blocking install of llama.cpp
 ):
     logger.warning(
-        "WARNING: llama.cpp GGUF conversion is currently unstable, since llama.cpp is\n"\
+        "NOTICE: llama.cpp GGUF conversion is currently unstable, since llama.cpp is\n"\
         "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
         "Please be patient - GGUF saving should still work, but might not work as well."
     )
-
-    from transformers.models.llama.modeling_llama import logger
 
     if quantization_method.startswith("iq2"):
         raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
