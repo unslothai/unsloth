@@ -162,7 +162,7 @@ colab-ampere-torch220 = [
     "ninja",
     "flash-attn",
 ]
-colab-new = [
+colab-221 = [
     "tyro",
     "transformers>=4.38.2",
     "datasets>=2.16.0",

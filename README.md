@@ -91,7 +91,16 @@ model = FastLanguageModel.get_peft_model(
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
-## 💾 Installation Instructions
+## 💾 Simple Installation Instructions
+
+```bash
+./install.sh
+```
+
+## 💾 Manual Installation Instructions
+<details>
+<summary>Details</summary>
+
 ### Conda Installation
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
 ```bash
@@ -100,7 +109,7 @@ conda activate unsloth_env
 
 conda install pytorch-cuda=<12.1/11.8> pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers
 
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
 
 pip install --no-deps trl peft accelerate bitsandbytes
 ```
@@ -145,27 +154,28 @@ pip install "unsloth[cu121-torch220] @ git+https://github.com/unslothai/unsloth.
 pip install "unsloth[cu118-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
 pip install "unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
 ```
-5. If you get errors, try the below first, then go back to step 1:
-```bash
-pip install --upgrade pip
-```
-6. For Pytorch 2.2.1:
+5. For Pytorch 2.2.1:
 ```bash
 # RTX 3090, 4090 Ampere GPUs:
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
 pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes
 
 # Pre Ampere RTX 2080, T4, GTX 1080 GPUs:
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[colab-221] @ git+https://github.com/unslothai/unsloth.git"
 pip install --no-deps xformers trl peft accelerate bitsandbytes
 ```
-7. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
+6. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
 ```bash
 nvcc
 python -m xformers.info
 python -m bitsandbytes
 ```
+7. If you get errors, try the below first, then go back to step 1:
+```bash
+pip install --upgrade pip
+```
 
+</details>
 ## 📜 Documentation
 - Go to our [Wiki page](https://github.com/unslothai/unsloth/wiki) for saving to GGUF, checkpointing, evaluation and more!
 - We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
