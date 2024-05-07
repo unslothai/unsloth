@@ -611,7 +611,7 @@ def test_chat_templates():
     assert(correct_prompt == our_prompt)
 
     # Phi-3
-    template = phi3_templatetemplate
+    template = phi3_template
     correct_tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
     correct_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
     correct_tokenizer.chat_template = template
