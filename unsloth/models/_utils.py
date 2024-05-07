@@ -144,24 +144,60 @@ pass
 
 
 def patch_tokenizer(model, tokenizer):
+    """
+        Phi3's pad_token isn't set. We set it to <|placeholder...
+        Llama-3 is <|reserved...
+        Llama-2 is <unk>
+        Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
+        Fixes https://github.com/unslothai/unsloth/issues/5
+    """
+    possible_reserved_tokens = ("<|reserved", "<|placeholder",)
+
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
-    if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
-        # Fixes https://github.com/unslothai/unsloth/issues/5
-        if hasattr(tokenizer, "unk_token") and tokenizer.unk_token is not None:
-            tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token})
-            tokenizer.pad_token = tokenizer.unk_token
-        else:
-            name = model.config._name_or_path if model is not None else "Model"
-            logger.warning_once(
-                f"{name} does not have a padding or unknown token!\n"\
-                f"Will use the EOS token of id {tokenizer.eos_token_id} as padding."
+
+    bad_pad_token = False
+    if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
+        # Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
+        bad_pad_token = tokenizer.eos_token == tokenizer.pad_token
+    elif hasattr(tokenizer, "pad_token") and tokenizer.pad_token is None:
+        bad_pad_token = True
+    else:
+        bad_pad_token = False
+    pass
+
+    if bad_pad_token:
+        # Find a better pad token
+        added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
+        possible_pad_token = None
+        for added_token in added_tokens[::-1]:
+            if added_token.startswith(possible_reserved_tokens):
+                possible_pad_token = added_token
+                break
+            pass
+        pass
+        if possible_pad_token is None:
+            # Try unk_token
+            possible_pad_token = tokenizer.unk_token
+        pass
+        if possible_pad_token is None:
+            # Failure!!
+            raise RuntimeError(
+                "Unsloth: Tokenizer's pad_token cannot be = eos_token, and we couldn't find a\n"\
+                "replacement of either <|reserved... or <|placeholder..."
             )
-            assert(hasattr(tokenizer, "eos_token"))
-            tokenizer.add_special_tokens({"pad_token" : tokenizer.eos_token})
-            tokenizer.pad_token = tokenizer.eos_token
+        pass
+
+        name = model.config._name_or_path if model is not None else "Model"
+        logger.warning_once(
+            f"{name} does not have a padding token! Will use pad_token = {possible_pad_token}."
+        )
+        
+        # Edit pad_token
+        tokenizer.add_special_tokens({"pad_token" : possible_pad_token})
+        tokenizer.pad_token = possible_pad_token
         if model is not None:
-            config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
+            config = model.config.update({"pad_token_id" : tokenizer.pad_token_id})
     pass
     return model, tokenizer
 pass
