@@ -18,6 +18,7 @@ from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import torch
 import os
+import shutil
 import pickle
 import gc
 from transformers.models.llama.modeling_llama import logger
@@ -84,6 +85,24 @@ def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
         print(f'"{key}"  ==> {value}')
     pass
+pass
+
+
+def check_if_sentencepiece_model(model, temporary_location = "_unsloth_sentencepiece_temp"):
+    if not hasattr(model, "_saved_temp_tokenizer"): return False
+
+    temp_tokenizer = model._saved_temp_tokenizer
+    sentencepiece_model = False
+    file_location = f"{temporary_location}/{temp_tokenizer.name_or_path}"
+    if not os.path.exists(file_location):
+        os.makedirs(file_location)
+    pass
+    temp_tokenizer.save_pretrained(file_location)
+    if os.path.isfile(f"{file_location}/tokenizer.model"):
+        sentencepiece_model = True
+    pass
+    shutil.rmtree(file_location)
+    return sentencepiece_model
 pass
 
 
@@ -840,6 +859,7 @@ pass
 
 def save_to_gguf(
     model_type           : str,
+    is_sentencepiece     : bool = False,
     model_directory      : str = "unsloth_finetuned_model",
     quantization_method  : str = "fast_quantized",
     first_conversion     : str = "f16",
@@ -856,7 +876,8 @@ def save_to_gguf(
 
     # Careful convert.py is only for Llama / Mistral based archs
     use_fast_convert = False
-    if   model_type == "llama":   use_fast_convert = True
+    if not is_sentencepiece:      use_fast_convert = False # Llama-3
+    elif model_type == "llama":   use_fast_convert = True
     elif model_type == "mistral": use_fast_convert = True
     pass
     logger.warning_once(f"Unsloth: Converting {model_type} model. Can use fast conversion = {use_fast_convert}.")
@@ -951,7 +972,7 @@ def save_to_gguf(
             f"--outtype {first_conversion} --concurrency {n_cpus}"
     else:
         # Need to fix convert-hf-to-gguf.py for some models!
-        _fix_gemma_gguf()
+        # _fix_gemma_gguf()
 
         command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
             f"--outfile {final_location} "\
@@ -1353,7 +1374,10 @@ def unsloth_save_pretrained_gguf(
         gc.collect()
 
     model_type = self.config.model_type
-    file_location = save_to_gguf(model_type, new_save_directory, quantization_method, first_conversion, makefile)
+    is_sentencepiece_model = check_if_sentencepiece_model(self)
+    file_location = save_to_gguf(model_type, is_sentencepiece_model, 
+        new_save_directory, quantization_method, first_conversion, makefile,
+    )
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -1473,7 +1497,10 @@ def unsloth_push_to_hub_gguf(
         gc.collect()
 
     model_type = self.config.model_type
-    file_location = save_to_gguf(model_type, new_save_directory, quantization_method, first_conversion, makefile)
+    is_sentencepiece_model = check_if_sentencepiece_model(self)
+    file_location = save_to_gguf(model_type, is_sentencepiece_model, 
+        new_save_directory, quantization_method, first_conversion, makefile,
+    )
 
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
     username = upload_to_huggingface(
