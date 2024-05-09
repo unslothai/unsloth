@@ -319,7 +319,7 @@ def fused_cel_forward(
     else:
         if self.config.use_fused_cel:
             print("Using fused cross entropy loss")
-            Fus
+
         else:
             logits = self.lm_head(hidden_states)
     logits = logits.float()
