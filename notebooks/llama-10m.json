@@ -1,0 +1,18 @@
+{
+  "architectures": ["LLaMAForCausalLM"],
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "hidden_act": "silu",
+  "hidden_size": 128,
+  "intermediate_size": 352,
+  "initializer_range": 0.02,
+  "max_sequence_length": 1024,
+  "model_type": "llama",
+  "num_attention_heads": 4,
+  "num_hidden_layers": 4,
+  "pad_token_id": -1,
+  "rms_norm_eps": 1e-6,
+  "transformers_version": "4.28.1",
+  "use_cache": true,
+  "vocab_size": 32000
+}
