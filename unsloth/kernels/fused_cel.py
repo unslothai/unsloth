@@ -1,7 +1,9 @@
+import logging
 import types
 from math import sqrt
 from typing import List, Optional, Tuple, Union
 
+logger = logging.getLogger(__name__)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -236,57 +238,6 @@ def fused_cel_linear(
     )
 
 
-# class FusedProjectionPlusCrossEntropyLoss(nn.Module):
-#     """Fused implementation of linear projection + cross entropy loss"""
-
-#     def __init__(
-#         self,
-#         dim: int,
-#         n_classes: int,
-#         n_loop_iters: int = 1,
-#         ignore_index: int = -100,
-#         reduction: str = "mean",
-#     ):
-#         super().__init__()
-#         self.n_loop_iters = n_loop_iters
-#         self.ignore_index = ignore_index
-#         self.reduction = reduction
-#         self.proj_weight = nn.Parameter(torch.empty(n_classes, dim))
-#         self.reset_parameters()
-
-#     def reset_parameters(self):
-#         nn.init.kaiming_uniform_(self.proj_weight, a=sqrt(5))
-
-#     def forward(self, x, targ):
-#         return FusedCrossEntropyLossFunction.apply(
-#             x,
-#             self.proj_weight,
-#             targ,
-#             self.n_loop_iters,
-#             self.ignore_index,
-#             self.reduction,
-#         )
-
-
-# class PyTorchProjectionPlusCrossEntropyLoss(nn.Module):
-#     """Simple PyTorch implementation of linear projection + cross entropy loss. Intended only for testing and benchmarking."""
-
-#     def __init__(
-#         self,
-#         dim: int,
-#         n_classes: int,
-#         ignore_index: int = -100,
-#         reduction: str = "mean",
-#     ):
-#         super().__init__()
-#         self.proj = nn.Linear(dim, n_classes, bias=False)
-#         self.loss = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
-
-#     def forward(self, x, targ):
-#         logits = self.proj(x)
-#         return self.loss(logits, targ)
-
-
 def fused_cel_forward(
     self,
     input_ids: torch.LongTensor = None,
@@ -339,26 +290,39 @@ def fused_cel_forward(
             for i in range(self.config.pretraining_tp)
         ]
         logits = torch.cat(logits, dim=-1)
-    else:
-        if self.config.use_fused_cel:
-            print("Using fused cross entropy loss")
-
-        else:
-            logits = self.lm_head(hidden_states)
-    logits = logits.float()
-
-    loss = None
-    if labels is not None:
-        # Shift so that tokens < n predict n
-        shift_logits = logits[..., :-1, :].contiguous()
+    elif self.config.use_fused_cel:
+        logger.warning_once(
+            "Using fused cross entropy loss, output logits will be in None"
+        )
         shift_labels = labels[..., 1:].contiguous()
-        # Flatten the tokens
-        loss_fct = CrossEntropyLoss()
-        shift_logits = shift_logits.view(-1, self.config.vocab_size)
-        shift_labels = shift_labels.view(-1)
-        # Enable model parallelism
-        shift_labels = shift_labels.to(shift_logits.device)
-        loss = loss_fct(shift_logits, shift_labels)
+        shift_labels = shift_labels.to(hidden_states.device)
+
+        loss = fused_cel_forward(
+            hidden_states,
+            self.lm_head.weight,
+            shift_labels,
+            n_loop_iters=self.config.fused_cel_n_loop_iters,
+            ignore_index=self.config.fused_cel_ignore_index,
+            reduction=self.config.fused_cel_reduction,
+        )
+        logits = None
+
+    else:
+        logits = self.lm_head(hidden_states)
+        logits = logits.float()
+
+        loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
 
     if not return_dict:
         output = (logits,) + outputs[1:]
@@ -373,6 +337,18 @@ def fused_cel_forward(
     )
 
 
-def patch_model(model, **kwargs):
-    model.config.update({"use_fused_cel": True, **kwargs})
+def patch_model(
+    model,
+    fused_cel_n_loop_iters=1,
+    fused_cel_ignore_index=-100,
+    fused_cel_reduction="mean",
+):
+    model.config.update(
+        {
+            "use_fused_cel": True,
+            "fused_cel_n_loop_iters": fused_cel_n_loop_iters,
+            "fused_cel_ignore_index": fused_cel_ignore_index,
+            "fused_cel_reduction": fused_cel_reduction,
+        }
+    )
     model.forward = types.MethodType(fused_cel_forward, model)
