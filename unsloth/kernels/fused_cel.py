@@ -341,13 +341,14 @@ def fused_cel_forward(
 
 def patch_model(
     model,
+    use_fused_cel=True,
     fused_cel_n_loop_iters=1,
     fused_cel_ignore_index=-100,
     fused_cel_reduction="mean",
 ):
     model.config.update(
         {
-            "use_fused_cel": True,
+            "use_fused_cel": use_fused_cel,
             "fused_cel_n_loop_iters": fused_cel_n_loop_iters,
             "fused_cel_ignore_index": fused_cel_ignore_index,
             "fused_cel_reduction": fused_cel_reduction,
