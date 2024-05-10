@@ -7,7 +7,7 @@ def CEL_only_forward(model, labels, hidden_states):
     self = model
 
     if model.config.use_fused_cel:
-        shift_hidden_states = hidden_states[..., :-1, :]
+        shift_hidden_states = hidden_states[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         shift_labels = shift_labels.to(shift_hidden_states.device)
 

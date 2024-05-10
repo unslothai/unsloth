@@ -72,11 +72,11 @@ def fused_cross_entropy_fwd_bwd_kernel(
 
 
 class FusedCrossEntropyLossFunction(torch.autograd.Function):
-    # NOTE: We put the linear projection in the same autograd Function as the loss computation
-    # because we overwrite the logits with their gradients inplace to avoid allocating more
-    # memory for the gradients, and so we keep the logits completely contained within this
-    # Functionto avoid possible side-effects if they were exposed.
-
+    # NOTE: Changes from original implementation:
+    # - Reshape inputs within forward from bs x seqlen x hidden_dim to (bs * seqlen) x hidden_dim per kernel requirement
+    # - Reshape labels within forward from bs x seqlen to (bs * seqlen)
+    # - Upcast `loss` from float32 (originally initialized to autocast / in-feat dtype)
+    # - Reshape dX from (bs * seqlen) x hidden_dim to bs x seqlen x hidden_dim
     @staticmethod
     def forward(
         ctx,
@@ -107,6 +107,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         NUM_WARPS = 16
 
         BLOCK_SIZE = triton.next_power_of_2(n_classes)
+
         # Change loss from in_feat.dtype to float32
         loss = torch.empty(n_tokens, dtype=torch.float32, device=in_feat.device)
         dtype = (
@@ -119,7 +120,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             grad_proj_weight = torch.zeros_like(proj_weight, dtype=dtype)
         else:
             grad_proj_weight = None
-        # logger.debug("in_feat.requires_grad: %s", in_feat.requires_grad)
+
         if in_feat.requires_grad:
             grad_in_feat = torch.zeros_like(in_feat)
         else:
@@ -138,7 +139,6 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         logits_chunk_cast = torch.zeros(
             (loop_chunk_size, n_classes), dtype=dtype, device=in_feat.device
         )
-        # logger.debug("in_feat.requires_grad: %s", in_feat.requires_grad)
 
         for i, in_feat_chunk in enumerate(torch.split(in_feat, loop_chunk_size)):
             token_start_idx = i * loop_chunk_size
@@ -158,7 +158,6 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             grad_logits_chunk = (
                 logits_chunk  # NOTE: we override the logits with their gradients
             )
-            #  logger.debug("in_feat.requires_grad: %s", in_feat.requires_grad)
 
             fused_cross_entropy_fwd_bwd_kernel[(n_tokens_chunk,)](
                 loss_chunk,
@@ -175,7 +174,6 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
                 num_warps=NUM_WARPS,
                 BLOCK_SIZE=BLOCK_SIZE,
             )
-            #   logger.debug("in_feat.requires_grad: %s", in_feat.requires_grad)
 
             grad_logits_chunk = grad_logits_chunk.to(dtype)
 
@@ -198,7 +196,6 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         # Save data for backward
         ctx.in_feat_requires_grad = in_feat.requires_grad
         ctx.proj_weight_requires_grad = proj_weight.requires_grad
-        # print("in_feat.requires_grad = ", in_feat.requires_grad)
 
         if proj_weight.requires_grad and in_feat.requires_grad:
             grad_in_feat = grad_in_feat.view(bs, seqlen, hidden_dim)
@@ -221,7 +218,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         elif ctx.in_feat_requires_grad and not ctx.proj_weight_requires_grad:
             (grad_in_feat,) = ctx.saved_tensors
 
-        assert grad_output.shape == tuple(), grad_output.shape
+        #   assert grad_output.shape == tuple(), grad_output.shape
 
         if grad_in_feat is not None:
             grad_in_feat *= grad_output

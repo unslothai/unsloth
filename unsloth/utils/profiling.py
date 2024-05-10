@@ -1,12 +1,27 @@
 import dataclasses
 import json
 import os
+from datetime import datetime
 
 from transformers.trainer_callback import ProgressCallback
 from transformers.trainer_pt_utils import _secs2timedelta
 
+# Prints filename and line number when logging
+LOG_FORMAT_STR = (
+    "%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s"
+)
+
+TRAINER_PERF_ARGS = {
+    "skip_memory_metrics": False,
+    "include_num_input_tokens_seen": True,
+    "include_tokens_per_second": True,
+}
+
 
 class MetricsCallBack(ProgressCallback):
+    def __init__(self, name):
+        self.name = name
+
     def metrics_format(self, metrics):
         """
         Reformat Trainer metrics values to a human-readable format
@@ -36,7 +51,11 @@ class MetricsCallBack(ProgressCallback):
         json_string = (
             json.dumps(dataclasses.asdict(state), indent=2, sort_keys=True) + "\n"
         )
-        json_path = os.path.join(output_dir, f"state-{state.global_step}.json")
+
+        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        json_path = os.path.join(
+            output_dir, f"{date_str}-{self.name}-state-{state.global_step}.json"
+        )
         with open(json_path, "w", encoding="utf-8") as f:
             f.write(json_string)
 
