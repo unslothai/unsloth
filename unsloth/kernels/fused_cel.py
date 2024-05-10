@@ -107,8 +107,8 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         NUM_WARPS = 16
 
         BLOCK_SIZE = triton.next_power_of_2(n_classes)
-
-        loss = torch.empty(n_tokens, dtype=in_feat.dtype, device=in_feat.device)
+        # Change loss from in_feat.dtype to float32
+        loss = torch.empty(n_tokens, dtype=torch.float32, device=in_feat.device)
         dtype = (
             torch.get_autocast_gpu_dtype()
             if torch.is_autocast_enabled()
