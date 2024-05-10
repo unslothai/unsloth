@@ -85,6 +85,10 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         ignore_index: int,
         reduction: str,
     ):
+        bs, seqlen, hidden_dim = in_feat.shape
+        in_feat = in_feat.reshape(bs * seqlen, hidden_dim)
+        targ = targ.reshape(-1)
+
         n_tokens = in_feat.shape[0]
         n_classes = proj_weight.shape[0]
 
@@ -189,10 +193,12 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         ctx.proj_weight_requires_grad = proj_weight.requires_grad
 
         if proj_weight.requires_grad and in_feat.requires_grad:
+            grad_in_feat = grad_in_feat.reshape(bs, seqlen, hidden_dim)
             ctx.save_for_backward(grad_in_feat, grad_proj_weight)
         elif proj_weight.requires_grad and not in_feat.requires_grad:
             ctx.save_for_backward(grad_proj_weight)
         elif not proj_weight.requires_grad and in_feat.requires_grad:
+            grad_in_feat = grad_in_feat.reshape(bs, seqlen, hidden_dim)
             ctx.save_for_backward(grad_in_feat)
 
         return loss
@@ -214,19 +220,19 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
 
 
 def fused_cel_linear(
-    x, embeddings, labels, n_loop_iters=1, ignore_index=-100, reduction="mean"
+    x, proj_weight, labels, n_loop_iters=1, ignore_index=-100, reduction="mean"
 ):
     """
     x: (bs, seqlen, hidden_dim)
-    embeddings: (vocab_size, hidden_dim)
+    proj_weight: (vocab_size, hidden_dim)
     labels: (bs, seqlen)
 
     """
-    x = x.reshape(-1, x.shape[-1])
-    labels = labels.reshape(-1)
+    # x = x.reshape(-1, x.shape[-1])
+    # labels = labels.reshape(-1)
 
     return FusedCrossEntropyLossFunction.apply(
-        x, embeddings, labels, n_loop_iters, ignore_index, reduction
+        x, proj_weight, labels, n_loop_iters, ignore_index, reduction
     )
 
 
