@@ -28,8 +28,9 @@ from unsloth.kernels import fused_cel
 from unsloth.kernels.fused_cel import patch_model as patch_model_fused_cel
 from unsloth.models._utils import patch_tokenizer
 from unsloth.models.llama import FastLlamaModel
+from unsloth.utils.profiling import MetricsCallBack
 
-# logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.WARNING)
 
 quant_config = BitsAndBytesConfig(
     load_in_4bit=True,
@@ -93,76 +94,9 @@ peft_config = LoraConfig(
     bias="none",
     task_type="CAUSAL_LM",
 )
-# patched_model = patch_model_fused_cel(model, use_fused_cel=False)
 
+patched_model = patch_model_fused_cel(model, use_fused_cel=True)
 
-class MetricsCallBack(ProgressCallback):
-    def metrics_format(self, metrics):
-        """
-        Reformat Trainer metrics values to a human-readable format
-
-        Args:
-            metrics (`Dict[str, float]`):
-                The metrics returned from train/evaluate/predict
-
-        Returns:
-            metrics (`Dict[str, float]`): The reformatted metrics
-        """
-
-        metrics_copy = metrics.copy()
-        for k, v in metrics_copy.items():
-            if "_mem_" in k:
-                metrics_copy[k] = f"{ v >> 20 }MB"
-            elif "_runtime" in k:
-                metrics_copy[k] = _secs2timedelta(v)
-            elif k == "total_flos":
-                metrics_copy[k] = f"{ int(v) >> 30 }GF"
-            elif isinstance(metrics_copy[k], float):
-                metrics_copy[k] = round(v, 4)
-
-        return metrics_copy
-
-    def save_state(self, output_dir, state):
-        json_string = (
-            json.dumps(dataclasses.asdict(state), indent=2, sort_keys=True) + "\n"
-        )
-        json_path = os.path.join(output_dir, f"state-{state.global_step}.json")
-        with open(json_path, "w", encoding="utf-8") as f:
-            f.write(json_string)
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        # with open(
-        #     os.path.join(args.output_dir, f"state-{state.global_step}.json"), "w"
-        # ) as f:
-        #     json.dump(state, f)
-        #    self.save_state(args.output_dir, state)
-
-        logs_formatted = self.metrics_format(logs)
-        k_width = max(len(str(x)) for x in logs_formatted.keys())
-        v_width = max(len(str(x)) for x in logs_formatted.values())
-        print("Global Step: ", state.global_step)
-        for key in sorted(logs_formatted.keys()):
-            print(f"  {key: <{k_width}} = {logs_formatted[key]:>{v_width}}")
-
-        # if state.is_world_process_zero and self.training_bar is not None:
-        #     # avoid modifying the logs object as it is shared between callbacks
-        #     logs = copy.deepcopy(logs)
-        #     _ = logs.pop("total_flos", None)
-        #     # round numbers so that it looks better in console
-        #     if "epoch" in logs:
-        #         logs["epoch"] = round(logs["epoch"], 2)
-        #     self.training_bar.write(str(logs))
-
-    def on_train_end(self, args, state, control, **kwargs):
-        # print("Final train logs: ", state.log_history)
-        # print("Final state: ", state)
-        # with open(os.path.join(args.output_dir, "train_logs.json"), "w") as f:
-        #     json.dump(state.log_history, f)
-        self.save_state(args.output_dir, state)
-        super().on_train_end(args, state, control, **kwargs)
-
-
-patched_model = model
 trainer = SFTTrainer(
     model=patched_model,
     tokenizer=tokenizer,
@@ -176,7 +110,4 @@ trainer = SFTTrainer(
 )
 trainer.remove_callback(ProgressCallback)
 _ = trainer.add_callback(MetricsCallBack())
-print(trainer.callback_handler.callback_list)
 train_stats = trainer.train()
-
-# print(trainer.log_metrics("train", train_stats.metrics))
