@@ -294,11 +294,13 @@ def fused_cel_forward(
         logger.warning_once(
             "Using fused cross entropy loss, output logits will be in None"
         )
+        # Need to shift, since kernel assumes labels and hidden states have same bs * seqlen
+        shift_hidden_states = hidden_states[..., :-1, :]
         shift_labels = labels[..., 1:].contiguous()
-        shift_labels = shift_labels.to(hidden_states.device)
+        shift_labels = shift_labels.to(shift_hidden_states.device)
 
-        loss = fused_cel_forward(
-            hidden_states,
+        loss = fused_cel_linear(
+            shift_hidden_states,
             self.lm_head.weight,
             shift_labels,
             n_loop_iters=self.config.fused_cel_n_loop_iters,
@@ -352,3 +354,4 @@ def patch_model(
         }
     )
     model.forward = types.MethodType(fused_cel_forward, model)
+    return model
