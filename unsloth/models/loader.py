@@ -14,6 +14,7 @@
 
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
+from .qwen2 import FastQwen2Model
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -119,6 +120,8 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."\
                 )
             dispatch_model = FastGemmaModel
+        elif model_type == "qwen2":
+            dispatch_model = FastQwen2Model
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\
