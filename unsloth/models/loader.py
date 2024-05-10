@@ -120,7 +120,7 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."\
                 )
             dispatch_model = FastGemmaModel
-        elif model_type == 'qwen2':
+        elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
         else:
             raise NotImplementedError(
