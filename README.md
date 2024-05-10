@@ -159,7 +159,14 @@ pip install --no-deps packaging ninja einops flash-attn xformers trl peft accele
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
 pip install --no-deps xformers trl peft accelerate bitsandbytes
 ```
-7. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
+7. For Pytorch 2.3.0: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
+```bash
+pip install "unsloth[cu118-torch230] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-torch230] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-ampere-torch230] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-ampere-torch230] @ git+https://github.com/unslothai/unsloth.git"
+```
+8. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
 ```bash
 nvcc
 python -m xformers.info
