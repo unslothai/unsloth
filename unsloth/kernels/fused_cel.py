@@ -213,55 +213,72 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         return grad_in_feat, grad_proj_weight, None, None, None, None
 
 
-class FusedProjectionPlusCrossEntropyLoss(nn.Module):
-    """Fused implementation of linear projection + cross entropy loss"""
+def fused_cel_linear(
+    x, embeddings, labels, n_loop_iters=1, ignore_index=-100, reduction="mean"
+):
+    """
+    x: (bs, seqlen, hidden_dim)
+    embeddings: (vocab_size, hidden_dim)
+    labels: (bs, seqlen)
 
-    def __init__(
-        self,
-        dim: int,
-        n_classes: int,
-        n_loop_iters: int = 1,
-        ignore_index: int = -100,
-        reduction: str = "mean",
-    ):
-        super().__init__()
-        self.n_loop_iters = n_loop_iters
-        self.ignore_index = ignore_index
-        self.reduction = reduction
-        self.proj_weight = nn.Parameter(torch.empty(n_classes, dim))
-        self.reset_parameters()
+    """
+    x = x.reshape(-1, x.shape[-1])
+    labels = labels.reshape(-1)
 
-    def reset_parameters(self):
-        nn.init.kaiming_uniform_(self.proj_weight, a=sqrt(5))
-
-    def forward(self, x, targ):
-        return FusedCrossEntropyLossFunction.apply(
-            x,
-            self.proj_weight,
-            targ,
-            self.n_loop_iters,
-            self.ignore_index,
-            self.reduction,
-        )
+    return FusedCrossEntropyLossFunction.apply(
+        x, embeddings, labels, n_loop_iters, ignore_index, reduction
+    )
 
 
-class PyTorchProjectionPlusCrossEntropyLoss(nn.Module):
-    """Simple PyTorch implementation of linear projection + cross entropy loss. Intended only for testing and benchmarking."""
+# class FusedProjectionPlusCrossEntropyLoss(nn.Module):
+#     """Fused implementation of linear projection + cross entropy loss"""
 
-    def __init__(
-        self,
-        dim: int,
-        n_classes: int,
-        ignore_index: int = -100,
-        reduction: str = "mean",
-    ):
-        super().__init__()
-        self.proj = nn.Linear(dim, n_classes, bias=False)
-        self.loss = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
+#     def __init__(
+#         self,
+#         dim: int,
+#         n_classes: int,
+#         n_loop_iters: int = 1,
+#         ignore_index: int = -100,
+#         reduction: str = "mean",
+#     ):
+#         super().__init__()
+#         self.n_loop_iters = n_loop_iters
+#         self.ignore_index = ignore_index
+#         self.reduction = reduction
+#         self.proj_weight = nn.Parameter(torch.empty(n_classes, dim))
+#         self.reset_parameters()
 
-    def forward(self, x, targ):
-        logits = self.proj(x)
-        return self.loss(logits, targ)
+#     def reset_parameters(self):
+#         nn.init.kaiming_uniform_(self.proj_weight, a=sqrt(5))
+
+#     def forward(self, x, targ):
+#         return FusedCrossEntropyLossFunction.apply(
+#             x,
+#             self.proj_weight,
+#             targ,
+#             self.n_loop_iters,
+#             self.ignore_index,
+#             self.reduction,
+#         )
+
+
+# class PyTorchProjectionPlusCrossEntropyLoss(nn.Module):
+#     """Simple PyTorch implementation of linear projection + cross entropy loss. Intended only for testing and benchmarking."""
+
+#     def __init__(
+#         self,
+#         dim: int,
+#         n_classes: int,
+#         ignore_index: int = -100,
+#         reduction: str = "mean",
+#     ):
+#         super().__init__()
+#         self.proj = nn.Linear(dim, n_classes, bias=False)
+#         self.loss = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction=reduction)
+
+#     def forward(self, x, targ):
+#         logits = self.proj(x)
+#         return self.loss(logits, targ)
 
 
 def fused_cel_forward(
@@ -352,4 +369,4 @@ def fused_cel_forward(
 
 def patch_model(model, **kwargs):
     model.config.update({"use_fused_cel": True, **kwargs})
-    model.forward = types.MethodType(forward, model)
+    model.forward = types.MethodType(fused_cel_forward, model)
