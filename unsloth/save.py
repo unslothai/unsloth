@@ -980,6 +980,8 @@ def save_to_gguf(
     pass
 
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
+        for line in sp.stderr:
+            print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         for line in sp.stdout:
             print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         if sp.returncode is not None and sp.returncode != 0:
