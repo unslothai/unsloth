@@ -2,6 +2,7 @@ import dataclasses
 import json
 import logging
 import os
+from pathlib import Path
 
 import torch
 from IPython.core.interactiveshell import InteractiveShell
@@ -26,12 +27,18 @@ import unsloth.utils.memory as memory_utils
 import unsloth.utils.testing as test_utils
 from unsloth.kernels import fused_cel
 from unsloth.kernels.fused_cel import patch_model as patch_model_fused_cel
-from unsloth.models._utils import patch_tokenizer
+from unsloth.models._utils import patch_tokenizer, prepare_model_for_kbit_training
 from unsloth.models.llama import FastLlamaModel
 from unsloth.utils.profiling import MetricsCallBack
 
-logging.basicConfig(level=logging.WARNING)
+parent_dir = Path(__file__).parent.absolute()
 
+
+logging.basicConfig(
+    format="%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
+    datefmt="%H:%M:%S",
+    level=logging.DEBUG,
+)
 quant_config = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_quant_type="nf4",
@@ -39,9 +46,12 @@ quant_config = BitsAndBytesConfig(
     bnb_4bit_compute_dtype=torch.bfloat16,
 )
 
-model_config = LlamaConfig.from_pretrained("./llama-10m.json")
+
+model_config = LlamaConfig.from_pretrained(parent_dir / "llama-10m.json")
 model = AutoModelForCausalLM.from_pretrained(
-    "./llama-10m", quantization_config=quant_config, torch_dtype=torch.bfloat16
+    parent_dir / "llama-10m",
+    quantization_config=quant_config,
+    torch_dtype=torch.bfloat16,
 )
 # model = LlamaForCausalLM(model_config).to("cuda")
 
@@ -55,8 +65,8 @@ max_seq_length = 256
 training_args = TrainingArguments(
     per_device_train_batch_size=2,
     gradient_accumulation_steps=1,
-    warmup_steps=5,
-    max_steps=5,
+    warmup_steps=1,
+    max_steps=1,
     learning_rate=2e-4,
     fp16=not torch.cuda.is_bf16_supported(),
     bf16=torch.cuda.is_bf16_supported(),
@@ -94,7 +104,10 @@ peft_config = LoraConfig(
     bias="none",
     task_type="CAUSAL_LM",
 )
-
+# Need to set inputs require_grad (i.e., output of embeddings requires grad for fused_cel to work)
+model = prepare_model_for_kbit_training(
+    model, use_gradient_checkpointing=training_args.gradient_checkpointing
+)
 patched_model = patch_model_fused_cel(model, use_fused_cel=True)
 
 trainer = SFTTrainer(
@@ -108,6 +121,8 @@ trainer = SFTTrainer(
     packing=False,  # Can make training 5x faster for short sequences.
     args=training_args,
 )
-trainer.remove_callback(ProgressCallback)
-_ = trainer.add_callback(MetricsCallBack())
+# trainer.remove_callback(ProgressCallback)
+# trainer.model.enable_input_require_grads()
+
+# _ = trainer.add_callback(MetricsCallBack())
 train_stats = trainer.train()

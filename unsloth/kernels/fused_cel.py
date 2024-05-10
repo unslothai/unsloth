@@ -88,8 +88,8 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         reduction: str,
     ):
         bs, seqlen, hidden_dim = in_feat.shape
-        in_feat = in_feat.reshape(bs * seqlen, hidden_dim)
-        targ = targ.reshape(-1)
+        in_feat = in_feat.view(-1, in_feat.shape[-1])
+        targ = targ.view(-1)
 
         n_tokens = in_feat.shape[0]
         n_classes = proj_weight.shape[0]
@@ -119,7 +119,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             grad_proj_weight = torch.zeros_like(proj_weight, dtype=dtype)
         else:
             grad_proj_weight = None
-
+        # logger.debug("in_feat.requires_grad: %s", in_feat.requires_grad)
         if in_feat.requires_grad:
             grad_in_feat = torch.zeros_like(in_feat)
         else:
@@ -138,6 +138,8 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         logits_chunk_cast = torch.zeros(
             (loop_chunk_size, n_classes), dtype=dtype, device=in_feat.device
         )
+        # logger.debug("in_feat.requires_grad: %s", in_feat.requires_grad)
+
         for i, in_feat_chunk in enumerate(torch.split(in_feat, loop_chunk_size)):
             token_start_idx = i * loop_chunk_size
             token_end_idx = (i + 1) * loop_chunk_size
@@ -156,6 +158,8 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             grad_logits_chunk = (
                 logits_chunk  # NOTE: we override the logits with their gradients
             )
+            #  logger.debug("in_feat.requires_grad: %s", in_feat.requires_grad)
+
             fused_cross_entropy_fwd_bwd_kernel[(n_tokens_chunk,)](
                 loss_chunk,
                 grad_logits_chunk,
@@ -171,6 +175,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
                 num_warps=NUM_WARPS,
                 BLOCK_SIZE=BLOCK_SIZE,
             )
+            #   logger.debug("in_feat.requires_grad: %s", in_feat.requires_grad)
 
             grad_logits_chunk = grad_logits_chunk.to(dtype)
 
@@ -193,21 +198,22 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         # Save data for backward
         ctx.in_feat_requires_grad = in_feat.requires_grad
         ctx.proj_weight_requires_grad = proj_weight.requires_grad
-        print("in_feat.requires_grad = ", in_feat.requires_grad)
+        # print("in_feat.requires_grad = ", in_feat.requires_grad)
 
         if proj_weight.requires_grad and in_feat.requires_grad:
-            grad_in_feat = grad_in_feat.reshape(bs, seqlen, hidden_dim)
+            grad_in_feat = grad_in_feat.view(bs, seqlen, hidden_dim)
             ctx.save_for_backward(grad_in_feat, grad_proj_weight)
         elif proj_weight.requires_grad and not in_feat.requires_grad:
             ctx.save_for_backward(grad_proj_weight)
         elif not proj_weight.requires_grad and in_feat.requires_grad:
-            grad_in_feat = grad_in_feat.reshape(bs, seqlen, hidden_dim)
+            grad_in_feat = grad_in_feat.view(bs, seqlen, hidden_dim)
             ctx.save_for_backward(grad_in_feat)
 
         return loss
 
     @staticmethod
     def backward(ctx, grad_output):
+        grad_in_feat = grad_proj_weight = None
         if ctx.in_feat_requires_grad and ctx.proj_weight_requires_grad:
             grad_in_feat, grad_proj_weight = ctx.saved_tensors
         elif not ctx.in_feat_requires_grad and ctx.proj_weight_requires_grad:
@@ -216,8 +222,11 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             (grad_in_feat,) = ctx.saved_tensors
 
         assert grad_output.shape == tuple(), grad_output.shape
-        grad_in_feat *= grad_output
-        grad_proj_weight *= grad_output
+
+        if grad_in_feat is not None:
+            grad_in_feat *= grad_output
+        if grad_proj_weight is not None:
+            grad_proj_weight *= grad_output
 
         return grad_in_feat, grad_proj_weight, None, None, None, None
 
@@ -231,9 +240,6 @@ def fused_cel_linear(
     labels: (bs, seqlen)
 
     """
-    # x = x.reshape(-1, x.shape[-1])
-    # labels = labels.reshape(-1)
-
     return FusedCrossEntropyLossFunction.apply(
         x, proj_weight, labels, n_loop_iters, ignore_index, reduction
     )
@@ -296,7 +302,9 @@ def fused_cel_forward(
             "Using fused cross entropy loss, output logits will be in None"
         )
         # Need to shift, since kernel assumes labels and hidden states have same bs * seqlen
-        shift_hidden_states = hidden_states[..., :-1, :]
+        shift_hidden_states = hidden_states[
+            ..., :-1, :
+        ].contiguous()  # This is important -- MUST call contiguous, otherwise will cause downstream reshaping issues
         shift_labels = labels[..., 1:].contiguous()
         shift_labels = shift_labels.to(shift_hidden_states.device)
 
