@@ -193,6 +193,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         # Save data for backward
         ctx.in_feat_requires_grad = in_feat.requires_grad
         ctx.proj_weight_requires_grad = proj_weight.requires_grad
+        print("in_feat.requires_grad = ", in_feat.requires_grad)
 
         if proj_weight.requires_grad and in_feat.requires_grad:
             grad_in_feat = grad_in_feat.reshape(bs, seqlen, hidden_dim)
