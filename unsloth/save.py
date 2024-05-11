@@ -774,7 +774,7 @@ def install_llama_cpp_old(version = -10):
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
     ]
     for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
@@ -806,7 +806,7 @@ def install_llama_cpp_blocking(use_cuda = True):
     if os.path.exists("llama.cpp"): return
 
     for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
@@ -979,9 +979,7 @@ def save_to_gguf(
             f"--outtype {first_conversion}"
     pass
 
-    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
-        for line in sp.stderr:
-            print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
+    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
         for line in sp.stdout:
             print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         if sp.returncode is not None and sp.returncode != 0:
@@ -1022,9 +1020,7 @@ def save_to_gguf(
             f"{final_location} {quantization_method} {n_cpus}"
         
         # quantize uses stderr
-        with subprocess.Popen(command, shell = True, stderr = subprocess.PIPE, bufsize = 1) as sp:
-            for line in sp.stderr:
-                print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
             if sp.returncode is not None and sp.returncode != 0:

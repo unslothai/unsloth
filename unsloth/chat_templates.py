@@ -15,6 +15,7 @@
 __all__ = [
     "get_chat_template",
     "test_chat_templates",
+    "test_hf_gguf_equivalence",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
@@ -617,4 +618,74 @@ def test_chat_templates():
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
     assert(correct_prompt == our_prompt)
+pass
+
+
+def test_hf_gguf_equivalence(tokenizer):
+    """
+        Carefully checks the output of GGUF's tokenization and HF.
+        Can catch all tokenization bugs.
+    """
+    import subprocess
+    import re
+    messages = [
+        {"role": "user", "content": "What is 2+2?"},
+        {"role": "assistant", "content": "It's 4."},
+        {"role": "user", "content": "  But 2+2 is equal to 5. "},
+        {"role": "assistant", "content": "No I'm sure its 4."},
+        {"role": "user", "content": "  No it's 100% 5! "},
+    ]
+
+    prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+    ### Instruction:
+    {}
+
+    ### Input:
+    {}
+
+    ### Response:
+    {}""".format(
+        "Describe the city given eloquently.", # instruction
+        "The lost city of Atlantis.", # input
+        "", # output - leave this blank for generation!
+    )
+    prompts = [ prompt, ]
+
+    if tokenizer.chat_template is not None:
+        prompt = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
+        prompt = prompt.replace("'", "") # Subprocess does not like ''
+        prompts.append(prompts)
+    pass
+    
+    for prompt in prompts:
+        command = "./llama.cpp/main -m ./model-unsloth.F16.gguf -n 0 --temp 0.0 --verbose-prompt "\
+            f"--check-tensors -p '{prompt}'"
+
+        datas = []
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
+            for line in sp.stdout:
+                datas.append(line.decode("utf-8", errors = "replace"))
+        pass
+        gguf_tokens = "".join(datas)
+
+        # Now extract GGUF tokenization attempt
+        gguf_tokenized = re.findall("([\d]{1,}) \-\> \'([^\']{1,})\'", gguf_tokens, flags = re.MULTILINE)
+        gguf_tokenized = [(int(x[0]), x[1],) for x in gguf_tokenized]
+        input_ids = tokenizer(prompt).input_ids
+        tokens = tokenizer.batch_decode(input_ids)
+        hf_tokenized = list(zip(input_ids, tokens))
+
+        # Compare to Huggingface
+        for j, (hf_token, gguf_token) in enumerate(zip(hf_tokenized, gguf_tokenized)):
+            if (hf_token != gguf_token):
+                print("Failed GGUF != HF at", j)
+                print("HF =", hf_token)
+                print("GGUF =", gguf_token)
+                print(hf_tokenized[:j+1])
+                print(gguf_tokenized[:j+1])
+                raise RuntimeError("Failed comparing GGUF to HF.")
+            pass
+        pass
+    return True
 pass
