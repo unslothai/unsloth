@@ -1077,7 +1077,7 @@ def unsloth_save_pretrained_merged(
     save_peft_format     : bool = True,
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,
+    maximum_memory_usage : float = 0.75,
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
