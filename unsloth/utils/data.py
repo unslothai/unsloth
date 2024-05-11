@@ -1,7 +1,7 @@
 from functools import partial
 
 from datasets import load_dataset
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 
 ALPACA_PROMPT = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -99,9 +99,12 @@ def get_data_loader(
         max_seq_length=max_seq_length,
         batch_size=batch_size,
         num_proc=num_proc,
-        num_examples=num_examples,
+        num_examples=num_examples * batch_size,
     )
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     return DataLoader(
-        tokenized_dataset, batch_size=batch_size, collate_fn=data_collator
+        tokenized_dataset,
+        batch_size=batch_size,
+        collate_fn=data_collator,
+        sampler=RandomSampler(tokenized_dataset),
     )

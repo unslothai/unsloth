@@ -142,7 +142,6 @@ def run_test_batches(model, batches):
     for batch in batches:
         batch = {k: v.cuda() for k, v in batch.items()}
         out = model(**batch)
-        print(out.loss.dtype)
         outputs.append(out.loss.detach().item())
     return outputs
 
@@ -175,22 +174,27 @@ def run_benchmark(args):
 
     training_args = get_trainer_args(args)
     peft_config = get_lora_config(args)
-
-    model = prepare_model_for_kbit_training(
-        model, use_gradient_checkpointing=training_args.gradient_checkpointing
-    )
+    if args.load_in_4bit:
+        model = prepare_model_for_kbit_training(
+            model, use_gradient_checkpointing=training_args.gradient_checkpointing
+        )
 
     dataset = data_utils.get_alpaca(tokenizer)
 
-    formatted_args = " ".join([f"{k}={v}" for k, v in vars(args).items()])
-    print(f"Running with {formatted_args}")
+    formatted_args = "\n ".join([f"{k}={v}" for k, v in vars(args).items()])
+    print(f"Running with:\n {formatted_args}")
     if args.sanity_check:
         dataloader = get_data_loader(
-            dataset, tokenizer, args.max_seq_len, args.batch_size
+            dataset,
+            tokenizer,
+            args.max_seq_len,
+            args.batch_size,
+            num_examples=args.max_steps,
         )
-        original_outputs = run_test_batches(model, dataloader)
+        batches = [b for b in dataloader]
+        original_outputs = run_test_batches(model, batches)
         fused_model = patch_model_fused_cel(model, use_fused_cel=True)
-        fused_outputs = run_test_batches(fused_model, dataloader)
+        fused_outputs = run_test_batches(fused_model, batches)
 
         diffs = [
             abs(expected - actual)
@@ -231,12 +235,6 @@ def run_benchmark(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    parser.add_argument(
-        "--use_fused_cel",
-        action="store_true",
-        default=False,
-        help="Whether to use fused CEL",
     )
     parser.add_argument(
         "--max_steps", type=int, default=5, help="Number of training steps"

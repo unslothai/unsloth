@@ -21,7 +21,7 @@ def load_log_history(
         model_type = "fused_cel" if "fused" in file else "no-fused"
         loss_df["model"] = model_type
         loss_df = loss_df[return_cols]
-        metrics_df = pd.Series(metrics).to_frame(name=model_type)
+        metrics_df = pd.Series(metrics).to_frame(name=model_type).loc[idx["step":], :]
     return (loss_df, metrics_df) if return_df else (losses, metrics)
 
 
