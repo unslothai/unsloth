@@ -13,6 +13,8 @@ from accelerate.utils.operations import convert_outputs_to_fp32
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
+# torch.autograd.set_detect_anomaly(True)
+
 
 @triton.jit
 def fused_cross_entropy_fwd_bwd_kernel(
@@ -76,9 +78,11 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
     # NOTE: Changes from original implementation:
     # - Reshape inputs within forward from bs x seqlen x hidden_dim to (bs * seqlen) x hidden_dim per kernel requirement
     # - Reshape labels within forward from bs x seqlen to (bs * seqlen)
-    # - Upcast `loss` from float32 (originally initialized to autocast / in-feat dtype)
+    # - Upcast `loss` to float32 (originally initialized to autocast / in-feat dtype)
+    # - Upcast 'divisor' to float32 (originally initialized to autocast / in-feat dtype)
     # - Reshape dX from (bs * seqlen) x hidden_dim to bs x seqlen x hidden_dim
     @staticmethod
+    @torch.cuda.amp.custom_fwd
     def forward(
         ctx,
         in_feat: torch.Tensor,
@@ -127,10 +131,11 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         else:
             grad_in_feat = None
 
+        # Change divisor from in_feat.dtype to float32
         divisor = (
-            (targ != ignore_index).sum().to(dtype)
+            (targ != ignore_index).sum().to(torch.float32)
             if reduction == "mean"
-            else torch.ones(1, dtype=dtype, device=in_feat.device)
+            else torch.ones(1, dtype=torch.float32, device=in_feat.device)
         )
 
         # Divide the input into chunks of size num_tokens // n_loop_iters, then compute the loss for each of these groups
@@ -150,7 +155,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             # Compute logits
             torch.matmul(in_feat_chunk, proj_weight_cast.T, out=logits_chunk_cast)
             logits_chunk = logits_chunk_cast.float()
-
+            print(f"Fused cel logits_chunk: {logits_chunk.mean()}")
             # Compute loss
             loss_chunk = loss[token_start_idx:token_end_idx]
             targ_chunk = targ[token_start_idx:token_end_idx]
@@ -192,8 +197,9 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
                 )
 
         # NOTE: if reduction == "mean" we already divide by an appropriate normalization factor in the kernel so we can alway sum here
+        # print("Loss before sum: ", loss)
         loss = loss.sum()
-
+        print("Loss after sum: ", loss.item())
         # Save data for backward
         ctx.in_feat_requires_grad = in_feat.requires_grad
         ctx.proj_weight_requires_grad = proj_weight.requires_grad
@@ -210,6 +216,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         return loss
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, grad_output):
         grad_in_feat = grad_proj_weight = None
         if ctx.in_feat_requires_grad and ctx.proj_weight_requires_grad:
@@ -220,12 +227,38 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             (grad_in_feat,) = ctx.saved_tensors
 
         #   assert grad_output.shape == tuple(), grad_output.shape
+        print(
+            "grad_in_feature before grad_output: ",
+            grad_in_feat.min().item(),
+            grad_in_feat.max().item(),
+            grad_in_feat.shape,
+            grad_in_feat.dtype,
+        )
+        print(
+            "grad_output: ",
+            grad_output.min().item(),
+            grad_output.max().item(),
+            grad_output.shape,
+            grad_output.dtype,
+        )
 
-        if grad_in_feat is not None:
-            grad_in_feat *= grad_output
-        if grad_proj_weight is not None:
-            grad_proj_weight *= grad_output
-
+        # Only needed for gradient scaling
+        if grad_in_feat.dtype == torch.float16:
+            if grad_in_feat is not None:
+                grad_in_feat = (grad_in_feat.to(torch.float32) * grad_output).to(
+                    torch.float16
+                )
+            if grad_proj_weight is not None:
+                grad_proj_weight = (
+                    grad_proj_weight.to(torch.float32) * grad_output
+                ).to(torch.float16)
+            print(
+                "grad_in_feature: ",
+                grad_in_feat.min().item(),
+                grad_in_feat.max().item(),
+                grad_in_feat.shape,
+                grad_in_feat.dtype,
+            )
         return grad_in_feat, grad_proj_weight, None, None, None, None
 
 
@@ -314,6 +347,13 @@ def fused_cel_forward(
             ignore_index=self.config.fused_cel_ignore_index,
             reduction=self.config.fused_cel_reduction,
         )
+        print("Fused CEL Loss", loss.item())
+        # dX = torch.autograd.grad(
+        #     loss, hidden_states, retain_graph=True, allow_unused=True
+        # )[0]
+
+        # print("dX fused", dX.min().item(), dX.max().item())
+
         logits = None
 
     else:
@@ -324,6 +364,7 @@ def fused_cel_forward(
         if labels is not None:
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
+            print("No fused shift logits", shift_logits.mean().item())
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
@@ -332,7 +373,11 @@ def fused_cel_forward(
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
-
+            print("Cross Entropy Loss", loss.item())
+            dHiddens = torch.autograd.grad(loss, hidden_states, retain_graph=True)[0]
+            dLogits = torch.autograd.grad(loss, shift_logits, retain_graph=True)[0]
+            print("dLogits non-fused", dLogits.min().item(), dLogits.max().item())
+            print("dX non-fused", dHiddens.min().item(), dHiddens.max().item())
     if not return_dict:
         output = (logits,) + outputs[1:]
         return (loss,) + output if loss is not None else output

@@ -142,6 +142,7 @@ def run_test_batches(model, batches):
     for batch in batches:
         batch = {k: v.cuda() for k, v in batch.items()}
         out = model(**batch)
+        out.loss.backward()
         outputs.append(out.loss.detach().item())
     return outputs
 
@@ -162,11 +163,16 @@ def run_train_loop(
     _ = trainer.train()
 
 
-def run_benchmark(args):
+def get_model_and_tokenizer(args):
     model = get_model(args)
     tokenizer = get_tokenizer(args)
     model, tokenizer = patch_tokenizer(model, tokenizer)
 
+    return model, tokenizer
+
+
+def run_benchmark(args):
+    model, tokenizer = get_model_and_tokenizer(args)
     if args.overwrite_output_dir:
         import shutil
 
@@ -217,7 +223,10 @@ def run_benchmark(args):
             cli_args=args,
             use_fused_cel=False,
         )
+        del model
+        del tokenizer
 
+        model, tokenizer = get_model_and_tokenizer(args)
         run_train_loop(
             model=model,
             tokenizer=tokenizer,
@@ -237,10 +246,10 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
-        "--max_steps", type=int, default=5, help="Number of training steps"
+        "--max_steps", type=int, default=1, help="Number of training steps"
     )
     parser.add_argument(
-        "--dtype", type=str, default="bfloat16", help="torch compute type"
+        "--dtype", type=str, default="float16", help="torch compute type"
     )
     parser.add_argument(
         "--model_path",
