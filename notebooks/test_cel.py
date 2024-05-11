@@ -27,6 +27,7 @@ from unsloth.utils.profiling import MetricsCallBack
 parent_dir = Path(__file__).parent.absolute()
 SEED = 3407
 enable_full_determinism(SEED)
+torch.autograd.set_detect_anomaly(True)
 
 
 def get_quant_config(load_in_4bit, dtype):
@@ -150,7 +151,14 @@ def run_test_batches(model, batches):
 def run_train_loop(
     model, tokenizer, dataset, peft_config, training_args, cli_args, use_fused_cel=False
 ):
-    model = patch_model_fused_cel(model, use_fused_cel=use_fused_cel)
+    model = patch_model_fused_cel(
+        model,
+        use_fused_cel=use_fused_cel,
+        fused_cel_n_loop_iters=cli_args.fused_cel_n_loop_iters,
+        # these are defaults
+        fused_cel_ignore_index=-100,
+        fused_cel_reduction="mean",
+    )
     trainer = get_sft_trainer(
         cli_args,
         model,
@@ -264,5 +272,14 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="outputs")
     parser.add_argument("--overwrite_output_dir", action="store_true", default=True)
     parser.add_argument("--sanity_check", action="store_true")
+    parser.add_argument(
+        "--fused_cel_n_loop_iters",
+        type=int,
+        default=1,
+        help="""Number of loop iterations for fused CEL.  
+        E.g., `n_loop_iters=4` will calculate the logits / loss in 4 chunks along sequence length.
+        `batch_size * seqlen` must be divisible by `n_loop_iters`
+        """,
+    )
     args = parser.parse_args()
     run_benchmark(args)

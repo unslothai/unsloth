@@ -81,6 +81,9 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
     # - Upcast `loss` to float32 (originally initialized to autocast / in-feat dtype)
     # - Upcast 'divisor' to float32 (originally initialized to autocast / in-feat dtype)
     # - Reshape dX from (bs * seqlen) x hidden_dim to bs x seqlen x hidden_dim
+    # - Add custom_fwd / custom_bwd
+    # - Handle torch.float16 scaling in backward
+
     @staticmethod
     @torch.cuda.amp.custom_fwd
     def forward(
@@ -107,7 +110,9 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         ), f"Number of tokens in in_feat and targ is not equal: {(in_feat.shape, targ.shape) = }"
         assert reduction in ("mean", "sum"), reduction
         assert n_loop_iters > 0, n_loop_iters
-        assert n_tokens % n_loop_iters == 0, (n_tokens, n_loop_iters)
+        assert (
+            n_tokens % n_loop_iters == 0
+        ), "Number of tokens must be divisible by n_loop_iters"
 
         NUM_WARPS = 16
 
@@ -259,6 +264,8 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
                 grad_in_feat.shape,
                 grad_in_feat.dtype,
             )
+        else:
+            assert grad_output == 1
         return grad_in_feat, grad_proj_weight, None, None, None, None
 
 
@@ -332,7 +339,30 @@ def fused_cel_forward(
         logger.warning_once(
             "Using fused cross entropy loss, output logits will be in None"
         )
-        # Need to shift, since kernel assumes labels and hidden states have same bs * seqlen
+        assert labels is not None, "labels must not be None to use fused CEL"
+        # Don't shift, pass in full hidden_states
+        # Instead, append -100 (ignore_index) to labels
+        # labels = labels[..., 1:].contiguous()
+        # place_holder = torch.full(
+        #     (labels.shape[0], 1),
+        #     self.config.fused_cel_ignore_index,
+        #     dtype=labels.dtype,
+        #     device=labels.device,
+        # )
+        # labels = (
+        #     torch.hstack([labels, place_holder]).to(hidden_states.device).contiguous()
+        # )
+
+        # loss = fused_cel_linear(
+        #     hidden_states,
+        #     self.lm_head.weight,
+        #     labels,
+        #     n_loop_iters=self.config.fused_cel_n_loop_iters,
+        #     ignore_index=self.config.fused_cel_ignore_index,
+        #     reduction=self.config.fused_cel_reduction,
+        # )
+
+        #        Need to shift, since kernel assumes labels and hidden states have same bs * seqlen
         shift_hidden_states = hidden_states[
             ..., :-1, :
         ].contiguous()  # This is important -- MUST call contiguous, otherwise will cause downstream reshaping issues
@@ -347,12 +377,6 @@ def fused_cel_forward(
             ignore_index=self.config.fused_cel_ignore_index,
             reduction=self.config.fused_cel_reduction,
         )
-        print("Fused CEL Loss", loss.item())
-        # dX = torch.autograd.grad(
-        #     loss, hidden_states, retain_graph=True, allow_unused=True
-        # )[0]
-
-        # print("dX fused", dX.min().item(), dX.max().item())
 
         logits = None
 
