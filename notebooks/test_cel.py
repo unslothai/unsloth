@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 
 import torch
+from cel_analysis import load_log_diffs
 from peft import LoraConfig
 from tabulate import tabulate
 from transformers import (
@@ -13,6 +14,8 @@ from transformers import (
 )
 from transformers.models.llama import LlamaConfig
 from transformers.trainer_callback import ProgressCallback
+from transformers.trainer_utils import enable_full_determinism
+from transformers.trainer_utils import set_seed as hf_set_seed
 from trl import SFTTrainer
 
 import unsloth.utils.data as data_utils
@@ -23,7 +26,7 @@ from unsloth.utils.profiling import MetricsCallBack
 
 parent_dir = Path(__file__).parent.absolute()
 SEED = 3407
-torch.manual_seed(SEED)
+enable_full_determinism(SEED)
 
 
 def get_quant_config(load_in_4bit, dtype):
@@ -109,7 +112,9 @@ def get_lora_config(args):
     return peft_config
 
 
-def get_sft_trainer(args, model, tokenizer, dataset, peft_config, trainer_args):
+def get_sft_trainer(
+    args, model, tokenizer, dataset, peft_config, trainer_args, use_fused_cel
+):
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
@@ -121,12 +126,13 @@ def get_sft_trainer(args, model, tokenizer, dataset, peft_config, trainer_args):
         packing=False,  # Can make training 5x faster for short sequences.
         args=trainer_args,
     )
+
+    # Remove default callbacks, make less verbose
     trainer.remove_callback(ProgressCallback)
     trainer.model.enable_input_require_grads()
-
-    _ = trainer.add_callback(
-        MetricsCallBack(name="fused_cel" if args.use_fused_cel else "no_fused_cel")
-    )
+    file_prefix = "fused_cel" if use_fused_cel else ""
+    file_prefix += "_" + args.dtype
+    _ = trainer.add_callback(MetricsCallBack(name=file_prefix, verbose=False))
     return trainer
 
 
@@ -136,8 +142,25 @@ def run_test_batches(model, batches):
     for batch in batches:
         batch = {k: v.cuda() for k, v in batch.items()}
         out = model(**batch)
+        print(out.loss.dtype)
         outputs.append(out.loss.detach().item())
     return outputs
+
+
+def run_train_loop(
+    model, tokenizer, dataset, peft_config, training_args, cli_args, use_fused_cel=False
+):
+    model = patch_model_fused_cel(model, use_fused_cel=use_fused_cel)
+    trainer = get_sft_trainer(
+        cli_args,
+        model,
+        tokenizer,
+        dataset,
+        peft_config,
+        training_args,
+        use_fused_cel=use_fused_cel,
+    )
+    _ = trainer.train()
 
 
 def run_benchmark(args):
@@ -168,6 +191,7 @@ def run_benchmark(args):
         original_outputs = run_test_batches(model, dataloader)
         fused_model = patch_model_fused_cel(model, use_fused_cel=True)
         fused_outputs = run_test_batches(fused_model, dataloader)
+
         diffs = [
             abs(expected - actual)
             for expected, actual in zip(original_outputs, fused_outputs)
@@ -179,13 +203,29 @@ def run_benchmark(args):
             )
         )
     else:
-        patched_model = patch_model_fused_cel(model, use_fused_cel=args.use_fused_cel)
-
-        trainer = get_sft_trainer(
-            args, patched_model, tokenizer, dataset, peft_config, training_args
+        # Run with and without fused CEL
+        run_train_loop(
+            model=model,
+            tokenizer=tokenizer,
+            dataset=dataset,
+            peft_config=peft_config,
+            training_args=training_args,
+            cli_args=args,
+            use_fused_cel=False,
         )
 
-        _ = trainer.train()
+        run_train_loop(
+            model=model,
+            tokenizer=tokenizer,
+            dataset=dataset,
+            peft_config=peft_config,
+            training_args=training_args,
+            cli_args=args,
+            use_fused_cel=True,
+        )
+        loss_df, metrics_df = load_log_diffs(args.output_dir)
+        print(loss_df.to_string(float_format="%.6f", justify="left"))
+        print(metrics_df.to_string())
 
 
 if __name__ == "__main__":
@@ -214,8 +254,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_seq_len", type=int, default=256)
     parser.add_argument("--grad_accum_steps", type=int, default=1)
     parser.add_argument("--load_in_4bit", action="store_true")
-    parser.add_argument("--output_dir", type=str, default="fused_cel_output")
-    parser.add_argument("--overwrite_output_dir", action="store_true")
+    parser.add_argument("--output_dir", type=str, default="outputs")
+    parser.add_argument("--overwrite_output_dir", action="store_true", default=True)
     parser.add_argument("--sanity_check", action="store_true")
     args = parser.parse_args()
     run_benchmark(args)

@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime
 
-from transformers.trainer_callback import ProgressCallback
+from transformers.trainer_callback import ProgressCallback, TrainerCallback
 from transformers.trainer_pt_utils import _secs2timedelta
 
 # Prints filename and line number when logging
@@ -18,9 +18,10 @@ TRAINER_PERF_ARGS = {
 }
 
 
-class MetricsCallBack(ProgressCallback):
-    def __init__(self, name):
+class MetricsCallBack(TrainerCallback):
+    def __init__(self, name, verbose=False):
         self.name = name
+        self.verbose = verbose
 
     def metrics_format(self, metrics):
         """
@@ -48,6 +49,13 @@ class MetricsCallBack(ProgressCallback):
         return metrics_copy
 
     def save_state(self, output_dir, state):
+        # Format metrics (last entry of log_history)
+        log_history = state.log_history
+        metrics = self.metrics_format(log_history[-1])
+        log_history[-1] = metrics
+        state.log_history = log_history
+
+        # Save state
         json_string = (
             json.dumps(dataclasses.asdict(state), indent=2, sort_keys=True) + "\n"
         )
@@ -60,13 +68,18 @@ class MetricsCallBack(ProgressCallback):
             f.write(json_string)
 
     def on_log(self, args, state, control, logs=None, **kwargs):
-        logs_formatted = self.metrics_format(logs)
-        k_width = max(len(str(x)) for x in logs_formatted.keys())
-        v_width = max(len(str(x)) for x in logs_formatted.values())
-        print("Global Step: ", state.global_step)
-        for key in sorted(logs_formatted.keys()):
-            print(f"  {key: <{k_width}} = {logs_formatted[key]:>{v_width}}")
+        if self.verbose:
+            logs_formatted = self.metrics_format(logs)
+            k_width = max(len(str(x)) for x in logs_formatted.keys())
+            v_width = max(len(str(x)) for x in logs_formatted.values())
+            print("Global Step: ", state.global_step)
+            for key in sorted(logs_formatted.keys()):
+                print(f"  {key: <{k_width}} = {logs_formatted[key]:>{v_width}}")
+        else:
+            return
 
     def on_train_end(self, args, state, control, **kwargs):
         self.save_state(args.output_dir, state)
-        super().on_train_end(args, state, control, **kwargs)
+
+
+#        super().on_train_end(args, state, control, **kwargs)
