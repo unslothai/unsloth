@@ -160,7 +160,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             # Compute logits
             torch.matmul(in_feat_chunk, proj_weight_cast.T, out=logits_chunk_cast)
             logits_chunk = logits_chunk_cast.float()
-            print(f"Fused cel logits_chunk: {logits_chunk.mean()}")
+            # print(f"Fused cel logits_chunk: {logits_chunk.mean()}")
             # Compute loss
             loss_chunk = loss[token_start_idx:token_end_idx]
             targ_chunk = targ[token_start_idx:token_end_idx]
@@ -204,7 +204,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         # NOTE: if reduction == "mean" we already divide by an appropriate normalization factor in the kernel so we can alway sum here
         # print("Loss before sum: ", loss)
         loss = loss.sum()
-        print("Loss after sum: ", loss.item())
+        # print("Loss after sum: ", loss.item())
         # Save data for backward
         ctx.in_feat_requires_grad = in_feat.requires_grad
         ctx.proj_weight_requires_grad = proj_weight.requires_grad
@@ -232,20 +232,20 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
             (grad_in_feat,) = ctx.saved_tensors
 
         #   assert grad_output.shape == tuple(), grad_output.shape
-        print(
-            "grad_in_feature before grad_output: ",
-            grad_in_feat.min().item(),
-            grad_in_feat.max().item(),
-            grad_in_feat.shape,
-            grad_in_feat.dtype,
-        )
-        print(
-            "grad_output: ",
-            grad_output.min().item(),
-            grad_output.max().item(),
-            grad_output.shape,
-            grad_output.dtype,
-        )
+        # print(
+        #     "grad_in_feature before grad_output: ",
+        #     grad_in_feat.min().item(),
+        #     grad_in_feat.max().item(),
+        #     grad_in_feat.shape,
+        #     grad_in_feat.dtype,
+        # )
+        # print(
+        #     "grad_output: ",
+        #     grad_output.min().item(),
+        #     grad_output.max().item(),
+        #     grad_output.shape,
+        #     grad_output.dtype,
+        # )
 
         # Only needed for gradient scaling
         if grad_in_feat.dtype == torch.float16:
@@ -257,13 +257,13 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
                 grad_proj_weight = (
                     grad_proj_weight.to(torch.float32) * grad_output
                 ).to(torch.float16)
-            print(
-                "grad_in_feature: ",
-                grad_in_feat.min().item(),
-                grad_in_feat.max().item(),
-                grad_in_feat.shape,
-                grad_in_feat.dtype,
-            )
+            # print(
+            #     "grad_in_feature: ",
+            #     grad_in_feat.min().item(),
+            #     grad_in_feat.max().item(),
+            #     grad_in_feat.shape,
+            #     grad_in_feat.dtype,
+            # )
         else:
             assert grad_output == 1
         return grad_in_feat, grad_proj_weight, None, None, None, None
@@ -393,7 +393,7 @@ def fused_cel_forward(
         if labels is not None:
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
-            print("No fused shift logits", shift_logits.mean().item())
+            # print("No fused shift logits", shift_logits.mean().item())
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
@@ -402,11 +402,11 @@ def fused_cel_forward(
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
-            print("Cross Entropy Loss", loss.item())
-            dHiddens = torch.autograd.grad(loss, hidden_states, retain_graph=True)[0]
-            dLogits = torch.autograd.grad(loss, shift_logits, retain_graph=True)[0]
-            print("dLogits non-fused", dLogits.min().item(), dLogits.max().item())
-            print("dX non-fused", dHiddens.min().item(), dHiddens.max().item())
+            # print("Cross Entropy Loss", loss.item())
+            # dHiddens = torch.autograd.grad(loss, hidden_states, retain_graph=True)[0]
+            # dLogits = torch.autograd.grad(loss, shift_logits, retain_graph=True)[0]
+            # print("dLogits non-fused", dLogits.min().item(), dLogits.max().item())
+            # print("dX non-fused", dHiddens.min().item(), dHiddens.max().item())
     if not return_dict:
         output = (logits,) + outputs[1:]
         return (loss,) + output if loss is not None else output
