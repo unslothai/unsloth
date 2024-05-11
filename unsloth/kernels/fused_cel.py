@@ -340,43 +340,48 @@ def fused_cel_forward(
             "Using fused cross entropy loss, output logits will be in None"
         )
         assert labels is not None, "labels must not be None to use fused CEL"
-        # Don't shift, pass in full hidden_states
-        # Instead, append -100 (ignore_index) to labels
-        # labels = labels[..., 1:].contiguous()
-        # place_holder = torch.full(
-        #     (labels.shape[0], 1),
-        #     self.config.fused_cel_ignore_index,
-        #     dtype=labels.dtype,
-        #     device=labels.device,
-        # )
-        # labels = (
-        #     torch.hstack([labels, place_holder]).to(hidden_states.device).contiguous()
-        # )
 
-        # loss = fused_cel_linear(
-        #     hidden_states,
-        #     self.lm_head.weight,
-        #     labels,
-        #     n_loop_iters=self.config.fused_cel_n_loop_iters,
-        #     ignore_index=self.config.fused_cel_ignore_index,
-        #     reduction=self.config.fused_cel_reduction,
-        # )
+        # We don't shift when n_loop_iters >1 to make it easier to chunk along sequence length
+        # In this case, we don't shift hidden states or labels
+        # Instead, pass in full hidden states and append -100 (ignore_index) to labels
+        if self.config.fused_cel_n_loop_iters > 1:
+            labels = labels[..., 1:].contiguous()
+            place_holder = torch.full(
+                (labels.shape[0], 1),
+                self.config.fused_cel_ignore_index,
+                dtype=labels.dtype,
+                device=labels.device,
+            )
+            labels = (
+                torch.hstack([labels, place_holder])
+                .to(hidden_states.device)
+                .contiguous()
+            )
 
-        #        Need to shift, since kernel assumes labels and hidden states have same bs * seqlen
-        shift_hidden_states = hidden_states[
-            ..., :-1, :
-        ].contiguous()  # This is important -- MUST call contiguous, otherwise will cause downstream reshaping issues
-        shift_labels = labels[..., 1:].contiguous()
-        shift_labels = shift_labels.to(shift_hidden_states.device)
+            loss = fused_cel_linear(
+                hidden_states,
+                self.lm_head.weight,
+                labels,
+                n_loop_iters=self.config.fused_cel_n_loop_iters,
+                ignore_index=self.config.fused_cel_ignore_index,
+                reduction=self.config.fused_cel_reduction,
+            )
+        else:
+            # Need to shift, since kernel assumes labels and hidden states have same bs * seqlen
+            shift_hidden_states = hidden_states[
+                ..., :-1, :
+            ].contiguous()  # This is important -- MUST call contiguous, otherwise will cause downstream reshaping issues
+            shift_labels = labels[..., 1:].contiguous()
+            shift_labels = shift_labels.to(shift_hidden_states.device)
 
-        loss = fused_cel_linear(
-            shift_hidden_states,
-            self.lm_head.weight,
-            shift_labels,
-            n_loop_iters=self.config.fused_cel_n_loop_iters,
-            ignore_index=self.config.fused_cel_ignore_index,
-            reduction=self.config.fused_cel_reduction,
-        )
+            loss = fused_cel_linear(
+                shift_hidden_states,
+                self.lm_head.weight,
+                shift_labels,
+                n_loop_iters=self.config.fused_cel_n_loop_iters,
+                ignore_index=self.config.fused_cel_ignore_index,
+                reduction=self.config.fused_cel_reduction,
+            )
 
         logits = None
 
