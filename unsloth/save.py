@@ -1120,7 +1120,7 @@ def unsloth_push_to_hub_merged(
     commit_description   : str = "Upload model trained with Unsloth 2x faster",
     tags                 : Optional[List[str]] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,
+    maximum_memory_usage : float = 0.75,
 ):
     """
         Same as .push_to_hub(...) except 4bit weights are auto
