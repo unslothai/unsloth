@@ -621,7 +621,7 @@ def test_chat_templates():
 pass
 
 
-def test_hf_gguf_equivalence(tokenizer):
+def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf"):
     """
         Carefully checks the output of GGUF's tokenization and HF.
         Can catch all tokenization bugs.
@@ -659,7 +659,7 @@ def test_hf_gguf_equivalence(tokenizer):
     pass
     
     for prompt in prompts:
-        command = "./llama.cpp/main -m ./model-unsloth.F16.gguf -n 0 --temp 0.0 --verbose-prompt "\
+        command = f"./llama.cpp/main -m {gguf_model} -n 0 --temp 0.0 --verbose-prompt "\
             f"--check-tensors -p '{prompt}'"
 
         datas = []
@@ -684,6 +684,7 @@ def test_hf_gguf_equivalence(tokenizer):
                 print("GGUF =", gguf_token)
                 print(hf_tokenized[:j+1])
                 print(gguf_tokenized[:j+1])
+                print(gguf_tokens)
                 raise RuntimeError("Failed comparing GGUF to HF.")
             pass
         pass
