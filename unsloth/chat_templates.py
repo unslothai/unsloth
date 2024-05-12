@@ -675,10 +675,11 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
         input_ids = tokenizer(prompt).input_ids
         tokens = tokenizer.batch_decode(input_ids)
         hf_tokenized = list(zip(input_ids, tokens))
+        print(gguf_tokenized[:5])
 
         # Compare to Huggingface
         for j, (hf_token, gguf_token) in enumerate(zip(hf_tokenized, gguf_tokenized)):
-            if (hf_token != gguf_token):
+            if (hf_token[0] != gguf_token[0]):
                 print("Failed GGUF != HF at", j)
                 print("HF =", hf_token)
                 print("GGUF =", gguf_token)
