@@ -26,7 +26,11 @@ from unsloth.utils.profiling import MetricsCallBack
 
 parent_dir = Path(__file__).parent.absolute()
 SEED = 3407
+
+# Fully deterministic algorithms and also sets global seeds
 enable_full_determinism(SEED)
+
+# Detect nans in gradients
 torch.autograd.set_detect_anomaly(True)
 
 
