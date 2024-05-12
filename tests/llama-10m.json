@@ -14,5 +14,5 @@
   "rms_norm_eps": 1e-6,
   "transformers_version": "4.28.1",
   "use_cache": true,
-  "vocab_size": 32000
+  "vocab_size": 320000
 }
