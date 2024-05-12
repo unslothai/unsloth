@@ -1,8 +1,6 @@
 import logging
-import types
 from dataclasses import dataclass
-from math import sqrt
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -24,6 +22,10 @@ class FusedCELConfig(dict):
 
     def __post_init__(self):
         self.update(self.__dict__)
+
+
+# Efficient Cross Entropy Fused Kernel
+# credit: https://github.com/mgmalek/efficient_cross_entropy
 
 
 @triton.jit
@@ -84,16 +86,23 @@ def fused_cross_entropy_fwd_bwd_kernel(
     tl.store(logit_grad_row_ptrs, grad, mask=col_offsets < n_cols)
 
 
-class FusedCrossEntropyLossFunction(torch.autograd.Function):
-    # NOTE: Changes from original implementation:
-    # - Reshape inputs within forward from bs x seqlen x hidden_dim to (bs * seqlen) x hidden_dim per kernel requirement
-    # - Reshape labels within forward from bs x seqlen to (bs * seqlen)
-    # - Upcast `loss` to float32 (originally initialized to autocast / in-feat dtype)
-    # - Upcast 'divisor' to float32 (originally initialized to autocast / in-feat dtype)
-    # - Reshape dX from (bs * seqlen) x hidden_dim to bs x seqlen x hidden_dim
-    # - Add custom_fwd / custom_bwd
-    # - Handle torch.float16 scaling in backward
+"""
+NOTE: Changes from original implementation:
+- Reshape inputs within forward from bs x seqlen x hidden_dim to (bs * seqlen) x hidden_dim per kernel requirement
+- Reshape labels within forward from bs x seqlen to (bs * seqlen)
+- Upcast `loss` to float32 (originally initialized to autocast / in-feat dtype)
+- Upcast 'divisor' to float32 (originally initialized to autocast / in-feat dtype)
+- Reshape dX from `(bs * seqlen) x hidden_dim` to `bs x seqlen x hidden_dim`
+- Add custom_fwd / custom_bwd
+- Handle torch.float16 scaling in backward
 
+TODO:
+- Revisit float16 scaling in `backward`
+- Investigate why in_feat.view(-1, in_feat.shape[-1]) sometimes changes in `in_feat.requires_grad` to False 
+"""
+
+
+class FusedCrossEntropyLossFunction(torch.autograd.Function):
     @staticmethod
     @torch.cuda.amp.custom_fwd
     def forward(
@@ -108,19 +117,20 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         bs, seqlen, hidden_dim = in_feat.shape
 
         in_feat = in_feat.view(-1, in_feat.shape[-1])
+        # print(
+        #     f"in_feat shape, contiguity, grad: {in_feat.shape}, {in_feat.is_contiguous(), in_feat.requires_grad}"
+        # )
+
         in_feat.requires_grad_(True)
         targ = targ.view(-1)
 
         n_tokens = in_feat.shape[0]
         n_classes = proj_weight.shape[0]
-        print(
-            f"in_feat shape, contiguity, grad: {in_feat.shape}, {in_feat.is_contiguous(), in_feat.requires_grad}"
-        )
-        print(
-            f"proj_weight shape, contiguity, grad: {proj_weight.shape}, {proj_weight.is_contiguous(), proj_weight.requires_grad}"
-        )
+        # print(
+        #     f"proj_weight shape, contiguity, grad: {proj_weight.shape}, {proj_weight.is_contiguous(), proj_weight.requires_grad}"
+        # )
 
-        print(f"n_tokens: {n_tokens}, n_classes: {n_classes}")
+        # print(f"n_tokens: {n_tokens}, n_classes: {n_classes}")
         assert in_feat.ndim == 2, in_feat.ndim
         assert proj_weight.ndim == 2, proj_weight.ndim
         assert targ.ndim == 1, targ.shape
@@ -431,122 +441,6 @@ class LlamaForCausalLMFusedCEL(LlamaForCausalLM):
         )
 
 
-# Only for debugging hugginfgface base models (not unsloth)
-# def fused_cel_forward(
-#     self,
-#     input_ids: torch.LongTensor = None,
-#     causal_mask: Optional[torch.Tensor] = None,  # this is deprecated
-#     attention_mask: Optional[torch.Tensor] = None,
-#     position_ids: Optional[torch.LongTensor] = None,
-#     past_key_values: Optional[List[torch.FloatTensor]] = None,
-#     inputs_embeds: Optional[torch.FloatTensor] = None,
-#     labels: Optional[torch.LongTensor] = None,
-#     use_cache: Optional[bool] = None,
-#     output_attentions: Optional[bool] = None,
-#     output_hidden_states: Optional[bool] = None,
-#     return_dict: Optional[bool] = None,
-#     cache_position: Optional[torch.LongTensor] = None,
-# ) -> Union[Tuple, CausalLMOutputWithPast]:
-#     output_attentions = (
-#         output_attentions
-#         if output_attentions is not None
-#         else self.config.output_attentions
-#     )
-#     output_hidden_states = (
-#         output_hidden_states
-#         if output_hidden_states is not None
-#         else self.config.output_hidden_states
-#     )
-#     return_dict = (
-#         return_dict if return_dict is not None else self.config.use_return_dict
-#     )
-
-#     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-#     # if hasattr(self, "base_model"):
-#     #     outputs = self.base_model.model.model(
-#     #         input_ids=input_ids,
-#     #         attention_mask=attention_mask,
-#     #         position_ids=position_ids,
-#     #         past_key_values=past_key_values,
-#     #         inputs_embeds=inputs_embeds,
-#     #         use_cache=use_cache,
-#     #         output_attentions=output_attentions,
-#     #         output_hidden_states=output_hidden_states,
-#     #         return_dict=return_dict,
-#     #         cache_position=cache_position,
-#     #     )
-#     # else:
-#     outputs = self.model(
-#         input_ids=input_ids,
-#         attention_mask=attention_mask,
-#         position_ids=position_ids,
-#         past_key_values=past_key_values,
-#         inputs_embeds=inputs_embeds,
-#         use_cache=use_cache,
-#         output_attentions=output_attentions,
-#         output_hidden_states=output_hidden_states,
-#         return_dict=return_dict,
-#         cache_position=cache_position,
-#     )
-
-#     hidden_states = outputs[0]
-#     if self.config.pretraining_tp > 1:
-#         lm_head_slices = self.lm_head.weight.split(
-#             self.vocab_size // self.config.pretraining_tp, dim=0
-#         )
-#         logits = [
-#             F.linear(hidden_states, lm_head_slices[i])
-#             for i in range(self.config.pretraining_tp)
-#         ]
-#         logits = torch.cat(logits, dim=-1)
-#     elif self.config.use_fused_cel:
-#         logger.warning_once(
-#             "Using fused cross entropy loss, output logits will be in None"
-#         )
-#         assert labels is not None, "labels must not be None to use fused CEL"
-
-#         loss = fused_cel_layer(
-#             hidden_states,
-#             self.lm_head.weight,
-#             labels,
-#             n_loop_iters=self.config.n_loop_iters,
-#             ignore_index=self.config.ignore_index,
-#             reduction="mean",
-#         )
-
-#         logits = None
-
-#     else:
-#         logits = self.lm_head(hidden_states)
-#         logits = logits.float()
-
-#         loss = None
-#         if labels is not None:
-#             # Shift so that tokens < n predict n
-#             shift_logits = logits[..., :-1, :].contiguous()
-#             # print("No fused shift logits", shift_logits.mean().item())
-#             shift_labels = labels[..., 1:].contiguous()
-#             # Flatten the tokens
-#             loss_fct = CrossEntropyLoss()
-#             shift_logits = shift_logits.view(-1, self.config.vocab_size)
-#             shift_labels = shift_labels.view(-1)
-#             # Enable model parallelism
-#             shift_labels = shift_labels.to(shift_logits.device)
-#             loss = loss_fct(shift_logits, shift_labels)
-
-#     if not return_dict:
-#         output = (logits,) + outputs[1:]
-#         return (loss,) + output if loss is not None else output
-
-#     return CausalLMOutputWithPast(
-#         loss=loss,
-#         logits=logits,
-#         past_key_values=outputs.past_key_values,
-#         hidden_states=outputs.hidden_states,
-#         attentions=outputs.attentions,
-#     )
-
-
 def patch_model(
     model,
     use_fused_cel=True,
@@ -562,8 +456,4 @@ def patch_model(
     )
     model.config.update({"fused_cel": fused_config})
 
-    # if hasattr(model, "base_model"):
-    #     model.base_model.model.forward = types.MethodType(fused_cel_forward, model)
-    # else:
-    # model.forward = types.MethodType(fused_cel_forward, model)
     return model

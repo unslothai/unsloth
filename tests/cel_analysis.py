@@ -46,12 +46,15 @@ def load_log_diffs(
 ):
     traces = [
         os.path.join(trace_dir, trace)
-        for trace in sorted(os.listdir(trace_dir))
+        for trace in sorted(os.listdir(trace_dir), reverse=True)  # Load most recent
         if trace.endswith(".json")
     ]
+    base_traces = [trace for trace in traces if "fused" not in trace]
+    fused_traces = [trace for trace in traces if "fused" in trace]
+
     losses = []
     metrics = []
-    for trace in traces:
+    for trace in [base_traces[0], fused_traces[0]]:
         loss, metric = load_log_history(
             trace, return_df=return_df, return_cols=return_cols
         )

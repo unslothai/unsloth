@@ -123,6 +123,7 @@ def get_sft_trainer(
     trainer_args,
     max_seq_len,
     file_prefix,
+    packing=False,
 ):
     trainer = SFTTrainer(
         model=model,
@@ -132,7 +133,7 @@ def get_sft_trainer(
         dataset_text_field="text",
         max_seq_length=max_seq_len,
         dataset_num_proc=2,
-        packing=False,  # Can make training 5x faster for short sequences.
+        packing=packing,
         args=trainer_args,
     )
 

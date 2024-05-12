@@ -48,7 +48,7 @@ class MetricsCallBack(TrainerCallback):
 
         return metrics_copy
 
-    def save_state(self, output_dir, state):
+    def save_state(self, output_dir, state, append_step=False):
         # Format metrics (last entry of log_history)
         log_history = state.log_history
         metrics = self.metrics_format(log_history[-1])
@@ -61,9 +61,8 @@ class MetricsCallBack(TrainerCallback):
         )
 
         date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        json_path = os.path.join(
-            output_dir, f"{date_str}-{self.name}-state-{state.global_step}.json"
-        )
+        step = "-" + str(state.global_step) if append_step else ""
+        json_path = os.path.join(output_dir, f"{date_str}-{self.name}{step}.json")
         with open(json_path, "w", encoding="utf-8") as f:
             f.write(json_string)
 
