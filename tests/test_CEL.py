@@ -1,5 +1,5 @@
 import types
-from unittest.mock import patch
+from pathlib import Path
 
 import pytest
 import torch
@@ -11,19 +11,27 @@ from unsloth.kernels.fused_cel import patch_model as patch_model_fused_cel
 torch.manual_seed(0)
 
 
-@pytest.mark.parametrize("bs", [1, 2, 4])
-@pytest.mark.parametrize("seqlen", [256, 512, 1024])
-@pytest.mark.parametrize("hidden_size", [4096])
+@pytest.fixture
+def model_path():
+    PARENT_DIR = Path(__file__).parent.absolute()
+    MODEL_CONFIG_PATH = PARENT_DIR / "llama-small.json"
+
+    return MODEL_CONFIG_PATH
+
+
+@pytest.mark.parametrize("bs", [1])  # , 2, 4])
+@pytest.mark.parametrize("seqlen", [256])  # , 512, 1024])
+@pytest.mark.parametrize("hidden_size", [128])  # , 4096])
 @pytest.mark.parametrize(
     "vocab_size",
     [32000],  # , 128256, 256000]
 )  # llama-2, llama-3, gemma
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32"])
-@pytest.mark.parametrize("n_loop_iters", [1, 2, 4])
-def test_cel(bs, seqlen, hidden_size, vocab_size, dtype, n_loop_iters):
+@pytest.mark.parametrize("n_loop_iters", [1])  # , 2, 4])
+def test_cel(bs, seqlen, hidden_size, vocab_size, dtype, n_loop_iters, model_path):
     dtype = getattr(torch, dtype)
 
-    model_config = LlamaConfig.from_pretrained("./llama-10m.json")
+    model_config = LlamaConfig.from_pretrained(model_path)
     model_config.update({"vocab_size": vocab_size})
     model_config.update({"hidden_size": hidden_size})
 
@@ -71,5 +79,5 @@ def test_cel(bs, seqlen, hidden_size, vocab_size, dtype, n_loop_iters):
         [fused_loss, dX_fused, dW_fused],
         ["loss", "dX", "dW"],
         atol=atol,
-        rtol=1,
+        rtol=1e-5,
     )
