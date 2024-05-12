@@ -271,12 +271,11 @@ CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token,)
 phi3_template = \
     "{{ bos_token }}"\
     "{% for message in messages %}"\
-        "{% if (message['role'] == 'user') %}"\
-            "{{'<|user|>' + '\n' + message['content'] + '<|end|>' + '\n' + '<|assistant|>' + '\n'}}"\
-        "{% elif (message['role'] == 'assistant') %}"\
-            "{{message['content'] + '<|end|>' + '\n'}}"\
-        "{% endif %}"\
-    "{% endfor %}"
+        "{{'<|' + message['role'] + '|>\n' + message['content'] + '<|end|>\n'}}"\
+    "{% endfor %}"\
+    "{% if add_generation_prompt %}"\
+        "{{ '<|assistant|>\n' }}"\
+    "{% endif %}"
 phi3_template_eos_token = "<|end|>"
 CHAT_TEMPLATES["phi-3"] = (phi3_template, phi3_template_eos_token,)
 
@@ -614,9 +613,9 @@ def test_chat_templates():
     # Phi-3
     template = phi3_template
     correct_tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct")
-    correct_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
+    correct_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     correct_tokenizer.chat_template = template
-    our_prompt = correct_tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
+    our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     assert(correct_prompt == our_prompt)
 pass
 

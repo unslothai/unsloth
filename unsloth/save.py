@@ -27,6 +27,7 @@ import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
+from .tokenizer_utils import fix_sentencepiece_gguf
 
 __all__ = [
     "print_quantization_methods",
@@ -962,6 +963,8 @@ def save_to_gguf(
     # We first check if tokenizer.model exists in the model_directory
     if os.path.exists(f"{model_directory}/tokenizer.model"):
         vocab_type = "spm,hfft,bpe"
+        # Fix Sentencepiece model as well!
+        fix_sentencepiece_gguf(model_directory)
     else:
         vocab_type = "bpe"
     pass
@@ -969,7 +972,7 @@ def save_to_gguf(
     if use_fast_convert:
         command = f"python llama.cpp/convert.py {model_directory} "\
             f"--outfile {final_location} --vocab-type {vocab_type} "\
-            f"--outtype {first_conversion} --concurrency {n_cpus}"
+            f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
     else:
         # Need to fix convert-hf-to-gguf.py for some models!
         # _fix_gemma_gguf()
