@@ -293,32 +293,32 @@ def fused_cel_forward(
     )
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    if hasattr(self, "base_model"):
-        outputs = self.base_model.model.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            cache_position=cache_position,
-        )
-    else:
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-            cache_position=cache_position,
-        )
+    # if hasattr(self, "base_model"):
+    #     outputs = self.base_model.model.model(
+    #         input_ids=input_ids,
+    #         attention_mask=attention_mask,
+    #         position_ids=position_ids,
+    #         past_key_values=past_key_values,
+    #         inputs_embeds=inputs_embeds,
+    #         use_cache=use_cache,
+    #         output_attentions=output_attentions,
+    #         output_hidden_states=output_hidden_states,
+    #         return_dict=return_dict,
+    #         cache_position=cache_position,
+    #     )
+    # else:
+    outputs = self.model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        past_key_values=past_key_values,
+        inputs_embeds=inputs_embeds,
+        use_cache=use_cache,
+        output_attentions=output_attentions,
+        output_hidden_states=output_hidden_states,
+        return_dict=return_dict,
+        cache_position=cache_position,
+    )
 
     hidden_states = outputs[0]
     if self.config.pretraining_tp > 1:
@@ -430,5 +430,5 @@ def patch_model(
     # if hasattr(model, "base_model"):
     #     model.base_model.model.forward = types.MethodType(fused_cel_forward, model)
     # else:
-    #     model.forward = types.MethodType(fused_cel_forward, model)
+    model.forward = types.MethodType(fused_cel_forward, model)
     return model
