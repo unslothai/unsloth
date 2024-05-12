@@ -86,6 +86,17 @@ cu121onlytorch220 = [
     "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.24-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
     "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.24-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
 ]
+cu118onlytorch230 = [
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.26.post1%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.26.post1%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.26.post1%2Bcu118-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+]
+cu121onlytorch230 = [
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.26.post1-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.26.post1-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.26.post1-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
+]
+
 cu118 = [
     "unsloth[huggingface]",
     "bitsandbytes",
@@ -125,6 +136,16 @@ cu121-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch220]",
+]
+cu118-torch230 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu118onlytorch230]",
+]
+cu121-torch230 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121onlytorch230]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -234,6 +255,22 @@ cu121-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes",
     "unsloth[cu121onlytorch220]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
+cu118-ampere-torch230 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu118onlytorch230]",
+    "packaging",
+    "ninja",
+    "flash-attn",
+]
+cu121-ampere-torch230 = [
+    "unsloth[huggingface]",
+    "bitsandbytes",
+    "unsloth[cu121onlytorch230]",
     "packaging",
     "ninja",
     "flash-attn",
