@@ -1,3 +1,4 @@
+import itertools
 import types
 from pathlib import Path
 
@@ -18,6 +19,22 @@ def model_path():
     MODEL_CONFIG_PATH = PARENT_DIR / "llama-small.json"
 
     return MODEL_CONFIG_PATH
+
+
+@pytest.fixture(scope="module")
+def tensors(bs, seqlen, hidden_size, vocab_size, dtype):
+    dtype = getattr(torch, dtype)
+    hidden_states = torch.randn(
+        bs, seqlen, hidden_size, dtype=dtype, device="cuda", requires_grad=True
+    )
+    lm_head_weight = torch.randn(
+        (vocab_size, hidden_size), dtype=dtype, device="cuda", requires_grad=True
+    )
+    labels = torch.randint(0, vocab_size, size=(bs, seqlen), device="cuda")
+    yield hidden_states, labels, lm_head_weight
+    # Cleanup
+    del hidden_states, labels, lm_head_weight
+    empty_cache()
 
 
 def ref_cel(hidden_states, lm_head_weight, labels):
@@ -42,24 +59,35 @@ def run_cel(fn, hidden_states, lm_head_weight, labels, **kwargs):
     return loss, dX, dW
 
 
+BATCH_SIZES = [1]
+SEQ_LENS = [256]
+HIDDEN_SIZES = [128, 4096]
+VOCAB_SIZES = [32000, 128256]
+DTYPE = ["float16", "bfloat16", "float32"]
+N_LOOP_ITERS = [1, 2]
+TEST_CONFIGS = list(
+    itertools.product(
+        BATCH_SIZES, SEQ_LENS, HIDDEN_SIZES, VOCAB_SIZES, DTYPE, N_LOOP_ITERS
+    )
+)
+
+
 # Test will fail for dX when hidden_size > 4096 and n_loop_iters > 1 and vocab_size == 32000
 # Comment out the pytest.skip if you want to run
-@pytest.mark.parametrize("bs", [1])  # , 2, 4])
-@pytest.mark.parametrize("seqlen", [256])  # , 512, 1024])
-@pytest.mark.parametrize("hidden_size", [128, 4096])
+# Also, the pytest does not release all resources, leading to memory leaks and OOM, which is why we comment out
+# some test configs
 @pytest.mark.parametrize(
-    "vocab_size",
-    [32000, 128256],  # , 256000]
-)  # llama-2, llama-3, gemma
-@pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32"])
-@pytest.mark.parametrize("n_loop_iters", [1, 2])  # , 2])  # , 2, 4])
+    "bs, seqlen, hidden_size, vocab_size, dtype, n_loop_iters", TEST_CONFIGS
+)
 def test_cel(bs, seqlen, hidden_size, vocab_size, dtype, n_loop_iters):
     dtype = getattr(torch, dtype)
-    # if hidden_size >= 4096 and n_loop_iters > 1:
-    #     pytest.skip("Failure cases for dX")
-    # if not (hidden_size >= 4096 and n_loop_iters > 1 and vocab_size == 32000):
-    #     pytest.skip("Skipping, running only failure cases for dX")
 
+    # Accuracy failure case
+    # if not (hidden_size >= 4096 and n_loop_iters > 1 and vocab_size == 32000):
+    #     pytest.skip("Skipping, failure case for dX, uncomment to run only these cases")
+
+    if vocab_size > 32000 and dtype == "float32":
+        pytest.skip("No need for float32 for large vocabs")
     hidden_states = torch.randn(
         bs, seqlen, hidden_size, dtype=dtype, device="cuda", requires_grad=True
     )
@@ -83,9 +111,9 @@ def test_cel(bs, seqlen, hidden_size, vocab_size, dtype, n_loop_iters):
         reduction="mean",
     )
     if dtype == torch.bfloat16:
-        atol, rtol = 1e-3, 1e-3  # Fails if < 1e-3
+        atol, rtol = 1e-3, 1e-3
     elif dtype == torch.float16:
-        atol, rtol = 1e-4, 1e-4  # Fails if < 1e-4
+        atol, rtol = 1e-4, 1e-4
     else:
         atol, rtol = 1e-6, 1e-6
 
@@ -96,6 +124,9 @@ def test_cel(bs, seqlen, hidden_size, vocab_size, dtype, n_loop_iters):
         atol=atol,
         rtol=rtol,
     )
+    del loss, dX, dW
+    del fused_loss, dX_fused, dW_fused
+    del hidden_states, lm_head_weight, labels
     empty_cache()
 
 

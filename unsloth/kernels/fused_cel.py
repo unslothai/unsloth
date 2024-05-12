@@ -16,11 +16,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class FusedCELConfig:
+class FusedCELConfig(dict):
     use_fused_cel: bool = True
     n_loop_iters: int = 1
     ignore_index: int = -100
     reduction: str = "mean"
+
+    def __post_init__(self):
+        self.update(self.__dict__)
 
 
 @triton.jit
