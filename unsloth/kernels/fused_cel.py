@@ -96,12 +96,18 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         reduction: str,
     ):
         bs, seqlen, hidden_dim = in_feat.shape
+
         in_feat = in_feat.view(-1, in_feat.shape[-1])
+        in_feat.requires_grad_(True)
         targ = targ.view(-1)
 
         n_tokens = in_feat.shape[0]
         n_classes = proj_weight.shape[0]
+        print(
+            f"in_feat shape, contiguity, grad: {in_feat.shape}, {in_feat.is_contiguous(), in_feat.requires_grad}"
+        )
 
+        print(f"n_tokens: {n_tokens}, n_classes: {n_classes}")
         assert in_feat.ndim == 2, in_feat.ndim
         assert proj_weight.ndim == 2, proj_weight.ndim
         assert targ.ndim == 1, targ.shape
@@ -112,8 +118,7 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         assert n_loop_iters > 0, n_loop_iters
         assert (
             n_tokens % n_loop_iters == 0
-        ), "Number of tokens must be divisible by n_loop_iters"
-
+        ), f"Number of tokens must be divisible by n_loop_iters {(n_tokens, n_loop_iters)}"
         NUM_WARPS = 16
 
         BLOCK_SIZE = triton.next_power_of_2(n_classes)
@@ -231,41 +236,16 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         elif ctx.in_feat_requires_grad and not ctx.proj_weight_requires_grad:
             (grad_in_feat,) = ctx.saved_tensors
 
-        #   assert grad_output.shape == tuple(), grad_output.shape
-        # print(
-        #     "grad_in_feature before grad_output: ",
-        #     grad_in_feat.min().item(),
-        #     grad_in_feat.max().item(),
-        #     grad_in_feat.shape,
-        #     grad_in_feat.dtype,
-        # )
-        # print(
-        #     "grad_output: ",
-        #     grad_output.min().item(),
-        #     grad_output.max().item(),
-        #     grad_output.shape,
-        #     grad_output.dtype,
-        # )
+        # Needed for gradient scaling?
+        if grad_in_feat is not None and grad_in_feat.dtype == torch.float16:
+            grad_in_feat = (grad_in_feat.to(torch.float32) * grad_output).to(
+                torch.float16
+            )
+        if grad_proj_weight is not None and grad_proj_weight.dtype == torch.float16:
+            grad_proj_weight = (grad_proj_weight.to(torch.float32) * grad_output).to(
+                torch.float16
+            )
 
-        # Only needed for gradient scaling
-        if grad_in_feat.dtype == torch.float16:
-            if grad_in_feat is not None:
-                grad_in_feat = (grad_in_feat.to(torch.float32) * grad_output).to(
-                    torch.float16
-                )
-            if grad_proj_weight is not None:
-                grad_proj_weight = (
-                    grad_proj_weight.to(torch.float32) * grad_output
-                ).to(torch.float16)
-            # print(
-            #     "grad_in_feature: ",
-            #     grad_in_feat.min().item(),
-            #     grad_in_feat.max().item(),
-            #     grad_in_feat.shape,
-            #     grad_in_feat.dtype,
-            # )
-        else:
-            assert grad_output == 1
         return grad_in_feat, grad_proj_weight, None, None, None, None
 
 
@@ -286,6 +266,7 @@ def fused_cel_linear(
 def fused_cel_forward(
     self,
     input_ids: torch.LongTensor = None,
+    causal_mask: Optional[torch.Tensor] = None,  # this is deprecated
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
     past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -312,18 +293,32 @@ def fused_cel_forward(
     )
 
     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    outputs = self.model(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_values=past_key_values,
-        inputs_embeds=inputs_embeds,
-        use_cache=use_cache,
-        output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
-        return_dict=return_dict,
-        cache_position=cache_position,
-    )
+    if hasattr(self, "base_model"):
+        outputs = self.base_model.model.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            cache_position=cache_position,
+        )
+    else:
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            cache_position=cache_position,
+        )
 
     hidden_states = outputs[0]
     if self.config.pretraining_tp > 1:
@@ -402,11 +397,7 @@ def fused_cel_forward(
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
-            # print("Cross Entropy Loss", loss.item())
-            # dHiddens = torch.autograd.grad(loss, hidden_states, retain_graph=True)[0]
-            # dLogits = torch.autograd.grad(loss, shift_logits, retain_graph=True)[0]
-            # print("dLogits non-fused", dLogits.min().item(), dLogits.max().item())
-            # print("dX non-fused", dHiddens.min().item(), dHiddens.max().item())
+
     if not return_dict:
         output = (logits,) + outputs[1:]
         return (loss,) + output if loss is not None else output
@@ -435,5 +426,9 @@ def patch_model(
             "fused_cel_reduction": fused_cel_reduction,
         }
     )
-    model.forward = types.MethodType(fused_cel_forward, model)
+
+    # if hasattr(model, "base_model"):
+    #     model.base_model.model.forward = types.MethodType(fused_cel_forward, model)
+    # else:
+    #     model.forward = types.MethodType(fused_cel_forward, model)
     return model

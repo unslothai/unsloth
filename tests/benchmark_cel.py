@@ -1,5 +1,6 @@
 import argparse
 import logging
+import warnings
 from pathlib import Path
 
 import torch
@@ -12,21 +13,25 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
 )
-from transformers.models.llama import LlamaConfig
+from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.trainer_callback import ProgressCallback
-from transformers.trainer_utils import enable_full_determinism
-from transformers.trainer_utils import set_seed as hf_set_seed
+from transformers.trainer_utils import TrainerMemoryTracker, enable_full_determinism
 from trl import SFTTrainer
 
 import unsloth.utils.data as data_utils
+from unsloth import FastLanguageModel
 from unsloth.kernels.fused_cel import patch_model as patch_model_fused_cel
 from unsloth.models._utils import patch_tokenizer, prepare_model_for_kbit_training
 from unsloth.utils.data import get_data_loader
+from unsloth.utils.memory import empty_cache
 from unsloth.utils.profiling import MetricsCallBack
 
+warnings.filterwarnings("ignore", category=FutureWarning)
 parent_dir = Path(__file__).parent.absolute()
 SEED = 3407
 
+# Needed to use memory tracking during training
+TrainerMemoryTracker.stages.update({"_fast_inner_training_loop": "train"})
 # Fully deterministic algorithms and also sets global seeds
 enable_full_determinism(SEED)
 
@@ -43,32 +48,36 @@ def get_quant_config(load_in_4bit, dtype):
     )
 
 
-def get_model(args):
+def get_model_and_tokenizer(args):
     dtype = getattr(torch, args.dtype)
-    quant_config = (
-        get_quant_config(args.load_in_4bit, dtype) if args.load_in_4bit else None
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=args.model_path,
+        max_seq_length=args.max_seq_len,
+        dtype=dtype,
+        load_in_4bit=args.load_in_4bit,
     )
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        quantization_config=quant_config,
-        torch_dtype=dtype,
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=16,
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        lora_alpha=16,
+        lora_dropout=0,
+        bias="none",
+        use_gradient_checkpointing=None,
+        random_state=SEED,
+        use_rslora=False,
+        loftq_config=None,
     )
-    return model
 
-
-def get_tokenizer(args):
-    common_args = {
-        "model_max_length": args.max_seq_len,
-        "padding_side": "right",
-    }
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(args.model_path, **common_args)
-    except:
-        tokenizer = AutoTokenizer.from_pretrained(
-            "meta-llama/Llama-2-7b-chat-hf",
-            **common_args,
-        )
-    return tokenizer
+    return model, tokenizer
 
 
 def get_trainer_args(args):
@@ -88,6 +97,7 @@ def get_trainer_args(args):
         data_seed=SEED,
         output_dir=args.output_dir,
         overwrite_output_dir=True,
+        report_to="none",
         # Metrics
         skip_memory_metrics=False,
     )
@@ -117,14 +127,11 @@ def get_lora_config(args):
     return peft_config
 
 
-def get_sft_trainer(
-    args, model, tokenizer, dataset, peft_config, trainer_args, use_fused_cel
-):
+def get_sft_trainer(args, model, tokenizer, dataset, trainer_args, use_fused_cel):
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
-        peft_config=peft_config,
         dataset_text_field="text",
         max_seq_length=args.max_seq_len,
         dataset_num_proc=2,
@@ -153,7 +160,7 @@ def run_test_batches(model, batches):
 
 
 def run_train_loop(
-    model, tokenizer, dataset, peft_config, training_args, cli_args, use_fused_cel=False
+    model, tokenizer, dataset, training_args, cli_args, use_fused_cel=False
 ):
     model = patch_model_fused_cel(
         model,
@@ -168,19 +175,10 @@ def run_train_loop(
         model,
         tokenizer,
         dataset,
-        peft_config,
         training_args,
         use_fused_cel=use_fused_cel,
     )
     _ = trainer.train()
-
-
-def get_model_and_tokenizer(args):
-    model = get_model(args)
-    tokenizer = get_tokenizer(args)
-    model, tokenizer = patch_tokenizer(model, tokenizer)
-
-    return model, tokenizer
 
 
 def run_benchmark(args):
@@ -191,11 +189,6 @@ def run_benchmark(args):
         shutil.rmtree(args.output_dir, ignore_errors=True)
 
     training_args = get_trainer_args(args)
-    peft_config = get_lora_config(args)
-    if args.load_in_4bit:
-        model = prepare_model_for_kbit_training(
-            model, use_gradient_checkpointing=training_args.gradient_checkpointing
-        )
 
     dataset = data_utils.get_alpaca(tokenizer)
 
@@ -226,24 +219,25 @@ def run_benchmark(args):
         )
     else:
         # Run with and without fused CEL
+        print("Running train loop without fused CEL...")
         run_train_loop(
             model=model,
             tokenizer=tokenizer,
             dataset=dataset,
-            peft_config=peft_config,
             training_args=training_args,
             cli_args=args,
             use_fused_cel=False,
         )
         del model
         del tokenizer
+        empty_cache()
 
         model, tokenizer = get_model_and_tokenizer(args)
+        print("Running train loop with fused CEL...")
         run_train_loop(
             model=model,
             tokenizer=tokenizer,
             dataset=dataset,
-            peft_config=peft_config,
             training_args=training_args,
             cli_args=args,
             use_fused_cel=True,
@@ -266,20 +260,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_path",
         type=str,
-        default="./llama-10m",
+        default="unsloth/llama-3-8b-bnb-4bit",
         help="Path to the model, passed to huggingface `from_pretrained` method",
     )
+    parser.add_argument("--load_in_4bit", action="store_true", default=True)
     parser.add_argument("--batch_size", type=int, default=2)
-    parser.add_argument("--max_seq_len", type=int, default=256)
+    parser.add_argument("--max_seq_len", type=int, default=512)
     parser.add_argument("--grad_accum_steps", type=int, default=1)
-    parser.add_argument("--load_in_4bit", action="store_true")
     parser.add_argument("--output_dir", type=str, default="outputs")
     parser.add_argument("--overwrite_output_dir", action="store_true", default=True)
     parser.add_argument("--sanity_check", action="store_true")
     parser.add_argument(
         "--fused_cel_n_loop_iters",
         type=int,
-        default=1,
+        default=2,
         help="""Number of loop iterations for fused CEL.  
         E.g., `n_loop_iters=4` will calculate the logits / loss in 4 chunks along sequence length.
         `batch_size * seqlen` must be divisible by `n_loop_iters`
