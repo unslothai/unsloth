@@ -13,19 +13,25 @@ torch.manual_seed(0)
 
 @pytest.mark.parametrize("bs", [1, 2, 4])
 @pytest.mark.parametrize("seqlen", [256, 512, 1024])
+@pytest.mark.parametrize("hidden_size", [4096])
+@pytest.mark.parametrize(
+    "vocab_size",
+    [32000],  # , 128256, 256000]
+)  # llama-2, llama-3, gemma
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16", "float32"])
 @pytest.mark.parametrize("n_loop_iters", [1, 2, 4])
-def test_cel(bs, seqlen, dtype, n_loop_iters):
+def test_cel(bs, seqlen, hidden_size, vocab_size, dtype, n_loop_iters):
     dtype = getattr(torch, dtype)
 
     model_config = LlamaConfig.from_pretrained("./llama-10m.json")
+    model_config.update({"vocab_size": vocab_size})
+    model_config.update({"hidden_size": hidden_size})
+
     model = LlamaForCausalLM(model_config).to(dtype).to("cuda")
-    hidden_dim = model.config.hidden_size
-    vocab_size = model.config.vocab_size
 
     # Mock LlamaModel.forward so that we can directly test the CEL loss and derivatives wrt the hidden states (input to the LM head)
     hidden_states = torch.randn(
-        bs, seqlen, hidden_dim, dtype=dtype, device="cuda", requires_grad=True
+        bs, seqlen, hidden_size, dtype=dtype, device="cuda", requires_grad=True
     )
     model.model.forward = types.MethodType(
         lambda *args, **kwargs: (hidden_states,), model.model
