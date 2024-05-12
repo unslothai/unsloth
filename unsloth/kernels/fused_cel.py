@@ -13,8 +13,6 @@ from accelerate.utils.operations import convert_outputs_to_fp32
 from torch.nn import CrossEntropyLoss
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-# torch.autograd.set_detect_anomaly(True)
-
 
 @triton.jit
 def fused_cross_entropy_fwd_bwd_kernel(
@@ -105,6 +103,9 @@ class FusedCrossEntropyLossFunction(torch.autograd.Function):
         n_classes = proj_weight.shape[0]
         print(
             f"in_feat shape, contiguity, grad: {in_feat.shape}, {in_feat.is_contiguous(), in_feat.requires_grad}"
+        )
+        print(
+            f"proj_weight shape, contiguity, grad: {proj_weight.shape}, {proj_weight.is_contiguous(), proj_weight.requires_grad}"
         )
 
         print(f"n_tokens: {n_tokens}, n_classes: {n_classes}")
@@ -263,6 +264,7 @@ def fused_cel_linear(
     )
 
 
+# Only for debugging hugginfgface base models (not unsloth)
 def fused_cel_forward(
     self,
     input_ids: torch.LongTensor = None,
