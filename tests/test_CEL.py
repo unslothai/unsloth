@@ -10,7 +10,6 @@ from unsloth.kernels.fused_cel import patch_model as patch_model_fused_cel
 
 torch.manual_seed(0)
 
-
 @pytest.fixture
 def model_path():
     PARENT_DIR = Path(__file__).parent.absolute()
