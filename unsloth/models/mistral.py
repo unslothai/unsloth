@@ -343,7 +343,7 @@ class FastMistralModel(FastLlamaModel):
         # Mistral does NOT support RoPE Scaling sadly so we have to error out.
         if max_seq_length > model_max_seq_length:
             raise RuntimeError(
-                "Unsloth: Unfortunately Mistral type models do not support RoPE scaling!\n"\
+                f"Unsloth: Unfortunately {model_patcher.__name__[4:-5]} type models do not support RoPE scaling!\n"\
                 f"The maximum sequence length supported is {model_max_seq_length}.",
             )
         pass

@@ -27,6 +27,7 @@ import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
+from .tokenizer_utils import fix_sentencepiece_gguf
 
 __all__ = [
     "print_quantization_methods",
@@ -774,7 +775,7 @@ def install_llama_cpp_old(version = -10):
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
     ]
     for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
@@ -806,7 +807,7 @@ def install_llama_cpp_blocking(use_cuda = True):
     if os.path.exists("llama.cpp"): return
 
     for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, bufsize = 1) as sp:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
@@ -865,11 +866,11 @@ def save_to_gguf(
     first_conversion     : str = "f16",
     _run_installer = None, # Non blocking install of llama.cpp
 ):
-    logger.warning(
-        "NOTICE: llama.cpp GGUF conversion is currently unstable, since llama.cpp is\n"\
-        "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
-        "Please be patient - GGUF saving should still work, but might not work as well."
-    )
+    # logger.warning(
+    #     "NOTICE: llama.cpp GGUF conversion is currently unstable, since llama.cpp is\n"\
+    #     "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
+    #     "Please be patient - GGUF saving should still work, but might not work as well."
+    # )
 
     if quantization_method.startswith("iq2"):
         raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
@@ -962,6 +963,8 @@ def save_to_gguf(
     # We first check if tokenizer.model exists in the model_directory
     if os.path.exists(f"{model_directory}/tokenizer.model"):
         vocab_type = "spm,hfft,bpe"
+        # Fix Sentencepiece model as well!
+        fix_sentencepiece_gguf(model_directory)
     else:
         vocab_type = "bpe"
     pass
@@ -969,7 +972,7 @@ def save_to_gguf(
     if use_fast_convert:
         command = f"python llama.cpp/convert.py {model_directory} "\
             f"--outfile {final_location} --vocab-type {vocab_type} "\
-            f"--outtype {first_conversion} --concurrency {n_cpus}"
+            f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
     else:
         # Need to fix convert-hf-to-gguf.py for some models!
         # _fix_gemma_gguf()
@@ -979,7 +982,7 @@ def save_to_gguf(
             f"--outtype {first_conversion}"
     pass
 
-    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE, bufsize = 1) as sp:
+    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
         for line in sp.stdout:
             print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         if sp.returncode is not None and sp.returncode != 0:
@@ -1020,8 +1023,8 @@ def save_to_gguf(
             f"{final_location} {quantization_method} {n_cpus}"
         
         # quantize uses stderr
-        with subprocess.Popen(command, shell = True, stderr = subprocess.PIPE, bufsize = 1) as sp:
-            for line in sp.stderr:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
+            for line in sp.stdout:
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
             if sp.returncode is not None and sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, sp.args)
@@ -1073,7 +1076,7 @@ def unsloth_save_pretrained_merged(
     save_peft_format     : bool = True,
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,
+    maximum_memory_usage : float = 0.75,
 ):
     """
         Same as .save_pretrained(...) except 4bit weights are auto
@@ -1116,7 +1119,7 @@ def unsloth_push_to_hub_merged(
     commit_description   : str = "Upload model trained with Unsloth 2x faster",
     tags                 : Optional[List[str]] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
-    maximum_memory_usage : float = 0.85,
+    maximum_memory_usage : float = 0.75,
 ):
     """
         Same as .push_to_hub(...) except 4bit weights are auto
