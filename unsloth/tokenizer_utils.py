@@ -298,7 +298,7 @@ def fix_sentencepiece_gguf(saved_location):
 
     # Load added_tokens_json
     if not os.path.isfile(f"{saved_location}/added_tokens.json"): return
-    with open(f"{tokenizer_path}/added_tokens.json", "r", encoding = "utf-8") as file:
+    with open(f"{saved_location}/added_tokens.json", "r", encoding = "utf-8") as file:
         added_tokens_json = json.load(file)
     pass
     if len(added_tokens_json) == 0: return
