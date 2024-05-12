@@ -79,6 +79,7 @@ def get_trainer_args(batch_size, grad_accum_steps, max_steps, dtype, seed, outpu
         data_seed=seed,
         output_dir=output_dir,
         overwrite_output_dir=True,
+        report_to="none",
         # Metrics
         skip_memory_metrics=False,
     )
