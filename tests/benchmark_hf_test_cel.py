@@ -155,9 +155,15 @@ def run_benchmark(args):
         losses.append(loss_df)
         # No fused always has n_loop_iters = 1
         metrics_df.loc["n_loop_iters"] = [1, n_loop_iters]
-        metrics_df.loc["num_trainable_parameters"] = [
-            model.num_trainable_parameters(),
-            model.num_trainable_parameters(),
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        metrics_df.loc["trainable_params"] = [
+            trainable_params,
+            trainable_params,
+        ]
+        metrics_df.loc["total_params"] = [
+            total_params,
+            total_params,
         ]
         metrics.append(metrics_df)
         if args.print_accuracy:
@@ -166,6 +172,8 @@ def run_benchmark(args):
     consolidated_metrics = pd.concat(metrics, axis=1).T.drop_duplicates()
     COL_ORDER = [
         "step",
+        "trainable_params",
+        "total_params",
         "n_loop_iters",
         "total_flos",
         "train_loss",
@@ -193,7 +201,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_id",
         type=str,
-        default="./llama-10m",
+        default="hf-internal-testing/tiny-random-LlamaForCausalLM",
         help="Path to the model, passed to huggingface `from_pretrained` method",
     )
     parser.add_argument("--batch_size", type=int, default=2)
@@ -211,7 +219,7 @@ if __name__ == "__main__":
         "--fused_cel_n_loop_iters",
         type=int,
         nargs="+",
-        default=[1, 2, 4],
+        default=[1],
         help="""Number of loop iterations for fused CEL.  
         E.g., `n_loop_iters=4` will calculate the logits / loss in 4 chunks along sequence length.
         `batch_size * seqlen` must be divisible by `n_loop_iters`
