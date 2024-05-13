@@ -26,7 +26,6 @@ from transformers.models.llama.modeling_llama import (
 )
 
 from ..kernels import *
-from ..kernels.fused_cel import fused_cel_linear
 from ..tokenizer_utils import *
 from ._utils import *
 from ._utils import __version__
@@ -968,76 +967,29 @@ def CausalLM_fast_forward(fast_forward_inference):
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
-        elif self.config.use_fused_cel:
-            logger.warning_once(
-                "Using fused cross entropy loss, output logits will be in None"
-            )
-            assert labels is not None, "labels must not be None to use fused CEL"
-            print("hidden_states requires grad", hidden_states.requires_grad)
-            # We don't shift when n_loop_iters >1 to make it easier to chunk along sequence length
-            # In this case, we don't shift hidden states or labels
-            # Instead, pass in full hidden states and append -100 (ignore_index) to labels
-            if self.config.fused_cel_n_loop_iters > 1:
-                labels = labels[..., 1:].contiguous()
-                place_holder = torch.full(
-                    (labels.shape[0], 1),
-                    self.config.fused_cel_ignore_index,
-                    dtype=labels.dtype,
-                    device=labels.device,
-                )
-                labels = (
-                    torch.hstack([labels, place_holder])
-                    .to(hidden_states.device)
-                    .contiguous()
-                )
-
-                loss = fused_cel_linear(
-                    hidden_states,
-                    self.lm_head.weight,
-                    labels,
-                    n_loop_iters=self.config.fused_cel_n_loop_iters,
-                    ignore_index=self.config.fused_cel_ignore_index,
-                    reduction=self.config.fused_cel_reduction,
-                )
-            else:
-                # Need to shift, since kernel assumes labels and hidden states have same bs * seqlen
-                shift_hidden_states = hidden_states[
-                    ..., :-1, :
-                ].contiguous()  # This is important -- MUST call contiguous, otherwise will cause downstream reshaping issues
-                shift_labels = labels[..., 1:].contiguous()
-                shift_labels = shift_labels.to(shift_hidden_states.device)
-
-                loss = fused_cel_linear(
-                    shift_hidden_states,
-                    self.lm_head.weight,
-                    shift_labels,
-                    n_loop_iters=self.config.fused_cel_n_loop_iters,
-                    ignore_index=self.config.fused_cel_ignore_index,
-                    reduction=self.config.fused_cel_reduction,
-                )
-
-            logits = None
         else:
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
-            logits = logits.to(self.config.torch_dtype)
+        pass
+        logits = logits.to(self.config.torch_dtype)
 
-            loss = None
-            if labels is not None:
-                shift_logits = logits
-                if not hasattr(self, "extra_ignored_labels"):
-                    # Fixes https://github.com/unslothai/unsloth/issues/10
-                    self.extra_ignored_labels = torch.full(
-                        (self.max_seq_length, 1), -100, device="cuda"
-                    )
-                pass
+        loss = None
+        if labels is not None:
+            shift_logits = logits
+            if not hasattr(self, "extra_ignored_labels"):
+                # Fixes https://github.com/unslothai/unsloth/issues/10
+                self.extra_ignored_labels = torch.full(
+                    (self.max_seq_length, 1), -100, device="cuda"
+                )
+            pass
 
-                shift_labels = torch.hstack(
-                    (labels[..., 1:], self.extra_ignored_labels[: labels.shape[0]])
-                )
-                loss = fast_cross_entropy_loss(
-                    logits=shift_logits,
-                    labels=shift_labels,
-                )
+            shift_labels = torch.hstack(
+                (labels[..., 1:], self.extra_ignored_labels[: labels.shape[0]])
+            )
+            loss = fast_cross_entropy_loss(
+                logits=shift_logits,
+                labels=shift_labels,
+            )
+        pass
 
         if not return_dict:
             output = (logits,) + outputs[1:]
@@ -1931,6 +1883,8 @@ class FastLlamaModel:
         if model_type == "llama":
             apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "mistral":
+            apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen2":
             apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "gemma":
             apply_lora_mlp = apply_lora_mlp_geglu_approx
