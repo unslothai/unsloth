@@ -362,7 +362,8 @@ def load_correct_tokenizer(
             padding_side      = padding_side,
             token             = token,
             trust_remote_code = trust_remote_code,
-            # Cannot use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+            # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+            use_fast          = False,
             legacy            = False,
             from_slow         = True,
             cache_dir         = cache_dir,
@@ -519,7 +520,8 @@ def check_tokenizer(
                     model_max_length = model_max_length,
                     padding_side = padding_side,
                     token = token,
-                    # Cannot use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+                    # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+                    use_fast = False,
                     legacy = False,
                     from_slow = True,
                     cache_dir = cache_dir,
