@@ -219,7 +219,7 @@ if __name__ == "__main__":
         "--fused_cel_n_loop_iters",
         type=int,
         nargs="+",
-        default=[1],
+        default=[1, 2, 4],
         help="""Number of loop iterations for fused CEL.  
         E.g., `n_loop_iters=4` will calculate the logits / loss in 4 chunks along sequence length.
         `batch_size * seqlen` must be divisible by `n_loop_iters`
