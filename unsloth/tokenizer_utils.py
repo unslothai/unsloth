@@ -315,7 +315,7 @@ def fix_sentencepiece_gguf(saved_location):
     # Edit sentence piece tokens with added_tokens_json
     logger.warning(
         f"Unsloth: Extending {saved_location}/tokenizer.model with added_tokens.json.\n"\
-        f"Originally tokenizer.model is of size ({sentence_piece_size})."\n
+        f"Originally tokenizer.model is of size ({sentence_piece_size}).\n"\
         f"But we need to extend to sentencepiece vocab size ({new_size})."
     )
     new_tokens = deepcopy(tokenizer_file.pieces[-len(added_tokens_ids):])
