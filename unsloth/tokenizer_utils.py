@@ -362,7 +362,9 @@ def load_correct_tokenizer(
             padding_side      = padding_side,
             token             = token,
             trust_remote_code = trust_remote_code,
-            use_fast          = False,
+            # Cannot use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+            legacy            = False,
+            from_slow         = True,
             cache_dir         = cache_dir,
         )
     except:
@@ -517,7 +519,9 @@ def check_tokenizer(
                     model_max_length = model_max_length,
                     padding_side = padding_side,
                     token = token,
-                    use_fast = False,
+                    # Cannot use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+                    legacy = False,
+                    from_slow = True,
                     cache_dir = cache_dir,
                 )
                 return check_tokenizer(
