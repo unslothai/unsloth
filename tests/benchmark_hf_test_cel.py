@@ -155,6 +155,10 @@ def run_benchmark(args):
         losses.append(loss_df)
         # No fused always has n_loop_iters = 1
         metrics_df.loc["n_loop_iters"] = [1, n_loop_iters]
+        metrics_df.loc["num_trainable_parameters"] = [
+            model.num_trainable_parameters(),
+            model.num_trainable_parameters(),
+        ]
         metrics.append(metrics_df)
         if args.print_accuracy:
             print(loss_df.to_string(float_format="%.6f", justify="left"))
