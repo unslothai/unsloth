@@ -304,6 +304,7 @@ def fix_sentencepiece_gguf(saved_location):
     if len(added_tokens_json) == 0: return
 
     added_tokens_json = dict(sorted(added_tokens_json.items(), key = lambda item: item[1]))
+    new_size = sentence_piece_size + len(added_tokens_json)
 
     # Confirm added_tokens_json is correct
     added_tokens_ids = np.array(list(added_tokens_json.values()))
@@ -312,7 +313,11 @@ def fix_sentencepiece_gguf(saved_location):
     if (added_tokens_ids.min() != sentence_piece_size): return
 
     # Edit sentence piece tokens with added_tokens_json
-    logger.warning("Unsloth: Extending tokenizer.model with added_tokens.json!")
+    logger.warning(
+        f"Unsloth: Extending {saved_location}/tokenizer.model with added_tokens.json.\n"\
+        f"Originally tokenizer.model is of size ({sentence_piece_size})."\n
+        f"But we need to extend to sentencepiece vocab size ({new_size})."
+    )
     new_tokens = deepcopy(tokenizer_file.pieces[-len(added_tokens_ids):])
     for new_token, added_token in zip(new_tokens, added_tokens_json.keys()):
         new_token.piece = added_token.encode("utf-8")
