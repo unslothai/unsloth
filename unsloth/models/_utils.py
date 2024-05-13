@@ -180,12 +180,14 @@ def patch_tokenizer(model, tokenizer):
             # Try unk_token
             possible_pad_token = tokenizer.unk_token
         pass
+
         if possible_pad_token is None:
-            # Failure!!
-            raise RuntimeError(
-                "Unsloth: Tokenizer's pad_token cannot be = eos_token, and we couldn't find a\n"\
-                "replacement of either <|reserved... or <|placeholder..."
-            )
+            # Failure to find a good replacement!! We shall manually add one!
+            new_pad_token = "<|PAD_TOKEN|>"
+            while new_pad_token in tokenizer.get_vocab():
+                new_pad_token += "#"
+            pass
+            possible_pad_token = new_pad_token
         pass
 
         name = model.config._name_or_path if model is not None else "Model"

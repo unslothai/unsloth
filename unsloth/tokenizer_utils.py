@@ -304,6 +304,7 @@ def fix_sentencepiece_gguf(saved_location):
     if len(added_tokens_json) == 0: return
 
     added_tokens_json = dict(sorted(added_tokens_json.items(), key = lambda item: item[1]))
+    new_size = sentence_piece_size + len(added_tokens_json)
 
     # Confirm added_tokens_json is correct
     added_tokens_ids = np.array(list(added_tokens_json.values()))
@@ -312,7 +313,11 @@ def fix_sentencepiece_gguf(saved_location):
     if (added_tokens_ids.min() != sentence_piece_size): return
 
     # Edit sentence piece tokens with added_tokens_json
-    logger.warning("Unsloth: Extending tokenizer.model with added_tokens.json!")
+    logger.warning(
+        f"Unsloth: Extending {saved_location}/tokenizer.model with added_tokens.json.\n"\
+        f"Originally tokenizer.model is of size ({sentence_piece_size}).\n"\
+        f"But we need to extend to sentencepiece vocab size ({new_size})."
+    )
     new_tokens = deepcopy(tokenizer_file.pieces[-len(added_tokens_ids):])
     for new_token, added_token in zip(new_tokens, added_tokens_json.keys()):
         new_token.piece = added_token.encode("utf-8")
@@ -357,7 +362,10 @@ def load_correct_tokenizer(
             padding_side      = padding_side,
             token             = token,
             trust_remote_code = trust_remote_code,
+            # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
             use_fast          = False,
+            legacy            = False,
+            from_slow         = True,
             cache_dir         = cache_dir,
         )
     except:
@@ -512,7 +520,10 @@ def check_tokenizer(
                     model_max_length = model_max_length,
                     padding_side = padding_side,
                     token = token,
+                    # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
                     use_fast = False,
+                    legacy = False,
+                    from_slow = True,
                     cache_dir = cache_dir,
                 )
                 return check_tokenizer(
@@ -725,7 +736,8 @@ def fix_sft_trainer_tokenizer():
         "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
-        "has_bos_token_already = test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template\n"\
+        "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
+        "if getattr(tokenizer, 'bos_token', None) is not None else False\n"\
         "add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
 
         check_text = check_text.split("\n")
