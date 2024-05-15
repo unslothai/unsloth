@@ -971,6 +971,7 @@ pass
 
 def _wrap_fast_inference(generate, device_type, dtype):
     # Wraps inference with bfloat16 / float16
+    print(1)
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
         with torch.autocast(device_type = device_type, dtype = dtype):
