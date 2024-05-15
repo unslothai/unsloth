@@ -969,13 +969,33 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
 pass
 
 
-def _wrap_fast_inference(generate, device_type, dtype):
+def _wrap_fast_inference(generate, device_type, dtype, model):
     # Wraps inference with bfloat16 / float16
-    print(1)
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
+
+        # Set a flag for generation!
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model._flag_for_generation = True
+            internal_model = internal_model.model
+        pass
+        internal_model._flag_for_generation = True
+
+        # Autocasted
         with torch.autocast(device_type = device_type, dtype = dtype):
-            return generate(*args, **kwargs)
+            output = generate(*args, **kwargs)
+        pass
+
+        # Unset a flag for generation!
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
+        pass
+        if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
+
+        return output
+    pass
     return _fast_generate
 pass
 
@@ -1789,7 +1809,7 @@ class FastLlamaModel:
 
         # Wrap model.generate
         model._unwrapped_old_generate = model.generate
-        model.generate = _wrap_fast_inference(model.generate, device_type, dtype)
+        model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
 
         # Patch tokenizer to pad to the left
         internal_model = model
