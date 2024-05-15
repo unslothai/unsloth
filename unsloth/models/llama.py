@@ -407,7 +407,7 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    if use_cache:
+    if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -677,7 +677,6 @@ def LlamaModel_fast_forward(
             hidden_states = layer_outputs[0]
 
         else:
-            print(use_cache, past_key_value)
             layer_outputs = decoder_layer(
                 hidden_states,
                 causal_mask=causal_mask,
