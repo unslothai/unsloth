@@ -990,6 +990,7 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
+            internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
 

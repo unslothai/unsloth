@@ -71,7 +71,7 @@ def GemmaDecoderLayer_fast_forward(
     padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ):
-    if use_cache: #past_key_value is not None:
+    if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
         out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda")
 
         # Self Attention
