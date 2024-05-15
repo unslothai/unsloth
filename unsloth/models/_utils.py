@@ -409,12 +409,12 @@ def patch_bitsandbytes():
         BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
         BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
             "__init__",
-            "BitsAndBytesConfig__init__",
+            "_BitsAndBytesConfig__init__",
         )
         exec(BitsAndBytesConfig__init__, globals())
         
         import transformers.utils.quantization_config
-        transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = BitsAndBytesConfig__init__
+        transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
     except:
         pass
     return
