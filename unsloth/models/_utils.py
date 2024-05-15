@@ -20,6 +20,7 @@ warnings.filterwarnings(action = "ignore", category = UserWarning, module = "hug
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning, module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "accelerate")
+warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "huggingface_hub")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
