@@ -388,3 +388,35 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     pass
 pass
 
+
+def patch_bitsandbytes():
+    """
+        Remove warnings about missing kwargs
+    """
+    try:
+        from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
+        from inspect import getsource
+        import re
+        BitsAndBytesConfig__init__ = getsource(BitsAndBytesConfig.__init__)
+        BitsAndBytesConfig__init__ = re.sub(
+            r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
+            "",
+            BitsAndBytesConfig__init__,
+            flags = re.MULTILINE,
+        )
+        BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
+        length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
+        BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
+        BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
+            "__init__",
+            "BitsAndBytesConfig__init__",
+        )
+        exec(BitsAndBytesConfig__init__, globals())
+        
+        import transformers.utils.quantization_config
+        transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = BitsAndBytesConfig__init__
+    except:
+        pass
+    return
+pass
+patch_bitsandbytes()
