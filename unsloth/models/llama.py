@@ -641,6 +641,7 @@ def LlamaModel_fast_forward(
     pass
 
     # Go through every layer!
+    print(gradient_checkpointing)
     for idx, decoder_layer in enumerate(self.layers):
 
         if output_hidden_states: all_hidden_states += (hidden_states,)
@@ -789,8 +790,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         return_dict: Optional[bool] = None,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-
-        print(past_key_values)
+        
         if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
