@@ -641,7 +641,6 @@ def LlamaModel_fast_forward(
     pass
 
     # Go through every layer!
-    print(gradient_checkpointing)
     for idx, decoder_layer in enumerate(self.layers):
 
         if output_hidden_states: all_hidden_states += (hidden_states,)
@@ -678,6 +677,7 @@ def LlamaModel_fast_forward(
             hidden_states = layer_outputs[0]
 
         else:
+            print(use_cache, past_key_value)
             layer_outputs = decoder_layer(
                 hidden_states,
                 causal_mask=causal_mask,
