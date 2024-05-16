@@ -15,11 +15,12 @@
 import torch
 from typing import Union, Optional, List, Any, Callable
 import warnings
-warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
-warnings.filterwarnings(action = "ignore", category = UserWarning, module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
-warnings.filterwarnings(action = "ignore", category = UserWarning, module = "transformers")
-warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "accelerate")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
@@ -388,3 +389,35 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     pass
 pass
 
+
+"""
+    Remove warnings about missing kwargs
+"""
+try:
+    from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
+    from inspect import getsource
+    import re
+    BitsAndBytesConfig__init__ = getsource(BitsAndBytesConfig.__init__)
+    BitsAndBytesConfig__init__ = re.sub(
+        r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
+        "",
+        BitsAndBytesConfig__init__,
+        flags = re.MULTILINE,
+    )
+    BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
+    length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
+    BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
+    BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
+        "__init__",
+        "_BitsAndBytesConfig__init__",
+    )
+    exec(BitsAndBytesConfig__init__, globals())
+    
+    import transformers.utils.quantization_config
+    transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
+except:
+    logger.warning_once(
+        "Unsloth unsuccessfully patched bitsandbytes. Please file a bug report.\n"\
+        "Luckily, your training run will still work in the meantime!"
+    )
+pass
