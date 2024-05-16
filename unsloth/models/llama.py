@@ -407,7 +407,7 @@ def LlamaDecoderLayer_fast_forward(
             (see `past_key_values`).
         past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
     """
-    if use_cache:
+    if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -789,7 +789,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         return_dict: Optional[bool] = None,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-
+        
         if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
@@ -968,12 +968,34 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
 pass
 
 
-def _wrap_fast_inference(generate, device_type, dtype):
+def _wrap_fast_inference(generate, device_type, dtype, model):
     # Wraps inference with bfloat16 / float16
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
+
+        # Set a flag for generation!
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model._flag_for_generation = True
+            internal_model = internal_model.model
+        pass
+        internal_model._flag_for_generation = True
+
+        # Autocasted
         with torch.autocast(device_type = device_type, dtype = dtype):
-            return generate(*args, **kwargs)
+            output = generate(*args, **kwargs)
+        pass
+
+        # Unset a flag for generation!
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
+            internal_model = internal_model.model
+        pass
+        if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
+
+        return output
+    pass
     return _fast_generate
 pass
 
@@ -1787,7 +1809,7 @@ class FastLlamaModel:
 
         # Wrap model.generate
         model._unwrapped_old_generate = model.generate
-        model.generate = _wrap_fast_inference(model.generate, device_type, dtype)
+        model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
 
         # Patch tokenizer to pad to the left
         internal_model = model
