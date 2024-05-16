@@ -777,6 +777,8 @@ def install_llama_cpp_old(version = -10):
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
+                if "undefined reference" in line:
+                    raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
     pass
@@ -809,6 +811,8 @@ def install_llama_cpp_blocking(use_cuda = True):
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
+                if "undefined reference" in line:
+                    raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         pass
     pass
@@ -984,6 +988,8 @@ def save_to_gguf(
 
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
         for line in sp.stdout:
+            if "undefined reference" in line:
+                raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
             print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
         if sp.returncode is not None and sp.returncode != 0:
             raise subprocess.CalledProcessError(sp.returncode, sp.args)
@@ -1025,6 +1031,8 @@ def save_to_gguf(
         # quantize uses stderr
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
+                if "undefined reference" in line:
+                    raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
                 print(line.decode("utf-8", errors = "replace"), flush = True, end = "")
             if sp.returncode is not None and sp.returncode != 0:
                 raise subprocess.CalledProcessError(sp.returncode, sp.args)
