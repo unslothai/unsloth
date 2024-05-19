@@ -1599,6 +1599,8 @@ class FastLlamaModel:
                 torch.cuda.empty_cache()
             pass
         pass
+        
+        model = _get_peft_model(model, lora_config)
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
