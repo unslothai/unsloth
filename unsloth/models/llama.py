@@ -1582,7 +1582,9 @@ class FastLlamaModel:
         lora_config = LoraConfig(**arguments)
 
         # First offload lm_head and embed_tokens to disk
-        original_device = model.get_input_embeddings().weight.device
+        input_embeddings_device  = model. get_input_embeddings().weight.device
+        output_embeddings_device = model.get_output_embeddings().weight.device
+
         if use_gradient_checkpointing == "unsloth":
             if train_embed_tokens:
                 print("Unsloth: Offloading input_embeddings to disk to save VRAM")
@@ -1594,7 +1596,7 @@ class FastLlamaModel:
                 gc.collect()
                 torch.cuda.empty_cache()
             pass
-            
+
             if train_lm_head:
                 print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
@@ -1618,7 +1620,7 @@ class FastLlamaModel:
             print("Unsloth: Casting embed_tokens to float32")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
             model.model.model.embed_tokens.modules_to_save.default\
-                .to(device = original_device, dtype = torch.float32, non_blocking = True)
+                .to(device = input_embeddings_device,  dtype = torch.float32, non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
@@ -1626,7 +1628,7 @@ class FastLlamaModel:
             print("Unsloth: Casting lm_head to float32")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
             model.model.lm_head.modules_to_save.default\
-                .to(device = original_device, dtype = torch.float32, non_blocking = True)
+                .to(device = output_embeddings_device, dtype = torch.float32, non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
