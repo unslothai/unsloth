@@ -1396,6 +1396,7 @@ class FastLlamaModel:
         modules_to_save     = None,
         init_lora_weights   = True,
         loftq_config        = {},
+        temporary_location  = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
         transformers_set_seed(random_state)
@@ -1579,7 +1580,19 @@ class FastLlamaModel:
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
         lora_config = LoraConfig(**arguments)
-        model = _get_peft_model(model, lora_config)
+
+        # First offload lm_head and embed_tokens to disk
+        original_device = model.get_input_embeddings.device
+        if use_gradient_checkpointing == "unsloth":
+            if train_embed_tokens:
+                print("Unsloth: Offloading input_embeddings to disk to save VRAM")
+                offload_input_embeddings(model, temporary_location)
+            pass
+            if train_lm_head:
+                print("Unsloth: Offloading output_embeddings to disk to save VRAM")
+                offload_output_embeddings(model, temporary_location)
+            pass
+        pass
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
@@ -1589,14 +1602,16 @@ class FastLlamaModel:
         if train_embed_tokens:
             print("Unsloth: Casting embed_tokens to float32")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
-            model.model.model.embed_tokens.modules_to_save.default.to(torch.float32)
+            model.model.model.embed_tokens.modules_to_save.default\
+                .to(torch.float32, device = original_device, non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
         if train_lm_head:
             print("Unsloth: Casting lm_head to float32")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
-            model.model.lm_head.modules_to_save.default.to(torch.float32)
+            model.model.lm_head.modules_to_save.default\
+                .to(torch.float32, device = original_device, non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
