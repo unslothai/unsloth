@@ -1490,19 +1490,19 @@ class FastLlamaModel:
         final_modules = []
         for module in target_modules:
             if module == "lm_head":
-                logger.warning_once(
-                    "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`. "\
-                    "Luckily, we shall do it for you!"
-                )
+                # logger.warning_once(
+                #     "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`. "\
+                #     "Luckily, we shall do it for you!"
+                # )
                 train_lm_head = True
                 if modules_to_save is None: modules_to_save = ["lm_head"]
                 else: modules_to_save.append("lm_head")
 
             elif module == "embed_tokens":
-                logger.warning_once(
-                    "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
-                    "Luckily, we shall do it for you!"
-                )
+                # logger.warning_once(
+                #     "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
+                #     "Luckily, we shall do it for you!"
+                # )
                 train_embed_tokens = True
                 if modules_to_save is None: modules_to_save = ["embed_tokens"]
                 else: modules_to_save.append("embed_tokens")
