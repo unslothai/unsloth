@@ -1599,7 +1599,7 @@ class FastLlamaModel:
                 torch.cuda.empty_cache()
             pass
         pass
-        
+
         model = _get_peft_model(model, lora_config)
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
@@ -1611,7 +1611,7 @@ class FastLlamaModel:
             print("Unsloth: Casting embed_tokens to float32")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
             model.model.model.embed_tokens.modules_to_save.default\
-                .to(torch.float32, device = original_device, non_blocking = True)
+                .to(device = original_device, dtype = torch.float32, non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
@@ -1619,7 +1619,7 @@ class FastLlamaModel:
             print("Unsloth: Casting lm_head to float32")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
             model.model.lm_head.modules_to_save.default\
-                .to(torch.float32, device = original_device, non_blocking = True)
+                .to(device = original_device, dtype = torch.float32, non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
