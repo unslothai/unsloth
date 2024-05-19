@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import torch
+import gc
 from typing import Optional, Tuple, List, Union
 from torch.nn.functional import scaled_dot_product_attention
 from transformers.models.llama.modeling_llama import (
@@ -1370,7 +1371,6 @@ class FastLlamaModel:
         pass
 
         # Clear deleted GPU items
-        import gc
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
@@ -1591,6 +1591,12 @@ class FastLlamaModel:
             if train_lm_head:
                 print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
+            pass
+
+            # Remove old items to save VRAM
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
             pass
         pass
 
