@@ -1588,6 +1588,13 @@ class FastLlamaModel:
                 print("Unsloth: Offloading input_embeddings to disk to save VRAM")
                 offload_input_embeddings(model, temporary_location)
             pass
+
+            # Remove old items to save VRAM
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
+            pass
+            
             if train_lm_head:
                 print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
