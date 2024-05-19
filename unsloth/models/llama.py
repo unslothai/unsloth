@@ -1582,7 +1582,7 @@ class FastLlamaModel:
         lora_config = LoraConfig(**arguments)
 
         # First offload lm_head and embed_tokens to disk
-        original_device = model.get_input_embeddings.device
+        original_device = model.get_input_embeddings().weight.device
         if use_gradient_checkpointing == "unsloth":
             if train_embed_tokens:
                 print("Unsloth: Offloading input_embeddings to disk to save VRAM")
