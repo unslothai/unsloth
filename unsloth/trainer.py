@@ -49,8 +49,10 @@ def _create_unsloth_optimizer(
 
     for name, param in model.named_parameters():
         if not param.requires_grad: continue
-        if "modules_to_save.default" in name:
-            print(f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {name}.")
+        if name.endswith("modules_to_save.default.weight"):
+            partial_name = name[:-len(".modules_to_save.default.weight")]
+            partial_name = partial_name[partial_name.rfind(".")+1:]
+            print(f"Unsloth: Setting lr = {embedding_lr:.2e} instead of {lr:.2e} for {partial_name}.")
             param_groups["embeddings"]    [name] = param
         else:
             param_groups["non_embeddings"][name] = param
