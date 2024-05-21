@@ -1,6 +1,6 @@
-## HQQ Dequant Kernel
+## HQQ Integration: dequant kernel
 
-Standalone asymmetric dequant kernels for `hqq`.
+Standalone asymmetric dequant kernel for `hqq` quantization as a first step towards integrating `hqq` as an alternative quantization backend.
 
 Supports `hqq` [`BaseQuantConfig`](https://github.com/mobiusml/hqq/blob/aad68687e042ed628b5a655969406d501a203949/hqq/core/quantize.py#L872-L935) settings currently:
 - `nbits` = `{4, 8}`
@@ -11,15 +11,14 @@ Supports `hqq` [`BaseQuantConfig`](https://github.com/mobiusml/hqq/blob/aad68687
   - Not all built-in `hqq` dequant implementations are available for both axis -- this kernel supports both.
 - `group_size`
   - Grouping size of weights during quantization 
-  - The kernel should work for any (power of 2) group sizes, but tested only for common sizes (`64`, `128`)
-  - mmon sizes
-- manual and `autotune` kernels (should ease interoperability with `torch.compile`)
+  - The kernel should work for any (power of 2) group sizes, but tested only for common sizes (`64`, `128`).
+- manual and `autotune` kernels, which should ease downstream interoperability with `torch.compile`.
 - `quant_zero`
   - Additional quantization of the zeropoints
-  - Currently only supports scalar scale / zero quantization of the zeros, which is the default setting of [`hqq.BaseQuantizeConfig`](https://github.com/mobiusml/hqq/blob/aad68687e042ed628b5a655969406d501a203949/hqq/core/quantize.py#L920-L924)
+  - Currently only supports `nbit=8` scalar scale / zero quantization of the zeros, which is the default setting of [`hqq.BaseQuantizeConfig`](https://github.com/mobiusml/hqq/blob/aad68687e042ed628b5a655969406d501a203949/hqq/core/quantize.py#L920-L924).
 - `quant_scale`
   - Additional quantization of the scales
-  - Not supported currently, as the default setting for [`hqq.BaseQuantizeConfig`](https://github.com/mobiusml/hqq/blob/aad68687e042ed628b5a655969406d501a203949/hqq/core/quantize.py#L876) is `quant_scale=False` (scales are not additionally quantized)
+  - Not supported currently, as the default setting for [`hqq.BaseQuantizeConfig`](https://github.com/mobiusml/hqq/blob/aad68687e042ed628b5a655969406d501a203949/hqq/core/quantize.py#L876) is `quant_scale=False` (scales are not additionally quantized).
   
 ## Accuracy
 See `test_hqq_dequant.py` for comprehensive tests across `dtypes`, `group_sizes`, `axis`, and other relevant params.
