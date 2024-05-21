@@ -314,7 +314,7 @@ class FastMistralModel(FastLlamaModel):
             logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
         pass
 
-        SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+        SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 

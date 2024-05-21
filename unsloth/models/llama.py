@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import torch
+import gc
 from typing import Optional, Tuple, List, Union
 from torch.nn.functional import scaled_dot_product_attention
 from transformers.models.llama.modeling_llama import (
@@ -1046,7 +1047,7 @@ class FastLlamaModel:
             token = os.environ["HUGGINGFACE_TOKEN"]
 
         if model_patcher is None: model_patcher = FastLlamaModel
-        SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+        SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
@@ -1193,7 +1194,11 @@ class FastLlamaModel:
         f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
-        logger.warning_once(debug_info)"""
+        logger.warning_once(debug_info)
+        import gc
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()"""
 
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -1370,7 +1375,6 @@ class FastLlamaModel:
         pass
 
         # Clear deleted GPU items
-        import gc
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
@@ -1396,6 +1400,7 @@ class FastLlamaModel:
         modules_to_save     = None,
         init_lora_weights   = True,
         loftq_config        = {},
+        temporary_location  = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
         transformers_set_seed(random_state)
@@ -1490,19 +1495,19 @@ class FastLlamaModel:
         final_modules = []
         for module in target_modules:
             if module == "lm_head":
-                logger.warning_once(
-                    "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`. "\
-                    "Luckily, we shall do it for you!"
-                )
+                # logger.warning_once(
+                #     "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`. "\
+                #     "Luckily, we shall do it for you!"
+                # )
                 train_lm_head = True
                 if modules_to_save is None: modules_to_save = ["lm_head"]
                 else: modules_to_save.append("lm_head")
 
             elif module == "embed_tokens":
-                logger.warning_once(
-                    "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
-                    "Luckily, we shall do it for you!"
-                )
+                # logger.warning_once(
+                #     "Unsloth: `embed_tokens` should be placed in `modules_to_save` and not `target_modules`. "\
+                #     "Luckily, we shall do it for you!"
+                # )
                 train_embed_tokens = True
                 if modules_to_save is None: modules_to_save = ["embed_tokens"]
                 else: modules_to_save.append("embed_tokens")
@@ -1579,6 +1584,35 @@ class FastLlamaModel:
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
         lora_config = LoraConfig(**arguments)
+
+        # First offload lm_head and embed_tokens to disk
+        input_embeddings_device  = model. get_input_embeddings().weight.device
+        output_embeddings_device = model.get_output_embeddings().weight.device
+
+        if use_gradient_checkpointing == "unsloth":
+            if train_embed_tokens:
+                print("Unsloth: Offloading input_embeddings to disk to save VRAM")
+                offload_input_embeddings(model, temporary_location)
+            pass
+
+            # Remove old items to save VRAM
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
+            pass
+
+            if train_lm_head:
+                print("Unsloth: Offloading output_embeddings to disk to save VRAM")
+                offload_output_embeddings(model, temporary_location)
+            pass
+
+            # Remove old items to save VRAM
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
+            pass
+        pass
+
         model = _get_peft_model(model, lora_config)
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
@@ -1589,14 +1623,16 @@ class FastLlamaModel:
         if train_embed_tokens:
             print("Unsloth: Casting embed_tokens to float32")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
-            model.model.model.embed_tokens.modules_to_save.default.to(torch.float32)
+            model.model.model.embed_tokens.modules_to_save.default\
+                .to(device = input_embeddings_device,  dtype = torch.float32, non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
         if train_lm_head:
             print("Unsloth: Casting lm_head to float32")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
-            model.model.lm_head.modules_to_save.default.to(torch.float32)
+            model.model.lm_head.modules_to_save.default\
+                .to(device = output_embeddings_device, dtype = torch.float32, non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
@@ -1610,6 +1646,12 @@ class FastLlamaModel:
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
+        pass
+
+        # Clear deleted GPU items
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
         pass
 
         return model
@@ -1715,7 +1757,7 @@ class FastLlamaModel:
                     n_mlp += 1
                 else:
                     logger.warning_once(
-                        "Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
+                        "Not an error, but Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
                 pass
@@ -1738,7 +1780,7 @@ class FastLlamaModel:
                     n_qkv += 1
                 else:
                     logger.warning_once(
-                        "Unsloth cannot patch Attention layers with our manual autograd engine since either LoRA adapters\n"\
+                        "Not an error, but Unsloth cannot patch Attention layers with our manual autograd engine since either LoRA adapters\n"\
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
                 pass
@@ -1753,7 +1795,7 @@ class FastLlamaModel:
                     n_o += 1
                 else:
                     logger.warning_once(
-                        "Unsloth cannot patch O projection layer with our manual autograd engine since either LoRA adapters\n"\
+                        "Not an error, but Unsloth cannot patch O projection layer with our manual autograd engine since either LoRA adapters\n"\
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
                 pass

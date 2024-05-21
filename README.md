@@ -180,7 +180,8 @@ python -m bitsandbytes
 - We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 
 ```python
-from unsloth import FastLanguageModel
+from unsloth import FastLanguageModel 
+from unsloth import is_bfloat16_supported
 import torch
 from trl import SFTTrainer
 from transformers import TrainingArguments
@@ -238,8 +239,8 @@ trainer = SFTTrainer(
         gradient_accumulation_steps = 4,
         warmup_steps = 10,
         max_steps = 60,
-        fp16 = not torch.cuda.is_bf16_supported(),
-        bf16 = torch.cuda.is_bf16_supported(),
+        fp16 = not is_bfloat16_supported(),
+        bf16 = is_bfloat16_supported(),
         logging_steps = 1,
         output_dir = "outputs",
         optim = "adamw_8bit",
@@ -263,6 +264,7 @@ We're in 🤗Hugging Face's official docs! We're on the [SFT docs](https://huggi
 
 ```python
 from unsloth import FastLanguageModel, PatchDPOTrainer
+from unsloth import is_bfloat16_supported
 PatchDPOTrainer()
 import torch
 from transformers import TrainingArguments
@@ -298,8 +300,8 @@ dpo_trainer = DPOTrainer(
         gradient_accumulation_steps = 8,
         warmup_ratio = 0.1,
         num_train_epochs = 3,
-        fp16 = not torch.cuda.is_bf16_supported(),
-        bf16 = torch.cuda.is_bf16_supported(),
+        fp16 = not is_bfloat16_supported(),
+        bf16 = is_bfloat16_supported(),
         logging_steps = 1,
         optim = "adamw_8bit",
         seed = 42,
