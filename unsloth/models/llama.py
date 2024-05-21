@@ -1757,7 +1757,7 @@ class FastLlamaModel:
                     n_mlp += 1
                 else:
                     logger.warning_once(
-                        "Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
+                        "Not an error, but Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
                 pass
@@ -1780,7 +1780,7 @@ class FastLlamaModel:
                     n_qkv += 1
                 else:
                     logger.warning_once(
-                        "Unsloth cannot patch Attention layers with our manual autograd engine since either LoRA adapters\n"\
+                        "Not an error, but Unsloth cannot patch Attention layers with our manual autograd engine since either LoRA adapters\n"\
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
                 pass
@@ -1795,7 +1795,7 @@ class FastLlamaModel:
                     n_o += 1
                 else:
                     logger.warning_once(
-                        "Unsloth cannot patch O projection layer with our manual autograd engine since either LoRA adapters\n"\
+                        "Not an error, but Unsloth cannot patch O projection layer with our manual autograd engine since either LoRA adapters\n"\
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
                 pass
