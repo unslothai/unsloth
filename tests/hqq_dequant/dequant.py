@@ -156,7 +156,7 @@ _autotuned_kernel = triton.autotune(configs=get_autotune_configs(), key=["num_gr
 )
 
 
-def triton_dequant(
+def hqq_dequant(
     q,
     scales,
     zeros,
@@ -381,7 +381,7 @@ if __name__ == "__main__":
         ).view(original_shape)
 
         block_size = num_groups // 2
-        dq = triton_dequant(
+        dq = hqq_dequant(
             q,
             scales.view(-1),
             zeros.view(-1),
