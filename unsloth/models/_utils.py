@@ -35,7 +35,10 @@ __version__ = "2024.5"
 
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()
+SUPPORTS_BFLOAT16 = False
+
 if major_version >= 8:
+    SUPPORTS_BFLOAT16 = True
     try:
         from flash_attn import flash_attn_func
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
@@ -75,6 +78,7 @@ __all__ = [
     "offload_to_disk",
     "offload_input_embeddings",
     "offload_output_embeddings",
+    "is_bfloat16_supported",
 ]
 
 
@@ -466,4 +470,10 @@ def offload_output_embeddings(model, temporary_location : str = "_unsloth_tempor
     new_output_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
     model.set_output_embeddings(new_output_embeddings)
     return
+pass
+
+
+# Fixes a weird Torch 2.3 bug which says T4s have bfloat16
+def is_bfloat16_supported():
+    return SUPPORTS_BFLOAT16
 pass
