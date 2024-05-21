@@ -98,11 +98,6 @@ python benchmark_hqq_dequant.py
 
 ## Notes
 The kernel requires `triton >= 3.0.0` which is not compatible with stable `xformers`:
-- Initially tried to add the kernels under `unsloth.kernels` but `import xformers` from `unsloth.__init__.py` errors out due to `xformers` `triton` kernels incompatible with `triton >= 3.0.0`.
+- This required fixing the `triton` import `unsloth.__init__.py` per this [PR](https://github.com/unslothai/unsloth/pull/227)
+- Initially tried to add the kernels under `unsloth.kernels` but `import xformers` from `unsloth.models.__init__.py` errors out due to `xformers` `triton` kernels incompatible with `triton >= 3.0.0`.
 - Note that `xformers` is technically not required with the release of `torch 2.3` since `xformers.attn_bias.LowerTriangularMask` is available as `torch.nn.attention.bias`.
-  
-TODO
-- [ ] Integrate with `fast_lora`
-- [ ] Integrate with `FastLanguageModel`
-- [ ] Benchmark performance against `bitsandbytes`
-- [ ] Support `1,2` bits
