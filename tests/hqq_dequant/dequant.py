@@ -4,9 +4,8 @@ import sys
 import torch
 import triton
 import triton.language as tl
+from pack import pack, unpack
 from triton import next_power_of_2
-
-from .pack import pack, unpack
 
 
 @triton.jit

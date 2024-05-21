@@ -3,8 +3,7 @@ from copy import deepcopy
 from functools import partial
 
 from hqq.core.quantize import Quantizer
-
-from .pack import pack, unpack
+from pack import pack, unpack
 
 
 @contextmanager
