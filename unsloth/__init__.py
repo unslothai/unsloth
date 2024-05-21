@@ -114,3 +114,4 @@ from .models import *
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
+from .trainer import *
