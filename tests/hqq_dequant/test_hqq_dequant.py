@@ -13,9 +13,9 @@ SHAPES = [(128, 128)]  # , (4096, 4096), (4096, 11008)]
 AXES = [1, 0]
 GROUP_SIZES = [64]  # , 128]
 NBITS = [8, 4]
-DTYPES = [torch.bfloat16, torch.float32, torch.float16]  # , torch.bfloat16]
+DTYPES = [torch.bfloat16, torch.float32, torch.float16]
 QUANT_SCALES = [False]
-QUANT_ZEROS = [False, True]  # , True]
+QUANT_ZEROS = [False, True]
 BLOCK_SIZES = [32, 128, 1024, "autotune"]
 device = "cuda"
 HQQLinear.set_backend(HQQBackend.PYTORCH)

@@ -1,5 +1,4 @@
 import itertools
-from types import MethodType
 
 import torch
 from dequant import hqq_dequant
@@ -10,7 +9,7 @@ from utils import patch_hqq_packing
 
 torch.manual_seed(0)
 
-SHAPES = [(4096, 4096)]  # , (4096, 4096), (4096, 11008)]
+SHAPES = [(4096, 4096)]
 AXES = [1, 0]
 GROUP_SIZES = [64, 128]
 NBITS = [4]
@@ -79,7 +78,6 @@ for (
         z_ref = Quantizer.dequantize(zero_q, meta_zero)
 
     HEADERS = [
-        "kernel",
         "shape",
         "axis",
         "group_size",
@@ -153,7 +151,6 @@ for (
         test_t = run_bench(test_fn, num_iters=num_iters)
         data.append(
             [
-                "triton",
                 *common_args,
                 "autotune" if autotune else block_size,
                 ref_t,
