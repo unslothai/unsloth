@@ -144,6 +144,14 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Phi-3-mini-4k-instruct",
         "microsoft/Phi-3-mini-4k-instruct",
     ),
+    "unsloth/mistral-7b-v0.3-bnb-4bit" : (
+        "unsloth/mistral-7b-v0.3",
+        "mistralai/Mistral-7B-v0.3",
+    ),
+    "unsloth/mistral-7b-instruct-v0.3-bnb-4bit" : (
+        "unsloth/mistral-7b-instruct-v0.3",
+        "mistralai/Mistral-7B-Instruct-v0.3",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
