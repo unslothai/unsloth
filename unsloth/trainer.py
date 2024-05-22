@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from transformers import TrainingArguments
 from trl import SFTTrainer
+from . import is_bfloat16_supported
 
 __all__ = [
     "UnslothTrainingArguments",

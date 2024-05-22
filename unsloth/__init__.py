@@ -38,6 +38,12 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 try:
     import torch
+
+    # Fix up is_bf16_supported https://github.com/unslothai/unsloth/issues/504
+    major_version, minor_version = torch.cuda.get_device_capability()
+    SUPPORTS_BFLOAT16 = (major_version >= 8)
+    def is_bf16_supported(): return SUPPORTS_BFLOAT16
+    torch.cuda.is_bf16_supported = is_bf16_supported
 except:
     raise ImportError("Pytorch is not installed. Go to https://pytorch.org/.\n"\
                       "We have some installation instructions on our Github page.")
