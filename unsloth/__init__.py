@@ -17,6 +17,7 @@ import importlib
 
 # Currently only supports 1 GPU, or else seg faults will occur.
 if "CUDA_VISIBLE_DEVICES" in os.environ:
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     devices = os.environ["CUDA_VISIBLE_DEVICES"]
     # Check if there are multiple cuda devices set in env
     if not devices.isdigit():
