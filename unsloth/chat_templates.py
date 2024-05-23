@@ -258,7 +258,13 @@ CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token,
 llama3_template = \
     "{{ bos_token }}"\
     "{% for message in messages %}"\
-        "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+        "{% if message['role'] == 'user' %}"\
+            "{{ '<|start_header_id|>user<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+        "{% elif message['role'] == 'assistant' %}"\
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+        "{% else %}"\
+            "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+        "{% endif %}"\
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
         "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"\
@@ -290,7 +296,7 @@ def get_chat_template(
     tokenizer,
     chat_template = "chatml",
     mapping = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
-    map_eos_token = False,
+    map_eos_token = True,
 ):
     assert(type(map_eos_token) is bool)
     old_tokenizer = tokenizer
