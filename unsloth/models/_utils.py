@@ -159,7 +159,7 @@ def patch_tokenizer(model, tokenizer):
         Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
         Fixes https://github.com/unslothai/unsloth/issues/5
     """
-    possible_reserved_tokens = ("<|reserved", "<|placeholder",)
+    possible_reserved_tokens = ("<|reserved", "<|placeholder", "[control")
 
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
@@ -176,14 +176,19 @@ def patch_tokenizer(model, tokenizer):
 
     if bad_pad_token:
         # Find a better pad token
-        added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
+        aadded_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
         possible_pad_token = None
+        n_possible_pad_tokens = 0
         for added_token in added_tokens[::-1]:
             if added_token.startswith(possible_reserved_tokens):
-                possible_pad_token = added_token
-                break
+                if possible_pad_token is None: possible_pad_token = added_token
+                n_possible_pad_tokens += 1
+                # We must see at least 3 of the reserved tokens
+                if n_possible_pad_tokens >= 3: break
             pass
         pass
+        if n_possible_pad_tokens < 3: possible_pad_token = None
+
         if possible_pad_token is None:
             # Try unk_token
             possible_pad_token = tokenizer.unk_token
