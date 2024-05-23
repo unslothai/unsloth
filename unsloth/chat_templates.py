@@ -52,7 +52,7 @@ unsloth_template = \
         "{{ '>>> Assistant: ' }}"\
     "{% endif %}"
 unsloth_eos_token = "eos_token"
-CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token,)
+CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token, False,)
 
 
 # Zephyr has no BOS!
@@ -70,7 +70,7 @@ zephyr_template = \
         "{{ '<|assistant|>\n' }}"\
     "{% endif %}"
 zephyr_eos_token = "eos_token"
-CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token,)
+CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False,)
 
 
 # ChatML has no BOS and not EOS! Rather <|im_start|> and <|im_end|> acts as BOS / EOS.
@@ -88,7 +88,7 @@ chatml_template = \
         "{{ '<|im_start|>assistant\n' }}"\
     "{% endif %}"
 chatml_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token,)
+CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token, True,)
 
 
 # Mistral Instruct doesn't allow system prompts, so we append it to the user message.
@@ -115,7 +115,7 @@ mistral_template = \
         "{% endif %}"\
     "{% endfor %}"
 mistral_eos_token = "eos_token"
-CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token,)
+CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False,)
 
 
 # Adds BOS to every convo! And weird <<SYS>> system messages.
@@ -141,7 +141,7 @@ llama_template = \
         "{% endif %}"\
     "{% endfor %}"
 llama_eos_token = "eos_token"
-CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token,)
+CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False,)
 
 
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
@@ -167,7 +167,7 @@ vicuna_template = \
         "{{ 'ASSISTANT:' }}"\
     "{% endif %}"
 vicuna_eos_token = "eos_token"
-CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token,)
+CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False,)
 
 
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
@@ -193,7 +193,7 @@ vicuna_old_template = \
         "{{ '### Assistant:' }}"\
     "{% endif %}"
 vicuna_old_eos_token = "eos_token"
-CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token,)
+CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False,)
 
 
 # https://github.com/tatsu-lab/stanford_alpaca Changed for multi-turn convos
@@ -219,7 +219,7 @@ alpaca_template = \
         "{{ '### Response:\n' }}"\
     "{% endif %}"
 alpaca_eos_token = "eos_token"
-CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token,)
+CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token, False,)
 
 
 # https://huggingface.co/google/gemma-7b-it
@@ -240,7 +240,7 @@ gemma_template = \
         "{{ '<start_of_turn>model\n' }}"\
     "{% endif %}"
 gemma_eos_token = "<end_of_turn>"
-CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token,)
+CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True,)
 
 
 # Gemma with ChatML instead
@@ -250,7 +250,7 @@ gemma_chatml_eos_token = (
     {"<start_of_turn>" : "<|im_start|>", "<eos>" : "<|im_end|>"},
     "<|im_end|>",
 )
-CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token,)
+CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token, True,)
 
 
 # Llama-3
@@ -258,26 +258,38 @@ CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token,
 llama3_template = \
     "{{ bos_token }}"\
     "{% for message in messages %}"\
-        "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+        "{% if message['role'] == 'user' %}"\
+            "{{ '<|start_header_id|>user<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+        "{% elif message['role'] == 'assistant' %}"\
+            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+        "{% else %}"\
+            "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
+        "{% endif %}"\
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
         "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"\
     "{% endif %}"
 llama3_template_eos_token = "eos_token"
-CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token,)
+CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token, False,)
 
 
 # Phi-3
 phi3_template = \
     "{{ bos_token }}"\
     "{% for message in messages %}"\
-        "{{'<|' + message['role'] + '|>\n' + message['content'] + '<|end|>\n'}}"\
+        "{% if message['role'] == 'user' %}"\
+            "{{'<|user|>\n' + message['content'] + '<|end|>\n'}}"\
+        "{% elif message['role'] == 'assistant' %}"\
+            "{{'<|assistant|>\n' + message['content'] + '<|end|>\n'}}"\
+        "{% else %}"\
+            "{{'<|' + message['role'] + '|>\n' + message['content'] + '<|end|>\n'}}"\
+        "{% endif %}"\
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
         "{{ '<|assistant|>\n' }}"\
     "{% endif %}"
 phi3_template_eos_token = "<|end|>"
-CHAT_TEMPLATES["phi-3"] = (phi3_template, phi3_template_eos_token,)
+CHAT_TEMPLATES["phi-3"] = (phi3_template, phi3_template_eos_token, False,)
 
 
 def get_chat_template(
@@ -319,7 +331,11 @@ def get_chat_template(
 
     elif type(chat_template) is str:
 
-        chat_template, stop_word = CHAT_TEMPLATES[chat_template]
+        chat_template, stop_word, yes_map_eos_token = CHAT_TEMPLATES[chat_template]
+
+        # Check mapping to eos_token
+        if not map_eos_token and yes_map_eos_token: map_eos_token = True
+        if not yes_map_eos_token and map_eos_token: map_eos_token = False
 
         if type(stop_word) in (list, tuple,):
             token_mapping, stop_word = stop_word
