@@ -719,9 +719,9 @@ from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
 
-def fix_sft_trainer_tokenizer():
+def patch_sft_trainer_tokenizer():
     """
-        Fixes double adding BOS tokens like in llama-3
+        Patches the trainer with changes
     """
     for function_name, replacer in (
         ("_prepare_non_packed_dataloader", "def tokenize(element):",),
@@ -747,10 +747,8 @@ def fix_sft_trainer_tokenizer():
         function = function.replace(replacer, check_text + replacer)
         exec(function, globals())
 
-        # Replace TRL's SFTTrainer
         exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
     pass
 pass
 
-# Fixes double adding BOS tokens like in llama-3
-fix_sft_trainer_tokenizer()
+patch_sft_trainer_tokenizer()
