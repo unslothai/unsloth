@@ -161,7 +161,7 @@ pass
 
 def fast_save_pickle(shard, name):
     # Use this if # CPUs is <= 2
-    print(f"Unsloth: Saving {name}...")
+    logger.info(f"Unsloth: Saving {name}...")
     torch.save(
         shard,
         name,
@@ -268,7 +268,7 @@ def unsloth_save_model(
 
     if save_method == "merged_4bit":
 
-        print("Unsloth: Merging 4bit and LoRA weights to 4bit...")
+        logger.info("Unsloth: Merging 4bit and LoRA weights to 4bit...")
         print("This might take 5 minutes...")
 
         # Counteract no LoRA adapters!
