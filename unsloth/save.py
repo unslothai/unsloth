@@ -94,7 +94,7 @@ def check_if_sentencepiece_model(model, temporary_location = "_unsloth_sentencep
 
     temp_tokenizer = model._saved_temp_tokenizer
     sentencepiece_model = False
-    file_location = f"{temporary_location}/{temp_tokenizer.name_or_path}"
+    file_location = os.path.join(temporary_location, temp_tokenizer.name_or_path)
     if not os.path.exists(file_location):
         os.makedirs(file_location)
     pass
