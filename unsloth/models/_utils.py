@@ -176,7 +176,7 @@ def patch_tokenizer(model, tokenizer):
 
     if bad_pad_token:
         # Find a better pad token
-        aadded_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
+        added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
         possible_pad_token = None
         n_possible_pad_tokens = 0
         for added_token in added_tokens[::-1]:
