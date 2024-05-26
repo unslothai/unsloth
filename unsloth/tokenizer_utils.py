@@ -834,6 +834,7 @@ def patch_sft_trainer_tokenizer():
 
     check_text = \
     "\n"\
+    "print(self.train_dataset)\n"\
     "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"
 
     check_text = check_text.split("\n")
