@@ -580,8 +580,8 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     if_bad_first  = False
     if_bad_second = False
     # Check tokenizer's chat template for any untrained tokens
-    if hasattr(tokenizer, "chat_template"):
-        chat_template = tokenizer.chat_template
+    chat_template = getattr(tokenizer, "chat_template", None):
+    if chat_template is not None:
         if_bad_first = any(x in chat_template for x in actual_bad_tokens)
     pass
 
