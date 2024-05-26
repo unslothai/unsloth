@@ -825,7 +825,7 @@ def patch_sft_trainer_tokenizer():
     pass
 
     # Patch __init__ with fix_untrained_tokens
-    function_name, replacer = "__init__", "if self.args.max_steps > 0 and packing:"
+    function_name, replacer = "train", "if resume_from_checkpoint is False:"
     function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
     where = function.find("def")
     function = function.split("\n")
