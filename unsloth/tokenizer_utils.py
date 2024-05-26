@@ -553,15 +553,15 @@ def check_tokenizer(
 pass
 
 
-@torch.no_grad
+@torch.inference_mode
 def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     """
     Llama-3 for eg has untrained vectors in the base model.
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
-    embedding_matrix = model.get_input_embeddings ().weight.data
-    lm_head_matrix   = model.get_output_embeddings().weight.data
+    embedding_matrix = model.get_input_embeddings ().weight
+    lm_head_matrix   = model.get_output_embeddings().weight
 
     # Get untrained tokens
     indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
@@ -676,8 +676,8 @@ def mean_of_trained_tokens(model, eps = 1e-16):
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
-    embedding_matrix = model.get_input_embeddings ().weight.data.clone()
-    lm_head_matrix   = model.get_output_embeddings().weight.data.clone()
+    embedding_matrix = model.get_input_embeddings ().weight.clone()
+    lm_head_matrix   = model.get_output_embeddings().weight.clone()
 
     # Get untrained tokens
     indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
