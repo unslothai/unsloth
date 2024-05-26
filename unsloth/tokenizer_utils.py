@@ -792,6 +792,7 @@ pass
 from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
+from transformers.trainer import *
 
 def patch_sft_trainer_tokenizer():
     """
