@@ -825,8 +825,8 @@ def patch_sft_trainer_tokenizer():
     pass
 
     # Patch _prepare_dataset
-    replacer = "if dataset is None:"
-    function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer._prepare_dataset"))
+    function_name, replacer = "_prepare_dataset", "if dataset is None:"
+    function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
     where = function.find("def")
     function = function.split("\n")
     function = "\n".join(x[where:] for x in function)
