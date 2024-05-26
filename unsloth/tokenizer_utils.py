@@ -553,7 +553,7 @@ def check_tokenizer(
 pass
 
 
-@torch.inference_mode
+@torch.no_grad
 def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     """
     Llama-3 for eg has untrained vectors in the base model.
