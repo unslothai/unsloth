@@ -808,7 +808,6 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "print(self.model)\n"\
         "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
@@ -824,6 +823,25 @@ def patch_sft_trainer_tokenizer():
 
         exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
     pass
+
+    # Patch _prepare_dataset
+    replacer = "if dataset is None:"
+    function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer._prepare_dataset"))
+    where = function.find("def")
+    function = function.split("\n")
+    function = "\n".join(x[where:] for x in function)
+
+    check_text = \
+    "\n"\
+    "print(dir(self))\n\n"
+
+    check_text = check_text.split("\n")
+    check_text = "\n".join(" "*where + x for x in check_text)
+
+    function = function.replace(replacer, check_text + replacer)
+    exec(function, globals())
+
+    exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
 pass
 
 patch_sft_trainer_tokenizer()
