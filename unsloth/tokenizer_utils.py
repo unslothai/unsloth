@@ -750,8 +750,8 @@ def add_new_tokens(
 
     # If we use interpolation, we interpolate between the mean embeddings and
     # the Word2Vec sum of the other vectors
-    embedding_matrix = model.get_input_embeddings ().weight.data
-    lm_head_matrix   = model.get_output_embeddings().weight.data
+    embedding_matrix = model.get_input_embeddings ().weight
+    lm_head_matrix   = model.get_output_embeddings().weight
 
     if method == "interpolation":
         print(
