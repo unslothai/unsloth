@@ -824,8 +824,8 @@ def patch_sft_trainer_tokenizer():
         exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
     pass
 
-    # Patch _prepare_dataset
-    function_name, replacer = "_prepare_dataset", "if dataset is None:"
+    # Patch __init__ with fix_untrained_tokens
+    function_name, replacer = "__init__", "if self.args.max_steps > 0 and packing:"
     function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
     where = function.find("def")
     function = function.split("\n")
@@ -833,7 +833,8 @@ def patch_sft_trainer_tokenizer():
 
     check_text = \
     "\n"\
-    "print(dir(self))\n\n"
+    "print('Fixing!')\n"
+    "fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16)\n\n"
 
     check_text = check_text.split("\n")
     check_text = "\n".join(" "*where + x for x in check_text)
