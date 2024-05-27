@@ -20,6 +20,10 @@ import os
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
+import itertools
+import collections
+import numpy as np
+import gc
 
 __all__ = [
     "load_correct_tokenizer",
@@ -274,12 +278,10 @@ def fix_sentencepiece_gguf(saved_location):
         user defined tokens.
         Inspiration from https://github.com/ggerganov/llama.cpp/blob/master/convert-hf-to-gguf.py
     """
-    import numpy as np
     from copy import deepcopy
     from transformers.utils import sentencepiece_model_pb2
     import json
     from enum import IntEnum
-    import os
     
     class SentencePieceTokenTypes(IntEnum):
         NORMAL = 1
@@ -632,6 +634,15 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
         )
     pass
 
+    # Count all the possible bad tokens
+    final_counts = np.zeros(len(tokenizer), dtype = np.int64)
+    def mapping(examples):
+        input_ids = examples["input_ids"]
+        counter = np.fromiter(itertools.chain.from_iterable(input_ids), dtype = np.int32)
+        np.add.at(final_counts, counter, 1)
+    pass
+    train_dataset.map(mapping, batched = True, desc = "Counting untrained tokens")
+
     # Get sum of all items
     sum_embedding = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
     sum_lm_head   = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
@@ -644,27 +655,28 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     mean_embedding = (sum_embedding / n_trained)
     mean_lm_head   = (sum_lm_head   / n_trained)
 
-    # Scale by the smallest correct item to make distribution correct
-    smallest_items = torch.amin(embedding_matrix, axis = 1).abs()
-    smallest_items[where_untrained] = torch.inf
-    smallest_item = smallest_items.min().abs()
-    mean_embedding *= (smallest_item / mean_embedding.abs()).min() * 0.01
-    mean_embedding = mean_embedding.to(embedding_matrix.dtype)
-
-    # Do for lm_head
-    smallest_items = torch.amin(lm_head_matrix, axis = 1).abs()
-    smallest_items[where_untrained] = torch.inf
-    smallest_item = smallest_items.min().abs()
-    mean_lm_head *= (smallest_item / mean_lm_head.abs()).min() * 0.01
-    mean_lm_head = mean_lm_head.to(lm_head_matrix.dtype)
+    # Scale each to be equal to 1/max_frequency. Also set some to 0 if none seen
+    scaling = final_counts[where_untrained] / max(final_counts.max(), 1)
+    scaling = torch.tensor(scaling, device = mean_embedding.device).unsqueeze(1)
+    mean_embedding = mean_embedding.repeat((n_untrained, 1,)) * scaling
+    mean_lm_head   = mean_lm_head  .repeat((n_untrained, 1,)) * scaling
+    where_null = scaling.ravel() == 0
+    mean_embedding[where_null] = 0
+    mean_lm_head  [where_null] = 0
 
     # Set them to the mean
     logger.warning(
         "Unsloth: Setting embed_tokens & lm_head untrained tokens to "\
         "mean(trained) to counteract NaNs during training."
     )
-    embedding_matrix[where_untrained] = mean_embedding
-    lm_head_matrix  [where_untrained] = mean_lm_head
+    embedding_matrix[where_untrained] = mean_embedding.to(embedding_matrix.dtype)
+    lm_head_matrix  [where_untrained] = mean_lm_head  .to(lm_head_matrix  .dtype)
+
+    # Clean up
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
+    pass
     return
 pass
 
@@ -825,7 +837,7 @@ def patch_sft_trainer_tokenizer():
         exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
     pass
 
-    # Patch __init__ with fix_untrained_tokens
+    # Patch train with fix_untrained_tokens
     function_name, replacer = "train", "if resume_from_checkpoint is False:"
     function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
     where = function.find("def")
