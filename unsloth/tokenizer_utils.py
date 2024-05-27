@@ -852,7 +852,17 @@ def patch_sft_trainer_tokenizer():
     "       'Do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'"\
     "    )\n"\
     "pass\n"\
-    "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"
+    "n_devices = torch.cuda.device_count()\n"\
+    "more_than = 0\n"\
+    "for j in range(n_devices):\n"\
+    "    vram = torch.cuda.max_memory_reserved(torch.cuda.device(j)) / 1024 / 1024 / 1024\n"\
+    "    more_than += (vram > 4)\n"\
+    "if more_than > 1: raise RuntimeError('Error: More than 1 GPUs have a lot of VRAM usage.')"\
+    "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n"\
+    "for _ in range(3):\n"\
+    "    gc.collect()\n"\
+    "    torch.cuda.empty_cache()\n"\
+    "pass\n\n"
 
     check_text = check_text.split("\n")
     check_text = "\n".join(" "*where + x for x in check_text)
