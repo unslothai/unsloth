@@ -1394,7 +1394,8 @@ def unsloth_save_pretrained_gguf(
     # Check if BOS added already, then warn
     if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
         chat_template = getattr(tokenizer, "chat_template", None)
-        if chat_template is not None and tokenizer.bos_token in chat_template:
+        if chat_template is not None and \
+            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
             logger.warning(
                 "Unsloth: ##### Your tokenizer adds a BOS token, and your chat template has a BOS token.\n"\
                 "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template.\n"\
@@ -1531,7 +1532,8 @@ def unsloth_push_to_hub_gguf(
     # Check if BOS added already, then warn
     if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
         chat_template = getattr(tokenizer, "chat_template", None)
-        if chat_template is not None and tokenizer.bos_token in chat_template:
+        if chat_template is not None and \
+            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
             logger.warning(
                 "Unsloth: ##### Your tokenizer adds a BOS token, and your chat template has a BOS token.\n"\
                 "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template.\n"\
