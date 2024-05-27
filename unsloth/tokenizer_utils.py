@@ -846,10 +846,9 @@ def patch_sft_trainer_tokenizer():
 
     check_text = \
     "\n"\
-    "print(self.args)\n"\
-    "if self._inner_training_loop.__name__ != '_fast_inner_training_loop':"\
+    "if self._inner_training_loop.__name__ != '_fast_inner_training_loop':\n"\
     "    raise RuntimeError(\n"\
-    "       'Do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'"\
+    "       'Do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'\n"\
     "    )\n"\
     "pass\n"\
     "n_devices = torch.cuda.device_count()\n"\
