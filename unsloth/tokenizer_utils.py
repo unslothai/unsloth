@@ -648,14 +648,14 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     smallest_items = torch.amin(embedding_matrix, axis = 1).abs()
     smallest_items[where_untrained] = torch.inf
     smallest_item = smallest_items.min().abs()
-    mean_embedding *= (smallest_item / mean_embedding.abs()).min() * 0.1
+    mean_embedding *= (smallest_item / mean_embedding.abs()).min() * 0.01
     mean_embedding = mean_embedding.to(embedding_matrix.dtype)
 
     # Do for lm_head
     smallest_items = torch.amin(lm_head_matrix, axis = 1).abs()
     smallest_items[where_untrained] = torch.inf
     smallest_item = smallest_items.min().abs()
-    mean_lm_head *= (smallest_item / mean_lm_head.abs()).min() * 0.1
+    mean_lm_head *= (smallest_item / mean_lm_head.abs()).min() * 0.01
     mean_lm_head = mean_lm_head.to(lm_head_matrix.dtype)
 
     # Set them to the mean
