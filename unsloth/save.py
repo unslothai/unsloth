@@ -1390,6 +1390,20 @@ def unsloth_save_pretrained_gguf(
 
     model_type = self.config.model_type
     is_sentencepiece_model = check_if_sentencepiece_model(self)
+
+    # Check if BOS added already, then warn
+    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+        chat_template = getattr(tokenizer, "chat_template", None)
+        if chat_template is not None and tokenizer.bos_token in chat_template:
+            logger.warning(
+                "Unsloth: ##### Your tokenizer adds a BOS token, and your chat template has a BOS token.\n"\
+                "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template.\n"\
+                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token."
+            )
+        pass
+    pass
+
+    # Save to GGUF
     file_location = save_to_gguf(model_type, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
@@ -1513,6 +1527,20 @@ def unsloth_push_to_hub_gguf(
 
     model_type = self.config.model_type
     is_sentencepiece_model = check_if_sentencepiece_model(self)
+
+    # Check if BOS added already, then warn
+    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+        chat_template = getattr(tokenizer, "chat_template", None)
+        if chat_template is not None and tokenizer.bos_token in chat_template:
+            logger.warning(
+                "Unsloth: ##### Your tokenizer adds a BOS token, and your chat template has a BOS token.\n"\
+                "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template.\n"\
+                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token."
+            )
+        pass
+    pass
+
+    # Save to GGUF
     file_location = save_to_gguf(model_type, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
