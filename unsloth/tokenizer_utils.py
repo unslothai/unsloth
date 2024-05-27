@@ -857,7 +857,7 @@ def patch_sft_trainer_tokenizer():
     "for j in range(n_devices):\n"\
     "    vram = torch.cuda.max_memory_reserved(torch.cuda.device(j)) / 1024 / 1024 / 1024\n"\
     "    more_than += (vram > 4)\n"\
-    "if more_than > 1: raise RuntimeError('Error: More than 1 GPUs have a lot of VRAM usage.')"\
+    "if more_than > 1: raise RuntimeError('Error: More than 1 GPUs have a lot of VRAM usage.')\n"\
     "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n"\
     "for _ in range(3):\n"\
     "    gc.collect()\n"\
