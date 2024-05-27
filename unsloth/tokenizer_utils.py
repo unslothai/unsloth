@@ -848,8 +848,7 @@ def patch_sft_trainer_tokenizer():
     "\n"\
     "if Trainer._inner_training_loop.__name__ != '_fast_inner_training_loop':"\
     "    raise RuntimeError(\n"\
-    "       'You must not edit specific areas of Unsloth's codebase since you'll make it slower.\n'"\
-    "       'Please revert your changes back otherwise you might get CUDA segfaults.\n'"\
+    "       'Do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'"\
     "    )\n"\
     "pass\n"\
     "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"
