@@ -657,7 +657,7 @@ def LlamaModel_fast_forward(
                 past_key_values,
                 output_attentions,
                 use_cache,
-            )
+            )[0]
 
         elif gradient_checkpointing:
             def create_custom_forward(module):
@@ -1166,7 +1166,7 @@ class FastLlamaModel:
         except:
             raise RuntimeError(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\n"
                 "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
@@ -1194,7 +1194,7 @@ class FastLlamaModel:
         f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
-        logger.warning_once(debug_info)
+        logger.warning(debug_info)
         import gc
         for _ in range(3):
             gc.collect()
@@ -1209,7 +1209,7 @@ class FastLlamaModel:
         if n_total_devices > 2:
             logger.warning_once(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
-                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\\n"
+                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
                 "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
@@ -1238,9 +1238,10 @@ class FastLlamaModel:
         n_total_devices = total_batches // ga // bsz
         if n_total_devices > 2:
             logger.warning_once(
-                "Please consider a commercial license - Unsloth was designed for the GPU Poor.\\n"
-                "The OSS currently works on 4 GPUs - we're a 2 person team, so please help fund\\n"
-                "our development costs by supporting us through Ko-fi or buying a license! Thanks!",
+                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
+                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
             divisor = n_total_devices / 2
             bsz = self._train_batch_size = max(int(bsz / divisor), 1)
@@ -1267,7 +1268,7 @@ class FastLlamaModel:
         if "n_total_devices >" not in inner_training_loop:
             raise RuntimeError(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\n"
                 "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
@@ -1703,7 +1704,7 @@ class FastLlamaModel:
         if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
             raise RuntimeError(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\n"
                 "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
