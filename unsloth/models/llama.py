@@ -657,7 +657,7 @@ def LlamaModel_fast_forward(
                 past_key_values,
                 output_attentions,
                 use_cache,
-            )
+            )[0]
 
         elif gradient_checkpointing:
             def create_custom_forward(module):
