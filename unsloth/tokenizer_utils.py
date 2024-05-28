@@ -20,6 +20,10 @@ import os
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
+import itertools
+import collections
+import numpy as np
+import gc
 
 __all__ = [
     "load_correct_tokenizer",
@@ -274,12 +278,10 @@ def fix_sentencepiece_gguf(saved_location):
         user defined tokens.
         Inspiration from https://github.com/ggerganov/llama.cpp/blob/master/convert-hf-to-gguf.py
     """
-    import numpy as np
     from copy import deepcopy
     from transformers.utils import sentencepiece_model_pb2
     import json
     from enum import IntEnum
-    import os
     
     class SentencePieceTokenTypes(IntEnum):
         NORMAL = 1
@@ -554,44 +556,128 @@ pass
 
 
 @torch.inference_mode
-def fix_untrained_tokens(model, eps = 1e-16):
+def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     """
     Llama-3 for eg has untrained vectors in the base model.
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
-    embedding_matrix = model.get_input_embeddings ().weight.data
-    lm_head_matrix   = model.get_output_embeddings().weight.data
+    embedding_matrix = model.get_input_embeddings ().weight
+    lm_head_matrix   = model.get_output_embeddings().weight
 
     # Get untrained tokens
     indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
     where_untrained = torch.where(indicator_untrained)[0]
     n_untrained = where_untrained.shape[0]
     n_trained = embedding_matrix.shape[0] - n_untrained
-    if n_untrained != 0:
-        print(
-            f"Unsloth: Not an error, but your model has {n_untrained} untrained tokens.\n"\
-            "We shall set them to the mean of the other trained tokens."
+
+    # Get set and actual tokens
+    where_untrained = where_untrained.tolist()
+    if len(where_untrained) == 0: return
+    
+    where_untrained_set = frozenset(where_untrained)
+    actual_bad_tokens = tokenizer.convert_ids_to_tokens(where_untrained)
+
+    # Check if tokenizer and training datasets have bad tokens
+    if_bad_first  = False
+    if_bad_second = False
+    # Check tokenizer's chat template for any untrained tokens
+    chat_template = getattr(tokenizer, "chat_template", None)
+    if chat_template is not None:
+        if_bad_first = any(x in chat_template for x in actual_bad_tokens)
+    pass
+
+    # Check the first 250, last 250 input_ids
+    size_dataset = len(train_dataset)
+    size = min(size_dataset, 250)
+    for j in range(size):
+        input_ids = train_dataset[j]
+        if "input_ids" in input_ids:
+            input_ids = input_ids["input_ids"]
+            if_bad = any(item in where_untrained_set for item in input_ids)
+            if if_bad:
+                if_bad_second = True
+                break
+            pass
+        pass
+    pass
+
+    # Check last 250
+    if not if_bad_second:
+        left = max(size_dataset-250, 0)
+        for j in range(left, size_dataset):
+            input_ids = train_dataset[j]
+            if "input_ids" in input_ids:
+                input_ids = input_ids["input_ids"]
+                if_bad = any(item in where_untrained_set for item in input_ids)
+                if if_bad:
+                    if_bad_second = True
+                    break
+                pass
+            pass
+        pass
+    pass
+
+    # Check if bad tokens exists!
+    if not if_bad_first and not if_bad_second: return
+
+    # Check if lm_head / embed_token are trainable!
+    bad_not_trainable = False
+    if not embedding_matrix.requires_grad: bad_not_trainable = True
+    if not lm_head_matrix  .requires_grad: bad_not_trainable = True
+
+    if bad_not_trainable:
+        raise ValueError(
+            'Unsloth: Untrained tokens found, but embed_tokens & lm_head not trainable, causing NaNs. '\
+            'Restart then add `embed_tokens` & `lm_head` to '\
+            '`FastLanguageModel.get_peft_model(target_modules = [..., "embed_tokens", "lm_head",])`',
         )
     pass
 
-    # First set untrained to all 0s - sometimes it's not! 1e-23 for bfloat16
-    embedding_matrix[where_untrained] = 0
-    lm_head_matrix  [where_untrained] = 0
+    # Count all the possible bad tokens
+    final_counts = np.zeros(len(tokenizer), dtype = np.int64)
+    def mapping(examples):
+        input_ids = examples["input_ids"]
+        counter = np.fromiter(itertools.chain.from_iterable(input_ids), dtype = np.int32)
+        np.add.at(final_counts, counter, 1)
+    pass
+    train_dataset.map(mapping, batched = True, desc = "Counting untrained tokens")
 
-    # Find sum
-    sum_embedding  = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
-    sum_lm_head    = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
+    # Get sum of all items
+    sum_embedding = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
+    sum_lm_head   = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
+
+    # Remove bad tokens
+    sum_embedding -= torch.sum(embedding_matrix[where_untrained], dtype = torch.float32, axis = 0)
+    sum_lm_head   -= torch.sum(lm_head_matrix  [where_untrained], dtype = torch.float32, axis = 0)
 
     # Find correct average by dividing by sum of trained tokens
-    mean_embedding = (sum_embedding / n_trained).to(embedding_matrix.dtype)
-    mean_lm_head   = (sum_lm_head   / n_trained).to(lm_head_matrix  .dtype)
+    mean_embedding = (sum_embedding / n_trained)
+    mean_lm_head   = (sum_lm_head   / n_trained)
+
+    # Scale each to be equal to 1/max_frequency. Also set some to 0 if none seen
+    scaling = final_counts[where_untrained] / max(final_counts.max(), 1)
+    scaling = torch.tensor(scaling, device = mean_embedding.device).unsqueeze(1)
+    mean_embedding = mean_embedding.repeat((n_untrained, 1,)) * scaling
+    mean_lm_head   = mean_lm_head  .repeat((n_untrained, 1,)) * scaling
+    where_null = scaling.ravel() == 0
+    mean_embedding[where_null] = 0
+    mean_lm_head  [where_null] = 0
 
     # Set them to the mean
-    embedding_matrix[where_untrained] = mean_embedding
-    lm_head_matrix  [where_untrained] = mean_lm_head
+    logger.warning(
+        "Unsloth: Setting embed_tokens & lm_head untrained tokens to "\
+        "mean(trained) to counteract NaNs during training."
+    )
+    embedding_matrix[where_untrained] = mean_embedding.to(embedding_matrix.dtype)
+    lm_head_matrix  [where_untrained] = mean_lm_head  .to(lm_head_matrix  .dtype)
 
-    return mean_embedding, mean_lm_head
+    # Clean up
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
+    pass
+    return
 pass
 
 
@@ -602,32 +688,32 @@ def mean_of_trained_tokens(model, eps = 1e-16):
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
-    embedding_matrix = model.get_input_embeddings ().weight.data.clone()
-    lm_head_matrix   = model.get_output_embeddings().weight.data.clone()
+    embedding_matrix = model.get_input_embeddings ().weight.clone()
+    lm_head_matrix   = model.get_output_embeddings().weight.clone()
 
     # Get untrained tokens
     indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
     where_untrained = torch.where(indicator_untrained)[0]
     n_untrained = where_untrained.shape[0]
     n_trained = embedding_matrix.shape[0] - n_untrained
-    if n_untrained != 0:
-        print(
-            f"Unsloth: Not an error, but your model has {n_untrained} untrained tokens.\n"\
-            "We shall set them to the mean of the other trained tokens."
-        )
-    pass
+    # if n_untrained != 0:
+    #     print(
+    #         f"Unsloth: Not an error, but your model has {n_untrained} untrained tokens.\n"\
+    #         "We shall set them to the mean of the other trained tokens."
+    #     )
+    # pass
 
-    # First set untrained to all 0s - sometimes it's not! 1e-23 for bfloat16
-    embedding_matrix[where_untrained] = 0
-    lm_head_matrix  [where_untrained] = 0
+    # Get sum of all items
+    sum_embedding = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
+    sum_lm_head   = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
 
-    # Find sum
-    sum_embedding  = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
-    sum_lm_head    = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
+    # Remove bad tokens
+    sum_embedding -= torch.sum(embedding_matrix[where_untrained], dtype = torch.float32, axis = 0)
+    sum_lm_head   -= torch.sum(lm_head_matrix  [where_untrained], dtype = torch.float32, axis = 0)
 
     # Find correct average by dividing by sum of trained tokens
-    mean_embedding = (sum_embedding / n_trained).to(embedding_matrix.dtype)
-    mean_lm_head   = (sum_lm_head   / n_trained).to(lm_head_matrix  .dtype)
+    mean_embedding = (sum_embedding / n_trained)
+    mean_lm_head   = (sum_lm_head   / n_trained)
 
     return mean_embedding, mean_lm_head
 pass
@@ -676,8 +762,8 @@ def add_new_tokens(
 
     # If we use interpolation, we interpolate between the mean embeddings and
     # the Word2Vec sum of the other vectors
-    embedding_matrix = model.get_input_embeddings ().weight.data
-    lm_head_matrix   = model.get_output_embeddings().weight.data
+    embedding_matrix = model.get_input_embeddings ().weight
+    lm_head_matrix   = model.get_output_embeddings().weight
 
     if method == "interpolation":
         print(
@@ -718,6 +804,7 @@ pass
 from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
+from transformers.trainer import *
 
 def patch_sft_trainer_tokenizer():
     """
@@ -749,6 +836,41 @@ def patch_sft_trainer_tokenizer():
 
         exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
     pass
+
+    # Patch train with fix_untrained_tokens
+    function_name, replacer = "train", "if resume_from_checkpoint is False:"
+    function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
+    where = function.find("def")
+    function = function.split("\n")
+    function = "\n".join(x[where:] for x in function)
+
+    check_text = \
+    "\n"\
+    "if self._inner_training_loop.__name__ != '_fast_inner_training_loop':\n"\
+    "    raise RuntimeError(\n"\
+    "       'Do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'\n"\
+    "    )\n"\
+    "pass\n"\
+    "n_devices = torch.cuda.device_count()\n"\
+    "more_than = 0\n"\
+    "for j in range(n_devices):\n"\
+    "    vram = torch.cuda.max_memory_reserved(torch.cuda.device(j)) / 1024 / 1024 / 1024\n"\
+    "    more_than += (vram > 4)\n"\
+    "if more_than > 1: raise RuntimeError('Error: More than 1 GPUs have a lot of VRAM usage.')\n"\
+    "for _ in range(3):\n"\
+    "    gc.collect()\n"\
+    "    torch.cuda.empty_cache()\n"\
+    "pass\n"\
+    "\n"\
+    "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"
+
+    check_text = check_text.split("\n")
+    check_text = "\n".join(" "*where + x for x in check_text)
+
+    function = function.replace(replacer, check_text + replacer)
+    exec(function, globals())
+
+    exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
 pass
 
 patch_sft_trainer_tokenizer()

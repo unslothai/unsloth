@@ -94,7 +94,7 @@ def check_if_sentencepiece_model(model, temporary_location = "_unsloth_sentencep
 
     temp_tokenizer = model._saved_temp_tokenizer
     sentencepiece_model = False
-    file_location = f"{temporary_location}/{temp_tokenizer.name_or_path}"
+    file_location = os.path.join(temporary_location, temp_tokenizer.name_or_path)
     if not os.path.exists(file_location):
         os.makedirs(file_location)
     pass
@@ -1390,6 +1390,22 @@ def unsloth_save_pretrained_gguf(
 
     model_type = self.config.model_type
     is_sentencepiece_model = check_if_sentencepiece_model(self)
+
+    # Check if BOS added already, then warn
+    print_bos_token_message = False
+    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+        chat_template = getattr(tokenizer, "chat_template", None)
+        if chat_template is not None and \
+            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
+            print_bos_token_message = True
+            logger.warning(
+                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
+                "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
+            )
+        pass
+    pass
+
+    # Save to GGUF
     file_location = save_to_gguf(model_type, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
@@ -1404,6 +1420,13 @@ def unsloth_save_pretrained_gguf(
             if username not in new_save_directory else \
             new_save_directory.lstrip('/.')
         print(f"Saved GGUF to https://huggingface.co/{link}")
+    pass
+
+    if print_bos_token_message:
+        logger.warning(
+            f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
+            "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
+        )
     pass
 pass
 
@@ -1513,6 +1536,22 @@ def unsloth_push_to_hub_gguf(
 
     model_type = self.config.model_type
     is_sentencepiece_model = check_if_sentencepiece_model(self)
+
+    # Check if BOS added already, then warn
+    print_bos_token_message = False
+    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+        chat_template = getattr(tokenizer, "chat_template", None)
+        if chat_template is not None and \
+            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
+            print_bos_token_message = True
+            logger.warning(
+                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
+                "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
+            )
+        pass
+    pass
+
+    # Save to GGUF
     file_location = save_to_gguf(model_type, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
@@ -1525,7 +1564,15 @@ def unsloth_push_to_hub_gguf(
     link = f"{username}/{new_save_directory.lstrip('/.')}" \
         if username not in new_save_directory else \
         new_save_directory.lstrip('/.')
+
     print(f"Saved GGUF to https://huggingface.co/{link}")
+
+    if print_bos_token_message:
+        logger.warning(
+            f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
+            "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
+        )
+    pass
 pass
 
 
