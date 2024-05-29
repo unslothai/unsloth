@@ -577,7 +577,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     
     where_untrained_set = frozenset(where_untrained)
     actual_bad_tokens = tokenizer.convert_ids_to_tokens(where_untrained)
-    print(actual_bad_tokens)
+    print(where_untrained)
 
     # Check if tokenizer and training datasets have bad tokens
     if_bad_first  = False
