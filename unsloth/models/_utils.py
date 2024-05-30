@@ -444,6 +444,7 @@ pass
 
 # Fix up Accelerate
 import accelerate.accelerator
+from accelerate.utils.dataclasses import DistributedType
 prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
 prepare = prepare.split("\n")
 spaces = prepare[0].find("def")
