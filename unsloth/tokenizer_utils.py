@@ -579,7 +579,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     actual_bad_tokens = tokenizer.convert_ids_to_tokens(where_untrained)
     # Remove None items in actual_bad_tokens
     actual_bad_tokens = [x for x in actual_bad_tokens if x is not None]
-    
+
     # Check if tokenizer and training datasets have bad tokens
     if_bad_first  = False
     if_bad_second = False
