@@ -1355,7 +1355,7 @@ def unsloth_save_pretrained_gguf(
 
             fix_bos_token = True
             logger.warning(
-                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
+                f"Unsloth: ##### The current model auto adds a BOS token.\n"\
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
             new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
@@ -1505,7 +1505,7 @@ def unsloth_push_to_hub_gguf(
 
             fix_bos_token = True
             logger.warning(
-                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
+                f"Unsloth: ##### The current model auto adds a BOS token.\n"\
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
             new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
