@@ -1344,6 +1344,26 @@ def unsloth_save_pretrained_gguf(
     del arguments["quantization_method"]
     del arguments["first_conversion"]
 
+    # Check if BOS added already, then warn
+    fix_bos_token = False
+    chat_template = getattr(tokenizer, "chat_template", None)
+    new_chat_template = None
+
+    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+        if chat_template is not None and \
+            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
+
+            fix_bos_token = True
+            logger.warning(
+                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
+                "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
+            )
+            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
+            tokenizer.chat_template = new_chat_template
+
+        pass
+    pass
+
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
@@ -1386,25 +1406,16 @@ def unsloth_save_pretrained_gguf(
         pass
     pass
 
+    # Use old chat template if the bos is removed
+    if fix_bos_token:
+        tokenizer.chat_template = chat_template
+    pass
+
     for _ in range(3):
         gc.collect()
 
     model_type = self.config.model_type
     is_sentencepiece_model = check_if_sentencepiece_model(self)
-
-    # Check if BOS added already, then warn
-    print_bos_token_message = False
-    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
-        chat_template = getattr(tokenizer, "chat_template", None)
-        if chat_template is not None and \
-            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
-            print_bos_token_message = True
-            logger.warning(
-                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
-                "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
-            )
-        pass
-    pass
 
     # Save to GGUF
     file_location = save_to_gguf(model_type, is_sentencepiece_model, 
@@ -1421,13 +1432,6 @@ def unsloth_save_pretrained_gguf(
             if username not in new_save_directory else \
             new_save_directory.lstrip('/.')
         print(f"Saved GGUF to https://huggingface.co/{link}")
-    pass
-
-    if print_bos_token_message:
-        logger.warning(
-            f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
-            "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
-        )
     pass
 pass
 
@@ -1490,6 +1494,26 @@ def unsloth_push_to_hub_gguf(
     del arguments["quantization_method"]
     del arguments["first_conversion"]
 
+    # Check if BOS added already, then warn
+    fix_bos_token = False
+    chat_template = getattr(tokenizer, "chat_template", None)
+    new_chat_template = None
+
+    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+        if chat_template is not None and \
+            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
+
+            fix_bos_token = True
+            logger.warning(
+                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
+                "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
+            )
+            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
+            tokenizer.chat_template = new_chat_template
+
+        pass
+    pass
+
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
@@ -1532,25 +1556,16 @@ def unsloth_push_to_hub_gguf(
         pass
     pass
 
+    # Use old chat template if the bos is removed
+    if fix_bos_token:
+        tokenizer.chat_template = chat_template
+    pass
+
     for _ in range(3):
         gc.collect()
 
     model_type = self.config.model_type
     is_sentencepiece_model = check_if_sentencepiece_model(self)
-
-    # Check if BOS added already, then warn
-    print_bos_token_message = False
-    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
-        chat_template = getattr(tokenizer, "chat_template", None)
-        if chat_template is not None and \
-            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
-            print_bos_token_message = True
-            logger.warning(
-                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
-                "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
-            )
-        pass
-    pass
 
     # Save to GGUF
     file_location = save_to_gguf(model_type, is_sentencepiece_model, 
@@ -1579,7 +1594,6 @@ pass
 
 def patch_saving_functions(model):
     import inspect
-    import re
     import types
     from typing import Callable, Optional, Union, List
 
