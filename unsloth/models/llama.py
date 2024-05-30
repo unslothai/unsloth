@@ -1336,18 +1336,18 @@ class FastLlamaModel:
         layers = model.model.layers
 
         # Torch.compile fails on embedding matrix??
-        # Workaround randomnly fixes it for torch versions < 2.2
-        model.model.embed_tokens = torch.nn.Embedding.from_pretrained(model.model.embed_tokens.weight)
+        # Workaround randomnly fixes it for torch versions < 2.
+        model.set_input_embeddings(torch.nn.Embedding.from_pretrained(model.get_input_embeddings().weight))
         model.config.update({"unsloth_version" : __version__})
 
         # We also do this for the lm_head
         lm_head = torch.nn.Linear(1, 1, bias = None)
         del lm_head.weight
-        lm_head.weight = model.lm_head.weight
+        lm_head.weight = model.get_output_embeddings().weight
         lm_head.in_features  = lm_head.weight.shape[1]
         lm_head.out_features = lm_head.weight.shape[0]
         model.lm_head = lm_head
-
+        
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
         correct_dtype = lm_head.weight.dtype
