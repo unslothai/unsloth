@@ -1237,6 +1237,9 @@ class FastLlamaModel:
         total_batches = bsz * ga * args.world_size
         n_total_devices = total_batches // ga // bsz
         print('N total devices = ', n_total_devices)
+        print('N total devices = ', n_total_devices)
+        print('N total devices = ', n_total_devices)
+        print('N total devices = ', n_total_devices)
         if n_total_devices > 2:
             logger.warning_once(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
