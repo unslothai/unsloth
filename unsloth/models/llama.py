@@ -1214,15 +1214,16 @@ class FastLlamaModel:
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
         n_devices = torch.cuda.device_count()
+        print(n_devices)
         more_than = 0
         for j in range(n_devices):
             vram = torch.cuda.max_memory_reserved(torch.cuda.device(j)) / 1024 / 1024 / 1024
             more_than += (vram > 4)
+        print(more_than)
         if more_than > 1: raise RuntimeError('Error: More than 1 GPUs have a lot of VRAM usage.')
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
-
         debug_info ="""
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
