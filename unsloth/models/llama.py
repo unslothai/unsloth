@@ -1277,6 +1277,7 @@ class FastLlamaModel:
             "is_sagemaker_mp_enabled()",
             "False",
         )
+        exec(inner_training_loop, globals())
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save max_seq_length
@@ -1316,6 +1317,7 @@ class FastLlamaModel:
 
         # Add save modules
         patch_saving_functions(model)
+        Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference
