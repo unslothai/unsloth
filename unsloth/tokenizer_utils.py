@@ -579,7 +579,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     actual_bad_tokens = tokenizer.convert_ids_to_tokens(where_untrained)
     # Remove None items in actual_bad_tokens
     actual_bad_tokens = [x for x in actual_bad_tokens if x is not None]
-    
+
     # Check if tokenizer and training datasets have bad tokens
     if_bad_first  = False
     if_bad_second = False
@@ -855,6 +855,7 @@ def patch_sft_trainer_tokenizer():
     "pass\n"\
     "n_devices = torch.cuda.device_count()\n"\
     "more_than = 0\n"\
+    "print(n_devices)\n"\
     "for j in range(n_devices):\n"\
     "    vram = torch.cuda.max_memory_reserved(torch.cuda.device(j)) / 1024 / 1024 / 1024\n"\
     "    more_than += (vram > 4)\n"\
