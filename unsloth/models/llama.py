@@ -1213,6 +1213,16 @@ class FastLlamaModel:
                 "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
+        n_devices = torch.cuda.device_count()
+        more_than = 0
+        for j in range(n_devices):
+            vram = torch.cuda.max_memory_reserved(torch.cuda.device(j)) / 1024 / 1024 / 1024
+            more_than += (vram > 4)
+        if more_than > 1: raise RuntimeError('Error: More than 1 GPUs have a lot of VRAM usage.')
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
+
         debug_info ="""
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -1236,10 +1246,6 @@ class FastLlamaModel:
         bsz = self._train_batch_size
         total_batches = bsz * ga * args.world_size
         n_total_devices = total_batches // ga // bsz
-        print('N total devices = ', n_total_devices)
-        print('N total devices = ', n_total_devices)
-        print('N total devices = ', n_total_devices)
-        print('N total devices = ', n_total_devices)
         if n_total_devices > 2:
             logger.warning_once(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
