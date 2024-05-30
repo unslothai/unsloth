@@ -1236,6 +1236,7 @@ class FastLlamaModel:
         bsz = self._train_batch_size
         total_batches = bsz * ga * args.world_size
         n_total_devices = total_batches // ga // bsz
+        print('N total devices = ', n_total_devices)
         if n_total_devices > 2:
             logger.warning_once(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
@@ -1349,7 +1350,7 @@ class FastLlamaModel:
         lm_head.in_features  = lm_head.weight.shape[1]
         lm_head.out_features = lm_head.weight.shape[0]
         model.lm_head = lm_head
-        
+
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
         correct_dtype = lm_head.weight.dtype

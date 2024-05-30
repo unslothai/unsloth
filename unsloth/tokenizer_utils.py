@@ -855,7 +855,6 @@ def patch_sft_trainer_tokenizer():
     "pass\n"\
     "n_devices = torch.cuda.device_count()\n"\
     "more_than = 0\n"\
-    "print(n_devices)\n"\
     "for j in range(n_devices):\n"\
     "    vram = torch.cuda.max_memory_reserved(torch.cuda.device(j)) / 1024 / 1024 / 1024\n"\
     "    more_than += (vram > 4)\n"\
