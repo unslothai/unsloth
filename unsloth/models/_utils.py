@@ -451,7 +451,7 @@ spaces = prepare[0].find("def")
 prepare = "\n".join(x[spaces:] for x in prepare)
 replace = "for obj in args:"
 s = " "*spaces
-prepare = prepare.replace(replace, f'self.distributed_type = DistributedType.MULTI_CPU\n{s}{replace}', 1)
+prepare = prepare.replace(replace, f'print(self.distributed_type)\n{s}{replace}', 1)
 prepare = prepare.replace("prepare", "_fast_prepare")
 exec(prepare, globals())
 accelerate.accelerator.Accelerator.prepare = _fast_prepare
