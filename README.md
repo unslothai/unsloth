@@ -255,7 +255,7 @@ trainer.train()
 # (1) Saving to GGUF / merging to 16bit for vLLM
 # (2) Continued training from a saved LoRA adapter
 # (3) Adding an evaluation loop / OOMs
-# (4) Cutomized chat templates
+# (4) Customized chat templates
 ```
 
 <a name="DPO"></a>
