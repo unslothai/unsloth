@@ -452,9 +452,8 @@ prepare = "\n".join(x[spaces:] for x in prepare)
 replace = "for obj in args:"
 s = " "*spaces
 prepare = prepare.replace(replace, f'print(self.distributed_type)\n{s}{replace}', 1)
-prepare = prepare.replace("prepare", "_fast_prepare")
 exec(prepare, globals())
-accelerate.accelerator.Accelerator.prepare = _fast_prepare
+accelerate.accelerator.Accelerator.prepare = prepare
 
 
 # Offloading to disk for modules (lm_head, embed_tokens)
