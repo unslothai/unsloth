@@ -975,6 +975,7 @@ def save_to_gguf(
         vocab_type = "bpe"
     pass
 
+    use_fast_convert = False
     if use_fast_convert:
         command = f"python llama.cpp/convert.py {model_directory} "\
             f"--outfile {final_location} --vocab-type {vocab_type} "\

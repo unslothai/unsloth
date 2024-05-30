@@ -410,36 +410,50 @@ pass
 
 
 """
-    Remove warnings about missing kwargs
+    Remove warnings about missing kwargs and patch stuff
 """
-try:
-    from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
-    from inspect import getsource
-    import re
-    BitsAndBytesConfig__init__ = getsource(BitsAndBytesConfig.__init__)
-    BitsAndBytesConfig__init__ = re.sub(
-        r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
-        "",
-        BitsAndBytesConfig__init__,
-        flags = re.MULTILINE,
-    )
-    BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
-    length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
-    BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
-    BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
-        "__init__",
-        "_BitsAndBytesConfig__init__",
-    )
-    exec(BitsAndBytesConfig__init__, globals())
-    
-    import transformers.utils.quantization_config
-    transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
-except:
-    logger.warning_once(
-        "Unsloth unsuccessfully patched bitsandbytes. Please file a bug report.\n"\
-        "Luckily, your training run will still work in the meantime!"
-    )
+from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
+from inspect import getsource
+from accelerate.utils.dataclasses import DistributedType
+import re
+BitsAndBytesConfig__init__ = getsource(BitsAndBytesConfig.__init__)
+BitsAndBytesConfig__init__ = re.sub(
+    r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
+    "",
+    BitsAndBytesConfig__init__,
+    flags = re.MULTILINE,
+)
+BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
+length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
+BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
+BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
+    "__init__",
+    "_BitsAndBytesConfig__init__",
+)
+
+def _prepare_backend(
+    self, cpu: bool = False, sagemaker_dp = False, backend: str = None,
+) -> tuple[str, DistributedType]:
+    return None, DistributedType.NO
 pass
+import accelerate.state
+accelerate.state.PartialState._prepare_backend = _prepare_backend
+
+import accelerate.accelerator
+prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
+prepare = prepare.split("\n")
+spaces = prepare[0].find("def")
+prepare = "\n".join(x[spaces:] for x in prepare)
+x = "for obj in args:"
+s = " "*spaces
+prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
+exec(prepare, globals())
+accelerate.accelerator.Accelerator.prepare = prepare
+
+exec(BitsAndBytesConfig__init__, globals())
+
+import transformers.utils.quantization_config
+transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
 
 
 # Offloading to disk for modules (lm_head, embed_tokens)
