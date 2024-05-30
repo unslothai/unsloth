@@ -1422,6 +1422,13 @@ def unsloth_save_pretrained_gguf(
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
+    if fix_bos_token:
+        logger.warning(
+            f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+            "Unsloth: ##### We removed in GGUF's chat template for you."
+        )
+    pass
+
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
@@ -1583,10 +1590,10 @@ def unsloth_push_to_hub_gguf(
 
     print(f"Saved GGUF to https://huggingface.co/{link}")
 
-    if print_bos_token_message:
+    if fix_bos_token:
         logger.warning(
-            f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
-            "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
+            f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+            "Unsloth: ##### We removed in GGUF's chat template for you."
         )
     pass
 pass
