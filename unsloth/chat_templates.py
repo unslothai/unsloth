@@ -30,6 +30,7 @@ from .models._utils import patch_tokenizer
 
 CHAT_TEMPLATES = {}
 
+# =========================================== Unsloth
 # Unsloth efficient template leverages from Zephyr
 unsloth_template = \
     "{{ bos_token }}"\
@@ -54,8 +55,9 @@ unsloth_template = \
     "{% endif %}"
 unsloth_eos_token = "eos_token"
 CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token, False,)
+pass
 
-
+# =========================================== Zephyr
 # Zephyr has no BOS!
 zephyr_template = \
     "{% for message in messages %}"\
@@ -72,8 +74,9 @@ zephyr_template = \
     "{% endif %}"
 zephyr_eos_token = "eos_token"
 CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False,)
+pass
 
-
+# =========================================== ChatML
 # ChatML has no BOS and not EOS! Rather <|im_start|> and <|im_end|> acts as BOS / EOS.
 chatml_template = \
     "{% for message in messages %}"\
@@ -88,10 +91,27 @@ chatml_template = \
     "{% if add_generation_prompt %}"\
         "{{ '<|im_start|>assistant\n' }}"\
     "{% endif %}"
+pass
+
+chatml_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ .Response }}<|im_end|>
+"""
+PARAMETER stop <|im_start|>
+PARAMETER stop <|im_end|>
+'''
+
 chatml_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token, True,)
+CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token, True, chatml_ollama,)
+pass
 
-
+# =========================================== Mistral-1
 # Mistral Instruct doesn't allow system prompts, so we append it to the user message.
 mistral_template = \
     "{{ bos_token }}"\
@@ -117,8 +137,9 @@ mistral_template = \
     "{% endfor %}"
 mistral_eos_token = "eos_token"
 CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False,)
+pass
 
-
+# =========================================== Llama-2
 # Adds BOS to every convo! And weird <<SYS>> system messages.
 llama_template = \
     "{% if messages[0]['role'] == 'system' %}"\
@@ -143,8 +164,9 @@ llama_template = \
     "{% endfor %}"
 llama_eos_token = "eos_token"
 CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False,)
+pass
 
-
+# ===========================================  Vicuna
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
 vicuna_template = \
     "{{ bos_token }}"\
@@ -169,8 +191,9 @@ vicuna_template = \
     "{% endif %}"
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False,)
+pass
 
-
+# =========================================== Vicuna Old
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
 vicuna_old_template = \
     "{{ bos_token }}"\
@@ -195,8 +218,9 @@ vicuna_old_template = \
     "{% endif %}"
 vicuna_old_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False,)
+pass
 
-
+# =========================================== Alpaca multi turn
 # https://github.com/tatsu-lab/stanford_alpaca Changed for multi-turn convos
 alpaca_template = \
     "{{ bos_token }}"\
@@ -219,42 +243,98 @@ alpaca_template = \
     "{% if add_generation_prompt %}"\
         "{{ '### Response:\n' }}"\
     "{% endif %}"
+pass
+
+alpaca_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}{{ .System }}
+
+{{ end }}{{ if .Prompt }}### Instruction:
+{{ .Prompt }}
+
+{{ end }}### Response:
+{{ .Response }}{__EOS_TOKEN__}
+
+"""
+PARAMETER stop {__EOS_TOKEN__}
+'''
+
 alpaca_eos_token = "eos_token"
-CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token, False,)
+CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token, False, alpaca_ollama,)
+pass
 
-
+# =========================================== Gemma
 # https://huggingface.co/google/gemma-7b-it
 # Notice we must use |trim for lstrip and rstrip. <start_of_turn> maps to 106.
 # <end_of_turn> maps to 107. user and model are normal 1 word tokens.
 gemma_template = \
     "{{ bos_token }}"\
+    "{% if messages[0]['role'] == 'system' %}"\
+        "{{'<start_of_turn>user\n' + messages[0]['content'] | trim + ' ' + messages[1]['content'] | trim + '<end_of_turn>\n'}}"\
+        "{% set loop_messages = messages[2:] %}"\
+    "{% endif %}"\
     "{% for message in messages %}"\
         "{% if message['role'] == 'user' %}"\
             "{{'<start_of_turn>user\n' + message['content'] | trim + '<end_of_turn>\n'}}"\
         "{% elif message['role'] == 'assistant' %}"\
             "{{'<start_of_turn>model\n' + message['content'] | trim + '<end_of_turn>\n' }}"\
         "{% else %}"\
-            "{{ '<start_of_turn>system\n' + message['content'] | trim + '<end_of_turn>\n' }}"\
+            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
         "{% endif %}"\
     "{% endfor %}"\
     "{% if add_generation_prompt %}"\
         "{{ '<start_of_turn>model\n' }}"\
     "{% endif %}"
+pass
+
+gemma_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """<start_of_turn>user
+{{ if .System }}{{ .System }} {{ end }}{{ .Prompt }}<end_of_turn>
+<start_of_turn>model
+{{ .Response }}<end_of_turn>
+"""
+PARAMETER repeat_penalty 1
+PARAMETER stop <start_of_turn>
+PARAMETER stop <end_of_turn>
+PARAMETER penalize_newline false
+'''
+
 gemma_eos_token = "<end_of_turn>"
-CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True,)
+CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True, gemma_ollama,)
+pass
 
-
-# Gemma with ChatML instead
+# =========================================== Gemma with ChatML instead
 # We find using <eos> is still more appropriate!
 gemma_chatml_template = "{{ bos_token }}" + chatml_template
+pass
+
+gemma_chatml_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ .Response }}<|im_end|>
+"""
+PARAMETER repeat_penalty 1
+PARAMETER stop <|im_start|>
+PARAMETER stop <|im_end|>
+PARAMETER penalize_newline false
+'''
+
 gemma_chatml_eos_token = (
     {"<start_of_turn>" : "<|im_start|>", "<eos>" : "<|im_end|>"},
     "<|im_end|>",
 )
-CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token, True,)
+CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token, True, gemma_chatml_ollama,)
+pass
 
-
-# Llama-3
+# =========================================== Llama-3
 # Weirdly \n\n is needed?
 llama3_template = \
     "{{ bos_token }}"\
@@ -270,11 +350,30 @@ llama3_template = \
     "{% if add_generation_prompt %}"\
         "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"\
     "{% endif %}"
+pass
+
+llama3_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
+
+{{ .System }}<|eot_id|>{{ end }}{{ if .Prompt }}<|start_header_id|>user<|end_header_id|>
+
+{{ .Prompt }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>
+
+{{ .Response }}<|eot_id|>"""
+PARAMETER stop "<|start_header_id|>"
+PARAMETER stop "<|end_header_id|>"
+PARAMETER stop "<|eot_id|>"
+PARAMETER stop "<|reserved_special_token"
+'''
+
 llama3_template_eos_token = "eos_token"
-CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token, False,)
+CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token, False, llama3_ollama,)
+pass
 
 
-# Phi-3
+# =========================================== Phi-3
 phi3_template = \
     "{{ bos_token }}"\
     "{% for message in messages %}"\
@@ -289,8 +388,26 @@ phi3_template = \
     "{% if add_generation_prompt %}"\
         "{{ '<|assistant|>\n' }}"\
     "{% endif %}"
+pass
+
+phi3_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}<|system|>
+{{ .System }}<|end|>
+{{ end }}{{ if .Prompt }}<|user|>
+{{ .Prompt }}<|end|>
+{{ end }}<|assistant|>
+{{ .Response }}<|end|>
+"""
+PARAMETER stop <|end|>
+PARAMETER stop <|user|>
+PARAMETER stop <|assistant|>
+'''
+
 phi3_template_eos_token = "<|end|>"
-CHAT_TEMPLATES["phi-3"] = (phi3_template, phi3_template_eos_token, False,)
+CHAT_TEMPLATES["phi-3"] = (phi3_template, phi3_template_eos_token, False, phi3_ollama,)
+pass
 
 
 def get_chat_template(
@@ -503,12 +620,8 @@ pass
 
 def remove_special_tokens(tokenizer, prompt):
     # Removes double BOS token
-    if tokenizer("A").input_ids[0] == tokenizer.bos_token_id:
-        input_ids = tokenizer(prompt).input_ids
-        for j, input_id in enumerate(input_ids):
-            if input_id != tokenizer.bos_token_id: break
-        input_ids = input_ids[j:]
-        prompt = tokenizer.decode(input_ids)
+    if prompt.startswith(tokenizer.bos_token):
+        prompt = prompt[len(tokenizer.bos_token):]
     pass
     return prompt
 pass
