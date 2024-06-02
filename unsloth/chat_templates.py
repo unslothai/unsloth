@@ -16,6 +16,7 @@ __all__ = [
     "get_chat_template",
     "test_chat_templates",
     "test_hf_gguf_equivalence",
+    "remove_special_tokens",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
@@ -500,6 +501,19 @@ def get_chat_template(
 pass
 
 
+def remove_special_tokens(tokenizer, prompt):
+    # Removes double BOS token
+    if tokenizer("A").input_ids[0] == tokenizer.bos_token_id:
+        input_ids = tokenizer(prompt).input_ids
+        for j, input_id in enumerate(input_ids):
+            if input_id != tokenizer.bos_token_id: break
+        input_ids = input_ids[j:]
+        prompt = tokenizer.decode(input_ids)
+    pass
+    return prompt
+pass
+
+
 def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
     class StoppingCriteriaSub(StoppingCriteria):
         __slots__ = "stop_token", "single_match", "length",
@@ -670,7 +684,8 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
     if tokenizer.chat_template is not None:
         prompt = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
         prompt = prompt.replace("'", "") # Subprocess does not like ''
-        prompts.append(prompts)
+        prompt = remove_special_tokens(tokenizer, prompt)
+        prompts.append(prompt)
     pass
     
     for prompt in prompts:
@@ -688,9 +703,9 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
         gguf_tokenized = re.findall("([\d]{1,}) \-\> \'([^\']{1,})\'", gguf_tokens, flags = re.MULTILINE)
         gguf_tokenized = [(int(x[0]), x[1],) for x in gguf_tokenized]
         input_ids = tokenizer(prompt).input_ids
+
         tokens = tokenizer.batch_decode(input_ids)
         hf_tokenized = list(zip(input_ids, tokens))
-        print(gguf_tokenized[:5])
 
         # Compare to Huggingface
         for j, (hf_token, gguf_token) in enumerate(zip(hf_tokenized, gguf_tokenized)):
@@ -698,9 +713,10 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
                 print("Failed GGUF != HF at", j)
                 print("HF =", hf_token)
                 print("GGUF =", gguf_token)
-                print(hf_tokenized[:j+1])
-                print(gguf_tokenized[:j+1])
-                print(gguf_tokens)
+                print(hf_tokenized)
+                print()
+                print(gguf_tokenized)
+                print()
                 raise RuntimeError("Failed comparing GGUF to HF.")
             pass
         pass
