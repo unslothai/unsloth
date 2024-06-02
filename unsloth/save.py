@@ -1281,6 +1281,38 @@ def upload_to_huggingface(
 pass
 
 
+def fix_tokenizer_bos_token(tokenizer):
+    # Check if BOS added already, then warn
+    fix_bos_token = False
+    chat_template = getattr(tokenizer, "chat_template", None)
+    
+    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+        if chat_template is not None and \
+            (
+                tokenizer.bos_token in chat_template or \
+                "{bos_token}" in chat_template.replace(" ", "") or \
+                "{bos_token+" in chat_template.replace(" ", "")
+            ):
+
+            fix_bos_token = True
+            logger.warning(
+                f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+                "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
+            )
+
+            # Remove {{bos_token}}
+            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
+            # Remove {{bos_token +
+            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\+[\s]{0,}", "", new_chat_template)
+            
+            tokenizer.chat_template = new_chat_template
+
+        pass
+    pass
+    return fix_bos_token, chat_template
+pass
+
+
 def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
@@ -1344,25 +1376,8 @@ def unsloth_save_pretrained_gguf(
     del arguments["quantization_method"]
     del arguments["first_conversion"]
 
-    # Check if BOS added already, then warn
-    fix_bos_token = False
-    chat_template = getattr(tokenizer, "chat_template", None)
-    new_chat_template = None
-
-    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
-        if chat_template is not None and \
-            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
-
-            fix_bos_token = True
-            logger.warning(
-                f"Unsloth: ##### The current model auto adds a BOS token.\n"\
-                "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
-            )
-            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
-            tokenizer.chat_template = new_chat_template
-
-        pass
-    pass
+    # Fix tokenizer adding an extra BOS token at the front
+    fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
@@ -1408,7 +1423,7 @@ def unsloth_save_pretrained_gguf(
 
     # Use old chat template if the bos is removed
     if fix_bos_token:
-        tokenizer.chat_template = chat_template
+        tokenizer.chat_template = old_chat_template
     pass
 
     for _ in range(3):
@@ -1501,25 +1516,8 @@ def unsloth_push_to_hub_gguf(
     del arguments["quantization_method"]
     del arguments["first_conversion"]
 
-    # Check if BOS added already, then warn
-    fix_bos_token = False
-    chat_template = getattr(tokenizer, "chat_template", None)
-    new_chat_template = None
-
-    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
-        if chat_template is not None and \
-            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
-
-            fix_bos_token = True
-            logger.warning(
-                f"Unsloth: ##### The current model auto adds a BOS token.\n"\
-                "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
-            )
-            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
-            tokenizer.chat_template = new_chat_template
-
-        pass
-    pass
+    # Fix tokenizer adding an extra BOS token at the front
+    fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
@@ -1565,7 +1563,7 @@ def unsloth_push_to_hub_gguf(
 
     # Use old chat template if the bos is removed
     if fix_bos_token:
-        tokenizer.chat_template = chat_template
+        tokenizer.chat_template = old_chat_template
     pass
 
     for _ in range(3):
