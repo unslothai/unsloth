@@ -17,6 +17,7 @@ __all__ = [
     "test_chat_templates",
     "test_hf_gguf_equivalence",
     "remove_special_tokens",
+    "create_ollama_modelfile",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
@@ -53,8 +54,20 @@ unsloth_template = \
     "{% if add_generation_prompt %}"\
         "{{ '>>> Assistant: ' }}"\
     "{% endif %}"
+pass
+
+unsloth_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}{{ .System }}
+{{ end }}{{ if .Prompt }}>>> User: {{ .Prompt }}
+{{ end }}>>> Assistant: {{ .Response }}{__EOS_TOKEN__}
+"""
+PARAMETER stop {__EOS_TOKEN__}
+'''
+
 unsloth_eos_token = "eos_token"
-CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token, False,)
+CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token, False, unsloth_ollama,)
 pass
 
 # =========================================== Zephyr
@@ -72,8 +85,23 @@ zephyr_template = \
     "{% if add_generation_prompt %}"\
         "{{ '<|assistant|>\n' }}"\
     "{% endif %}"
+pass
+
+zephyr_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}<|system|>
+{{ .System }}{__EOS_TOKEN__}
+{{ end }}{{ if .Prompt }}<|user|>
+{{ .Prompt }}{__EOS_TOKEN__}
+{{ end }}<|assistant|>
+{{ .Response }}{__EOS_TOKEN__}
+"""
+PARAMETER stop {__EOS_TOKEN__}
+'''
+
 zephyr_eos_token = "eos_token"
-CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False,)
+CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False, zephyr_ollama,)
 pass
 
 # =========================================== ChatML
@@ -135,8 +163,17 @@ mistral_template = \
             "{{ raise_exception('Only user and assistant roles are supported!') }}"\
         "{% endif %}"\
     "{% endfor %}"
+pass
+
+mistral_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST]"""
+PARAMETER stop {__EOS_TOKEN__}
+'''
+
 mistral_eos_token = "eos_token"
-CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False,)
+CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False, mistral_ollama,)
 pass
 
 # =========================================== Llama-2
@@ -162,8 +199,19 @@ llama_template = \
             "{{ raise_exception('Only user and assistant roles are supported!') }}"\
         "{% endif %}"\
     "{% endfor %}"
+pass
+
+llama_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """[INST] <<SYS>>{{ .System }}<</SYS>>
+
+{{ .Prompt }} [/INST]"""
+PARAMETER stop {__EOS_TOKEN__}
+'''
+
 llama_eos_token = "eos_token"
-CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False,)
+CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False, llama_ollama,)
 pass
 
 # ===========================================  Vicuna
@@ -189,8 +237,17 @@ vicuna_template = \
     "{% if add_generation_prompt %}"\
         "{{ 'ASSISTANT:' }}"\
     "{% endif %}"
+pass
+
+vicuna_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}{{ .System }} {{ end }}{{ if .Prompt }}USER: {{ .Prompt }} {{ end }}ASSISTANT: {{ .Response }} {__EOS_TOKEN__}"""
+PARAMETER stop {__EOS_TOKEN__}
+'''
+
 vicuna_eos_token = "eos_token"
-CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False,)
+CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
 pass
 
 # =========================================== Vicuna Old
@@ -216,8 +273,20 @@ vicuna_old_template = \
     "{% if add_generation_prompt %}"\
         "{{ '### Assistant:' }}"\
     "{% endif %}"
+pass
+
+vicuna_old_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}{{ .System }}
+{{ end }}{{ if .Prompt }}### Human: {{ .Prompt }}
+{{ end }}### Assistant: {{ .Response }}{__EOS_TOKEN__}
+"""
+PARAMETER stop {__EOS_TOKEN__}
+'''
+
 vicuna_old_eos_token = "eos_token"
-CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False,)
+CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False, vicuna_old_ollama,)
 pass
 
 # =========================================== Alpaca multi turn
@@ -415,6 +484,7 @@ def get_chat_template(
     chat_template = "chatml",
     mapping = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
     map_eos_token = True,
+    system_message = None,
 ):
     assert(type(map_eos_token) is bool)
     old_tokenizer = tokenizer
@@ -449,7 +519,7 @@ def get_chat_template(
 
     elif type(chat_template) is str:
 
-        chat_template, stop_word, yes_map_eos_token = CHAT_TEMPLATES[chat_template]
+        chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
         # Check mapping to eos_token
         if not map_eos_token and yes_map_eos_token: map_eos_token = True
@@ -614,6 +684,9 @@ def get_chat_template(
     # Patch saving functions
     tokenizer = patch_saving_functions(tokenizer)
 
+    # Add Ollama
+    tokenizer._ollama_modelfile = ollama_modelfile
+    tokenizer._system_message   = system_message
     return tokenizer#, stopping_criteria
 pass
 
@@ -624,6 +697,40 @@ def remove_special_tokens(tokenizer, prompt):
         prompt = prompt[len(tokenizer.bos_token):]
     pass
     return prompt
+pass
+
+
+def create_ollama_modelfile(tokenizer, gguf_location):
+
+    modelfile = getattr(tokenizer, "ollama_modelfile", None)
+    if modelfile is None:
+        raise RuntimeError(
+            "Unsloth: Tokenizer does not have a `ollama_modelfile` attribute.\n"\
+            "Please use get_chat_template(...)."
+        )
+    pass
+
+    system_message = getattr(tokenizer, "_system_message", None)
+    if system_message is None:
+        __SYSTEM_MESSAGE__ = ""
+    else:
+        __SYSTEM_MESSAGE__ = f'SYSTEM """{system_message}"""'
+    pass
+
+    modelfile = modelfile\
+        .replace("{{", "⚫@✅#🦥")\
+        .replace("}}", "⚡@🦥#⛵")\
+        .format(
+            __FILE_LOCATION__  = gguf_location,
+            __SYSTEM_MESSAGE__ = __SYSTEM_MESSAGE__,
+            __EOS_TOKEN__      = tokenizer.eos_token,
+        )\
+        .replace("⚫@✅#🦥", "{{")\
+        .replace("⚡@🦥#⛵", "}}")\
+        .rstrip()
+    pass
+
+    return modelfile
 pass
 
 
