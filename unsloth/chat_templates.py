@@ -702,7 +702,7 @@ pass
 
 def create_ollama_modelfile(tokenizer, gguf_location):
 
-    modelfile = getattr(tokenizer, "ollama_modelfile", None)
+    modelfile = getattr(tokenizer, "_ollama_modelfile", None)
     if modelfile is None:
         raise RuntimeError(
             "Unsloth: Tokenizer does not have a `ollama_modelfile` attribute.\n"\
