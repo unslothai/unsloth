@@ -38,7 +38,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 
 ## 🦥 Unsloth.ai News
-- 📣 NEW! [Continued Pretraining] for other languages like Korean: (https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing)
+- 📣 NEW! Continued Pretraining [notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) for other languages like Korean!
 - 📣 NEW! [Phi-3 medium](https://colab.research.google.com/drive/1hhdhBa1j_hsymiW9m-WzxQtgqTH_NHqi?usp=sharing) and [Phi-3 mini](https://colab.research.google.com/drive/1lN6hPQveB_mHSnTOYifygFcrO8C1bxq4?usp=sharing) support is here!
 - 📣 NEW! [Mistral v0.3 Base](https://colab.research.google.com/drive/1_yNCks4BTD5zOnjozppphh5GzMFaMKq_?usp=sharing) and [Mistral v0.3 Instruct](https://colab.research.google.com/drive/15F1xyn8497_dUbxZP4zWmPZ3PJx1Oymv?usp=sharing) support is here!
 - 📣 NEW! Qwen1.5-7B, Qwen1.5-14B, Qwen1.5-32B, Qwen1.5-72B now work, courtesy of Firefly's PR [#428](https://github.com/unslothai/unsloth/pull/428)
