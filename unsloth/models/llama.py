@@ -1853,9 +1853,11 @@ class FastLlamaModel:
         pass
 
         # Wrap model.generate
-        model._unwrapped_old_generate = model.generate
-        model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
-
+        if model.generate.__name__ != "_fast_generate":
+            model._unwrapped_old_generate = model.generate
+            model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
+        pass
+        
         # Patch tokenizer to pad to the left
         internal_model = model
         while hasattr(internal_model, "model"):
