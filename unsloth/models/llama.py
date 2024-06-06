@@ -1830,6 +1830,11 @@ class FastLlamaModel:
 
     @staticmethod
     def for_inference(model):
+        if model.config.model_type == "qwen2":
+            FastLlamaModel.for_training(model)
+            return
+        pass
+
         internal_model = model
         internal_model.gradient_checkpointing = False
         internal_model.training = False
