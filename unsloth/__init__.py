@@ -67,7 +67,13 @@ pass
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb
 import triton
-from triton.common.build import libcuda_dirs
+triton_version = triton.__version__.split(".")
+triton_major = int(triton_version[0])
+if triton_major >= 3:
+    from triton.backends.nvidia.driver import libcuda_dirs
+else:
+    from triton.common.build import libcuda_dirs
+
 import os
 import re
 import numpy as np
