@@ -156,6 +156,36 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Phi-3-medium-4k-instruct",
         "microsoft/Phi-3-medium-4k-instruct",
     ),
+    "unsloth/Qwen2-0.5B-bnb-4bit" : (
+        "unsloth/Qwen2-0.5B",
+        "Qwen/Qwen2-0.5B",
+    ),
+    "unsloth/Qwen2-0.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2-0.5B-Instruct",
+        "Qwen/Qwen2-0.5B-Instruct",
+    ),
+    "unsloth/Qwen2-1.5B-bnb-4bit" : (
+        "unsloth/Qwen2-1.5B",
+        "Qwen/Qwen2-1.5B",
+    ),
+    "unsloth/Qwen2-1.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2-1.5B-Instruct",
+        "Qwen/Qwen2-1.5B-Instruct",
+    ),
+    "unsloth/Qwen2-7B-bnb-4bit" : (
+        "unsloth/Qwen2-7B",
+        "Qwen/Qwen2-7B",
+    ),
+    "unsloth/Qwen2-7B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2-7B-Instruct",
+        "Qwen/Qwen2-7B-Instruct",
+    ),
+    "unsloth/Qwen2-70B-bnb-4bit" : (
+        "Qwen/Qwen2-70B",
+    ),
+    "unsloth/Qwen2-70B-Instruct-bnb-4bit" : (
+        "Qwen/Qwen2-70B-Instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
