@@ -34,9 +34,11 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - **Kaggle Notebooks** for [Llama 3 8B](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-8b-unsloth-notebook), [Gemma 7B](https://www.kaggle.com/code/danielhanchen/kaggle-gemma-7b-unsloth-notebook/), [Mistral 7B](https://www.kaggle.com/code/danielhanchen/kaggle-mistral-7b-unsloth-notebook)
 - Run [Llama 3 conversational notebook](https://colab.research.google.com/drive/1XamvWYinY6FOSX9GLvnqSjjsNflxdhNc?usp=sharing) and [Mistral 7B v3 ChatML](https://colab.research.google.com/drive/15F1xyn8497_dUbxZP4zWmPZ3PJx1Oymv?usp=sharing)
 - This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for continued pretraining / raw text
+- This [continued pretraining notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) is for learning another language
 
 
 ## 🦥 Unsloth.ai News
+- 📣 NEW! Continued Pretraining [notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) for other languages like Korean!
 - 📣 NEW! [Phi-3 medium](https://colab.research.google.com/drive/1hhdhBa1j_hsymiW9m-WzxQtgqTH_NHqi?usp=sharing) and [Phi-3 mini](https://colab.research.google.com/drive/1lN6hPQveB_mHSnTOYifygFcrO8C1bxq4?usp=sharing) support is here!
 - 📣 NEW! [Mistral v0.3 Base](https://colab.research.google.com/drive/1_yNCks4BTD5zOnjozppphh5GzMFaMKq_?usp=sharing) and [Mistral v0.3 Instruct](https://colab.research.google.com/drive/15F1xyn8497_dUbxZP4zWmPZ3PJx1Oymv?usp=sharing) support is here!
 - 📣 NEW! Qwen1.5-7B, Qwen1.5-14B, Qwen1.5-32B, Qwen1.5-72B now work, courtesy of Firefly's PR [#428](https://github.com/unslothai/unsloth/pull/428)
