@@ -642,7 +642,8 @@ def unsloth_save_model(
     model.config = new_config
 
     # Save!
-
+    
+    save_pretrained_settings["selected_adapters"] = None
     # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
