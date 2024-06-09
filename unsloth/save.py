@@ -59,7 +59,8 @@ ALLOWED_QUANTS = \
     "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
     "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
     "f32"     : "Not recommended. Retains 100% accuracy, but super slow and memory hungry.",
-    "f16"     : "Fastest conversion + retains 100% accuracy. Slow and memory hungry.",
+    "bf16"    : "Bfloat16 - Fastest conversion + retains 100% accuracy. Slow and memory hungry.",
+    "f16"     : "Float16  - Fastest conversion + retains 100% accuracy. Slow and memory hungry.",
     "q8_0"    : "Fast conversion. High resource use, but generally acceptable.",
     "q4_k_m"  : "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q4_K",
     "q5_k_m"  : "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q5_K",
@@ -102,7 +103,7 @@ def check_if_sentencepiece_model(model, temporary_location = "_unsloth_sentencep
     if os.path.isfile(f"{file_location}/tokenizer.model"):
         sentencepiece_model = True
     pass
-    shutil.rmtree(file_location)
+    shutil.rmtree(file_location, ignore_errors = True)
     return sentencepiece_model
 pass
 
@@ -700,7 +701,7 @@ def unsloth_save_model(
 
     # Remove temporary location
     import shutil
-    shutil.rmtree(temporary_location)
+    shutil.rmtree(temporary_location, ignore_errors = True)
 
     for _ in range(3):
         torch.cuda.empty_cache()
@@ -763,7 +764,7 @@ def install_llama_cpp_old(version = -10):
             print(f"**[WARNING]** Deleting llama.cpp directory... {10-i} seconds left.")
             time.sleep(1)
         import shutil
-        shutil.rmtree("llama.cpp")
+        shutil.rmtree("llama.cpp", ignore_errors = True)
     pass
 
     # Clone a specific commit
@@ -866,10 +867,11 @@ pass
 
 def save_to_gguf(
     model_type           : str,
+    model_dtype          : str,
     is_sentencepiece     : bool = False,
     model_directory      : str = "unsloth_finetuned_model",
     quantization_method  : str = "fast_quantized",
-    first_conversion     : str = "f16",
+    first_conversion     : str = None,
     _run_installer = None, # Non blocking install of llama.cpp
 ):
     # logger.warning(
@@ -877,6 +879,22 @@ def save_to_gguf(
     #     "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
     #     "Please be patient - GGUF saving should still work, but might not work as well."
     # )
+    assert(model_dtype == "float16" or model_dtype == "bfloat16")
+    model_dtype = "f16" if model_dtype == "float16" else "bf16"
+
+    # Check if bfloat16 is supported
+    if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
+        logger.warning(
+            "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"\
+            "We shall switch instead to f16."
+        )
+        model_dtype = "f16"
+    pass
+
+    # Check first_conversion as well
+    if first_conversion is None:
+        first_conversion = model_dtype
+    pass
 
     if quantization_method.startswith("iq2"):
         raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
@@ -889,7 +907,7 @@ def save_to_gguf(
     pass
     logger.warning_once(f"Unsloth: Converting {model_type} model. Can use fast conversion = {use_fast_convert}.")
 
-    if   quantization_method == "not_quantized":  quantization_method = "f16"
+    if   quantization_method == "not_quantized":  quantization_method = model_dtype
     elif quantization_method == "fast_quantized": quantization_method = "q8_0"
     elif quantization_method == "quantized":      quantization_method = "q4_k_m"
     elif quantization_method is None:             quantization_method = "q8_0"
@@ -911,12 +929,13 @@ def save_to_gguf(
     print(print_info)
 
     # Check first_conversion format
-    if   first_conversion == "f16" : pass
-    elif first_conversion == "f32" : pass
-    elif first_conversion == "q8_0": pass
+    if   first_conversion == "f16"  : pass
+    if   first_conversion == "bf16" : pass
+    elif first_conversion == "f32"  : pass
+    elif first_conversion == "q8_0" : pass
     else:
         raise RuntimeError(
-            f"Unsloth: `first_conversion` can only be one of ['f16', 'f32', 'q8_0'] and not `{first_conversion}`."
+            f"Unsloth: `first_conversion` can only be one of ['f16', 'bf16', 'f32', 'q8_0'] and not `{first_conversion}`."
         )
     pass
 
@@ -935,11 +954,13 @@ def save_to_gguf(
 
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
+    elif quantization_method == "bf16": first_conversion = "bf16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
     else:
         # Quantized models must have f16 as the default argument
-        if   first_conversion == "f32" : pass
-        elif first_conversion == "f16" : pass
+        if   first_conversion == "f32"  : pass
+        elif first_conversion == "f16"  : pass
+        elif first_conversion == "bf16" : pass
         elif first_conversion == "q8_0":
             logger.warning_once(
                 "Unsloth: Using q8_0 for the `first_conversion` will lose a bit of accuracy, "\
@@ -950,8 +971,22 @@ def save_to_gguf(
     pass
 
     # Non llama/mistral needs can only use f32 or f16
-    if not use_fast_convert and (first_conversion != "f16" or first_conversion != "f32"):
-        logger.warning_once("Unsloth: We must use f16 for non Llama and Mistral models.")
+    if not use_fast_convert and \
+        (first_conversion != "f16" or first_conversion != "bf16" or first_conversion != "f32"):
+
+        pass
+        # Latest llama.cpp works for all models for q8_0!
+
+        # logger.warning_once("Unsloth: We must use f16 for non Llama and Mistral models.")
+        # first_conversion = "f16"
+    pass
+
+    # Check if bfloat16 is supported
+    if first_conversion == "bf16" and not torch.cuda.is_bf16_supported():
+        logger.warning(
+            "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"\
+            "We shall switch instead to f16."
+        )
         first_conversion = "f16"
     pass
 
@@ -1318,7 +1353,7 @@ def unsloth_save_pretrained_gguf(
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
     quantization_method  : str = "fast_quantized",
-    first_conversion     : str = "f16",
+    first_conversion     : str = None,
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     private              : Optional[bool] = None,
@@ -1429,11 +1464,22 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    model_type = self.config.model_type
+    model_dtype = self.config.torch_dtype
+    model_type  = self.config.model_type
+    if type(model_dtype) is str:
+        assert(model_dtype == "float16" or model_dtype == "bfloat16")
+    elif model_dtype == torch.float16:
+        model_dtype = "float16"
+    elif model_dtype == torch.bfloat16:
+        model_dtype = "bfloat16"
+    else:
+        raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
+    pass
+
     is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
-    file_location = save_to_gguf(model_type, is_sentencepiece_model, 
+    file_location = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
@@ -1463,7 +1509,7 @@ def unsloth_push_to_hub_gguf(
     repo_id              : str,
     tokenizer            = None,
     quantization_method  : str = "fast_quantized",
-    first_conversion     : str = "f16",
+    first_conversion     : str = None,
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = "Trained with Unsloth",
     private              : Optional[bool] = None,
@@ -1569,11 +1615,22 @@ def unsloth_push_to_hub_gguf(
     for _ in range(3):
         gc.collect()
 
-    model_type = self.config.model_type
+    model_dtype = self.config.torch_dtype
+    model_type  = self.config.model_type
+    if type(model_dtype) is str:
+        assert(model_dtype == "float16" or model_dtype == "bfloat16")
+    elif model_dtype == torch.float16:
+        model_dtype = "float16"
+    elif model_dtype == torch.bfloat16:
+        model_dtype = "bfloat16"
+    else:
+        raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
+    pass
+
     is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
-    file_location = save_to_gguf(model_type, is_sentencepiece_model, 
+    file_location = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
