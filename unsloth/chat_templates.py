@@ -64,7 +64,8 @@ TEMPLATE """{{ if .System }}{{ .System }}
 {{ end }}{{ if .Prompt }}>>> User: {{ .Prompt }}
 {{ end }}>>> Assistant: {{ .Response }}{__EOS_TOKEN__}
 """
-PARAMETER stop {__EOS_TOKEN__}
+PARAMETER stop "{__EOS_TOKEN__}"
+SYSTEM """You are a helpful assistant to the user"""
 '''
 
 unsloth_eos_token = "eos_token"
@@ -98,7 +99,7 @@ TEMPLATE """{{ if .System }}<|system|>
 {{ end }}<|assistant|>
 {{ .Response }}{__EOS_TOKEN__}
 """
-PARAMETER stop {__EOS_TOKEN__}
+PARAMETER stop "{__EOS_TOKEN__}"
 '''
 
 zephyr_eos_token = "eos_token"
@@ -132,8 +133,8 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 {{ end }}<|im_start|>assistant
 {{ .Response }}<|im_end|>
 """
-PARAMETER stop <|im_start|>
-PARAMETER stop <|im_end|>
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
 '''
 
 chatml_eos_token = "<|im_end|>"
@@ -166,11 +167,12 @@ mistral_template = \
     "{% endfor %}"
 pass
 
+# Ollama from https://www.ollama.com/library/mistral
 mistral_ollama = \
 '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST]"""
-PARAMETER stop {__EOS_TOKEN__}
+PARAMETER stop "{__EOS_TOKEN__}"
 '''
 
 mistral_eos_token = "eos_token"
@@ -202,13 +204,14 @@ llama_template = \
     "{% endfor %}"
 pass
 
+# Ollama from https://www.ollama.com/library/llama3
 llama_ollama = \
 '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] <<SYS>>{{ .System }}<</SYS>>
 
 {{ .Prompt }} [/INST]"""
-PARAMETER stop {__EOS_TOKEN__}
+PARAMETER stop "{__EOS_TOKEN__}"
 '''
 
 llama_eos_token = "eos_token"
@@ -240,11 +243,12 @@ vicuna_template = \
     "{% endif %}"
 pass
 
+# Ollama from https://www.ollama.com/library/vicuna
 vicuna_ollama = \
 '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }} {{ end }}{{ if .Prompt }}USER: {{ .Prompt }} {{ end }}ASSISTANT: {{ .Response }} {__EOS_TOKEN__}"""
-PARAMETER stop {__EOS_TOKEN__}
+PARAMETER stop "{__EOS_TOKEN__}"
 '''
 
 vicuna_eos_token = "eos_token"
@@ -283,7 +287,8 @@ TEMPLATE """{{ if .System }}{{ .System }}
 {{ end }}{{ if .Prompt }}### Human: {{ .Prompt }}
 {{ end }}### Assistant: {{ .Response }}{__EOS_TOKEN__}
 """
-PARAMETER stop {__EOS_TOKEN__}
+PARAMETER stop "{__EOS_TOKEN__}"
+SYSTEM """A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions."""
 '''
 
 vicuna_old_eos_token = "eos_token"
@@ -298,7 +303,7 @@ alpaca_template = \
         "{{ messages[0]['content'] + '\n\n' }}"\
         "{% set loop_messages = messages[1:] %}"\
     "{% else %}"\
-        "{{ 'Below are some instructions that describes some tasks. Write responses that appropriately completes each request.\n\n' }}"\
+        "{{ 'Below are some instructions that describe some tasks. Write responses that appropriately complete each request.\n\n' }}"\
         "{% set loop_messages = messages %}"\
     "{% endif %}"\
     "{% for message in loop_messages %}"\
@@ -321,13 +326,14 @@ FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }}
 
 {{ end }}{{ if .Prompt }}### Instruction:
-{{ .Prompt }}
+{{ .Prompt }}{{ end }}
 
-{{ end }}### Response:
+### Response:
 {{ .Response }}{__EOS_TOKEN__}
 
 """
-PARAMETER stop {__EOS_TOKEN__}
+PARAMETER stop "{__EOS_TOKEN__}"
+SYSTEM """Below are some instructions that describe some tasks. Write responses that appropriately complete each request."""
 '''
 
 alpaca_eos_token = "eos_token"
@@ -358,6 +364,7 @@ gemma_template = \
     "{% endif %}"
 pass
 
+# Ollama from https://www.ollama.com/library/gemma
 gemma_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -367,8 +374,8 @@ TEMPLATE """<start_of_turn>user
 {{ .Response }}<end_of_turn>
 """
 PARAMETER repeat_penalty 1
-PARAMETER stop <start_of_turn>
-PARAMETER stop <end_of_turn>
+PARAMETER stop "<start_of_turn>"
+PARAMETER stop "<end_of_turn>"
 PARAMETER penalize_newline false
 '''
 
@@ -392,8 +399,8 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 {{ .Response }}<|im_end|>
 """
 PARAMETER repeat_penalty 1
-PARAMETER stop <|im_start|>
-PARAMETER stop <|im_end|>
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
 PARAMETER penalize_newline false
 '''
 
@@ -422,6 +429,7 @@ llama3_template = \
     "{% endif %}"
 pass
 
+# Ollama from https://www.ollama.com/library/llama3
 llama3_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -435,7 +443,6 @@ TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
 PARAMETER stop "<|start_header_id|>"
 PARAMETER stop "<|end_header_id|>"
 PARAMETER stop "<|eot_id|>"
-PARAMETER stop "<|reserved_special_token"
 '''
 
 llama3_template_eos_token = "eos_token"
@@ -460,6 +467,7 @@ phi3_template = \
     "{% endif %}"
 pass
 
+# Ollama from https://www.ollama.com/library/phi3
 phi3_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -470,9 +478,9 @@ TEMPLATE """{{ if .System }}<|system|>
 {{ end }}<|assistant|>
 {{ .Response }}<|end|>
 """
-PARAMETER stop <|end|>
-PARAMETER stop <|user|>
-PARAMETER stop <|assistant|>
+PARAMETER stop "<|end|>"
+PARAMETER stop "<|user|>"
+PARAMETER stop "<|assistant|>"
 '''
 
 phi3_template_eos_token = "<|end|>"
