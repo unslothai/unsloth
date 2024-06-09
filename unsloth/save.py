@@ -1010,6 +1010,7 @@ def save_to_gguf(
         vocab_type = "bpe"
     pass
 
+    # convert.py is deprecated!
     use_fast_convert = False
     if use_fast_convert:
         command = f"python llama.cpp/convert.py {model_directory} "\
