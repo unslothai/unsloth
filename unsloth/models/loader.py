@@ -33,6 +33,9 @@ del major, minor
 
 def _get_model_name(model_name, load_in_4bit = True):
 
+    # First try replacing lowercase 'b' with uppercase 'B'
+    model_name = model_name.lower()
+
     if not SUPPORTS_FOURBIT and model_name in INT_TO_FLOAT_MAPPER:
         model_name = INT_TO_FLOAT_MAPPER[model_name]
         logger.warning_once(
