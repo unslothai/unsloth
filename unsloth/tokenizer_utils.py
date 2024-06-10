@@ -193,17 +193,38 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         if x.endswith("_token") and x.count("_") == 1
     )))
     all_special_tokens = list(set(special_tokens + slow_tokenizer.all_special_tokens))
+
+    # Check if chat template is enabled!
+    check_chat_template = True
+
+    if  getattr(slow_tokenizer, "chat_template", None) is not None and \
+        getattr(fast_tokenizer, "chat_template", None) is not None:
+
+        # Check chat template!
+        messages = [
+            {"role": "user", "content": " What is 2+2? "},
+            {"role": "assistant", "content": " It's 4. "},
+        ]
+        check_chat_template = \
+            slow_tokenizer(slow_tokenizer.apply_chat_template(messages)).input_ids == \
+            fast_tokenizer(slow_tokenizer.apply_chat_template(messages)).input_ids
+    pass
+
     try:
         string = "\n".join(all_special_tokens) + \
             "A quick brown fox jumps over the lazy dog!!\n\nHi</s>\n\n" + \
             "".join(all_special_tokens)
-        return slow_tokenizer(string).input_ids == fast_tokenizer(string).input_ids
+        check_special_tokens = \
+            slow_tokenizer(string).input_ids == \
+            fast_tokenizer(string).input_ids
+
+        return check_chat_template and check_special_tokens
     except:
         # For eg see https://github.com/unslothai/unsloth/issues/292
         # Sometimes tokenizer has weird tokens, causing a combined tokenization to fail.
         # [TODO] We temporarily disable this for CodeLlama tokenizers
         if slow_tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
-            return True
+            return check_chat_template
         else:
             return False
 pass
