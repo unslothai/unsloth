@@ -1207,12 +1207,12 @@ class FastLlamaModel:
 
         debug_info = """n_total_devices = total_train_batch_size // \\
             args.gradient_accumulation_steps // self._train_batch_size
-        if n_total_devices > 2:
+        if n_total_devices > 1:
             logger.warning_once(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
-                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                "* Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "* The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
+                "* We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "* If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
         debug_info ="""
         debug_info = debug_info.split('\n')
@@ -1237,17 +1237,17 @@ class FastLlamaModel:
         bsz = self._train_batch_size
         total_batches = bsz * ga * args.world_size
         n_total_devices = total_batches // ga // bsz
-        if n_total_devices > 2:
+        if n_total_devices > 1:
             logger.warning_once(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
-                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                "* Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "* The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
+                "* We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "* If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
-            divisor = n_total_devices / 2
+            divisor = n_total_devices / 1
             bsz = self._train_batch_size = max(int(bsz / divisor), 1)
-            if total_batches // ga // bsz > 2:
-                divisor = n_total_devices / 2
+            if total_batches // ga // bsz > 1:
+                divisor = n_total_devices / 1
                 ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
         check_batches = check_batches.split('\n')
         check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])
