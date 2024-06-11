@@ -17,8 +17,11 @@ __all__ = [
     "test_chat_templates",
     "test_hf_gguf_equivalence",
     "remove_special_tokens",
-    "create_ollama_modelfile",
     "standardize_dataset",
+
+    "construct_chat_template",
+    "test_construct_chat_template",
+    "create_ollama_modelfile",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
@@ -782,6 +785,292 @@ def standardize_dataset(
     pass
 
     return dataset.map(_standardize_dataset, batched = True,)
+pass
+
+
+import re
+
+def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
+    added_tokens_decoder = tokenizer.added_tokens_decoder.values()
+    added_tokens_decoder = [str(x) for x in added_tokens_decoder]
+
+    # Remove added_tokens_decoder duplicates
+    added_tokens_decoder = list(set(added_tokens_decoder) - set(extra_eos_tokens))
+
+    # Remove BOS
+    if getattr(tokenizer, "bos_token", None) is not None:
+        added_tokens_decoder = [x for x in added_tokens_decoder if x != tokenizer.bos_token]
+    pass
+
+    repeatted_tokens = []
+    # Join all vocab
+    joined_text = "\x01\x00".join(added_tokens_decoder)
+    for token in added_tokens_decoder:
+        n = len(token)
+        repeatted_counts = joined_text.count(token[:n//2])
+        # Try finding longer than 1/2 of the token in the rest
+        # For eg <|reserved_special_token_0|>, <|reserved_special_token_1|>
+        if repeatted_counts > 2:
+            for j in range(n//2+1, n):
+                if joined_text.count(token[:j]) < repeatted_counts:
+                    j -= 1
+                    # Remove repeatted tokens to reduce search space
+                    joined_text = joined_text.replace(token[:j], "")
+                    repeatted_tokens.append(token[:j])
+                    break
+            pass
+        pass
+    pass
+
+    # Remove duplicates
+    splitted = joined_text.split("\x01\x00")
+    final_eos_tokens = []
+    for old, new in zip(added_tokens_decoder, splitted):
+        if old == new: final_eos_tokens.append(old)
+    pass
+    final_eos_tokens += extra_eos_tokens
+    final_eos_tokens += repeatted_tokens
+    return final_eos_tokens
+pass
+
+
+def construct_chat_template( \
+
+tokenizer = None,
+
+template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+{SYSTEM}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{OUTPUT}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{OUTPUT}<|eot_id|>""",
+    
+default_system_message = \
+    "Below are some instructions that describe some tasks. Write responses that appropriately complete each request.",
+  
+extra_eos_tokens = None,
+  
+):
+    """
+    Creates a Ollama modelfile and a HF Jinja template from a custom
+    template. You must provide 2x examples of an input & output.
+    There is an optional system message as well.
+
+    You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
+    """
+    assert(tokenizer is not None)
+
+    if extra_eos_tokens is None: extra_eos_tokens = []
+
+    vocab = tokenizer.get_vocab()
+    for extra_eos in extra_eos_tokens:
+        assert(type(extra_eos) is str)
+        if extra_eos not in vocab:
+            raise ValueError(f"Unsloth: `{extra_eos}` is not a singular token in the tokenizer.")
+        pass
+    pass
+
+    # O(N^2) search finding 2 repeatted pieces of text
+    j = len(template)-1
+    at_least_one = False
+    while j > 0:
+        found = template.rfind(template[j:], 0, j)
+        if found == -1: break
+        j -= 1
+        at_least_one = True
+    pass
+    if j > 0: j += 1
+    else: raise
+
+    if not at_least_one: raise
+
+    # Repeatted text
+    instruction_response = template[j:]
+    if instruction_response.count("{INPUT}") != 1 or instruction_response.count("{OUTPUT}") != 1:
+        raise RuntimeError(
+            "Unsloth: Your prompt template must have 2 examples showing the user input {INPUT} "\
+            "and the assistant output {OUTPUT}\n\n"\
+            "For example what is not allowed is just:\n"\
+            "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n\n\n"\
+            "What is required is 2x of this:\n"\
+            "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"\
+            "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"
+        )
+    pass
+
+    # 1st System, Instruction, Output pair
+    left  = template[:j]
+    # 2nd Instruction, Output pair
+    right = template[j:]
+
+    # Isolate input
+    extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in extra_eos_tokens)
+    if len(extra_eos_tokens_regex) != 0:
+        find_end = f"(?:{extra_eos_tokens_regex})?"
+    else:
+        find_end = ""
+    find_end = r"\{INPUT\}[\s\n]{0,}" + find_end
+    input_end = list(re.finditer(find_end, right))
+    assert(len(input_end) == 1)
+    input_end = input_end[0]
+    input_end = input_end.span(0)[1]
+    input_part = right[:input_end]
+
+    # Isolate output
+    output_part = right[input_end:]
+
+    # Isolate system
+    system_part = left[:left.find(input_part)]
+
+    # Check if the user provided a correct prompt
+    combined = system_part + input_part + output_part
+    if combined != left:
+        combined_changed = combined.replace('\n', '\\n')
+        left_changed     = left    .replace('\n', '\\n')
+        raise RuntimeError(
+            "Unsloth: The prompt template you provided isn't correct. You gave:\n"\
+            f"{combined_changed}\n\n"\
+            "But we require the following:\n"\
+            f"{left_changed}"
+        )
+    pass
+
+    # Ollama modelfile parts
+
+    # Check bos_token is in system prompt
+    ollama_system = system_part
+    has_bos_token = False
+    if tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None):
+        if ollama_system.startswith(tokenizer.bos_token):
+            has_bos_token = True
+            ollama_system = ollama_system[len(tokenizer.bos_token):]
+        pass
+    pass
+    system_modelfile = "{{ if .System }}" + ollama_system.replace("{SYSTEM}", "{{ .System }}") + "{{ end }}"
+    input_modelfile  = "{{ if .Prompt }}" + input_part .replace("{INPUT}",  "{{ .Prompt }}") + "{{ end }}"
+    output_modelfile = output_part.replace("{OUTPUT}", "{{ .Response }}")
+
+    # Check if EOS token is at the end of the output
+    if not output_modelfile.endswith(tuple(extra_eos_tokens)):
+        output_modelfile += "{__EOS_TOKEN__}"
+    pass
+
+    # Ollama EOS
+    ollama_eos = get_ollama_eos_tokens(tokenizer, extra_eos_tokens)
+    ollama_eos = '\n'.join(f'PARAMETER stop "{eos}"' for eos in ollama_eos)
+
+    # Ollama modelfile
+    modelfile = 'FROM {__FILE_LOCATION__}\n\n'\
+    'TEMPLATE """' + system_modelfile + input_modelfile + output_modelfile + \
+    '"""\n\n' + ollama_eos
+
+    # HF Jinja Chat template
+    def process(part, which, content = "message['content']"):
+        if part.endswith(which):
+            part = "'" + part[:part.find(which)] + f"' + {content}"
+        elif part.startswith(which):
+            part = f"{content} + '" + part[part.find(which):] + "'"
+        else:
+            part = "'" + part.replace(which, f"' + {content} + '") + "'"
+        if part.startswith("'' + "): part = part[5:]
+        return part
+    pass
+    input_jinja  = process(input_part,  "{INPUT}")
+    output_jinja = process(output_part, "{OUTPUT}")
+    pass
+
+    jinja_template = \
+        "{% for message in loop_messages %}"\
+            "{% if message['role'] == 'user' %}"\
+                "{{ " + input_jinja + " }}"\
+            "{% elif message['role'] == 'assistant' %}"\
+                "{{ " + output_jinja + " }}"\
+            "{% else %}"\
+                "{{ raise_exception('Only user and assistant roles are supported!') }}"\
+            "{% endif %}"\
+        "{% endfor %}"\
+        "{% if add_generation_prompt %}"\
+            "{{ '" + output_part[:output_part.find("{OUTPUT}")] + "' }}"\
+        "{% endif %}"
+    pass
+
+    # Now add system prompt to jinja
+    if len(system_part) != 0:
+        partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
+        partial_system = partial_system.replace("{SYSTEM}", "")
+
+        # Separate the BOS
+        if has_bos_token:
+            partial_system = partial_system.replace(tokenizer.bos_token, "", 1)
+        pass
+
+        partial_system = \
+            "{% if messages[0]['role'] == 'system' %}"\
+                "{{ " + partial_system + " }}"\
+                "{% set loop_messages = messages[1:] %}"
+        if default_system_message is not None:
+            partial_system += "{% else %}"\
+                "{{ '" + system_part.replace("{SYSTEM}", default_system_message) + "' }}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
+        else:
+            partial_system += "{% endif %}"
+        pass
+
+        jinja_template = partial_system + jinja_template
+
+        if has_bos_token:
+            jinja_template = "{{ bos_token }}" + jinja_template
+    pass
+
+    return modelfile, jinja_template
+pass
+
+
+def test_construct_chat_template():
+    token = "hf_"
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct", token = token)
+
+    template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+{SYSTEM}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{OUTPUT}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{OUTPUT}<|eot_id|>"""
+    
+    default_system_message = \
+        "Below are some instructions that describe some tasks. Write responses that appropriately complete each request."
+      
+    extra_eos_tokens = None
+
+    modelfile, jinja_template = construct_chat_template(template, default_system_message, extra_eos_tokens)
+
+    messages = [
+        {"role": "system", "content": "You are an assistant"},
+        {"role": "user", "content": "What is 2+2?"},
+        {"role": "assistant", "content": "It's 4."},
+        {"role": "user", "content": "Ok!"},
+        {"role": "assistant", "content": "Anything else?"},
+        {"role": "user", "content": "What's 2x2?"},
+    ]
+    correct_output = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
+
+    tokenizer.chat_template = jinja_template
+    new_output = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
+
+    assert(correct_output == new_output)
+    pass
 pass
 
 
