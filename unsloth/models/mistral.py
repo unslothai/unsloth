@@ -395,21 +395,6 @@ class FastMistralModel(FastLlamaModel):
 
         # Patch Trainer
         from transformers.trainer import Trainer
-        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
-            try:
-                inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
-            except:
-                raise RuntimeError(
-                    "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                    "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
-                    "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
-                    "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
-                )
-            pass
-        pass
-
-        # Patch Trainer
-        from transformers.trainer import Trainer
         try:
             if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
                 inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
@@ -419,7 +404,7 @@ class FastMistralModel(FastLlamaModel):
         except:
             raise RuntimeError(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\n"
                 "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
@@ -447,7 +432,17 @@ class FastMistralModel(FastLlamaModel):
         f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
-        logger.warning_once(debug_info)"""
+        logger.warning(debug_info)
+        import subprocess, re, gc
+        output = subprocess.check_output(
+            'nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
+        output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)
+        output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)
+        if output > 1: raise RuntimeError(
+            'Error: More than 1 GPUs have a lot of VRAM usage. Please obtain a commercial license.')
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()"""
 
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -455,12 +450,12 @@ class FastMistralModel(FastLlamaModel):
 
         debug_info = """n_total_devices = total_train_batch_size // \\
             args.gradient_accumulation_steps // self._train_batch_size
-        if n_total_devices > 2:
+        if n_total_devices > 1:
             logger.warning_once(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
-                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                "* Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "* The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
+                "* We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "* If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
         debug_info ="""
         debug_info = debug_info.split('\n')
@@ -485,16 +480,17 @@ class FastMistralModel(FastLlamaModel):
         bsz = self._train_batch_size
         total_batches = bsz * ga * args.world_size
         n_total_devices = total_batches // ga // bsz
-        if n_total_devices > 2:
+        if n_total_devices > 1:
             logger.warning_once(
-                "Please consider a commercial license - Unsloth was designed for the GPU Poor.\\n"
-                "The OSS currently works on 4 GPUs - we're a 2 person team, so please help fund\\n"
-                "our development costs by supporting us through Ko-fi or buying a license! Thanks!",
+                "* Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "* The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
+                "* We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "* If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
-            divisor = n_total_devices / 2
+            divisor = n_total_devices / 1
             bsz = self._train_batch_size = max(int(bsz / divisor), 1)
-            if total_batches // ga // bsz > 2:
-                divisor = n_total_devices / 2
+            if total_batches // ga // bsz > 1:
+                divisor = n_total_devices / 1
                 ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
         check_batches = check_batches.split('\n')
         check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])

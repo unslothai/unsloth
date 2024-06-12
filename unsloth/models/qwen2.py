@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from .llama import *
-from .mistral import FastMistralModel
 import os
 from ._utils import __version__
 
@@ -60,7 +59,7 @@ class FastQwen2Model(FastLlamaModel):
 
     @staticmethod
     def from_pretrained(
-        model_name     = "Qwen/Qwen1.5-7B",
+        model_name     = "Qwen/Qwen2-7B",
         max_seq_length = 4096,
         dtype          = None,
         load_in_4bit   = True,
@@ -73,7 +72,7 @@ class FastQwen2Model(FastLlamaModel):
         trust_remote_code = False,
         **kwargs,
     ):
-        return FastMistralModel.from_pretrained(
+        return FastLlamaModel.from_pretrained(
             model_name     = model_name,
             max_seq_length = max_seq_length,
             dtype          = dtype,

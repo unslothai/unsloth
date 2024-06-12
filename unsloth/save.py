@@ -59,7 +59,8 @@ ALLOWED_QUANTS = \
     "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
     "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
     "f32"     : "Not recommended. Retains 100% accuracy, but super slow and memory hungry.",
-    "f16"     : "Fastest conversion + retains 100% accuracy. Slow and memory hungry.",
+    "bf16"    : "Bfloat16 - Fastest conversion + retains 100% accuracy. Slow and memory hungry.",
+    "f16"     : "Float16  - Fastest conversion + retains 100% accuracy. Slow and memory hungry.",
     "q8_0"    : "Fast conversion. High resource use, but generally acceptable.",
     "q4_k_m"  : "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q4_K",
     "q5_k_m"  : "Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q5_K",
@@ -102,7 +103,7 @@ def check_if_sentencepiece_model(model, temporary_location = "_unsloth_sentencep
     if os.path.isfile(f"{file_location}/tokenizer.model"):
         sentencepiece_model = True
     pass
-    shutil.rmtree(file_location)
+    shutil.rmtree(file_location, ignore_errors = True)
     return sentencepiece_model
 pass
 
@@ -700,7 +701,7 @@ def unsloth_save_model(
 
     # Remove temporary location
     import shutil
-    shutil.rmtree(temporary_location)
+    shutil.rmtree(temporary_location, ignore_errors = True)
 
     for _ in range(3):
         torch.cuda.empty_cache()
@@ -763,7 +764,7 @@ def install_llama_cpp_old(version = -10):
             print(f"**[WARNING]** Deleting llama.cpp directory... {10-i} seconds left.")
             time.sleep(1)
         import shutil
-        shutil.rmtree("llama.cpp")
+        shutil.rmtree("llama.cpp", ignore_errors = True)
     pass
 
     # Clone a specific commit
@@ -866,10 +867,11 @@ pass
 
 def save_to_gguf(
     model_type           : str,
+    model_dtype          : str,
     is_sentencepiece     : bool = False,
     model_directory      : str = "unsloth_finetuned_model",
     quantization_method  : str = "fast_quantized",
-    first_conversion     : str = "f16",
+    first_conversion     : str = None,
     _run_installer = None, # Non blocking install of llama.cpp
 ):
     # logger.warning(
@@ -877,6 +879,22 @@ def save_to_gguf(
     #     "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
     #     "Please be patient - GGUF saving should still work, but might not work as well."
     # )
+    assert(model_dtype == "float16" or model_dtype == "bfloat16")
+    model_dtype = "f16" if model_dtype == "float16" else "bf16"
+
+    # Check if bfloat16 is supported
+    if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
+        logger.warning(
+            "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"\
+            "We shall switch instead to f16."
+        )
+        model_dtype = "f16"
+    pass
+
+    # Check first_conversion as well
+    if first_conversion is None:
+        first_conversion = model_dtype
+    pass
 
     if quantization_method.startswith("iq2"):
         raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
@@ -889,7 +907,7 @@ def save_to_gguf(
     pass
     logger.warning_once(f"Unsloth: Converting {model_type} model. Can use fast conversion = {use_fast_convert}.")
 
-    if   quantization_method == "not_quantized":  quantization_method = "f16"
+    if   quantization_method == "not_quantized":  quantization_method = model_dtype
     elif quantization_method == "fast_quantized": quantization_method = "q8_0"
     elif quantization_method == "quantized":      quantization_method = "q4_k_m"
     elif quantization_method is None:             quantization_method = "q8_0"
@@ -911,12 +929,13 @@ def save_to_gguf(
     print(print_info)
 
     # Check first_conversion format
-    if   first_conversion == "f16" : pass
-    elif first_conversion == "f32" : pass
-    elif first_conversion == "q8_0": pass
+    if   first_conversion == "f16"  : pass
+    if   first_conversion == "bf16" : pass
+    elif first_conversion == "f32"  : pass
+    elif first_conversion == "q8_0" : pass
     else:
         raise RuntimeError(
-            f"Unsloth: `first_conversion` can only be one of ['f16', 'f32', 'q8_0'] and not `{first_conversion}`."
+            f"Unsloth: `first_conversion` can only be one of ['f16', 'bf16', 'f32', 'q8_0'] and not `{first_conversion}`."
         )
     pass
 
@@ -935,11 +954,13 @@ def save_to_gguf(
 
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
+    elif quantization_method == "bf16": first_conversion = "bf16"
     elif quantization_method == "q8_0": first_conversion = "q8_0"
     else:
         # Quantized models must have f16 as the default argument
-        if   first_conversion == "f32" : pass
-        elif first_conversion == "f16" : pass
+        if   first_conversion == "f32"  : pass
+        elif first_conversion == "f16"  : pass
+        elif first_conversion == "bf16" : pass
         elif first_conversion == "q8_0":
             logger.warning_once(
                 "Unsloth: Using q8_0 for the `first_conversion` will lose a bit of accuracy, "\
@@ -950,8 +971,22 @@ def save_to_gguf(
     pass
 
     # Non llama/mistral needs can only use f32 or f16
-    if not use_fast_convert and (first_conversion != "f16" or first_conversion != "f32"):
-        logger.warning_once("Unsloth: We must use f16 for non Llama and Mistral models.")
+    if not use_fast_convert and \
+        (first_conversion != "f16" or first_conversion != "bf16" or first_conversion != "f32"):
+
+        pass
+        # Latest llama.cpp works for all models for q8_0!
+
+        # logger.warning_once("Unsloth: We must use f16 for non Llama and Mistral models.")
+        # first_conversion = "f16"
+    pass
+
+    # Check if bfloat16 is supported
+    if first_conversion == "bf16" and not torch.cuda.is_bf16_supported():
+        logger.warning(
+            "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"\
+            "We shall switch instead to f16."
+        )
         first_conversion = "f16"
     pass
 
@@ -975,6 +1010,7 @@ def save_to_gguf(
         vocab_type = "bpe"
     pass
 
+    # convert.py is deprecated!
     use_fast_convert = False
     if use_fast_convert:
         command = f"python llama.cpp/convert.py {model_directory} "\
@@ -1281,12 +1317,44 @@ def upload_to_huggingface(
 pass
 
 
+def fix_tokenizer_bos_token(tokenizer):
+    # Check if BOS added already, then warn
+    fix_bos_token = False
+    chat_template = getattr(tokenizer, "chat_template", None)
+    
+    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+        if chat_template is not None and \
+            (
+                tokenizer.bos_token in chat_template or \
+                "{bos_token}" in chat_template.replace(" ", "") or \
+                "{bos_token+" in chat_template.replace(" ", "")
+            ):
+
+            fix_bos_token = True
+            logger.warning(
+                f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+                "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
+            )
+
+            # Remove {{bos_token}}
+            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
+            # Remove {{bos_token +
+            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\+[\s]{0,}", "", new_chat_template)
+            
+            tokenizer.chat_template = new_chat_template
+
+        pass
+    pass
+    return fix_bos_token, chat_template
+pass
+
+
 def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
     quantization_method  : str = "fast_quantized",
-    first_conversion     : str = "f16",
+    first_conversion     : str = None,
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
     private              : Optional[bool] = None,
@@ -1344,6 +1412,9 @@ def unsloth_save_pretrained_gguf(
     del arguments["quantization_method"]
     del arguments["first_conversion"]
 
+    # Fix tokenizer adding an extra BOS token at the front
+    fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
+
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
@@ -1386,30 +1457,39 @@ def unsloth_save_pretrained_gguf(
         pass
     pass
 
+    # Use old chat template if the bos is removed
+    if fix_bos_token:
+        tokenizer.chat_template = old_chat_template
+    pass
+
     for _ in range(3):
         gc.collect()
 
-    model_type = self.config.model_type
-    is_sentencepiece_model = check_if_sentencepiece_model(self)
-
-    # Check if BOS added already, then warn
-    print_bos_token_message = False
-    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
-        chat_template = getattr(tokenizer, "chat_template", None)
-        if chat_template is not None and \
-            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
-            print_bos_token_message = True
-            logger.warning(
-                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
-                "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
-            )
-        pass
+    model_dtype = self.config.torch_dtype
+    model_type  = self.config.model_type
+    if type(model_dtype) is str:
+        assert(model_dtype == "float16" or model_dtype == "bfloat16")
+    elif model_dtype == torch.float16:
+        model_dtype = "float16"
+    elif model_dtype == torch.bfloat16:
+        model_dtype = "bfloat16"
+    else:
+        raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
     pass
 
+    is_sentencepiece_model = check_if_sentencepiece_model(self)
+
     # Save to GGUF
-    file_location = save_to_gguf(model_type, is_sentencepiece_model, 
+    file_location = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
+
+    if fix_bos_token:
+        logger.warning(
+            f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+            "Unsloth: ##### We removed in GGUF's chat template for you."
+        )
+    pass
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
@@ -1422,13 +1502,6 @@ def unsloth_save_pretrained_gguf(
             new_save_directory.lstrip('/.')
         print(f"Saved GGUF to https://huggingface.co/{link}")
     pass
-
-    if print_bos_token_message:
-        logger.warning(
-            f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
-            "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
-        )
-    pass
 pass
 
 
@@ -1437,7 +1510,7 @@ def unsloth_push_to_hub_gguf(
     repo_id              : str,
     tokenizer            = None,
     quantization_method  : str = "fast_quantized",
-    first_conversion     : str = "f16",
+    first_conversion     : str = None,
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = "Trained with Unsloth",
     private              : Optional[bool] = None,
@@ -1490,6 +1563,9 @@ def unsloth_push_to_hub_gguf(
     del arguments["quantization_method"]
     del arguments["first_conversion"]
 
+    # Fix tokenizer adding an extra BOS token at the front
+    fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
+
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
@@ -1532,28 +1608,30 @@ def unsloth_push_to_hub_gguf(
         pass
     pass
 
+    # Use old chat template if the bos is removed
+    if fix_bos_token:
+        tokenizer.chat_template = old_chat_template
+    pass
+
     for _ in range(3):
         gc.collect()
 
-    model_type = self.config.model_type
-    is_sentencepiece_model = check_if_sentencepiece_model(self)
-
-    # Check if BOS added already, then warn
-    print_bos_token_message = False
-    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
-        chat_template = getattr(tokenizer, "chat_template", None)
-        if chat_template is not None and \
-            (tokenizer.bos_token in chat_template or "{bos_token}" in chat_template.replace(" ", "")):
-            print_bos_token_message = True
-            logger.warning(
-                f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
-                "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
-            )
-        pass
+    model_dtype = self.config.torch_dtype
+    model_type  = self.config.model_type
+    if type(model_dtype) is str:
+        assert(model_dtype == "float16" or model_dtype == "bfloat16")
+    elif model_dtype == torch.float16:
+        model_dtype = "float16"
+    elif model_dtype == torch.bfloat16:
+        model_dtype = "bfloat16"
+    else:
+        raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
     pass
 
+    is_sentencepiece_model = check_if_sentencepiece_model(self)
+
     # Save to GGUF
-    file_location = save_to_gguf(model_type, is_sentencepiece_model, 
+    file_location = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
@@ -1568,10 +1646,10 @@ def unsloth_push_to_hub_gguf(
 
     print(f"Saved GGUF to https://huggingface.co/{link}")
 
-    if print_bos_token_message:
+    if fix_bos_token:
         logger.warning(
-            f"Unsloth: ##### The current model type of {model_type} auto adds a BOS token.\n"\
-            "Unsloth: ##### If you're using Ollama or GGUF etc, do not add a BOS in the chat template."
+            f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+            "Unsloth: ##### We removed in GGUF's chat template for you."
         )
     pass
 pass
@@ -1579,7 +1657,6 @@ pass
 
 def patch_saving_functions(model):
     import inspect
-    import re
     import types
     from typing import Callable, Optional, Union, List
 
