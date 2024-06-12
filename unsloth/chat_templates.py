@@ -788,8 +788,6 @@ def standardize_dataset(
 pass
 
 
-import re
-
 def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     added_tokens_decoder = tokenizer.added_tokens_decoder.values()
     added_tokens_decoder = [str(x) for x in added_tokens_decoder]
@@ -875,6 +873,15 @@ extra_eos_tokens = None,
         pass
     pass
 
+    error_msg = \
+        "Unsloth: Your prompt template must have 2 examples showing the user input {INPUT} "\
+        "and the assistant output {OUTPUT}\n\n"\
+        "For example what is not allowed is just:\n"\
+        "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n\n\n"\
+        "What is required is 2x of this:\n"\
+        "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"\
+        "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"
+
     # O(N^2) search finding 2 repeatted pieces of text
     j = len(template)-1
     at_least_one = False
@@ -885,22 +892,15 @@ extra_eos_tokens = None,
         at_least_one = True
     pass
     if j > 0: j += 1
-    else: raise
+    else: raise RuntimeError(error_msg)
 
-    if not at_least_one: raise
+
+    if not at_least_one: raise RuntimeError(error_msg)
 
     # Repeatted text
     instruction_response = template[j:]
     if instruction_response.count("{INPUT}") != 1 or instruction_response.count("{OUTPUT}") != 1:
-        raise RuntimeError(
-            "Unsloth: Your prompt template must have 2 examples showing the user input {INPUT} "\
-            "and the assistant output {OUTPUT}\n\n"\
-            "For example what is not allowed is just:\n"\
-            "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n\n\n"\
-            "What is required is 2x of this:\n"\
-            "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"\
-            "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"
-        )
+        raise RuntimeError(error_msg)
     pass
 
     # 1st System, Instruction, Output pair
