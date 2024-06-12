@@ -1096,6 +1096,7 @@ class FastLlamaModel:
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
+                bnb_4bit_quant_storage    = dtype,
             )
         pass
 
@@ -1756,7 +1757,7 @@ class FastLlamaModel:
                     (getattr(down_proj, "lora_magnitude_vector", None) is None):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                    # layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
                     n_mlp += 1
                 else:
                     logger.warning_once(
@@ -1779,7 +1780,7 @@ class FastLlamaModel:
                     (getattr(k_proj, "lora_magnitude_vector", None) is None) and \
                     (getattr(v_proj, "lora_magnitude_vector", None) is None):
 
-                    layer.self_attn.apply_qkv = apply_lora_qkv
+                    # layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
                 else:
                     if model_type != "qwen2":
@@ -1796,7 +1797,7 @@ class FastLlamaModel:
                     (getattr(o_proj, "base_layer", o_proj).bias is None) and \
                     (getattr(o_proj, "lora_magnitude_vector", None) is None):
 
-                    layer.self_attn.apply_o = apply_lora_o
+                    # layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
                 else:
                     logger.warning_once(
