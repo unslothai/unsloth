@@ -109,7 +109,7 @@ class FastLanguageModel(FastLlamaModel):
 
         model_type = model_config.model_type
 
-        if   model_type == "llama":   dispatch_model = FastLlamaModel
+        if   model_type == "llama" or model_type == "llava":   dispatch_model = FastLlamaModel
         elif model_type == "mistral": dispatch_model = FastMistralModel
         elif model_type == "gemma":
             if not SUPPORTS_GEMMA:
@@ -124,7 +124,7 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastQwen2Model
         else:
             raise NotImplementedError(
-                f"Unsloth: {model_name} not supported yet!\n"\
+                f"Unsloth: {model_name} with type {model_type} not supported yet!\n"\
                 "Make an issue to https://github.com/unslothai/unsloth!",
             )
         pass

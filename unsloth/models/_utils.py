@@ -431,6 +431,7 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
     "_BitsAndBytesConfig__init__",
 )
 
+"""
 def _prepare_backend(
     self, cpu: bool = False, sagemaker_dp = False, backend: str = None,
 ) -> tuple[str, DistributedType]:
@@ -449,6 +450,7 @@ s = " "*spaces
 prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
 exec(prepare, globals())
 accelerate.accelerator.Accelerator.prepare = prepare
+"""
 
 exec(BitsAndBytesConfig__init__, globals())
 
