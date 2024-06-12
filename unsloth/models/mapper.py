@@ -197,4 +197,12 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
     for value in values:
         FLOAT_TO_INT_MAPPER[value] = key
     pass
+
+    # Get lowercased
+    lowered_key = key.lower()
+    INT_TO_FLOAT_MAPPER[lowered_key] = values[0].lower()
+
+    for value in values:
+        FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
+    pass
 pass
