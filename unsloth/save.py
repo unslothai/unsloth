@@ -829,49 +829,6 @@ def install_llama_cpp_blocking(use_cuda = True):
 pass
 
 
-def _fix_gemma_gguf():
-    # Fixes Gemma saving to GGUF to float32 instead of float16!
-    with open("llama.cpp/convert-hf-to-gguf.py", "rb") as file:
-        text = file.read()
-    pass
-
-    gemma_start = text.find(b"class GemmaModel(Model):")
-    if gemma_start == -1: return
-
-    gemma_end   = text.find(b"self.gguf_writer.add_tensor(new_name, data)", gemma_start)
-    if gemma_end == -1: return
-
-    gemma_text = text[gemma_start : gemma_end]
-    bad_text = \
-b"""         data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)"""
-    good_text = \
-b"""         # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)"""
-    find_bad = gemma_text.find(bad_text)
-    if find_bad == -1: return
-
-    gemma_text = gemma_text[:find_bad] + good_text + gemma_text[find_bad + len(bad_text):]
-    text = text[:gemma_start] + gemma_text + text[gemma_end:]
-
-    with open("llama.cpp/convert-hf-to-gguf.py", "w+b") as file:
-        file.write(text)
-    pass
-pass
-
-
 def save_to_gguf(
     model_type           : str,
     model_dtype          : str,
@@ -1024,9 +981,6 @@ def save_to_gguf(
             f"--outfile {final_location} --vocab-type {vocab_type} "\
             f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
     else:
-        # Need to fix convert-hf-to-gguf.py for some models!
-        # _fix_gemma_gguf()
-
         command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
             f"--outfile {final_location} "\
             f"--outtype {first_conversion}"
@@ -1425,7 +1379,7 @@ def unsloth_save_pretrained_gguf(
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
-        if IS_KAGGLE_ENVIRONMENT:
+        if True:#IS_KAGGLE_ENVIRONMENT:
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
