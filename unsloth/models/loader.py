@@ -33,11 +33,8 @@ del major, minor
 
 def _get_model_name(model_name, load_in_4bit = True):
 
-    # First try replacing lowercase 'b' with uppercase 'B'
-    model_name = model_name.lower()
-
     if not SUPPORTS_FOURBIT and model_name in INT_TO_FLOAT_MAPPER:
-        model_name = INT_TO_FLOAT_MAPPER[model_name]
+        model_name = INT_TO_FLOAT_MAPPER[model_name.lower()]
         logger.warning_once(
             f"Unsloth: Your transformers version of {transformers_version} does not support native "\
             f"4bit loading.\nThe minimum required version is 4.37.\n"\
@@ -47,7 +44,7 @@ def _get_model_name(model_name, load_in_4bit = True):
         )
     
     elif not load_in_4bit and model_name in INT_TO_FLOAT_MAPPER:
-        new_model_name = INT_TO_FLOAT_MAPPER[model_name]
+        new_model_name = INT_TO_FLOAT_MAPPER[model_name.lower()]
         # logger.warning_once(
         #     f"Unsloth: You passed in `{model_name}` which is a 4bit model, yet you set\n"\
         #     f"`load_in_4bit = False`. We shall load `{new_model_name}` instead."
@@ -55,7 +52,7 @@ def _get_model_name(model_name, load_in_4bit = True):
         model_name = new_model_name
 
     elif load_in_4bit and SUPPORTS_FOURBIT and model_name in FLOAT_TO_INT_MAPPER:
-        new_model_name = FLOAT_TO_INT_MAPPER[model_name]
+        new_model_name = FLOAT_TO_INT_MAPPER[model_name.lower()]
         # logger.warning_once(
         #     f"Unsloth: You passed in `{model_name}` and `load_in_4bit = True`.\n"\
         #     f"We shall load `{new_model_name}` for 4x faster loading."
@@ -70,17 +67,18 @@ pass
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name     = "unsloth/llama-3-8b-bnb-4bit",
-        max_seq_length = None,
-        dtype          = None,
-        load_in_4bit   = True,
-        token          = None,
-        device_map     = "sequential",
-        rope_scaling   = None,
-        fix_tokenizer  = True,
-        trust_remote_code = False,
-        use_gradient_checkpointing = True,
-        resize_model_vocab = None,
+        model_name                 = "unsloth/llama-3-8b-bnb-4bit",
+        max_seq_length             = None,
+        dtype                      = None,
+        load_in_4bit               = True,
+        token                      = None,
+        device_map                 = "sequential",
+        rope_scaling               = None,
+        fix_tokenizer              = True,
+        trust_remote_code          = False,
+        use_gradient_checkpointing = "unsloth",
+        resize_model_vocab         = None,
+        revision                   = None,
         *args, **kwargs,
     ):
         if token is None and "HF_TOKEN" in os.environ:
@@ -95,12 +93,12 @@ class FastLanguageModel(FastLlamaModel):
         # First check if it's a normal model via AutoConfig
         is_peft = False
         try:
-            model_config = AutoConfig.from_pretrained(model_name, token = token)
+            model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
             is_peft = False
         except:
             try:
                 # Most likely a PEFT model
-                peft_config = PeftConfig.from_pretrained(model_name, token = token)
+                peft_config = PeftConfig.from_pretrained(model_name, token = token, revision = revision)
             except:
                 raise RuntimeError(f"Unsloth: `{model_name}` is not a full model or a PEFT model.")
             
@@ -143,22 +141,24 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         model, tokenizer = dispatch_model.from_pretrained(
-            model_name     = model_name,
-            max_seq_length = max_seq_length,
-            dtype          = dtype,
-            load_in_4bit   = load_in_4bit,
-            token          = token,
-            device_map     = device_map,
-            rope_scaling   = rope_scaling,
-            fix_tokenizer  = fix_tokenizer,
-            model_patcher  = dispatch_model,
-            tokenizer_name = tokenizer_name,
+            model_name        = model_name,
+            max_seq_length    = max_seq_length,
+            dtype             = dtype,
+            load_in_4bit      = load_in_4bit,
+            token             = token,
+            device_map        = device_map,
+            rope_scaling      = rope_scaling,
+            fix_tokenizer     = fix_tokenizer,
+            model_patcher     = dispatch_model,
+            tokenizer_name    = tokenizer_name,
             trust_remote_code = trust_remote_code,
+            revision          = revision if not is_peft else None,
             *args, **kwargs,
         )
         
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
+        pass
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
@@ -188,8 +188,16 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if is_peft:
+            # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model = PeftModel.from_pretrained(model, old_model_name, token = token)
+            model.enable_input_require_grads()
+            model = PeftModel.from_pretrained(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                is_trainable = True,
+            )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
         pass

@@ -24,6 +24,7 @@ from .geglu import (
 )
 from .fast_lora import (
 	get_lora_parameters,
+	get_lora_parameters_bias,
 	apply_lora_mlp_swiglu,
 	apply_lora_mlp_geglu_exact,
 	apply_lora_mlp_geglu_approx,
