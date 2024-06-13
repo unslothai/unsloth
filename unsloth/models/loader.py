@@ -14,11 +14,12 @@
 
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
+from .qwen2 import FastQwen2Model
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER
-
+import os
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 major, minor = transformers_version.split(".")[:2]
@@ -32,6 +33,9 @@ del major, minor
 
 def _get_model_name(model_name, load_in_4bit = True):
 
+    # First try replacing lowercase 'b' with uppercase 'B'
+    model_name = model_name.lower()
+
     if not SUPPORTS_FOURBIT and model_name in INT_TO_FLOAT_MAPPER:
         model_name = INT_TO_FLOAT_MAPPER[model_name]
         logger.warning_once(
@@ -44,18 +48,18 @@ def _get_model_name(model_name, load_in_4bit = True):
     
     elif not load_in_4bit and model_name in INT_TO_FLOAT_MAPPER:
         new_model_name = INT_TO_FLOAT_MAPPER[model_name]
-        logger.warning_once(
-            f"Unsloth: You passed in `{model_name}` which is a 4bit model, yet you set\n"\
-            f"`load_in_4bit = False`. We shall load `{new_model_name}` instead."
-        )
+        # logger.warning_once(
+        #     f"Unsloth: You passed in `{model_name}` which is a 4bit model, yet you set\n"\
+        #     f"`load_in_4bit = False`. We shall load `{new_model_name}` instead."
+        # )
         model_name = new_model_name
 
     elif load_in_4bit and SUPPORTS_FOURBIT and model_name in FLOAT_TO_INT_MAPPER:
         new_model_name = FLOAT_TO_INT_MAPPER[model_name]
-        logger.warning_once(
-            f"Unsloth: You passed in `{model_name}` and `load_in_4bit = True`.\n"\
-            f"We shall load `{new_model_name}` for 4x faster loading."
-        )
+        # logger.warning_once(
+        #     f"Unsloth: You passed in `{model_name}` and `load_in_4bit = True`.\n"\
+        #     f"We shall load `{new_model_name}` for 4x faster loading."
+        # )
         model_name = new_model_name
     pass
 
@@ -66,29 +70,38 @@ pass
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name     = "unsloth/mistral-7b-bnb-4bit",
-        max_seq_length = 4096,
+        model_name     = "unsloth/llama-3-8b-bnb-4bit",
+        max_seq_length = None,
         dtype          = None,
         load_in_4bit   = True,
         token          = None,
         device_map     = "sequential",
         rope_scaling   = None,
         fix_tokenizer  = True,
+        trust_remote_code = False,
         use_gradient_checkpointing = True,
+        resize_model_vocab = None,
+        revision = None,
         *args, **kwargs,
     ):
+        if token is None and "HF_TOKEN" in os.environ:
+            token = os.environ["HF_TOKEN"]
+
+        if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+            token = os.environ["HUGGINGFACE_TOKEN"]
+
         old_model_name = model_name
         model_name = _get_model_name(model_name, load_in_4bit)
 
         # First check if it's a normal model via AutoConfig
         is_peft = False
         try:
-            model_config = AutoConfig.from_pretrained(model_name, token = token)
+            model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
             is_peft = False
         except:
             try:
                 # Most likely a PEFT model
-                peft_config = PeftConfig.from_pretrained(model_name, token = token)
+                peft_config = PeftConfig.from_pretrained(model_name, token = token, revision = revision)
             except:
                 raise RuntimeError(f"Unsloth: `{model_name}` is not a full model or a PEFT model.")
             
@@ -111,11 +124,23 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."\
                 )
             dispatch_model = FastGemmaModel
+        elif model_type == "qwen2":
+            dispatch_model = FastQwen2Model
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\
                 "Make an issue to https://github.com/unslothai/unsloth!",
             )
+        pass
+
+        # Check if this is local model since the tokenizer gets overwritten
+        if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
+            os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
+            os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
+
+            tokenizer_name = old_model_name
+        else:
+            tokenizer_name = None
         pass
 
         model, tokenizer = dispatch_model.from_pretrained(
@@ -128,8 +153,14 @@ class FastLanguageModel(FastLlamaModel):
             rope_scaling   = rope_scaling,
             fix_tokenizer  = fix_tokenizer,
             model_patcher  = dispatch_model,
+            tokenizer_name = tokenizer_name,
+            trust_remote_code = trust_remote_code,
+            revision = revision if not is_peft else None,
             *args, **kwargs,
         )
+        
+        if resize_model_vocab is not None:
+            model.resize_token_embeddings(resize_model_vocab)
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
@@ -160,7 +191,7 @@ class FastLanguageModel(FastLlamaModel):
 
         if is_peft:
             # Now add PEFT adapters
-            model = PeftModel.from_pretrained(model, old_model_name, token = token)
+            model = PeftModel.from_pretrained(model, old_model_name, token = token, revision = revision)
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
         pass

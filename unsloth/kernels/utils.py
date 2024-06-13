@@ -63,6 +63,25 @@ def get_lora_parameters(proj):
 pass
 
 
+def get_lora_parameters_bias(proj):
+    # For DPO or disabled adapters
+    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
+    W = base_layer.weight
+    bias = base_layer.bias
+
+    if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+        return W, QUANT_STATE(W), None, None, None, bias
+    pass
+
+    active_adapter = proj.active_adapters[0] if \
+        hasattr(proj, "active_adapters") else proj.active_adapter
+    A = proj.lora_A [active_adapter].weight
+    B = proj.lora_B [active_adapter].weight
+    s = proj.scaling[active_adapter]
+    return W, QUANT_STATE(W), A, B, s, bias
+pass
+
+
 def fast_dequantize(W, quant_state = None, out = None):
     if quant_state is None: return W
     if type(quant_state) is not list:
@@ -118,7 +137,7 @@ def fast_gemv(X, W, quant_state, out = None):
     if quant_state is None: return torch.matmul(X, W, out = out)
     # For fast X @ W where seq_len == 1
     # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
-    bsz, q_len, hd = X.shape
+    _, q_len, hd = X.shape
     # assert(q_len == 1)
 
     if type(quant_state) is not list:
@@ -142,10 +161,10 @@ def fast_gemv(X, W, quant_state, out = None):
     bout = shape[0]
 
     if out is None:
-        out = torch.empty((bsz, 1, bout,), dtype = dtype, device = "cuda")
-    else:
-        assert(out.shape == (bsz, 1, bout,))
-    pass
+        out = torch.empty((1, 1, bout,), dtype = dtype, device = "cuda")
+    # else:
+    #     assert(out.shape == (1, 1, bout,))
+    # pass
 
     n = 1
     m = shape[0]
@@ -171,15 +190,9 @@ def fast_gemv(X, W, quant_state, out = None):
     fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
         cgemm_4bit_inference_naive_bf16
 
-    ptr_W      = get_ptr(W)
-    ptr_absmax = get_ptr(absmax)
-    ptr_stats  = get_ptr(stats)
-    blocksize  = ctypes.c_int32(blocksize)
-
-    for row in range(bsz):
-        fx(m, n, k, get_ptr(X[row]), ptr_W, ptr_absmax, ptr_stats, get_ptr(out[row]),
-           lda, ldb, ldc, blocksize)
-    pass
+    blocksize = ctypes.c_int32(blocksize)
+    fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
+       lda, ldb, ldc, blocksize)
 
     return out
 pass
@@ -187,14 +200,13 @@ pass
 
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
-    W, W_quant, lora_A, lora_B, lora_S = get_lora_parameters(proj)
-
-    bsz, _, in_dim = X.shape
+    W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
+    bsz, q_len, in_dim = X.shape
+    if q_len != 1: return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
 
     if W_quant is None:
         out = torch.matmul(X, W.t(), out = out)
-    elif bsz <= 2:
-        # Only batches of 2 are faster with Gemv
+    elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant)
@@ -210,7 +222,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
             lora_A._fast_lora = lora_A.to(dtype)
             lora_B._fast_lora = lora_B.to(dtype)
         pass
-
+        
         if bsz == 1:
             out = out.view(out_dim)
             temp_lora = torch.mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
@@ -223,5 +235,32 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
         out = out.view(bsz, 1, out_dim)
     pass
 
+    if bias is not None: out += bias
+
     return out
+pass
+
+
+def matmul_lora(X, W, W_quant, A, B, s, out = None):
+    dtype = X.dtype
+    W = fast_dequantize(W.t(), W_quant)
+
+    if X.dim() == 3:
+        batch, seq_len, d = X.shape
+        X = X.view(-1, X.shape[-1])
+        reshape = True
+    else:
+        reshape = False
+    pass
+
+    out = torch.matmul(X, W, out = out)
+    if W_quant is not None: del W
+
+    if A is not None:
+        # LoRA is enabled
+        A, B = A.t(), B.t()
+        out += (X @ A.to(dtype)) @ (s * B.to(dtype))
+    pass
+    
+    return out.view(batch, seq_len, -1) if reshape else out
 pass
