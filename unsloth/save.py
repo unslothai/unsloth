@@ -930,7 +930,7 @@ def save_to_gguf(
 
     # Check first_conversion format
     if   first_conversion == "f16"  : pass
-    if   first_conversion == "bf16" : pass
+    elif first_conversion == "bf16" : pass
     elif first_conversion == "f32"  : pass
     elif first_conversion == "q8_0" : pass
     else:
