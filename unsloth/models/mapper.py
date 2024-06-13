@@ -140,6 +140,52 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/llama-3-70b-Instruct-bnb-4bit" : (
         "meta-llama/Meta-Llama-3-70B-Instruct",
     ),
+    "unsloth/Phi-3-mini-4k-instruct-bnb-4bit" : (
+        "unsloth/Phi-3-mini-4k-instruct",
+        "microsoft/Phi-3-mini-4k-instruct",
+    ),
+    "unsloth/mistral-7b-v0.3-bnb-4bit" : (
+        "unsloth/mistral-7b-v0.3",
+        "mistralai/Mistral-7B-v0.3",
+    ),
+    "unsloth/mistral-7b-instruct-v0.3-bnb-4bit" : (
+        "unsloth/mistral-7b-instruct-v0.3",
+        "mistralai/Mistral-7B-Instruct-v0.3",
+    ),
+    "unsloth/Phi-3-medium-4k-instruct-bnb-4bit" : (
+        "unsloth/Phi-3-medium-4k-instruct",
+        "microsoft/Phi-3-medium-4k-instruct",
+    ),
+    "unsloth/Qwen2-0.5B-bnb-4bit" : (
+        "unsloth/Qwen2-0.5B",
+        "Qwen/Qwen2-0.5B",
+    ),
+    "unsloth/Qwen2-0.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2-0.5B-Instruct",
+        "Qwen/Qwen2-0.5B-Instruct",
+    ),
+    "unsloth/Qwen2-1.5B-bnb-4bit" : (
+        "unsloth/Qwen2-1.5B",
+        "Qwen/Qwen2-1.5B",
+    ),
+    "unsloth/Qwen2-1.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2-1.5B-Instruct",
+        "Qwen/Qwen2-1.5B-Instruct",
+    ),
+    "unsloth/Qwen2-7B-bnb-4bit" : (
+        "unsloth/Qwen2-7B",
+        "Qwen/Qwen2-7B",
+    ),
+    "unsloth/Qwen2-7B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2-7B-Instruct",
+        "Qwen/Qwen2-7B-Instruct",
+    ),
+    "unsloth/Qwen2-70B-bnb-4bit" : (
+        "Qwen/Qwen2-70B",
+    ),
+    "unsloth/Qwen2-70B-Instruct-bnb-4bit" : (
+        "Qwen/Qwen2-70B-Instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
@@ -150,5 +196,13 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
 
     for value in values:
         FLOAT_TO_INT_MAPPER[value] = key
+    pass
+
+    # Get lowercased
+    lowered_key = key.lower()
+    INT_TO_FLOAT_MAPPER[lowered_key] = values[0].lower()
+
+    for value in values:
+        FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
     pass
 pass

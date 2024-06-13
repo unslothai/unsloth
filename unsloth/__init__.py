@@ -14,9 +14,19 @@
 import os
 import warnings
 import importlib
+import sys
 
-# Currently only supports 1 GPU, or else seg faults will occur.
+# Define a list of modules to check
+MODULES_TO_CHECK = ["peft", "bitsandbytes"]
+
+# Check if any of the modules in the list have been imported
+for module in MODULES_TO_CHECK:
+    if module in sys.modules:
+        raise ImportError(f"Please import unsloth before {module}.")
+    
+# Currently only supports 1 GPU, or else seg faults will occur.    
 if "CUDA_VISIBLE_DEVICES" in os.environ:
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     devices = os.environ["CUDA_VISIBLE_DEVICES"]
     # Check if there are multiple cuda devices set in env
     if not devices.isdigit():
@@ -41,6 +51,13 @@ try:
 except:
     raise ImportError("Pytorch is not installed. Go to https://pytorch.org/.\n"\
                       "We have some installation instructions on our Github page.")
+pass
+
+# Fix up is_bf16_supported https://github.com/unslothai/unsloth/issues/504
+major_version, minor_version = torch.cuda.get_device_capability()
+SUPPORTS_BFLOAT16 = (major_version >= 8)
+def is_bf16_supported(): return SUPPORTS_BFLOAT16
+torch.cuda.is_bf16_supported = is_bf16_supported
 
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
@@ -114,3 +131,4 @@ from .models import *
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
+from .trainer import *

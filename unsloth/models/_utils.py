@@ -15,11 +15,12 @@
 import torch
 from typing import Union, Optional, List, Any, Callable
 import warnings
-warnings.filterwarnings(action = "ignore", category = UserWarning, module = "torch")
-warnings.filterwarnings(action = "ignore", category = UserWarning, module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
-warnings.filterwarnings(action = "ignore", category = UserWarning, module = "transformers")
-warnings.filterwarnings(action = "ignore", category = FutureWarning, module = "accelerate")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
@@ -30,11 +31,14 @@ import numpy as np
 import os
 import psutil
 
-__version__ = "2024.4"
+__version__ = "2024.6"
 
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()
+SUPPORTS_BFLOAT16 = False
+
 if major_version >= 8:
+    SUPPORTS_BFLOAT16 = True
     try:
         from flash_attn import flash_attn_func
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
@@ -71,6 +75,11 @@ __all__ = [
     "patch_tokenizer",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
+    "offload_to_disk",
+    "offload_input_embeddings",
+    "offload_output_embeddings",
+    "is_bfloat16_supported",
+    "unsloth_offloaded_gradient_checkpoint",
 ]
 
 
@@ -144,24 +153,67 @@ pass
 
 
 def patch_tokenizer(model, tokenizer):
+    """
+        Phi3's pad_token isn't set. We set it to <|placeholder...
+        Llama-3 is <|reserved...
+        Llama-2 is <unk>
+        Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
+        Fixes https://github.com/unslothai/unsloth/issues/5
+    """
+    possible_reserved_tokens = ("<|reserved", "<|placeholder", "[control")
+
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
-    if not hasattr(tokenizer, "pad_token") or tokenizer.pad_token is None:
-        # Fixes https://github.com/unslothai/unsloth/issues/5
-        if hasattr(tokenizer, "unk_token") and tokenizer.unk_token is not None:
-            tokenizer.add_special_tokens({"pad_token" : tokenizer.unk_token})
-            tokenizer.pad_token = tokenizer.unk_token
-        else:
-            name = model.config._name_or_path if model is not None else "Model"
-            logger.warning_once(
-                f"{name} does not have a padding or unknown token!\n"\
-                f"Will use the EOS token of id {tokenizer.eos_token_id} as padding."
-            )
-            assert(hasattr(tokenizer, "eos_token"))
-            tokenizer.add_special_tokens({"pad_token" : tokenizer.eos_token})
-            tokenizer.pad_token = tokenizer.eos_token
+
+    bad_pad_token = False
+    if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
+        # Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
+        bad_pad_token = tokenizer.eos_token == tokenizer.pad_token
+    elif hasattr(tokenizer, "pad_token") and tokenizer.pad_token is None:
+        bad_pad_token = True
+    else:
+        bad_pad_token = False
+    pass
+
+    if bad_pad_token:
+        # Find a better pad token
+        added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
+        possible_pad_token = None
+        n_possible_pad_tokens = 0
+        for added_token in added_tokens[::-1]:
+            if added_token.startswith(possible_reserved_tokens):
+                if possible_pad_token is None: possible_pad_token = added_token
+                n_possible_pad_tokens += 1
+                # We must see at least 3 of the reserved tokens
+                if n_possible_pad_tokens >= 3: break
+            pass
+        pass
+        if n_possible_pad_tokens < 3: possible_pad_token = None
+
+        if possible_pad_token is None:
+            # Try unk_token
+            possible_pad_token = tokenizer.unk_token
+        pass
+
+        if possible_pad_token is None:
+            # Failure to find a good replacement!! We shall manually add one!
+            new_pad_token = "<|PAD_TOKEN|>"
+            while new_pad_token in tokenizer.get_vocab():
+                new_pad_token += "#"
+            pass
+            possible_pad_token = new_pad_token
+        pass
+
+        name = model.config._name_or_path if model is not None else "Model"
+        logger.warning_once(
+            f"{name} does not have a padding token! Will use pad_token = {possible_pad_token}."
+        )
+        
+        # Edit pad_token
+        tokenizer.add_special_tokens({"pad_token" : possible_pad_token})
+        tokenizer.pad_token = possible_pad_token
         if model is not None:
-            config = model.config.update({"pad_token_id" : tokenizer.eos_token_id})
+            config = model.config.update({"pad_token_id" : tokenizer.pad_token_id})
     pass
     return model, tokenizer
 pass
@@ -330,7 +382,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     def forward(ctx, forward_function, hidden_states, *args):
         saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
         with torch.no_grad():
-            (output,) = forward_function(hidden_states, *args)
+            output = forward_function(hidden_states, *args)
         ctx.save_for_backward(saved_hidden_states)
         ctx.forward_function = forward_function
         ctx.args = args
@@ -350,3 +402,104 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     pass
 pass
 
+
+@torch._disable_dynamo
+def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
+    return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
+pass
+
+
+"""
+    Remove warnings about missing kwargs and patch stuff
+"""
+from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
+from inspect import getsource
+from accelerate.utils.dataclasses import DistributedType
+import re
+BitsAndBytesConfig__init__ = getsource(BitsAndBytesConfig.__init__)
+BitsAndBytesConfig__init__ = re.sub(
+    r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
+    "",
+    BitsAndBytesConfig__init__,
+    flags = re.MULTILINE,
+)
+BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.split("\n")
+length_spaces = len(re.match(r"[\s]{1,}", BitsAndBytesConfig__init__[0]).group(0))
+BitsAndBytesConfig__init__ = "\n".join(x[length_spaces:] for x in BitsAndBytesConfig__init__)
+BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
+    "__init__",
+    "_BitsAndBytesConfig__init__",
+)
+
+def _prepare_backend(
+    self, cpu: bool = False, sagemaker_dp = False, backend: str = None,
+) -> tuple[str, DistributedType]:
+    return None, DistributedType.NO
+pass
+import accelerate.state
+accelerate.state.PartialState._prepare_backend = _prepare_backend
+
+import accelerate.accelerator
+prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
+prepare = prepare.split("\n")
+spaces = prepare[0].find("def")
+prepare = "\n".join(x[spaces:] for x in prepare)
+x = "for obj in args:"
+s = " "*spaces
+prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
+exec(prepare, globals())
+accelerate.accelerator.Accelerator.prepare = prepare
+
+exec(BitsAndBytesConfig__init__, globals())
+
+import transformers.utils.quantization_config
+transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
+
+
+# Offloading to disk for modules (lm_head, embed_tokens)
+import os
+import pickle
+
+def offload_to_disk(W, model, name, temporary_location : str = "_unsloth_temporary_saved_buffers"):
+    file_location = os.path.join(temporary_location, model.config._name_or_path)
+    if not os.path.exists(file_location):
+        os.makedirs(file_location)
+    pass
+
+    filename = os.path.join(file_location, f"{name}.pt")
+    W = W.weight if hasattr(W, "weight") else W
+    torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
+    offloaded_W = torch.load(filename, map_location = "cpu", mmap = True)
+    offloaded_W._offloaded_file_location = filename
+    return offloaded_W
+pass
+
+
+def offload_input_embeddings(model, temporary_location : str = "_unsloth_temporary_saved_buffers"):
+    offloaded_W = offload_to_disk(model.get_input_embeddings(), model, "input_embeddings", temporary_location)
+    new_input_embeddings = torch.nn.Embedding.from_pretrained(offloaded_W)
+    new_input_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
+    model.set_input_embeddings(new_input_embeddings)
+    return
+pass
+
+
+def offload_output_embeddings(model, temporary_location : str = "_unsloth_temporary_saved_buffers"):
+    offloaded_W = offload_to_disk(model.get_output_embeddings(), model, "output_embeddings", temporary_location)
+
+    new_output_embeddings = torch.nn.Linear(1, 1, bias = None)
+    del new_output_embeddings.weight
+    new_output_embeddings.weight = offloaded_W
+    new_output_embeddings.in_features  = offloaded_W.shape[1]
+    new_output_embeddings.out_features = offloaded_W.shape[0]
+
+    new_output_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
+    model.set_output_embeddings(new_output_embeddings)
+    return
+pass
+
+
+# Fixes a weird Torch 2.3 bug which says T4s have bfloat16
+def is_bfloat16_supported():
+    return SUPPORTS_BFLOAT16
+pass
