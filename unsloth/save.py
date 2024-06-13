@@ -22,7 +22,7 @@ import shutil
 import pickle
 import gc
 from transformers.models.llama.modeling_llama import logger
-from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters
+from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import psutil
 import re
@@ -132,9 +132,10 @@ pass
 
 def _merge_lora(layer, name):
 
+    bias = None
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         # Is LoRA so we need to merge!
-        W, quant_state, A, B, s = get_lora_parameters(layer)
+        W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
         if quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
             W = fast_dequantize(W, quant_state)
@@ -156,7 +157,7 @@ def _merge_lora(layer, name):
         W = W.t().to(dtype)
     else:
         W = layer.weight
-    return W
+    return W, bias
 pass
 
 
@@ -527,7 +528,12 @@ def unsloth_save_model(
         for item in LLAMA_WEIGHTS:
             proj = eval(f"layer.{item}")
             name = f"model.layers.{j}.{item}.weight"
-            W = _merge_lora(proj, name)
+            W, bias = _merge_lora(proj, name)
+
+            # Bias term
+            if bias is not None:
+                state_dict[f"model.layers.{j}.{item}.bias"] = bias
+            pass
 
             if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
                 # Save to GPU memory
@@ -643,7 +649,8 @@ def unsloth_save_model(
     model.config = new_config
 
     # Save!
-
+    
+    save_pretrained_settings["selected_adapters"] = None
     # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
@@ -785,7 +792,7 @@ def install_llama_cpp_old(version = -10):
         pass
     pass
     # Check if successful
-    if not os.path.exists("llama.cpp/quantize"):
+    if not os.path.exists("llama.cpp/quantize") and not os.path.exists("llama.cpp/llama-quantize"):
         raise RuntimeError(
             "Unsloth: llama.cpp GGUF seems to be too buggy to install.\n"\
             "File a report to llama.cpp's main repo since this is not an Unsloth issue."
@@ -794,7 +801,7 @@ def install_llama_cpp_old(version = -10):
 pass
 
 
-def install_llama_cpp_blocking(use_cuda = True):
+def install_llama_cpp_blocking(use_cuda = False):
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
@@ -818,49 +825,6 @@ def install_llama_cpp_blocking(use_cuda = True):
                     raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
                 print(line, flush = True, end = "")
         pass
-    pass
-pass
-
-
-def _fix_gemma_gguf():
-    # Fixes Gemma saving to GGUF to float32 instead of float16!
-    with open("llama.cpp/convert-hf-to-gguf.py", "rb") as file:
-        text = file.read()
-    pass
-
-    gemma_start = text.find(b"class GemmaModel(Model):")
-    if gemma_start == -1: return
-
-    gemma_end   = text.find(b"self.gguf_writer.add_tensor(new_name, data)", gemma_start)
-    if gemma_end == -1: return
-
-    gemma_text = text[gemma_start : gemma_end]
-    bad_text = \
-b"""         data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)"""
-    good_text = \
-b"""         # if f32 desired, convert any float16 to float32
-            if self.ftype == 0 and data_dtype == np.float16:
-                data = data.astype(np.float32)
-
-            # TODO: Why cant we use these float16 as-is? There should be not reason to store float16 as float32
-            if self.ftype == 1 and data_dtype == np.float16 and n_dims == 1:
-                data = data.astype(np.float32)
-
-            # if f16 desired, convert any float32 2-dim weight tensors to float16
-            if self.ftype == 1 and data_dtype == np.float32 and name.endswith(".weight") and n_dims == 2:
-                data = data.astype(np.float16)"""
-    find_bad = gemma_text.find(bad_text)
-    if find_bad == -1: return
-
-    gemma_text = gemma_text[:find_bad] + good_text + gemma_text[find_bad + len(bad_text):]
-    text = text[:gemma_start] + gemma_text + text[gemma_end:]
-
-    with open("llama.cpp/convert-hf-to-gguf.py", "w+b") as file:
-        file.write(text)
     pass
 pass
 
@@ -930,7 +894,7 @@ def save_to_gguf(
 
     # Check first_conversion format
     if   first_conversion == "f16"  : pass
-    if   first_conversion == "bf16" : pass
+    elif first_conversion == "bf16" : pass
     elif first_conversion == "f32"  : pass
     elif first_conversion == "q8_0" : pass
     else:
@@ -946,8 +910,20 @@ def save_to_gguf(
         error = 0
         install_llama_cpp_blocking()
     pass
+
     # Check if successful. If not install 10th latest release
-    if error != 0 or not os.path.exists("llama.cpp/quantize"):
+
+    # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
+    # and llama.cpp/main changed to llama.cpp/llama-cli
+    # See https://github.com/ggerganov/llama.cpp/pull/7809
+    quantize_location = None
+    if os.path.exists("llama.cpp/quantize"):
+        quantize_location = "llama.cpp/quantize"
+    elif os.path.exists("llama.cpp/llama-quantize"):
+        quantize_location = "llama.cpp/llama-quantize"
+    pass
+
+    if error != 0 or quantize_location is None:
         print(f"Unsloth: llama.cpp error code = {error}.")
         install_llama_cpp_old(-10)
     pass
@@ -1017,9 +993,6 @@ def save_to_gguf(
             f"--outfile {final_location} --vocab-type {vocab_type} "\
             f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
     else:
-        # Need to fix convert-hf-to-gguf.py for some models!
-        # _fix_gemma_gguf()
-
         command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
             f"--outfile {final_location} "\
             f"--outtype {first_conversion}"
@@ -1065,7 +1038,7 @@ def save_to_gguf(
         print(f"Unsloth: [2] Converting GGUF 16bit into {quantization_method}. This will take 20 minutes...")
         final_location = f"./{model_directory}-unsloth.{quantization_method.upper()}.gguf"
 
-        command = f"./llama.cpp/quantize {old_location} "\
+        command = f"./{quantize_location} {old_location} "\
             f"{final_location} {quantization_method} {n_cpus}"
         
         # quantize uses stderr
@@ -1654,6 +1627,140 @@ def unsloth_push_to_hub_gguf(
     pass
 pass
 
+# Corrected function to save LoRA to a custom directory
+def save_lora_to_custom_dir(model, tokenizer, save_directory):
+    # Create the custom directory if it doesn't exist
+    os.makedirs(save_directory, exist_ok=True)
+
+    # Call the unsloth_save_model function with the custom directory
+    unsloth_save_model(
+        model,
+        tokenizer,
+        save_directory=save_directory,
+        save_method="lora",
+        push_to_hub=False,
+    )
+
+# Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
+def unsloth_convert_lora_to_ggml_and_push_to_hub(
+    self,
+    tokenizer,
+    repo_id: str,
+    use_temp_dir: Optional[bool] = None,
+    commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
+    private: Optional[bool] = None,
+    token: Union[bool, str, None] = None,
+    create_pr: bool = False,
+    revision: str = None,
+    commit_description: str = "Convert LoRA to GGML format using Unsloth",
+    temporary_location: str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage: float = 0.85,
+):
+    if not os.path.exists("llama.cpp"):
+        if IS_KAGGLE_ENVIRONMENT:
+            python_install = install_python_non_blocking(["protobuf"])
+            python_install.wait()
+            install_llama_cpp_blocking(use_cuda=False)
+            makefile = None
+        else:
+            git_clone = install_llama_cpp_clone_non_blocking()
+            python_install = install_python_non_blocking(["protobuf"])
+            git_clone.wait()
+            makefile = install_llama_cpp_make_non_blocking()
+            python_install.wait()
+    else:
+        makefile = None
+
+    for _ in range(3):
+        gc.collect()
+
+    lora_directory_push = "lora-to-ggml-push"
+    save_lora_to_custom_dir(self, tokenizer, lora_directory_push)
+
+    model_type = self.config.model_type
+    output_file = os.path.join(lora_directory_push, "ggml-adapter-model.bin")
+
+    print(f"Unsloth: Converting auto-saved LoRA adapters at {lora_directory_push} to GGML format.")
+    print(f"The output file will be {output_file}")
+
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_push} {output_file} llama"
+
+    try:
+        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+            for line in sp.stdout:
+                print(line, end="", flush=True)
+            for line in sp.stderr:
+                print(line, end="", flush=True)
+            sp.wait()
+            if sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, command)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Conversion failed with return code {e.returncode}")
+        return
+
+    print(f"Unsloth: Conversion completed! Output file: {output_file}")
+
+    print("Unsloth: Uploading GGML file to Hugging Face Hub...")
+    username = upload_to_huggingface(
+        self, repo_id, token,
+        "GGML converted LoRA", "ggml", output_file, None, private,
+    )
+    link = f"{repo_id.lstrip('/')}"
+    print("Unsloth: Done.")
+    print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
+    print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
+
+def unsloth_convert_lora_to_ggml_and_save_locally(
+    self,
+    save_directory: str, # Added parameter for the folder name 
+    tokenizer, 
+    temporary_location: str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage: float = 0.85,
+):
+    if not os.path.exists("llama.cpp"):
+        if IS_KAGGLE_ENVIRONMENT:
+            python_install = install_python_non_blocking(["protobuf"])
+            python_install.wait()
+            install_llama_cpp_blocking(use_cuda=False)
+            makefile = None
+        else:
+            git_clone = install_llama_cpp_clone_non_blocking()
+            python_install = install_python_non_blocking(["protobuf"])
+            git_clone.wait()
+            makefile = install_llama_cpp_make_non_blocking()
+            python_install.wait()
+    else:
+        makefile = None
+
+    for _ in range(3):
+        gc.collect()
+
+    # Use the provided save_directory for local saving
+    save_lora_to_custom_dir(self, tokenizer, save_directory)
+
+    model_type = self.config.model_type
+    output_file = os.path.join(save_directory, "ggml-adapter-model.bin")
+
+    print(f"Unsloth: Converting auto-saved LoRA adapters at {save_directory} to GGML format.")
+    print(f"The output file will be {output_file}")
+
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
+
+    try:
+        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+            for line in sp.stdout:
+                print(line, end="", flush=True)
+            for line in sp.stderr:
+                print(line, end="", flush=True)
+            sp.wait()
+            if sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, command)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Conversion failed with return code {e.returncode}")
+        return
+    print("Unsloth: Done.")
+    print(f"Unsloth: Conversion completed! Output file: {output_file}")
+    print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
 
 def patch_saving_functions(model):
     import inspect
@@ -1746,10 +1853,12 @@ def patch_saving_functions(model):
     # Add saving methods to top level model
     if hasattr(model, "config"):
         # Counteract tokenizers
-        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
-        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
-        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
-        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
+        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,                    model)
+        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged,                model)
+        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
+        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
+        model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
+        model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
     pass
     return model
 pass
