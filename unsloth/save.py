@@ -812,7 +812,7 @@ def install_llama_cpp_blocking(use_cuda = False):
         # https://github.com/ggerganov/llama.cpp/issues/7062
         # Weirdly GPU conversion for GGUF breaks??
         # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
-        f"make -j{psutil.cpu_count()*2} quantize -C llama.cpp",
+        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
@@ -915,10 +915,10 @@ def save_to_gguf(
     print(error)
     print(os.path.exists("llama.cpp/quantize"))
     print("====================================")
-    if error != 0 or not os.path.exists("llama.cpp/quantize"):
-        print(f"Unsloth: llama.cpp error code = {error}.")
-        install_llama_cpp_old(-10)
-    pass
+    # if error != 0 or not os.path.exists("llama.cpp/quantize"):
+    #     print(f"Unsloth: llama.cpp error code = {error}.")
+    #     install_llama_cpp_old(-10)
+    # pass
 
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
@@ -1030,7 +1030,7 @@ def save_to_gguf(
         print(f"Unsloth: [2] Converting GGUF 16bit into {quantization_method}. This will take 20 minutes...")
         final_location = f"./{model_directory}-unsloth.{quantization_method.upper()}.gguf"
 
-        command = f"./llama.cpp/quantize {old_location} "\
+        command = f"./llama.cpp/examples/quantize {old_location} "\
             f"{final_location} {quantization_method} {n_cpus}"
         
         # quantize uses stderr
