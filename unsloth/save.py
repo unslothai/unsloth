@@ -1655,6 +1655,140 @@ def unsloth_push_to_hub_gguf(
     pass
 pass
 
+# Corrected function to save LoRA to a custom directory
+def save_lora_to_custom_dir(model, tokenizer, save_directory):
+    # Create the custom directory if it doesn't exist
+    os.makedirs(save_directory, exist_ok=True)
+
+    # Call the unsloth_save_model function with the custom directory
+    unsloth_save_model(
+        model,
+        tokenizer,
+        save_directory=save_directory,
+        save_method="lora",
+        push_to_hub=False,
+    )
+
+# Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
+def unsloth_convert_lora_to_ggml_and_push_to_hub(
+    self,
+    tokenizer,
+    repo_id: str,
+    use_temp_dir: Optional[bool] = None,
+    commit_message: Optional[str] = "Converted LoRA to GGML with Unsloth",
+    private: Optional[bool] = None,
+    token: Union[bool, str, None] = None,
+    create_pr: bool = False,
+    revision: str = None,
+    commit_description: str = "Convert LoRA to GGML format using Unsloth",
+    temporary_location: str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage: float = 0.85,
+):
+    if not os.path.exists("llama.cpp"):
+        if IS_KAGGLE_ENVIRONMENT:
+            python_install = install_python_non_blocking(["protobuf"])
+            python_install.wait()
+            install_llama_cpp_blocking(use_cuda=False)
+            makefile = None
+        else:
+            git_clone = install_llama_cpp_clone_non_blocking()
+            python_install = install_python_non_blocking(["protobuf"])
+            git_clone.wait()
+            makefile = install_llama_cpp_make_non_blocking()
+            python_install.wait()
+    else:
+        makefile = None
+
+    for _ in range(3):
+        gc.collect()
+
+    lora_directory_push = "lora-to-ggml-push"
+    save_lora_to_custom_dir(self, tokenizer, lora_directory_push)
+
+    model_type = self.config.model_type
+    output_file = os.path.join(lora_directory_push, "ggml-adapter-model.bin")
+
+    print(f"Unsloth: Converting auto-saved LoRA adapters at {lora_directory_push} to GGML format.")
+    print(f"The output file will be {output_file}")
+
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_push} {output_file} llama"
+
+    try:
+        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+            for line in sp.stdout:
+                print(line, end="", flush=True)
+            for line in sp.stderr:
+                print(line, end="", flush=True)
+            sp.wait()
+            if sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, command)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Conversion failed with return code {e.returncode}")
+        return
+
+    print(f"Unsloth: Conversion completed! Output file: {output_file}")
+
+    print("Unsloth: Uploading GGML file to Hugging Face Hub...")
+    username = upload_to_huggingface(
+        self, repo_id, token,
+        "GGML converted LoRA", "ggml", output_file, None, private,
+    )
+    link = f"{repo_id.lstrip('/')}"
+    print("Unsloth: Done.")
+    print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
+    print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
+
+def unsloth_convert_lora_to_ggml_and_save_locally(
+    self,
+    save_directory: str, # Added parameter for the folder name 
+    tokenizer, 
+    temporary_location: str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage: float = 0.85,
+):
+    if not os.path.exists("llama.cpp"):
+        if IS_KAGGLE_ENVIRONMENT:
+            python_install = install_python_non_blocking(["protobuf"])
+            python_install.wait()
+            install_llama_cpp_blocking(use_cuda=False)
+            makefile = None
+        else:
+            git_clone = install_llama_cpp_clone_non_blocking()
+            python_install = install_python_non_blocking(["protobuf"])
+            git_clone.wait()
+            makefile = install_llama_cpp_make_non_blocking()
+            python_install.wait()
+    else:
+        makefile = None
+
+    for _ in range(3):
+        gc.collect()
+
+    # Use the provided save_directory for local saving
+    save_lora_to_custom_dir(self, tokenizer, save_directory)
+
+    model_type = self.config.model_type
+    output_file = os.path.join(save_directory, "ggml-adapter-model.bin")
+
+    print(f"Unsloth: Converting auto-saved LoRA adapters at {save_directory} to GGML format.")
+    print(f"The output file will be {output_file}")
+
+    command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
+
+    try:
+        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+            for line in sp.stdout:
+                print(line, end="", flush=True)
+            for line in sp.stderr:
+                print(line, end="", flush=True)
+            sp.wait()
+            if sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, command)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Conversion failed with return code {e.returncode}")
+        return
+    print("Unsloth: Done.")
+    print(f"Unsloth: Conversion completed! Output file: {output_file}")
+    print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
 
 def patch_saving_functions(model):
     import inspect
@@ -1747,10 +1881,12 @@ def patch_saving_functions(model):
     # Add saving methods to top level model
     if hasattr(model, "config"):
         # Counteract tokenizers
-        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,     model)
-        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged, model)
-        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,       model)
-        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,   model)
+        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,                    model)
+        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged,                model)
+        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
+        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
+        model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
+        model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
     pass
     return model
 pass
