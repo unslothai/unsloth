@@ -801,7 +801,7 @@ def install_llama_cpp_old(version = -10):
 pass
 
 
-def install_llama_cpp_blocking(use_cuda = True):
+def install_llama_cpp_blocking(use_cuda = False):
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
@@ -911,6 +911,10 @@ def save_to_gguf(
         install_llama_cpp_blocking()
     pass
     # Check if successful. If not install 10th latest release
+    print("====================================")
+    print(error)
+    print(os.path.exists("llama.cpp/quantize"))
+    print("====================================")
     if error != 0 or not os.path.exists("llama.cpp/quantize"):
         print(f"Unsloth: llama.cpp error code = {error}.")
         install_llama_cpp_old(-10)
@@ -1383,7 +1387,6 @@ def unsloth_save_pretrained_gguf(
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
-            install_llama_cpp_blocking(use_cuda = False)
             new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         else:
@@ -1404,7 +1407,6 @@ def unsloth_save_pretrained_gguf(
                 # Kaggle is weird - no blocking installs, and no CUDA?
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 python_install.wait()
-                install_llama_cpp_blocking(use_cuda = False)
                 new_save_directory, old_username = unsloth_save_model(**arguments)
                 makefile = None
             else:
@@ -1534,7 +1536,6 @@ def unsloth_push_to_hub_gguf(
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
-            install_llama_cpp_blocking(use_cuda = False)
             new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         else:
@@ -1555,7 +1556,6 @@ def unsloth_push_to_hub_gguf(
                 # Kaggle is weird - no blocking installs, and no CUDA?
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 python_install.wait()
-                install_llama_cpp_blocking(use_cuda = False)
                 new_save_directory, old_username = unsloth_save_model(**arguments)
                 makefile = None
             else:
