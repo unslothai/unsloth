@@ -15,6 +15,7 @@
 from .llama import *
 import os
 from ._utils import __version__
+from .mistral import FastMistralModel
 
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
@@ -72,7 +73,7 @@ class FastQwen2Model(FastLlamaModel):
         trust_remote_code = False,
         **kwargs,
     ):
-        return FastLlamaModel.from_pretrained(
+        return FastMistralModel.from_pretrained(
             model_name     = model_name,
             max_seq_length = max_seq_length,
             dtype          = dtype,
