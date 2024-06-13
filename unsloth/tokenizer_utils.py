@@ -232,62 +232,6 @@ llama_template = \
         "{% endif %}"\
     "{% endfor %}"
 pass
-    
-
-def select_correct_slow_tokenizer(
-    tokenizer_name,
-    model_max_length = None,
-    padding_side = "right",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = "huggingface_tokenizers_cache",
-):
-    """
-    Returns 'correct' tokenizer by checking if the chat templates are
-    actually tokenized correctly.
-    """
-    messages = [
-        {"role": "user", "content": "What is 2+2?"},
-        {"role": "assistant", "content": "It's 4."},
-    ]
-    
-    settings = (
-        (False, False, True,),
-        (False, True,  True,),
-        (True,  False, True,),
-        (True,  False, False,),
-    )
-
-    for (use_fast, legacy, from_slow,) in settings:
-        # Default as mentioned by Arthur from HF:
-        slow_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name,
-            model_max_length  = model_max_length,
-            padding_side      = padding_side,
-            token             = token,
-            trust_remote_code = trust_remote_code,
-            # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
-            use_fast          = use_fast,
-            legacy            = legacy,
-            from_slow         = from_slow,
-            cache_dir         = cache_dir,
-        )
-        slow_tokenizer_chat_template = slow_tokenizer.chat_template
-
-        slow_tokenizer.chat_template = llama_template
-        result1 = slow_tokenizer.decode(slow_tokenizer.apply_chat_template(messages))
-        slow_tokenizer.chat_template = mistral_template
-        result2 = slow_tokenizer.decode(slow_tokenizer.apply_chat_template(messages))
-
-        # If 2 spaces seen, normally wrong!
-        if " "*2 not in result1 and " "*2 not in result2:
-            slow_tokenizer.chat_template = slow_tokenizer_chat_template
-            return slow_tokenizer
-        pass
-    pass
-    # Return fast version as default
-    return slow_tokenizer
-pass
 
 
 def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
@@ -508,13 +452,17 @@ def load_correct_tokenizer(
     # Mainly to solve Deepseek models with no tokenizer.model file
     slow_tokenizer = None
     try:
-        slow_tokenizer = select_correct_slow_tokenizer(
+        slow_tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = model_max_length,
-            padding_side = padding_side,
-            token = token,
+            model_max_length  = model_max_length,
+            padding_side      = padding_side,
+            token             = token,
             trust_remote_code = trust_remote_code,
-            cache_dir = cache_dir,
+            # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+            use_fast          = False,
+            legacy            = False,
+            from_slow         = True,
+            cache_dir         = cache_dir,
         )
     except:
         pass
