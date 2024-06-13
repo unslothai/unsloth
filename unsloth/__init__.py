@@ -23,7 +23,9 @@ MODULES_TO_CHECK = ["peft", "bitsandbytes"]
 # Check if any of the modules in the list have been imported
 for module in MODULES_TO_CHECK:
     if module in sys.modules:
-        raise ImportError(f"Please import unsloth before {module}.")
+        raise ImportError(f"Unsloth: Please import Unsloth before {module}.")
+    pass
+pass
     
 # Currently only supports 1 GPU, or else seg faults will occur.    
 if "CUDA_VISIBLE_DEVICES" in os.environ:
