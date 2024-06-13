@@ -13,7 +13,13 @@
 # limitations under the License.
 
 import torch
-from .utils import fast_dequantize, QUANT_STATE, get_lora_parameters, matmul_lora
+from .utils import (
+    fast_dequantize,
+    QUANT_STATE,
+    get_lora_parameters,
+    get_lora_parameters_bias,
+    matmul_lora,
+)
 
 
 class LoRA_MLP(torch.autograd.Function):

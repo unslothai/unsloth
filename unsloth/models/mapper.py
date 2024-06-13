@@ -186,6 +186,9 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/Qwen2-70B-Instruct-bnb-4bit" : (
         "Qwen/Qwen2-70B-Instruct",
     ),
+    "mistralai/Codestral-22B-v0.1" : (
+        "mistral-community/Codestral-22B-v0.1",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
