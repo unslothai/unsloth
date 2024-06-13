@@ -734,7 +734,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     pass
 
     # Count all the possible bad tokens
-    final_counts = np.zeros(len(tokenizer), dtype = np.int64)
+    final_counts = np.zeros(max(len(tokenizer), embedding_matrix.shape[0]), dtype = np.int64)
     def mapping(examples):
         input_ids = examples["input_ids"]
         counter = np.fromiter(itertools.chain.from_iterable(input_ids), dtype = np.int32)
