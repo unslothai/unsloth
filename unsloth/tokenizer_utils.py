@@ -247,6 +247,11 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     check_chat_template1 = True
     check_chat_template2 = True
     check_chat_template3 = True
+    
+    """
+    Weirdly Mistral tokenizers are actually correct??
+    Ie below will actually load mistral v1 and v3 incorrectly!
+
     slow_chat_template = getattr(slow_tokenizer, "chat_template", None)
     fast_chat_template = getattr(fast_tokenizer, "chat_template", None)
     messages = [
@@ -254,7 +259,7 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         {"role": "assistant", "content": " It's 4. "},
     ]
     # Check the tokenizer's own chat template
-    if  slow_chat_template is not None and fast_chat_template is not None:
+    if slow_chat_template is not None and fast_chat_template is not None:
         check_chat_template1 = \
             slow_tokenizer.apply_chat_template(messages) == \
             fast_tokenizer.apply_chat_template(messages)
@@ -277,9 +282,10 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     pass
 
     # Combine them all and revert chat templates
-    check_chat_template = check_chat_template1 and check_chat_template2 and check_chat_template3
     slow_tokenizer.chat_template = slow_chat_template
     fast_tokenizer.chat_template = fast_chat_template
+    """
+    check_chat_template = check_chat_template1 and check_chat_template2 and check_chat_template3
 
     # Try special tokens
     try:
