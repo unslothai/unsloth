@@ -61,9 +61,14 @@ import triton
 triton_version = triton.__version__.split(".")
 triton_major = int(triton_version[0])
 if triton_major >= 3:
-    from triton.backends.nvidia.driver import libcuda_dirs
+    try:
+        from triton.backends.nvidia.driver import libcuda_dirs
+    except:
+        libcuda_dirs = lambda: None
+    pass
 else:
     from triton.common.build import libcuda_dirs
+pass
 
 import os
 import re
@@ -101,7 +106,11 @@ except:
     importlib.reload(triton)
     try:
         import bitsandbytes as bnb
-        from triton.common.build import libcuda_dirs
+        try:
+            from triton.common.build import libcuda_dirs
+        except:
+            libcuda_dirs = lambda: None
+        pass
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
