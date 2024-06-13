@@ -914,6 +914,7 @@ def save_to_gguf(
     print("====================================")
     print(error)
     print(os.path.exists("llama.cpp/quantize"))
+    raise
     print("====================================")
     if error != 0 or not os.path.exists("llama.cpp/quantize"):
         print(f"Unsloth: llama.cpp error code = {error}.")
