@@ -792,7 +792,7 @@ def install_llama_cpp_old(version = -10):
         pass
     pass
     # Check if successful
-    if not os.path.exists("llama.cpp/quantize"):
+    if not os.path.exists("llama.cpp/quantize") and not os.path.exists("llama.cpp/llama-quantize"):
         raise RuntimeError(
             "Unsloth: llama.cpp GGUF seems to be too buggy to install.\n"\
             "File a report to llama.cpp's main repo since this is not an Unsloth issue."
@@ -910,15 +910,23 @@ def save_to_gguf(
         error = 0
         install_llama_cpp_blocking()
     pass
+
     # Check if successful. If not install 10th latest release
-    print("====================================")
-    print(error)
-    print(os.path.exists("llama.cpp/quantize"))
-    print("====================================")
-    # if error != 0 or not os.path.exists("llama.cpp/quantize"):
-    #     print(f"Unsloth: llama.cpp error code = {error}.")
-    #     install_llama_cpp_old(-10)
-    # pass
+
+    # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
+    # and llama.cpp/main changed to llama.cpp/llama-cli
+    # See https://github.com/ggerganov/llama.cpp/pull/7809
+    quantize_location = None
+    if os.path.exists("llama.cpp/quantize"):
+        quantize_location = "llama.cpp/quantize"
+    elif os.path.exists("llama.cpp/llama-quantize"):
+        quantize_location = "llama.cpp/llama-quantize"
+    pass
+
+    if error != 0 or quantize_location is None:
+        print(f"Unsloth: llama.cpp error code = {error}.")
+        install_llama_cpp_old(-10)
+    pass
 
     if   quantization_method == "f32":  first_conversion = "f32"
     elif quantization_method == "f16":  first_conversion = "f16"
@@ -1030,7 +1038,7 @@ def save_to_gguf(
         print(f"Unsloth: [2] Converting GGUF 16bit into {quantization_method}. This will take 20 minutes...")
         final_location = f"./{model_directory}-unsloth.{quantization_method.upper()}.gguf"
 
-        command = f"./llama.cpp/examples/quantize {old_location} "\
+        command = f"./{quantize_location} {old_location} "\
             f"{final_location} {quantization_method} {n_cpus}"
         
         # quantize uses stderr
@@ -1383,10 +1391,11 @@ def unsloth_save_pretrained_gguf(
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
 
-        if True:#IS_KAGGLE_ENVIRONMENT:
+        if IS_KAGGLE_ENVIRONMENT:
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
+            install_llama_cpp_blocking(use_cuda = False)
             new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         else:
@@ -1407,6 +1416,7 @@ def unsloth_save_pretrained_gguf(
                 # Kaggle is weird - no blocking installs, and no CUDA?
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 python_install.wait()
+                install_llama_cpp_blocking(use_cuda = False)
                 new_save_directory, old_username = unsloth_save_model(**arguments)
                 makefile = None
             else:
@@ -1536,6 +1546,7 @@ def unsloth_push_to_hub_gguf(
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             python_install.wait()
+            install_llama_cpp_blocking(use_cuda = False)
             new_save_directory, old_username = unsloth_save_model(**arguments)
             makefile = None
         else:
@@ -1556,6 +1567,7 @@ def unsloth_push_to_hub_gguf(
                 # Kaggle is weird - no blocking installs, and no CUDA?
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 python_install.wait()
+                install_llama_cpp_blocking(use_cuda = False)
                 new_save_directory, old_username = unsloth_save_model(**arguments)
                 makefile = None
             else:
