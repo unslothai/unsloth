@@ -15,6 +15,7 @@ import os
 import warnings
 import importlib
 import sys
+from packaging.version import Version
 
 # Define a list of modules to check
 MODULES_TO_CHECK = ["peft", "bitsandbytes"]
@@ -75,8 +76,14 @@ pass
 
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb
+
 import triton
-from triton.common.build import libcuda_dirs
+libcuda_dirs = lambda: None
+if Version(triton.__version__) >= Version("3.0.0"):
+    try: from triton.backends.nvidia.driver import libcuda_dirs
+    except: pass
+else: from triton.common.build import libcuda_dirs
+
 import os
 import re
 import numpy as np
@@ -112,8 +119,11 @@ except:
     importlib.reload(bnb)
     importlib.reload(triton)
     try:
-        import bitsandbytes as bnb
-        from triton.common.build import libcuda_dirs
+        libcuda_dirs = lambda: None
+        if Version(triton.__version__) >= Version("3.0.0"):
+            try: from triton.backends.nvidia.driver import libcuda_dirs
+            except: pass
+        else: from triton.common.build import libcuda_dirs
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
