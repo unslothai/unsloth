@@ -14,8 +14,17 @@
 import os
 import warnings
 import importlib
+import sys
 
-# Currently only supports 1 GPU, or else seg faults will occur.
+# Define a list of modules to check
+MODULES_TO_CHECK = ["peft", "bitsandbytes"]
+
+# Check if any of the modules in the list have been imported
+for module in MODULES_TO_CHECK:
+    if module in sys.modules:
+        raise ImportError(f"Please import unsloth before {module}.")
+    
+# Currently only supports 1 GPU, or else seg faults will occur.    
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     devices = os.environ["CUDA_VISIBLE_DEVICES"]
