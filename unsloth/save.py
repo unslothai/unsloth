@@ -812,7 +812,7 @@ def install_llama_cpp_blocking(use_cuda = False):
         # https://github.com/ggerganov/llama.cpp/issues/7062
         # Weirdly GPU conversion for GGUF breaks??
         # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
-        f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
+        f"make -j{psutil.cpu_count()*2} quantize -C llama.cpp",
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
@@ -914,7 +914,6 @@ def save_to_gguf(
     print("====================================")
     print(error)
     print(os.path.exists("llama.cpp/quantize"))
-    raise
     print("====================================")
     if error != 0 or not os.path.exists("llama.cpp/quantize"):
         print(f"Unsloth: llama.cpp error code = {error}.")
