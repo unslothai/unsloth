@@ -14,6 +14,7 @@
 import os
 import warnings
 import importlib
+from packaging.version import Version
 
 # Currently only supports 1 GPU, or else seg faults will occur.
 if "CUDA_VISIBLE_DEVICES" in os.environ:
@@ -57,18 +58,13 @@ if (major_torch != 2):# or (major_torch == 2 and minor_torch < 1):
 
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb
+
 import triton
-triton_version = triton.__version__.split(".")
-triton_major = int(triton_version[0])
-if triton_major >= 3:
-    try:
-        from triton.backends.nvidia.driver import libcuda_dirs
-    except:
-        libcuda_dirs = lambda: None
-    pass
-else:
-    from triton.common.build import libcuda_dirs
-pass
+libcuda_dirs = lambda: None
+if Version(triton.__version__) >= Version("3.0.0"):
+    try: from triton.backends.nvidia.driver import libcuda_dirs
+    except: pass
+else: from triton.common.build import libcuda_dirs
 
 import os
 import re
@@ -105,12 +101,11 @@ except:
     importlib.reload(bnb)
     importlib.reload(triton)
     try:
-        import bitsandbytes as bnb
-        try:
-            from triton.common.build import libcuda_dirs
-        except:
-            libcuda_dirs = lambda: None
-        pass
+        libcuda_dirs = lambda: None
+        if Version(triton.__version__) >= Version("3.0.0"):
+            try: from triton.backends.nvidia.driver import libcuda_dirs
+            except: pass
+        else: from triton.common.build import libcuda_dirs
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
