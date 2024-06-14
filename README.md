@@ -100,14 +100,16 @@ model = FastLanguageModel.get_peft_model(
 ### Conda Installation
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
 ```bash
-conda create --name unsloth_env python=3.10
+conda create --name unsloth_env \
+    python=3.10 \
+    pytorch-cuda=<11.8/12.1> \
+    pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers \
+    -y
 conda activate unsloth_env
-
-conda install pytorch-cuda=<12.1/11.8> pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers
 
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
 
-pip install --no-deps trl peft accelerate bitsandbytes
+pip install --no-deps "trl<0.9.0" peft accelerate bitsandbytes
 ```
 
 ### Pip Installation
@@ -162,7 +164,7 @@ pip install --no-deps packaging ninja einops flash-attn xformers trl peft accele
 
 # Pre Ampere RTX 2080, T4, GTX 1080 GPUs:
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-pip install --no-deps xformers trl peft accelerate bitsandbytes
+pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes
 ```
 7. For Pytorch 2.3.0: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
 ```bash
