@@ -59,10 +59,9 @@ from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 
-from inspect import currentframe, getframeinfo
+import sys
 def DEBUG():
-    frameinfo = getframeinfo(currentframe())
-    print(frameinfo.filename, frameinfo.lineno)
+    print(sys._getframe().f_back.f_lineno)
 pass
 
 def original_apply_qkv(self, X):
