@@ -27,7 +27,8 @@ for module in MODULES_TO_CHECK:
     pass
 pass
 
-# Currently only supports 1 GPU, or else seg faults will occur.    
+"""
+# Currently only supports 1 GPU, or else seg faults will occur.
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     devices = os.environ["CUDA_VISIBLE_DEVICES"]
@@ -45,6 +46,7 @@ else:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 pass
+"""
 
 # Reduce VRAM usage by reducing fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"

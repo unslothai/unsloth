@@ -175,7 +175,7 @@ def LlamaAttention_fast_forward_inference(
     torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
-    
+
     # New KV cache
     # Kn = torch.cat([K1, Kn], dim = 2)
     # Vn = torch.cat([V1, Vn], dim = 2)
@@ -287,7 +287,7 @@ def LlamaAttention_fast_forward(
     padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -508,7 +508,7 @@ def LlamaModel_fast_forward(
             inputs_embeds = inputs_embeds[:,:self.max_seq_length,:]
         pass
     pass
-    
+
     past_key_values_length = 0
 
     if past_key_values is not None:
@@ -791,7 +791,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         return_dict: Optional[bool] = None,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        
+
         if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
@@ -802,7 +802,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             )
         else:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
-    
+
             output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
             output_hidden_states = (
                 output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -844,7 +844,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Fixes https://github.com/unslothai/unsloth/issues/10
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda")
             pass
-            
+
             shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
@@ -1198,12 +1198,6 @@ class FastLlamaModel:
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
         logger.warning(debug_info)
         import subprocess, re, gc
-        output = subprocess.check_output(
-            'nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
-        output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)
-        output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)
-        if output > 1: raise RuntimeError(
-            'Error: More than 1 GPUs have a lot of VRAM usage. Please obtain a commercial license.')
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
@@ -1335,7 +1329,7 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model._saved_temp_tokenizer = tokenizer
-        
+
         return model, tokenizer
     pass
 
@@ -1357,7 +1351,7 @@ class FastLlamaModel:
         lm_head.in_features  = lm_head.weight.shape[1]
         lm_head.out_features = lm_head.weight.shape[0]
         model.lm_head = lm_head
-        
+
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
         correct_dtype = lm_head.weight.dtype
@@ -1378,7 +1372,7 @@ class FastLlamaModel:
             # Downcast RoPE embedding to correct data type
             if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")) \
                 and (module.cos_cached.dtype != correct_dtype):
-                
+
                 module.cos_cached = module.cos_cached.to(correct_dtype)
                 module.sin_cached = module.sin_cached.to(correct_dtype)
                 pass
@@ -1428,7 +1422,7 @@ class FastLlamaModel:
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora"   in signature
-        
+
         assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
@@ -1471,7 +1465,7 @@ class FastLlamaModel:
                 )
                 loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
             pass
-            
+
             if hasattr(model.config, "quantization_config"):
                 raise ValueError(
                     "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"\
@@ -1710,7 +1704,7 @@ class FastLlamaModel:
             model.peft_config[active_adapter].revision = f"unsloth"
         pass
 
-        from transformers.trainer import Trainer 
+        from transformers.trainer import Trainer
         if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
             raise RuntimeError(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\n"
@@ -1861,7 +1855,7 @@ class FastLlamaModel:
         lm_head = internal_model.lm_head.weight
         device_type = lm_head.device.type
         dtype = model.config.torch_dtype
-        
+
         if type(dtype) is str:
             if   dtype ==  "float16": dtype = torch.float16
             elif dtype == "bfloat16": dtype = torch.bfloat16
@@ -1872,7 +1866,7 @@ class FastLlamaModel:
             model._unwrapped_old_generate = model.generate
             model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
         pass
-        
+
         # Patch tokenizer to pad to the left
         internal_model = model
         while hasattr(internal_model, "model"):

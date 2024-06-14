@@ -114,7 +114,7 @@ def convert_to_fast_tokenizer(
 ):
     is_fast = getattr(slow_tokenizer, "is_fast", False)
     if is_fast: return slow_tokenizer
-    
+
     try:
         tokenizer_name = slow_tokenizer.__class__.__name__
         lowered_tokenizer_name = tokenizer_name.lower()
@@ -247,7 +247,7 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     check_chat_template1 = True
     check_chat_template2 = True
     check_chat_template3 = True
-    
+
     """
     Weirdly Mistral tokenizers are actually correct??
     Ie below will actually load mistral v1 and v3 incorrectly!
@@ -382,7 +382,7 @@ def fix_sentencepiece_gguf(saved_location):
     from transformers.utils import sentencepiece_model_pb2
     import json
     from enum import IntEnum
-    
+
     class SentencePieceTokenTypes(IntEnum):
         NORMAL = 1
         UNKNOWN = 2
@@ -492,7 +492,7 @@ def load_correct_tokenizer(
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
         if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
             fast_tokenizer.add_eos_token = slow_tokenizer.add_eos_token
-        
+
         # Confirm if slow and fast are equivalent!
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             return fast_tokenizer
@@ -609,7 +609,7 @@ def check_tokenizer(
                     f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
             pass
-            
+
             if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
                 cache_dir = "huggingface_tokenizers_cache"
             else:
@@ -677,7 +677,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     if len(where_untrained) == 0: return
 
     # Remove untrained indices where it's longer
-    
+
     where_untrained_set = frozenset(where_untrained)
     actual_bad_tokens = tokenizer.convert_ids_to_tokens(where_untrained)
     # Remove None items in actual_bad_tokens
@@ -901,7 +901,7 @@ def add_new_tokens(
         internal_model = internal_model.model
     pass
     internal_model._need_to_train_embeddings = True
-    
+
     return
 pass
 
@@ -980,4 +980,4 @@ def patch_sft_trainer_tokenizer():
     exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
 pass
 
-patch_sft_trainer_tokenizer()
+# patch_sft_trainer_tokenizer()

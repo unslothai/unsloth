@@ -46,7 +46,7 @@ def MistralAttention_fast_forward(
     padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -154,7 +154,7 @@ def MistralAttention_fast_forward(
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
-    
+
     attn_output = A.reshape(bsz, q_len, self.hidden_size)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
@@ -242,7 +242,7 @@ def MistralForCausalLM_fast_forward(
             # Fixes https://github.com/unslothai/unsloth/issues/10
             self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda")
         pass
-        
+
         shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
         loss = fast_cross_entropy_loss(
             logits = shift_logits,
@@ -434,12 +434,6 @@ class FastMistralModel(FastLlamaModel):
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
         logger.warning(debug_info)
         import subprocess, re, gc
-        output = subprocess.check_output(
-            'nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
-        output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)
-        output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)
-        if output > 1: raise RuntimeError(
-            'Error: More than 1 GPUs have a lot of VRAM usage. Please obtain a commercial license.')
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
@@ -554,7 +548,7 @@ class FastMistralModel(FastLlamaModel):
                 name = name[:len(name) - len("-bnb-4bit")]
                 model.config.update({"_name_or_path" : name})
             pass
-        
+
         # Log Unsloth version for future fastpaths for inference
         model.config.update({"unsloth_version" : __version__})
 
@@ -569,7 +563,7 @@ class FastMistralModel(FastLlamaModel):
             internal_model = internal_model.model
         pass
         internal_model._saved_temp_tokenizer = tokenizer
-        
+
         return model, tokenizer
     pass
 pass
