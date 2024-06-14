@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .mistral import *
-import os
-from ._utils import __version__
+from .llama import *
 
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
@@ -72,7 +70,7 @@ class FastQwen2Model(FastLlamaModel):
         trust_remote_code = False,
         **kwargs,
     ):
-        return FastMistralModel.from_pretrained(
+        return FastLlamaModel.from_pretrained(
             model_name     = model_name,
             max_seq_length = max_seq_length,
             dtype          = dtype,
