@@ -59,10 +59,6 @@ from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 
-import sys
-def DEBUG():
-    print(sys._getframe().f_back.f_lineno)
-pass
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -293,7 +289,6 @@ def LlamaAttention_fast_forward(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
     # Clear inference
-    DEBUG()
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
         del self.paged_attention_V
@@ -335,7 +330,6 @@ def LlamaAttention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
     past_key_value = (K, V) if use_cache else None
-    DEBUG()
 
     # Attention module
     if (not HAS_FLASH_ATTENTION and attention_mask is None):
@@ -344,7 +338,6 @@ def LlamaAttention_fast_forward(
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        DEBUG()
 
         # Group query attention
         if n_groups != 1:
@@ -360,7 +353,6 @@ def LlamaAttention_fast_forward(
         pass
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
-        DEBUG()
 
     elif HAS_FLASH_ATTENTION and attention_mask is None:
         Q = Q.transpose(1, 2)
@@ -387,7 +379,6 @@ def LlamaAttention_fast_forward(
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
-    DEBUG()
     return attn_output, attn_weights, past_key_value
 pass
 
@@ -439,10 +430,8 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
         hidden_states += residual
     else:
-        DEBUG()
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
-        DEBUG()
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             causal_mask=causal_mask,
@@ -453,24 +442,18 @@ def LlamaDecoderLayer_fast_forward(
             use_cache=use_cache,
             padding_mask=padding_mask,
         )
-        DEBUG()
         hidden_states = residual + hidden_states
-        DEBUG()
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        DEBUG()
         hidden_states = self.mlp(hidden_states)
-        DEBUG()
         hidden_states = residual + hidden_states
-        DEBUG()
     pass
 
     outputs = (hidden_states,)
     if output_attentions: outputs += (self_attn_weights,)
     if use_cache: outputs += (present_key_value,)
-    DEBUG()
     return outputs
 pass
 
@@ -490,8 +473,7 @@ def LlamaModel_fast_forward(
     return_dict:          Optional[bool] = None,
     *args, **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
-    
-    DEBUG()
+
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     assert(output_attentions is False)
     output_hidden_states = (
@@ -526,7 +508,6 @@ def LlamaModel_fast_forward(
             inputs_embeds = inputs_embeds[:,:self.max_seq_length,:]
         pass
     pass
-    DEBUG()
     
     past_key_values_length = 0
 
@@ -534,7 +515,6 @@ def LlamaModel_fast_forward(
         past_key_values_length = past_key_values[0][0].shape[2]
         seq_length_with_past = seq_length_with_past + past_key_values_length
     pass
-    DEBUG()
 
     # We already handle KV cache position_ids ourselves.
     if False:#(past_key_values_length != 0):
@@ -549,13 +529,11 @@ def LlamaModel_fast_forward(
     else:
         position_ids = None
     pass
-    DEBUG()
 
     if position_ids is not None:
         if position_ids.shape[0] != batch_size:
             position_ids = position_ids.repeat((batch_size, 1))
     pass
-    DEBUG()
 
     # Embed positions
     if inputs_embeds is None:
@@ -566,7 +544,6 @@ def LlamaModel_fast_forward(
     # Normalized from Gemma
     IS_GEMMA = self.config.model_type == "gemma"
     train_embed_tokens = self.embed_tokens.weight.requires_grad
-    DEBUG()
 
     if IS_GEMMA:
         # Match Gemma exactly by casting to bfloat16 / float16
@@ -591,7 +568,6 @@ def LlamaModel_fast_forward(
             if inputs_requires_grad: inputs_embeds.requires_grad_(True)
         pass
     pass
-    DEBUG()
 
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
@@ -609,7 +585,6 @@ def LlamaModel_fast_forward(
         inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
-    DEBUG()
 
     # Ignore attention_mask
     if attention_mask is None:
@@ -631,7 +606,6 @@ def LlamaModel_fast_forward(
             sliding_window = getattr(self.config, "sliding_window", None),
         )
     pass
-    DEBUG()
 
     hidden_states = inputs_embeds
 
@@ -655,7 +629,6 @@ def LlamaModel_fast_forward(
     else:
         boundaries = None
     pass
-    DEBUG()
 
     # Check checkpointing method
     gradient_checkpointing = False
@@ -668,7 +641,6 @@ def LlamaModel_fast_forward(
         if output_attentions is False and hasattr(self, "_offloaded_gradient_checkpointing"):
             offloaded_gradient_checkpointing = True
     pass
-    DEBUG()
 
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
@@ -676,7 +648,6 @@ def LlamaModel_fast_forward(
         if output_hidden_states: all_hidden_states += (hidden_states,)
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
-        DEBUG()
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
                 decoder_layer,
@@ -688,7 +659,6 @@ def LlamaModel_fast_forward(
                 output_attentions,
                 use_cache,
             )[0]
-            DEBUG()
 
         elif gradient_checkpointing:
             def create_custom_forward(module):
@@ -696,7 +666,7 @@ def LlamaModel_fast_forward(
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask)
                 return custom_forward
             pass
-            DEBUG()
+
             layer_outputs = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(decoder_layer),
                 hidden_states,
@@ -707,7 +677,7 @@ def LlamaModel_fast_forward(
                 preserve_rng_state = False,
             )
             hidden_states = layer_outputs[0]
-            DEBUG()
+
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -720,7 +690,6 @@ def LlamaModel_fast_forward(
                 padding_mask=padding_mask,
             )
             hidden_states = layer_outputs[0]
-            DEBUG()
         pass
 
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
@@ -734,12 +703,10 @@ def LlamaModel_fast_forward(
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
     pass
-    DEBUG()
 
     if output_hidden_states: all_hidden_states += (hidden_states,)
     next_cache = next_decoder_cache if use_cache else None
 
-    DEBUG()
     if not return_dict:
         return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
     return BaseModelOutputWithPast(
@@ -834,7 +801,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 attention_mask = attention_mask,
             )
         else:
-            DEBUG()
             causal_mask = xformers.attn_bias.LowerTriangularMask()
     
             output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -846,7 +812,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
 
-            DEBUG()
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
@@ -861,7 +826,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             )
         pass
 
-        DEBUG()
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
@@ -872,8 +836,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
         logits = logits.to(self.config.torch_dtype)
-
-        DEBUG()
 
         loss = None
         if labels is not None:
@@ -889,7 +851,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 labels = shift_labels,
             )
         pass
-        DEBUG()
 
         if not return_dict:
             output = (logits,) + outputs[1:]
@@ -920,7 +881,6 @@ def PeftModelForCausalLM_fast_forward(
     task_ids=None,
     **kwargs,
 ):
-    DEBUG()
     return self.base_model(
         input_ids=input_ids,
         causal_mask=causal_mask,
