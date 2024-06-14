@@ -76,7 +76,7 @@ model = FastLanguageModel.get_peft_model(
 
 
 ## 🥇 Performance Benchmarking
-- For the full list of **reproducable** benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
+- For the full list of **reproducible** benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
 
 | 1 A100 40GB  | 🤗Hugging Face | Flash Attention | 🦥Unsloth Open Source | 🦥[Unsloth Pro](https://unsloth.ai/pricing) |
 |--------------|--------------|-----------------|---------------------|-----------------|
@@ -257,7 +257,7 @@ trainer.train()
 # (1) Saving to GGUF / merging to 16bit for vLLM
 # (2) Continued training from a saved LoRA adapter
 # (3) Adding an evaluation loop / OOMs
-# (4) Cutomized chat templates
+# (4) Customized chat templates
 ```
 
 <a name="DPO"></a>
