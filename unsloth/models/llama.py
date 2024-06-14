@@ -470,6 +470,7 @@ def LlamaDecoderLayer_fast_forward(
     outputs = (hidden_states,)
     if output_attentions: outputs += (self_attn_weights,)
     if use_cache: outputs += (present_key_value,)
+    DEBUG()
     return outputs
 pass
 
@@ -687,6 +688,7 @@ def LlamaModel_fast_forward(
                 output_attentions,
                 use_cache,
             )[0]
+            DEBUG()
 
         elif gradient_checkpointing:
             def create_custom_forward(module):
@@ -694,7 +696,7 @@ def LlamaModel_fast_forward(
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask)
                 return custom_forward
             pass
-
+            DEBUG()
             layer_outputs = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(decoder_layer),
                 hidden_states,
@@ -705,7 +707,7 @@ def LlamaModel_fast_forward(
                 preserve_rng_state = False,
             )
             hidden_states = layer_outputs[0]
-
+            DEBUG()
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -718,6 +720,7 @@ def LlamaModel_fast_forward(
                 padding_mask=padding_mask,
             )
             hidden_states = layer_outputs[0]
+            DEBUG()
         pass
 
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
