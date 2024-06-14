@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .llama import *
+from .mistral import *
 import os
 from ._utils import __version__
 
