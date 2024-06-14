@@ -35,7 +35,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - Run [Llama 3 conversational notebook](https://colab.research.google.com/drive/1XamvWYinY6FOSX9GLvnqSjjsNflxdhNc?usp=sharing) and [Mistral 7B v3 ChatML](https://colab.research.google.com/drive/15F1xyn8497_dUbxZP4zWmPZ3PJx1Oymv?usp=sharing)
 - This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for continued pretraining / raw text
 - This [continued pretraining notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) is for learning another language
-
+- Click [here](https://github.com/unslothai/unsloth/wiki) for detailed documentation for Unsloth.
 
 ## 🦥 Unsloth.ai News
 - 📣 NEW! Continued Pretraining [notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) for other languages like Korean!
@@ -76,7 +76,7 @@ model = FastLanguageModel.get_peft_model(
 
 
 ## 🥇 Performance Benchmarking
-- For the full list of **reproducable** benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
+- For the full list of **reproducible** benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
 
 | 1 A100 40GB  | 🤗Hugging Face | Flash Attention | 🦥Unsloth Open Source | 🦥[Unsloth Pro](https://unsloth.ai/pricing) |
 |--------------|--------------|-----------------|---------------------|-----------------|
@@ -100,14 +100,16 @@ model = FastLanguageModel.get_peft_model(
 ### Conda Installation
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
 ```bash
-conda create --name unsloth_env python=3.10
+conda create --name unsloth_env \
+    python=3.10 \
+    pytorch-cuda=<11.8/12.1> \
+    pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers \
+    -y
 conda activate unsloth_env
-
-conda install pytorch-cuda=<12.1/11.8> pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers
 
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
 
-pip install --no-deps trl peft accelerate bitsandbytes
+pip install --no-deps "trl<0.9.0" peft accelerate bitsandbytes
 ```
 
 ### Pip Installation
@@ -162,7 +164,7 @@ pip install --no-deps packaging ninja einops flash-attn xformers trl peft accele
 
 # Pre Ampere RTX 2080, T4, GTX 1080 GPUs:
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-pip install --no-deps xformers trl peft accelerate bitsandbytes
+pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes
 ```
 7. For Pytorch 2.3.0: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
 ```bash
@@ -257,7 +259,7 @@ trainer.train()
 # (1) Saving to GGUF / merging to 16bit for vLLM
 # (2) Continued training from a saved LoRA adapter
 # (3) Adding an evaluation loop / OOMs
-# (4) Cutomized chat templates
+# (4) Customized chat templates
 ```
 
 <a name="DPO"></a>
