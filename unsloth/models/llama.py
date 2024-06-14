@@ -1090,24 +1090,23 @@ class FastLlamaModel:
 
         if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
 
-            # Warn RoPE scaling isn't allowed
-            if not has_rope_scaling:
-                raise RuntimeError(
-                    f"Unsloth: {model_name} can only handle sequence lengths of at most "\
-                    f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
-                    f"{round(rope_scaling, 3)}, it should be magically be extended to "\
-                    f"{max_seq_length}. However, {model_name} doesn't support RoPE Scaling!\n"\
-                    "Please file a feature request at https://github.com/unslothai/unsloth."
-                )
-            pass
-
             rope_scaling = max_seq_length / model_max_seq_length
+
             logger.warning_once(
                 f"Unsloth: {model_name} can only handle sequence lengths of at most "\
                 f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
                 f"{round(rope_scaling, 3)}, it can be magically be extended to "\
                 f"{max_seq_length}!"
             )
+
+            # Warn RoPE scaling isn't allowed
+            if not has_rope_scaling:
+                raise RuntimeError(
+                    "However, {model_name} doesn't support RoPE Scaling!\n"\
+                    "Please file a feature request at https://github.com/unslothai/unsloth."
+                )
+            pass
+
             rope_scaling = {"type": "linear", "factor": rope_scaling,}
 
             # Add to kwargs
