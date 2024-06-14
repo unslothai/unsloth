@@ -289,13 +289,13 @@ class FastMistralModel(FastLlamaModel):
 
     @staticmethod
     def from_pretrained(
-        model_name     = "unsloth/mistral-7b-bnb-4bit",
+        model_name     = "unsloth/llama-2-7b-bnb-4bit",
         max_seq_length = None,
         dtype          = None,
         load_in_4bit   = True,
         token          = None,
         device_map     = "sequential",
-        rope_scaling   = None, # Mistral does not support RoPE scaling
+        rope_scaling   = None,
         fix_tokenizer  = True,
         model_patcher  = None,
         tokenizer_name = None,
@@ -308,12 +308,7 @@ class FastMistralModel(FastLlamaModel):
         if token is None and "HUGGINGFACE_TOKEN" in os.environ:
             token = os.environ["HUGGINGFACE_TOKEN"]
 
-        if model_patcher is None: model_patcher = FastMistralModel
-        # Mistral does NOT support RoPE Scaling!
-        if rope_scaling is not None:
-            logger.warning_once("Unsloth: Mistral models do not support RoPE scaling.")
-        pass
-
+        if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
@@ -336,21 +331,24 @@ class FastMistralModel(FastLlamaModel):
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # Check max sequence length
-        model_config = AutoConfig.from_pretrained(model_name, token = token)
-        model_max_seq_length = model_config.max_position_embeddings
+        # RoPE scaling
+        model_max_seq_length = \
+            AutoConfig.from_pretrained(model_name, token = token).max_position_embeddings
 
         # If max_seq_length is not specified, use maximum fron config
         if max_seq_length is None:
             max_seq_length = model_max_seq_length
         pass
 
-        # Mistral does NOT support RoPE Scaling sadly so we have to error out.
-        if max_seq_length > model_max_seq_length:
-            raise RuntimeError(
-                f"Unsloth: Unfortunately {model_patcher.__name__[4:-5]} type models do not support RoPE scaling!\n"\
-                f"The maximum sequence length supported is {model_max_seq_length}.",
+        if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
+            rope_scaling = max_seq_length / model_max_seq_length
+            logger.warning_once(
+                f"Unsloth: {model_name} can only handle sequence lengths of at most "\
+                f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
+                f"{round(rope_scaling, 3)}, it can be magically be extended to "\
+                f"{max_seq_length}!"
             )
+            rope_scaling = {"type": "linear", "factor": rope_scaling,}
         pass
 
         bnb_config = None
@@ -361,23 +359,49 @@ class FastMistralModel(FastLlamaModel):
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
             )
+        pass
 
+        # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
+        # RoPE Scaling's max_position_embeddings must be updated
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            device_map          = device_map,
-            torch_dtype         = dtype,
-            quantization_config = bnb_config,
-            token               = token,
-            # rope_scaling      = rope_scaling,
-            trust_remote_code   = trust_remote_code,
-            **kwargs,
-        )
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = dtype,
+                quantization_config     = bnb_config,
+                token                   = token,
+                # rope_scaling            = rope_scaling,
+                max_position_embeddings = max_position_embeddings,
+                trust_remote_code       = trust_remote_code,
+                **kwargs,
+            )
+        except Exception as error:
+            if "rope_scaling" in str(error):
+                if rope_scaling is not None:
+                    raise TypeError("Unsloth: {model_name} does not support rope_scaling.")
+                pass
+
+                # Counteract missing rope_scaling
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    device_map              = device_map,
+                    torch_dtype             = dtype,
+                    quantization_config     = bnb_config,
+                    token                   = token,
+                    max_position_embeddings = max_position_embeddings,
+                    trust_remote_code       = trust_remote_code,
+                    **kwargs,
+                )
+            else:
+                raise error
+            pass
+        pass
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         tokenizer = load_correct_tokenizer(
-            tokenizer_name,
+            tokenizer_name    = tokenizer_name,
             model_max_length  = max_position_embeddings,
             padding_side      = "right",
             token             = token,
@@ -525,7 +549,6 @@ class FastMistralModel(FastLlamaModel):
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save max_seq_length
-        max_position_embeddings = max(max_seq_length, model.config.max_position_embeddings)
         model.max_seq_length = max_position_embeddings
         internal_model = model
         while hasattr(internal_model, "model"):
@@ -548,14 +571,15 @@ class FastMistralModel(FastLlamaModel):
         patch_saving_functions(tokenizer)
 
         # Fix up config for transformers uploading PEFT
-        # Not necessary anymore since we require transformers>=4.37
+        # Not necessary anymore since we require transformers>=4.37!
         if False:
             name = model.config._name_or_path
             if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
                 name = name[:len(name) - len("-bnb-4bit")]
                 model.config.update({"_name_or_path" : name})
             pass
-        
+        pass
+
         # Log Unsloth version for future fastpaths for inference
         model.config.update({"unsloth_version" : __version__})
 
