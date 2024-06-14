@@ -512,7 +512,7 @@ class FastMistralModel(FastLlamaModel):
         if "n_total_devices >" not in inner_training_loop:
             raise RuntimeError(
                 "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports four GPUs - please obtain a commercial license from our website.\n"
+                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\n"
                 "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
@@ -521,6 +521,7 @@ class FastMistralModel(FastLlamaModel):
             "is_sagemaker_mp_enabled()",
             "False",
         )
+        exec(inner_training_loop, globals())
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save max_seq_length
@@ -560,6 +561,7 @@ class FastMistralModel(FastLlamaModel):
 
         # Add save modules
         patch_saving_functions(model)
+        Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference

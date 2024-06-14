@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .llama import *
-import os
-from ._utils import __version__
+from .mistral import *
 
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
@@ -34,7 +32,7 @@ except:
 pass
 
 
-class FastQwen2Model(FastLlamaModel):
+class FastQwen2Model(FastMistralModel):
 
     @staticmethod
     def pre_patch():
@@ -72,7 +70,7 @@ class FastQwen2Model(FastLlamaModel):
         trust_remote_code = False,
         **kwargs,
     ):
-        return FastLlamaModel.from_pretrained(
+        return FastMistralModel.from_pretrained(
             model_name     = model_name,
             max_seq_length = max_seq_length,
             dtype          = dtype,
