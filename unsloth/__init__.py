@@ -18,7 +18,7 @@ import sys
 from packaging.version import Version
 
 # Define a list of modules to check
-MODULES_TO_CHECK = ["peft", "bitsandbytes"]
+MODULES_TO_CHECK = ["bitsandbytes"]
 
 # Check if any of the modules in the list have been imported
 for module in MODULES_TO_CHECK:
