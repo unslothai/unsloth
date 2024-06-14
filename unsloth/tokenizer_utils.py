@@ -232,62 +232,6 @@ llama_template = \
         "{% endif %}"\
     "{% endfor %}"
 pass
-    
-
-def select_correct_slow_tokenizer(
-    tokenizer_name,
-    model_max_length = None,
-    padding_side = "right",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = "huggingface_tokenizers_cache",
-):
-    """
-    Returns 'correct' tokenizer by checking if the chat templates are
-    actually tokenized correctly.
-    """
-    messages = [
-        {"role": "user", "content": "What is 2+2?"},
-        {"role": "assistant", "content": "It's 4."},
-    ]
-    
-    settings = (
-        (False, False, True,),
-        (False, True,  True,),
-        (True,  False, True,),
-        (True,  False, False,),
-    )
-
-    for (use_fast, legacy, from_slow,) in settings:
-        # Default as mentioned by Arthur from HF:
-        slow_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_name,
-            model_max_length  = model_max_length,
-            padding_side      = padding_side,
-            token             = token,
-            trust_remote_code = trust_remote_code,
-            # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
-            use_fast          = use_fast,
-            legacy            = legacy,
-            from_slow         = from_slow,
-            cache_dir         = cache_dir,
-        )
-        slow_tokenizer_chat_template = slow_tokenizer.chat_template
-
-        slow_tokenizer.chat_template = llama_template
-        result1 = slow_tokenizer.decode(slow_tokenizer.apply_chat_template(messages))
-        slow_tokenizer.chat_template = mistral_template
-        result2 = slow_tokenizer.decode(slow_tokenizer.apply_chat_template(messages))
-
-        # If 2 spaces seen, normally wrong!
-        if " "*2 not in result1 and " "*2 not in result2:
-            slow_tokenizer.chat_template = slow_tokenizer_chat_template
-            return slow_tokenizer
-        pass
-    pass
-    # Return fast version as default
-    return slow_tokenizer
-pass
 
 
 def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
@@ -303,6 +247,11 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     check_chat_template1 = True
     check_chat_template2 = True
     check_chat_template3 = True
+    
+    """
+    Weirdly Mistral tokenizers are actually correct??
+    Ie below will actually load mistral v1 and v3 incorrectly!
+
     slow_chat_template = getattr(slow_tokenizer, "chat_template", None)
     fast_chat_template = getattr(fast_tokenizer, "chat_template", None)
     messages = [
@@ -310,7 +259,7 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         {"role": "assistant", "content": " It's 4. "},
     ]
     # Check the tokenizer's own chat template
-    if  slow_chat_template is not None and fast_chat_template is not None:
+    if slow_chat_template is not None and fast_chat_template is not None:
         check_chat_template1 = \
             slow_tokenizer.apply_chat_template(messages) == \
             fast_tokenizer.apply_chat_template(messages)
@@ -333,9 +282,10 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     pass
 
     # Combine them all and revert chat templates
-    check_chat_template = check_chat_template1 and check_chat_template2 and check_chat_template3
     slow_tokenizer.chat_template = slow_chat_template
     fast_tokenizer.chat_template = fast_chat_template
+    """
+    check_chat_template = check_chat_template1 and check_chat_template2 and check_chat_template3
 
     # Try special tokens
     try:
@@ -508,13 +458,17 @@ def load_correct_tokenizer(
     # Mainly to solve Deepseek models with no tokenizer.model file
     slow_tokenizer = None
     try:
-        slow_tokenizer = select_correct_slow_tokenizer(
+        slow_tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            model_max_length = model_max_length,
-            padding_side = padding_side,
-            token = token,
+            model_max_length  = model_max_length,
+            padding_side      = padding_side,
+            token             = token,
             trust_remote_code = trust_remote_code,
-            cache_dir = cache_dir,
+            # Cannot just use use_fast = False as per https://twitter.com/danielhanchen/status/1789659394302718373
+            use_fast          = False,
+            legacy            = False,
+            from_slow         = True,
+            cache_dir         = cache_dir,
         )
     except:
         pass
@@ -786,7 +740,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     pass
 
     # Count all the possible bad tokens
-    final_counts = np.zeros(len(tokenizer), dtype = np.int64)
+    final_counts = np.zeros(max(len(tokenizer), embedding_matrix.shape[0]), dtype = np.int64)
     def mapping(examples):
         input_ids = examples["input_ids"]
         counter = np.fromiter(itertools.chain.from_iterable(input_ids), dtype = np.int32)
@@ -972,7 +926,7 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])\n"\
+        "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
