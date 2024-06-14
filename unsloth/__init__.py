@@ -14,8 +14,20 @@
 import os
 import warnings
 import importlib
+import sys
+from packaging.version import Version
 
-# Currently only supports 1 GPU, or else seg faults will occur.
+# Define a list of modules to check
+MODULES_TO_CHECK = ["bitsandbytes"]
+
+# Check if any of the modules in the list have been imported
+for module in MODULES_TO_CHECK:
+    if module in sys.modules:
+        raise ImportError(f"Unsloth: Please import Unsloth before {module}.")
+    pass
+pass
+
+# Currently only supports 1 GPU, or else seg faults will occur.    
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     devices = os.environ["CUDA_VISIBLE_DEVICES"]
@@ -66,8 +78,14 @@ pass
 
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb
+
 import triton
-from triton.common.build import libcuda_dirs
+libcuda_dirs = lambda: None
+if Version(triton.__version__) >= Version("3.0.0"):
+    try: from triton.backends.nvidia.driver import libcuda_dirs
+    except: pass
+else: from triton.common.build import libcuda_dirs
+
 import os
 import re
 import numpy as np
@@ -103,8 +121,11 @@ except:
     importlib.reload(bnb)
     importlib.reload(triton)
     try:
-        import bitsandbytes as bnb
-        from triton.common.build import libcuda_dirs
+        libcuda_dirs = lambda: None
+        if Version(triton.__version__) >= Version("3.0.0"):
+            try: from triton.backends.nvidia.driver import libcuda_dirs
+            except: pass
+        else: from triton.common.build import libcuda_dirs
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:

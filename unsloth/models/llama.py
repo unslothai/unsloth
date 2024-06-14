@@ -51,6 +51,7 @@ except:
 pass
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
+from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
@@ -209,8 +210,9 @@ def LlamaAttention_fast_forward_inference(
 
     # Attention
     if bsz == 1:
+        Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
+        # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
         A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
-        A *= self.scalar
         # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
         A = torch.matmul(A, Vnn, out = Qn)
@@ -791,7 +793,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
-        if past_key_values is not None and self.config.model_type != "qwen2":
+        if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
                 input_ids,
@@ -1027,16 +1029,16 @@ class FastLlamaModel:
 
     @staticmethod
     def from_pretrained(
-        model_name     = "unsloth/llama-2-7b-bnb-4bit",
-        max_seq_length = None,
-        dtype          = None,
-        load_in_4bit   = True,
-        token          = None,
-        device_map     = "sequential",
-        rope_scaling   = None,
-        fix_tokenizer  = True,
-        model_patcher  = None,
-        tokenizer_name = None,
+        model_name        = "unsloth/llama-3-8b-bnb-4bit",
+        max_seq_length    = None,
+        dtype             = None,
+        load_in_4bit      = True,
+        token             = None,
+        device_map        = "sequential",
+        rope_scaling      = None,
+        fix_tokenizer     = True,
+        model_patcher     = None,
+        tokenizer_name    = None,
         trust_remote_code = False,
         **kwargs,
     ):
@@ -1069,9 +1071,17 @@ class FastLlamaModel:
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # RoPE scaling
-        model_max_seq_length = \
-            AutoConfig.from_pretrained(model_name, token = token).max_position_embeddings
+        # RoPE Scaling
+        model_config = AutoConfig.from_pretrained(model_name, token = token)
+        model_max_seq_length = model_config.max_position_embeddings
+
+        # Check if RoPE Scaling is even allowed
+        model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
+        has_rope_scaling = False
+        try:
+            with open(inspect.getfile(model_function), "r") as file:
+                has_rope_scaling = "self.config.rope_scaling" in file.read()
+        except: pass
 
         # If max_seq_length is not specified, use maximum fron config
         if max_seq_length is None:
@@ -1079,14 +1089,28 @@ class FastLlamaModel:
         pass
 
         if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
+
             rope_scaling = max_seq_length / model_max_seq_length
+
             logger.warning_once(
                 f"Unsloth: {model_name} can only handle sequence lengths of at most "\
                 f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
                 f"{round(rope_scaling, 3)}, it can be magically be extended to "\
                 f"{max_seq_length}!"
             )
+
+            # Warn RoPE scaling isn't allowed
+            if not has_rope_scaling:
+                raise RuntimeError(
+                    "However, {model_name} doesn't support RoPE Scaling!\n"\
+                    "Please file a feature request at https://github.com/unslothai/unsloth."
+                )
+            pass
+
             rope_scaling = {"type": "linear", "factor": rope_scaling,}
+
+            # Add to kwargs
+            kwargs["rope_scaling"] = rope_scaling
         pass
 
         bnb_config = None
@@ -1102,39 +1126,16 @@ class FastLlamaModel:
         # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
         # RoPE Scaling's max_position_embeddings must be updated
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
-        try:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map              = device_map,
-                torch_dtype             = dtype,
-                quantization_config     = bnb_config,
-                token                   = token,
-                rope_scaling            = rope_scaling,
-                max_position_embeddings = max_position_embeddings,
-                trust_remote_code       = trust_remote_code,
-                **kwargs,
-            )
-        except Exception as error:
-            if "rope_scaling" in str(error):
-                if rope_scaling is not None:
-                    raise TypeError("Unsloth: {model_name} does not support rope_scaling.")
-                pass
-
-                # Counteract missing rope_scaling
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    device_map              = device_map,
-                    torch_dtype             = dtype,
-                    quantization_config     = bnb_config,
-                    token                   = token,
-                    max_position_embeddings = max_position_embeddings,
-                    trust_remote_code       = trust_remote_code,
-                    **kwargs,
-                )
-            else:
-                raise error
-            pass
-        pass
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map              = device_map,
+            torch_dtype             = dtype,
+            quantization_config     = bnb_config,
+            token                   = token,
+            max_position_embeddings = max_position_embeddings,
+            trust_remote_code       = trust_remote_code,
+            **kwargs,
+        )
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
@@ -1195,7 +1196,13 @@ class FastLlamaModel:
         f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
         logger.warning(debug_info)
-        import gc
+        import subprocess, re, gc
+        output = subprocess.check_output(
+            'nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
+        output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)
+        output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)
+        if output > 1: raise RuntimeError(
+            'Error: More than 1 GPUs have a lot of VRAM usage. Please obtain a commercial license.')
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
@@ -1206,12 +1213,12 @@ class FastLlamaModel:
 
         debug_info = """n_total_devices = total_train_batch_size // \\
             args.gradient_accumulation_steps // self._train_batch_size
-        if n_total_devices > 2:
+        if n_total_devices > 1:
             logger.warning_once(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
-                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                "* Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "* The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
+                "* We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "* If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
         debug_info ="""
         debug_info = debug_info.split('\n')
@@ -1236,17 +1243,17 @@ class FastLlamaModel:
         bsz = self._train_batch_size
         total_batches = bsz * ga * args.world_size
         n_total_devices = total_batches // ga // bsz
-        if n_total_devices > 2:
+        if n_total_devices > 1:
             logger.warning_once(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\\n"
-                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                "* Our OSS was designed for people with few GPU resources to level the playing field.\\n"
+                "* The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
+                "* We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
+                "* If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
-            divisor = n_total_devices / 2
+            divisor = n_total_devices / 1
             bsz = self._train_batch_size = max(int(bsz / divisor), 1)
-            if total_batches // ga // bsz > 2:
-                divisor = n_total_devices / 2
+            if total_batches // ga // bsz > 1:
+                divisor = n_total_devices / 1
                 ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
         check_batches = check_batches.split('\n')
         check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])
@@ -1416,7 +1423,6 @@ class FastLlamaModel:
 
         if loftq_config is None: loftq_config = {}
 
-        import inspect
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora"   in signature
@@ -1830,10 +1836,10 @@ class FastLlamaModel:
 
     @staticmethod
     def for_inference(model):
-        if model.config.model_type == "qwen2":
-            FastLlamaModel.for_training(model)
-            return
-        pass
+        # if model.config.model_type == "qwen2":
+        #     FastLlamaModel.for_training(model)
+        #     return
+        # pass
 
         internal_model = model
         internal_model.gradient_checkpointing = False

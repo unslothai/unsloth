@@ -185,6 +185,55 @@ def convert_to_fast_tokenizer(
 pass
 
 
+# Check Mistral chat template without BOS / EOS
+mistral_template = \
+    "{% if messages[0]['role'] == 'system' %}"\
+        "{% if messages[1]['role'] == 'user' %}"\
+            "{{ '[INST] ' + messages[0]['content'] + ' ' + messages[1]['content'] + ' [/INST]' }}"\
+            "{% set loop_messages = messages[2:] %}"\
+        "{% else %}"\
+            "{{ '[INST] ' + messages[0]['content'] + ' [/INST]' }}"\
+            "{% set loop_messages = messages[1:] %}"\
+        "{% endif %}"\
+    "{% else %}"\
+        "{% set loop_messages = messages %}"\
+    "{% endif %}"\
+    "{% for message in loop_messages %}"\
+        "{% if message['role'] == 'user' %}"\
+            "{{ '[INST] ' + message['content'] + ' [/INST]' }}"\
+        "{% elif message['role'] == 'assistant' %}"\
+            "{{ message['content'] }}"\
+        "{% else %}"\
+            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
+        "{% endif %}"\
+    "{% endfor %}"
+pass
+
+# Check Llama chat template without BOS / EOS
+llama_template = \
+    "{% if messages[0]['role'] == 'system' %}"\
+        "{% if messages[1]['role'] == 'user' %}"\
+            "{{ '[INST] <<SYS>>\n' + messages[0]['content'] + '\n<</SYS>>\n\n' + messages[1]['content'] + ' [/INST]' }}"\
+            "{% set loop_messages = messages[2:] %}"\
+        "{% else %}"\
+            "{{ '[INST] ' + messages[0]['content'] + ' [/INST]' }}"\
+            "{% set loop_messages = messages[1:] %}"\
+        "{% endif %}"\
+    "{% else %}"\
+        "{% set loop_messages = messages %}"\
+    "{% endif %}"\
+    "{% for message in loop_messages %}"\
+        "{% if message['role'] == 'user' %}"\
+            "{{ '[INST] ' + message['content'].strip() + ' [/INST]' }}"\
+        "{% elif message['role'] == 'assistant' %}"\
+            "{{ ' ' + message['content'].strip() + ' ' }}"\
+        "{% else %}"\
+            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
+        "{% endif %}"\
+    "{% endfor %}"
+pass
+
+
 def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     # Get eos_token, bos_token etc
     dir_names = dir(slow_tokenizer)
@@ -193,19 +242,70 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         if x.endswith("_token") and x.count("_") == 1
     )))
     all_special_tokens = list(set(special_tokens + slow_tokenizer.all_special_tokens))
+
+    # Check if chat template is enabled!
+    check_chat_template1 = True
+    check_chat_template2 = True
+    check_chat_template3 = True
+    
+    """
+    Weirdly Mistral tokenizers are actually correct??
+    Ie below will actually load mistral v1 and v3 incorrectly!
+
+    slow_chat_template = getattr(slow_tokenizer, "chat_template", None)
+    fast_chat_template = getattr(fast_tokenizer, "chat_template", None)
+    messages = [
+        {"role": "user", "content": " What is 2+2? "},
+        {"role": "assistant", "content": " It's 4. "},
+    ]
+    # Check the tokenizer's own chat template
+    if slow_chat_template is not None and fast_chat_template is not None:
+        check_chat_template1 = \
+            slow_tokenizer.apply_chat_template(messages) == \
+            fast_tokenizer.apply_chat_template(messages)
+    pass
+
+    # Check Mistral chat template without BOS / EOS
+    slow_tokenizer.chat_template = mistral_template
+    fast_tokenizer.chat_template = mistral_template
+    check_chat_template2 = \
+        slow_tokenizer.apply_chat_template(messages) == \
+        fast_tokenizer.apply_chat_template(messages)
+    pass
+
+    # Check Llama chat template without BOS / EOS
+    slow_tokenizer.chat_template = llama_template
+    fast_tokenizer.chat_template = llama_template
+    check_chat_template3 = \
+        slow_tokenizer.apply_chat_template(messages) == \
+        fast_tokenizer.apply_chat_template(messages)
+    pass
+
+    # Combine them all and revert chat templates
+    slow_tokenizer.chat_template = slow_chat_template
+    fast_tokenizer.chat_template = fast_chat_template
+    """
+    check_chat_template = check_chat_template1 and check_chat_template2 and check_chat_template3
+
+    # Try special tokens
     try:
         string = "\n".join(all_special_tokens) + \
             "A quick brown fox jumps over the lazy dog!!\n\nHi</s>\n\n" + \
             "".join(all_special_tokens)
-        return slow_tokenizer(string).input_ids == fast_tokenizer(string).input_ids
+        check_special_tokens = \
+            slow_tokenizer(string).input_ids == \
+            fast_tokenizer(string).input_ids
+
+        return check_chat_template and check_special_tokens
     except:
         # For eg see https://github.com/unslothai/unsloth/issues/292
         # Sometimes tokenizer has weird tokens, causing a combined tokenization to fail.
         # [TODO] We temporarily disable this for CodeLlama tokenizers
         if slow_tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
-            return True
+            return check_chat_template
         else:
             return False
+    pass
 pass
 
 
@@ -397,6 +497,7 @@ def load_correct_tokenizer(
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
             return fast_tokenizer
         else:
+            logger.warning(f"Unsloth: Will load {tokenizer_name} as a legacy tokenizer.")
             return convert_to_fast_tokenizer(slow_tokenizer)
         pass
     else:
@@ -574,6 +675,8 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     # Get set and actual tokens
     where_untrained = where_untrained.tolist()
     if len(where_untrained) == 0: return
+
+    # Remove untrained indices where it's longer
     
     where_untrained_set = frozenset(where_untrained)
     actual_bad_tokens = tokenizer.convert_ids_to_tokens(where_untrained)
@@ -637,7 +740,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     pass
 
     # Count all the possible bad tokens
-    final_counts = np.zeros(len(tokenizer), dtype = np.int64)
+    final_counts = np.zeros(max(len(tokenizer), embedding_matrix.shape[0]), dtype = np.int64)
     def mapping(examples):
         input_ids = examples["input_ids"]
         counter = np.fromiter(itertools.chain.from_iterable(input_ids), dtype = np.int32)
@@ -823,7 +926,7 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])\n"\
+        "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
@@ -854,11 +957,13 @@ def patch_sft_trainer_tokenizer():
     "    )\n"\
     "pass\n"\
     "n_devices = torch.cuda.device_count()\n"\
-    "more_than = 0\n"\
-    "for j in range(n_devices):\n"\
-    "    vram = torch.cuda.max_memory_reserved(torch.cuda.device(j)) / 1024 / 1024 / 1024\n"\
-    "    more_than += (vram > 4)\n"\
-    "if more_than > 1: raise RuntimeError('Error: More than 1 GPUs have a lot of VRAM usage.')\n"\
+    "import subprocess, re\n"\
+    "output = subprocess.check_output(\n"\
+    "    'nvidia-smi --query-gpu=memory.used --format=csv', shell = True)\n"\
+    "output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)\n"\
+    "output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)\n"\
+    "if output > 1: raise RuntimeError(\n"\
+    "    'Error: More than 1 GPUs have a lot of VRAM usage. Please obtain a commercial license.')\n"\
     "for _ in range(3):\n"\
     "    gc.collect()\n"\
     "    torch.cuda.empty_cache()\n"\
