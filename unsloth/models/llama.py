@@ -1423,9 +1423,38 @@ class FastLlamaModel:
         transformers_set_seed(random_state)
 
         if isinstance(model, PeftModelForCausalLM):
-            raise TypeError(
-                "Unsloth: Your model already has LoRA adapters. No need to run this again!"
+            # Check if exactly the same and then pass through!
+            assert(hasattr(model, "peft_config"))
+
+            peft_config = model.peft_config["default"].to_dict()
+            check_parameters = [
+                "r", "lora_alpha", "lora_dropout",
+                "bias", "layers_to_transform", "layers_pattern",
+                "use_rslora", "modules_to_save", "init_lora_weights",
+            ]
+            check_all = True
+            for param in check_parameters:
+                check_all = check_all and (peft_config[param] == eval(param))
+            pass
+            check_all = check_all and (
+                len(set(peft_config["target_modules"]) ^ set(target_modules)) == 0
             )
+            check_all = check_all and (
+                (loftq_config == {} or loftq_config is None) and \
+                (peft_config["loftq_config"] == {} or peft_config["loftq_config"] is None)
+            )
+
+            if check_all:
+                # Simply pass through!
+                logger.warning(
+                    "Unsloth: Already have LoRA adapters! We shall skip this step."
+                )
+                return model
+            else:
+                raise TypeError(
+                    "Unsloth: Your model already has LoRA adapters. Your new parameters are different."
+                )
+            pass
         pass
 
         if loftq_config is None: loftq_config = {}
