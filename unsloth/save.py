@@ -853,8 +853,12 @@ def save_to_gguf(
     model_dtype = "f16" if model_dtype == "float16" else "bf16"
 
     # Convert quantization_method to list
-    quantization_method = \
-        quantization_method if type(quantization_method) is list else list(quantization_method)
+    if isinstance(quantization_method, list):
+        quantization_method_list = quantization_method
+    elif isinstance(quantization_method, str):
+        quantization_method_list = [quantization_method]
+    else:
+        quantization_method_list = list(quantization_method)
 
     # Check if bfloat16 is supported
     if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
