@@ -76,7 +76,8 @@ pass
 
 import os # Unsloth only works on NVIDIA GPUs for now
 device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
-device = f"cuda:{device_ids[:device_ids.find(',')]}"
+device = device_ids[:device_ids.find(',')] # Unsloth only works on NVIDIA GPUs for now
+device = f"cuda:{device if device.isdigit() else '0'}"
 
 from math import sqrt as math_sqrt
 KV_CACHE_INCREMENT = 256 # KV Cache update size
@@ -846,7 +847,8 @@ def CausalLM_fast_forward(fast_forward_inference):
             shift_logits = logits
             if not hasattr(self, "extra_ignored_labels"):
                 device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
-                device = f"cuda:{device_ids[:device_ids.find(',')]}" # Unsloth only works on NVIDIA GPUs for now
+                device = device_ids[:device_ids.find(',')] # Unsloth only works on NVIDIA GPUs for now
+                device = f"cuda:{device if device.isdigit() else '0'}"
                 # Fixes https://github.com/unslothai/unsloth/issues/10
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = device)
             pass
@@ -1828,7 +1830,8 @@ class FastLlamaModel:
         # Fixes https://github.com/unslothai/unsloth/issues/10
         max_seq_length = model.max_seq_length
         device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
-        device = f"cuda:{device_ids[:device_ids.find(',')]}" # Unsloth only works on NVIDIA GPUs for now
+        device = device_ids[:device_ids.find(',')] # Unsloth only works on NVIDIA GPUs for now
+        device = f"cuda:{device if device.isdigit() else '0'}"
         extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = device)
         model.model.extra_ignored_labels = extra_ignored_labels
         internal_model = model
