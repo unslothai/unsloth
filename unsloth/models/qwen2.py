@@ -13,8 +13,6 @@
 # limitations under the License.
 
 from .llama import *
-import os
-from ._utils import __version__
 
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
@@ -59,30 +57,30 @@ class FastQwen2Model(FastLlamaModel):
 
     @staticmethod
     def from_pretrained(
-        model_name     = "Qwen/Qwen2-7B",
-        max_seq_length = 4096,
-        dtype          = None,
-        load_in_4bit   = True,
-        token          = None,
-        device_map     = "sequential",
-        rope_scaling   = None, # Qwen2 does not support RoPE scaling
-        fix_tokenizer  = True,
-        model_patcher  = None,
-        tokenizer_name = None,
+        model_name        = "Qwen/Qwen2-7B",
+        max_seq_length    = 4096,
+        dtype             = None,
+        load_in_4bit      = True,
+        token             = None,
+        device_map        = "sequential",
+        rope_scaling      = None, # Qwen2 does not support RoPE scaling
+        fix_tokenizer     = True,
+        model_patcher     = None,
+        tokenizer_name    = None,
         trust_remote_code = False,
         **kwargs,
     ):
         return FastLlamaModel.from_pretrained(
-            model_name     = model_name,
-            max_seq_length = max_seq_length,
-            dtype          = dtype,
-            load_in_4bit   = load_in_4bit,
-            token          = token,
-            device_map     = device_map,
-            rope_scaling   = rope_scaling,
-            fix_tokenizer  = fix_tokenizer,
-            model_patcher  = FastQwen2Model,
-            tokenizer_name = tokenizer_name,
+            model_name        = model_name,
+            max_seq_length    = max_seq_length,
+            dtype             = dtype,
+            load_in_4bit      = load_in_4bit,
+            token             = token,
+            device_map        = device_map,
+            rope_scaling      = rope_scaling,
+            fix_tokenizer     = fix_tokenizer,
+            model_patcher     = FastQwen2Model,
+            tokenizer_name    = tokenizer_name,
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
