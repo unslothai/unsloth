@@ -373,7 +373,7 @@ pass
 
 
 # Unsloth only works on NVIDIA GPUs for now
-device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
 device = f"cuda:{device_ids[:device_ids.find(',')]}"
 
 class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):

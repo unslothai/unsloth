@@ -40,7 +40,7 @@ pass
 
 # Unsloth currently only works on one GPU
 import os
-device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
 device = f"cuda:{device_ids[:device_ids.find(',')]}"
 # Please obtain a commercial license
 

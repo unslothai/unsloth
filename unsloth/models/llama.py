@@ -75,7 +75,7 @@ def original_apply_o(self, X):
 pass
 
 import os # Unsloth only works on NVIDIA GPUs for now
-device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
 device = f"cuda:{device_ids[:device_ids.find(',')]}"
 
 from math import sqrt as math_sqrt
@@ -845,7 +845,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if labels is not None:
             shift_logits = logits
             if not hasattr(self, "extra_ignored_labels"):
-                device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+                device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
                 device = f"cuda:{device_ids[:device_ids.find(',')]}" # Unsloth only works on NVIDIA GPUs for now
                 # Fixes https://github.com/unslothai/unsloth/issues/10
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = device)
@@ -1827,7 +1827,7 @@ class FastLlamaModel:
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10
         max_seq_length = model.max_seq_length
-        device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+        device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
         device = f"cuda:{device_ids[:device_ids.find(',')]}" # Unsloth only works on NVIDIA GPUs for now
         extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = device)
         model.model.extra_ignored_labels = extra_ignored_labels
