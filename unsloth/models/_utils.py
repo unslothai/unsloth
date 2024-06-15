@@ -372,6 +372,10 @@ def prepare_n_gradient_checkpoints(
 pass
 
 
+# Unsloth only works on NVIDIA GPUs for now
+device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
+device = f"cuda:{device_ids[:device_ids.find(',')]}"
+
 class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     """
     Saves VRAM by smartly offloading to RAM.
@@ -393,7 +397,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY):
         (hidden_states,) = ctx.saved_tensors
-        hidden_states = hidden_states.to("cuda", non_blocking = True).detach()
+        hidden_states = hidden_states.to(device, non_blocking = True).detach()
         hidden_states.requires_grad = True
         with torch.enable_grad():
             (output,) = ctx.forward_function(hidden_states, *ctx.args)
@@ -457,7 +461,6 @@ transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndByt
 
 
 # Offloading to disk for modules (lm_head, embed_tokens)
-import os
 import pickle
 
 def offload_to_disk(W, model, name, temporary_location : str = "_unsloth_temporary_saved_buffers"):
