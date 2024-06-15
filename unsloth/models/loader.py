@@ -91,21 +91,37 @@ class FastLanguageModel(FastLlamaModel):
         model_name = _get_model_name(model_name, load_in_4bit)
 
         # First check if it's a normal model via AutoConfig
-        is_peft = False
         try:
             model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
-            is_peft = False
+            is_model = True
         except:
-            try:
-                # Most likely a PEFT model
-                peft_config = PeftConfig.from_pretrained(model_name, token = token, revision = revision)
-            except:
-                raise RuntimeError(f"Unsloth: `{model_name}` is not a full model or a PEFT model.")
-            
+            is_model = False
+        try:
+            peft_config = PeftConfig .from_pretrained(model_name, token = token, revision = revision)
+            is_peft = True
+        except:
+            is_peft = False
+
+        # Cannot be both!
+        if is_model and is_peft:
+            raise RuntimeError(
+                "Unsloth: You repo has a LoRA adapter and a base model.\n"\
+                "You have 2 files `config.json` and `adapter_config.json`.\n"\
+                "We must only allow one config file.\n"\
+                "Please separate the LoRA and base models to 2 repos."
+            )
+        elif not is_model and not is_peft:
+            raise RuntimeError(
+                f"Unsloth: `{model_name}` is not a base model or a PEFT model.\n"\
+                "We could not locate a `config.json` or `adapter_config.json` file"
+            )
+        pass
+
+        # Get base model for PEFT:
+        if is_peft:
             # Check base model again for PEFT
             model_name = _get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
-            model_config = AutoConfig.from_pretrained(model_name, token = token)
-            is_peft = True
+            model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
         pass
 
         model_type = model_config.model_type
