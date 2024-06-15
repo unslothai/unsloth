@@ -38,11 +38,9 @@ except:
     GemmaFlashAttention2 = GemmaAttention
 pass
 
-# Unsloth currently only works on one GPU
 import os
 device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
-device = f"cuda:{device_ids[:device_ids.find(',')]}"
-# Please obtain a commercial license
+device = f"cuda:{device_ids[:device_ids.find(',')]}" # Unsloth only works on NVIDIA GPUs for now
 
 torch_nn_functional_gelu = torch.nn.functional.gelu
 def fast_geglu_inference(self, X):
