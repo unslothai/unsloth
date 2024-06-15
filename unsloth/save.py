@@ -875,7 +875,7 @@ def save_to_gguf(
     pass
 
     # Check I quants
-    for quant_method in quantization_method: 
+    for quant_method in quantization_method_list:
         if quant_method.startswith("iq2"):
             raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
     pass
@@ -890,7 +890,7 @@ def save_to_gguf(
 
     # Map quant methods
     new_quantization_method = []
-    for quant_method in quantization_method:
+    for quant_method in quantization_method_list:
         if   quant_method == "not_quantized":  quantization_method = model_dtype
         elif quant_method == "fast_quantized": quantization_method = "q8_0"
         elif quant_method == "quantized":      quantization_method = "q4_k_m"
