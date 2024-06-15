@@ -15,6 +15,8 @@
 from .llama import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
+from .llava_mistral import FastLlavaMistralModel
+from .llava_vicuna import FastLlavaVicunaModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -42,7 +44,7 @@ def _get_model_name(model_name, load_in_4bit = True):
             f"to obtain the latest transformers build, then restart this session.\n"\
             f"For now, we shall load `{model_name}` instead (still 4bit, just slower downloading)."
         )
-    
+
     elif not load_in_4bit and model_name in INT_TO_FLOAT_MAPPER:
         new_model_name = INT_TO_FLOAT_MAPPER[model_name.lower()]
         # logger.warning_once(
@@ -101,7 +103,7 @@ class FastLanguageModel(FastLlamaModel):
                 peft_config = PeftConfig.from_pretrained(model_name, token = token, revision = revision)
             except:
                 raise RuntimeError(f"Unsloth: `{model_name}` is not a full model or a PEFT model.")
-            
+
             # Check base model again for PEFT
             model_name = _get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
             model_config = AutoConfig.from_pretrained(model_name, token = token)
@@ -110,7 +112,7 @@ class FastLanguageModel(FastLlamaModel):
 
         model_type = model_config.model_type
 
-        if   model_type == "llama" or model_type == "llava":   dispatch_model = FastLlamaModel
+        if   model_type == "llama":   dispatch_model = FastLlamaModel
         elif model_type == "mistral": dispatch_model = FastMistralModel
         elif model_type == "gemma":
             if not SUPPORTS_GEMMA:
@@ -123,6 +125,10 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemmaModel
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
+        elif model_type == "llava_next" and "vicuna" in model_name:
+            dispatch_model = FastLlavaVicunaModel
+        elif model_type == "llava_next" and "mistral" in model_name:
+            dispatch_model = FastLlavaMistralModel
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} with type {model_type} not supported yet!\n"\
@@ -155,7 +161,7 @@ class FastLanguageModel(FastLlamaModel):
             revision          = revision if not is_peft else None,
             *args, **kwargs,
         )
-        
+
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
