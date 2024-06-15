@@ -1449,7 +1449,7 @@ class FastLlamaModel:
                 logger.warning(
                     "Unsloth: Already have LoRA adapters! We shall skip this step."
                 )
-                return
+                return model
             else:
                 raise TypeError(
                     "Unsloth: Your model already has LoRA adapters. Your new parameters are different."
