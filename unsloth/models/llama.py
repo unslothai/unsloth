@@ -1428,16 +1428,21 @@ class FastLlamaModel:
 
             peft_config = model.peft_config["default"].to_dict()
             check_parameters = [
-                "r", "target_modules", "lora_alpha", "lora_dropout",
+                "r", "lora_alpha", "lora_dropout",
                 "bias", "layers_to_transform", "layers_pattern",
                 "use_rslora", "modules_to_save", "init_lora_weights",
-                "loftq_config",
             ]
             check_all = True
             for param in check_parameters:
-                print(peft_config[param] == eval(param), peft_config[param], eval(param))
                 check_all = check_all and (peft_config[param] == eval(param))
             pass
+            check_all = check_all and (
+                len(set(peft_config["target_modules"]) ^ set(target_modules)) == 0
+            )
+            check_all = check_all and (
+                (loftq_config == {} or loftq_config is None) and \
+                (peft_config["loftq_config"] == {} or peft_config["loftq_config"] is None)
+            )
 
             if check_all:
                 # Simply pass through!
