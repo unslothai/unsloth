@@ -1435,6 +1435,7 @@ class FastLlamaModel:
             ]
             check_all = True
             for param in check_parameters:
+                print(peft_config[param] == eval(param), peft_config[param], eval(param))
                 check_all = check_all and (peft_config[param] == eval(param))
             pass
 
