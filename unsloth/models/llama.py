@@ -51,6 +51,7 @@ except:
 pass
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
+from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
@@ -1075,7 +1076,12 @@ class FastLlamaModel:
         model_max_seq_length = model_config.max_position_embeddings
 
         # Check if RoPE Scaling is even allowed
-        has_rope_scaling = hasattr(model_config, "rope_scaling")
+        model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
+        has_rope_scaling = False
+        try:
+            with open(inspect.getfile(model_function), "r") as file:
+                has_rope_scaling = "self.config.rope_scaling" in file.read()
+        except: pass
 
         # If max_seq_length is not specified, use maximum fron config
         if max_seq_length is None:
