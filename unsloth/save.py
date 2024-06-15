@@ -655,7 +655,7 @@ def unsloth_save_model(
 
     # Save!
     # [TODO] --> is this correct?
-    save_pretrained_settings["selected_adapters"] = None
+    # save_pretrained_settings["selected_adapters"] = None
 
     # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
