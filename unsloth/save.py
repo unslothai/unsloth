@@ -893,8 +893,8 @@ def save_to_gguf(
         elif quant_method is None:             quantization_method = "q8_0"
 
         # Check if wrong method
-        if quantization_method not in ALLOWED_QUANTS.keys():
-            error = f"Unsloth: Quant method = [{quantization_method}] not supported. Choose from below:\n"
+        if quant_method not in ALLOWED_QUANTS.keys():
+            error = f"Unsloth: Quant method = [{quant_method}] not supported. Choose from below:\n"
             for key, value in ALLOWED_QUANTS.items():
                 error += f"[{key}] => {value}\n"
             raise RuntimeError(error)
