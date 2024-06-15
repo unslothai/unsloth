@@ -858,7 +858,7 @@ def save_to_gguf(
     elif isinstance(quantization_method, str):
         quantization_method_list = [quantization_method]
     else:
-        quantization_method_list = list(quantization_method)
+        raise TypeError("quantization_method should be either a string or a list")
 
     # Check if bfloat16 is supported
     if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
