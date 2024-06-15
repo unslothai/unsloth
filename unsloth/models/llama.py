@@ -1426,7 +1426,7 @@ class FastLlamaModel:
             # Check if exactly the same and then pass through!
             assert(hasattr(model, "peft_config"))
 
-            peft_config = model.peft_config
+            peft_config = model.peft_config["default"].to_dict()
             check_parameters = [
                 "r", "target_modules", "lora_alpha", "lora_dropout",
                 "bias", "layers_to_transform", "layers_pattern",
