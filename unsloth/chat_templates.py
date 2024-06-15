@@ -528,6 +528,7 @@ def get_chat_template(
         chat_template, stop_word = chat_template
         assert(type(chat_template) is str)
         assert(type(stop_word) is str)
+        ollama_modelfile = None
 
     elif type(chat_template) is str:
 
