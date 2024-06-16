@@ -1731,28 +1731,6 @@ class FastLlamaModel:
             use_reentrant = True,
         )
 
-        
-
-        # Patch tokenizer to pad to the right
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "right"
-            pass
-            internal_model = internal_model.model
-        pass
-        if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "right"
-        pass
-        max_seq_length = model.max_seq_length
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model = internal_model.model
-        pass
-        internal_model.max_seq_length = max_seq_length
-        return model
-
         # Fix up config for transformers uploading PEFT
         for active_adapter in model.peft_config.keys():
             # Not necessary since we requires transformers >= 4.37
@@ -1775,6 +1753,28 @@ class FastLlamaModel:
                 "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
             )
         pass
+
+        
+
+        # Patch tokenizer to pad to the right
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "_saved_temp_tokenizer"):
+                internal_model._saved_temp_tokenizer.padding_side = "right"
+            pass
+            internal_model = internal_model.model
+        pass
+        if hasattr(internal_model, "_saved_temp_tokenizer"):
+            internal_model._saved_temp_tokenizer.padding_side = "right"
+        pass
+        max_seq_length = model.max_seq_length
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model.max_seq_length = max_seq_length
+            internal_model = internal_model.model
+        pass
+        internal_model.max_seq_length = max_seq_length
+        return model
 
         # Fix loftq issues
         # loftq_config must not = None, but rather {}
