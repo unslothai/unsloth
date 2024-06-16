@@ -1849,28 +1849,6 @@ class FastLlamaModel:
             pass
         pass
 
-        
-
-        # Patch tokenizer to pad to the right
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "right"
-            pass
-            internal_model = internal_model.model
-        pass
-        if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "right"
-        pass
-        max_seq_length = model.max_seq_length
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model = internal_model.model
-        pass
-        internal_model.max_seq_length = max_seq_length
-        return model
-
         logger.warning_once(
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "\
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.",
@@ -1892,6 +1870,8 @@ class FastLlamaModel:
         pass
         internal_model.max_seq_length = max_seq_length
 
+        
+
         # Patch tokenizer to pad to the right
         internal_model = model
         while hasattr(internal_model, "model"):
@@ -1903,6 +1883,14 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
         pass
+        max_seq_length = model.max_seq_length
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model.max_seq_length = max_seq_length
+            internal_model = internal_model.model
+        pass
+        internal_model.max_seq_length = max_seq_length
+        return model
 
         # Clear deleted GPU items
         for _ in range(3):
