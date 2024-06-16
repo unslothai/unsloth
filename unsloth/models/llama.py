@@ -1725,6 +1725,7 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
         pass
+        max_seq_length = model.max_seq_length
         internal_model = model
         while hasattr(internal_model, "model"):
             internal_model.max_seq_length = max_seq_length
