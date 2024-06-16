@@ -1725,11 +1725,11 @@ class FastLlamaModel:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
         pass
 
-        # model = prepare_model_for_kbit_training(
-        #     model,
-        #     use_gradient_checkpointing = use_gradient_checkpointing,
-        #     use_reentrant = True,
-        # )
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+            use_reentrant = True,
+        )
 
         # Fix up config for transformers uploading PEFT
         for active_adapter in model.peft_config.keys():

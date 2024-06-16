@@ -156,6 +156,7 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name = None
         pass
 
+        print(model_name)
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
@@ -207,6 +208,7 @@ class FastLanguageModel(FastLlamaModel):
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
             model.enable_input_require_grads()
+            print(old_model_name)
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
