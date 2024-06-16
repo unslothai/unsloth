@@ -853,13 +853,13 @@ def save_to_gguf(
     model_dtype = "f16" if model_dtype == "float16" else "bf16"
 
     # Convert quantization_method to list
-    if isinstance(quantization_method, list):
-        quantization_method_list = quantization_method
-    elif isinstance(quantization_method, str):
-        quantization_method_list = [quantization_method]
+    if   isinstance(quantization_method, list):  pass
+    elif isinstance(quantization_method, str):   quantization_method = [ quantization_method, ]
+    elif isinstance(quantization_method, tuple): quantization_method = list(quantization_method)
     else:
-        raise TypeError("quantization_method should be either a string or a list")
-
+        raise TypeError("Unsloth: quantization_method can only be a string or a list of strings")
+    pass
+    
     # Check if bfloat16 is supported
     if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
         logger.warning(
@@ -875,7 +875,7 @@ def save_to_gguf(
     pass
 
     # Check I quants
-    for quant_method in quantization_method_list:
+    for quant_method in quantization_method: 
         if quant_method.startswith("iq2"):
             raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
     pass
@@ -890,7 +890,7 @@ def save_to_gguf(
 
     # Map quant methods
     new_quantization_method = []
-    for quant_method in quantization_method_list:
+    for quant_method in quantization_method:
         if   quant_method == "not_quantized":  quantization_method = model_dtype
         elif quant_method == "fast_quantized": quantization_method = "q8_0"
         elif quant_method == "quantized":      quantization_method = "q4_k_m"
