@@ -216,7 +216,7 @@ class FastLanguageModel(FastLlamaModel):
                 is_trainable = True,
             )
             # Patch it as well!
-            model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
+            # model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
         pass
         return model, tokenizer
     pass
