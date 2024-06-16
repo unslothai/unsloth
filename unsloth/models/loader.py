@@ -113,7 +113,8 @@ class FastLanguageModel(FastLlamaModel):
         elif not is_model and not is_peft:
             raise RuntimeError(
                 f"Unsloth: `{model_name}` is not a base model or a PEFT model.\n"\
-                "We could not locate a `config.json` or `adapter_config.json` file"
+                "We could not locate a `config.json` or `adapter_config.json` file.\n"\
+                "Are you certain the model name is correct? Does it actually exist?"
             )
         pass
 
@@ -156,7 +157,6 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name = None
         pass
 
-        print(model_name)
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
@@ -208,7 +208,6 @@ class FastLanguageModel(FastLlamaModel):
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
             model.enable_input_require_grads()
-            print(old_model_name)
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
