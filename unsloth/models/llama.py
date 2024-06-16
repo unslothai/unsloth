@@ -1714,6 +1714,25 @@ class FastLlamaModel:
             )
         pass
 
+        # Get activation function
+        model_type = model.config.model_type
+
+        if   model_type == "llama":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "mistral": apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen2":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu_approx
+        else:
+            raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
+        pass
+
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+            use_reentrant = True,
+        )
+
+        
+
         # Patch tokenizer to pad to the right
         internal_model = model
         while hasattr(internal_model, "model"):
@@ -1733,23 +1752,6 @@ class FastLlamaModel:
         pass
         internal_model.max_seq_length = max_seq_length
         return model
-
-        # Get activation function
-        model_type = model.config.model_type
-
-        if   model_type == "llama":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "mistral": apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "qwen2":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu_approx
-        else:
-            raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
-        pass
-
-        model = prepare_model_for_kbit_training(
-            model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-            use_reentrant = True,
-        )
 
         # Fix up config for transformers uploading PEFT
         for active_adapter in model.peft_config.keys():
