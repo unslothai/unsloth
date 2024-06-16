@@ -113,7 +113,8 @@ class FastLanguageModel(FastLlamaModel):
         elif not is_model and not is_peft:
             raise RuntimeError(
                 f"Unsloth: `{model_name}` is not a base model or a PEFT model.\n"\
-                "We could not locate a `config.json` or `adapter_config.json` file"
+                "We could not locate a `config.json` or `adapter_config.json` file.\n"\
+                "Are you certain the model name is correct? Does it actually exist?"
             )
         pass
 
