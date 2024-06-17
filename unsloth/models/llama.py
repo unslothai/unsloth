@@ -1488,9 +1488,9 @@ class FastLlamaModel:
                     model.model.lm_head.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
-                    model.model.model.lm_head.original_module\
+                    model.model.lm_head.original_module\
                         .to(device = "cpu", non_blocking = True)
-                    model.model.model.lm_head.original_module.requires_grad_(False)
+                    model.model.lm_head.original_module.requires_grad_(False)
                 pass
 
                 return model
