@@ -735,7 +735,8 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
         raise ValueError(
             'Unsloth: Untrained tokens found, but embed_tokens & lm_head not trainable, causing NaNs. '\
             'Restart then add `embed_tokens` & `lm_head` to '\
-            '`FastLanguageModel.get_peft_model(target_modules = [..., "embed_tokens", "lm_head",])`',
+            '`FastLanguageModel.get_peft_model(target_modules = [..., "embed_tokens", "lm_head",]). `'\
+            'Are you using the `base` model? Instead, use the `instruct` version to silence this warning.',
         )
     pass
 
