@@ -1430,15 +1430,30 @@ class FastLlamaModel:
             check_parameters = [
                 "r", "lora_alpha", "lora_dropout",
                 "bias", "layers_to_transform", "layers_pattern",
-                "use_rslora", "modules_to_save", "init_lora_weights",
+                "use_rslora", "init_lora_weights",
             ]
             check_all = True
             for param in check_parameters:
                 check_all = check_all and (peft_config[param] == eval(param))
             pass
+
+            # Check save_modules
+            old_target_modules = list(peft_config["target_modules"])
+            modules_to_save = peft_config["modules_to_save"]
+            if modules_to_save is None: modules_to_save = {}
+            modules_to_save = list(modules_to_save)
+            old_target_modules += modules_to_save
+
+            # Combine all
+            new_target_modules = list(target_modules) + \
+                list(modules_to_save if modules_to_save is not None else [])
+
+            # Now check!
+            new_target_modules = set(new_target_modules)
             check_all = check_all and (
-                len(set(peft_config["target_modules"]) ^ set(target_modules)) == 0
+                len(set(old_target_modules) ^ new_target_modules) == 0
             )
+
             check_all = check_all and (
                 (loftq_config == {} or loftq_config is None) and \
                 (peft_config["loftq_config"] == {} or peft_config["loftq_config"] is None)
@@ -1449,6 +1464,35 @@ class FastLlamaModel:
                 logger.warning(
                     "Unsloth: Already have LoRA adapters! We shall skip this step."
                 )
+
+                # Offload!
+                # [TODO] First offload lm_head and embed_tokens to CPU (should be disk!!)
+                if "embed_tokens" in new_target_modules:
+                    print("Unsloth: Casting embed_tokens to float32")
+
+                    model.model.model.embed_tokens.modules_to_save.default\
+                        .to(device = device, dtype = torch.float32, non_blocking = True)
+                    model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
+
+                    # [TODO] Move old embed_tokens to CPU - should be disk!
+                    model.model.model.embed_tokens.original_module\
+                        .to(device = "cpu", non_blocking = True)
+                    model.model.model.embed_tokens.original_module.requires_grad_(False)
+                pass
+
+                if "lm_head" in new_target_modules:
+                    print("Unsloth: Casting lm_head to float32")
+
+                    model.model.lm_head.modules_to_save.default\
+                        .to(device = device, dtype = torch.float32, non_blocking = True)
+                    model.model.lm_head.modules_to_save.default.requires_grad_(True)
+
+                    # [TODO] Move old lm_head to CPU - should be disk!
+                    model.model.lm_head.original_module\
+                        .to(device = "cpu", non_blocking = True)
+                    model.model.lm_head.original_module.requires_grad_(False)
+                pass
+
                 return model
             else:
                 raise TypeError(
@@ -1669,7 +1713,7 @@ class FastLlamaModel:
             print("Unsloth: Casting embed_tokens to float32")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
             model.model.model.embed_tokens.modules_to_save.default\
-                .to(device = input_embeddings_device,  dtype = torch.float32, non_blocking = True)
+                .to(device = device, dtype = torch.float32, non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
@@ -1677,7 +1721,7 @@ class FastLlamaModel:
             print("Unsloth: Casting lm_head to float32")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
             model.model.lm_head.modules_to_save.default\
-                .to(device = output_embeddings_device, dtype = torch.float32, non_blocking = True)
+                .to(device = device, dtype = torch.float32, non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
