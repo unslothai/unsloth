@@ -1210,6 +1210,9 @@ extra_eos_tokens = None,
         partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
         partial_system = partial_system.replace("{SYSTEM}", "")
 
+        # If {SYSTEM} is non existent, simply just use the content
+        print(partial_system)
+
         # Separate the BOS
         if has_bos_token:
             partial_system = partial_system.replace(tokenizer.bos_token, "", 1)
