@@ -1327,15 +1327,6 @@ extra_eos_tokens = None,
 pass
 
 
-def formatting_prompts_func(examples):
-    convos = examples["conversations"]
-    texts = [tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False) for convo in convos]
-    return { "text" : texts, }
-pass
-
-tokenizer.chat_template = jinja_template
-dataset.map(formatting_prompts_func, batched = True,)[0]
-
 def create_ollama_modelfile(tokenizer, gguf_location):
     """
         Creates an Ollama Modelfile.
