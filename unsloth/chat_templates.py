@@ -20,7 +20,7 @@ __all__ = [
 
     "to_sharegpt",
     "standardize_sharegpt",
-    "construct_chat_template",
+    "apply_chat_template",
 
     "test_construct_chat_template",
     "create_ollama_modelfile",
@@ -1279,6 +1279,62 @@ def test_construct_chat_template():
     pass
 pass
 
+
+def apply_chat_template( \
+
+dataset,
+tokenizer = None,
+
+chat_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+{SYSTEM}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{OUTPUT}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+{INPUT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{OUTPUT}<|eot_id|>""",
+    
+default_system_message = \
+    "Below are some instructions that describe some tasks. Write responses that appropriately complete each request.",
+  
+extra_eos_tokens = None,
+  
+):
+    """
+    Creates a Ollama modelfile and a HF Jinja template from a custom
+    template. You must provide 2x examples of an input & output.
+    There is an optional system message as well.
+
+    You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
+    """
+    modelfile, jinja_template = construct_chat_template(
+        tokenizer = tokenizer,
+        chat_template = chat_template,
+        default_system_message = default_system_message,
+        extra_eos_tokens = extra_eos_tokens,
+    )
+    def formatting_prompts_func(examples):
+        convos = examples["conversations"]
+        texts = [tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False) for convo in convos]
+        return { "text" : texts, }
+    pass
+    tokenizer.chat_template = jinja_template
+    tokenizer._ollama_modelfile = modelfile
+    return dataset.map(formatting_prompts_func, batched = True,)
+pass
+
+
+def formatting_prompts_func(examples):
+    convos = examples["conversations"]
+    texts = [tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False) for convo in convos]
+    return { "text" : texts, }
+pass
+
+tokenizer.chat_template = jinja_template
+dataset.map(formatting_prompts_func, batched = True,)[0]
 
 def create_ollama_modelfile(tokenizer, gguf_location):
     """
