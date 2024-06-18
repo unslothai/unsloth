@@ -1037,7 +1037,7 @@ chat_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
     
 default_system_message = \
     "Below are some instructions that describe some tasks. Write responses that appropriately complete each request.",
-  
+
 extra_eos_tokens = None,
   
 ):
@@ -1216,8 +1216,11 @@ extra_eos_tokens = None,
         partial_system = partial_system.replace("{SYSTEM}", "")
 
         # If {SYSTEM} is non existent, simply just use the content
-        if partial_system == default_system_message:
+        if "{SYSTEM}" not in partial_system:
             partial_system = "messages[0]['content']"
+        else:
+            if default_system_message is None:
+                raise RuntimeError("Unsloth: Please specify a default system message!")
         pass
 
         # Separate the BOS
@@ -1230,10 +1233,14 @@ extra_eos_tokens = None,
                 "{{ " + partial_system + " }}"\
                 "{% set loop_messages = messages[1:] %}"
         if default_system_message is not None:
+            full_system = system_part.replace("{SYSTEM}", default_system_message)
             partial_system += "{% else %}"\
-                "{{ '" + system_part.replace("{SYSTEM}", default_system_message) + "' }}"\
+                "{{ '" + full_system + "' }}"\
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
+
+            # Add to modelfile
+            modelfile += '\nSYSTEM "' + full_system + '"'
         else:
             partial_system += "{% endif %}"
         pass
