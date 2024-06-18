@@ -1215,6 +1215,7 @@ extra_eos_tokens = None,
             partial_system = "messages[0]['content']"
         pass
         print(partial_system)
+        print(default_system_message)
 
         # Separate the BOS
         if has_bos_token:
