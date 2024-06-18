@@ -1211,7 +1211,9 @@ extra_eos_tokens = None,
         partial_system = partial_system.replace("{SYSTEM}", "")
 
         # If {SYSTEM} is non existent, simply just use the content
-        print(partial_system)
+        if partial_system == default_system_message:
+            partial_system = "messages[0]['content']"
+        pass
 
         # Separate the BOS
         if has_bos_token:
