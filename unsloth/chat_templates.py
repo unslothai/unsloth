@@ -1157,7 +1157,12 @@ extra_eos_tokens = None,
             ollama_system = ollama_system[len(tokenizer.bos_token):]
         pass
     pass
-    system_modelfile = "{{ if .System }}" + ollama_system.replace("{SYSTEM}", "{{ .System }}") + "{{ end }}"
+    # Check system
+    if "{SYSTEM}" in ollama_system:
+        system_modelfile = "{{ if .System }}" + ollama_system.replace("{SYSTEM}", "{{ .System }}") + "{{ end }}"
+    else:
+        system_modelfile = ollama_system
+    pass
     input_modelfile  = "{{ if .Prompt }}" + input_part .replace("{INPUT}",  "{{ .Prompt }}") + "{{ end }}"
     output_modelfile = output_part.replace("{OUTPUT}", "{{ .Response }}")
 
