@@ -789,6 +789,172 @@ def standardize_dataset(
 pass
 
 
+import re
+
+def _parse_combined_prompt(combined_prompt, dataset):
+    # Find {...}
+    possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
+    dataset_columns = set(dataset.column_names)
+    for column in possible_columns:
+        if column not in dataset_columns:
+            raise KeyError(
+                f"Unsloth: Your prompt includes '{column}' but this does not exist in the dataset. "\
+                f"Only allowed columns are {list(dataset_columns)}"
+            )
+        pass
+    pass
+
+    # Find [[...]]
+    optional_prompts = list(re.finditer(r"\[\[.+?\]\]", combined_prompt, flags = re.DOTALL | re.MULTILINE))
+    optional_prompts = [(x.span(), x.group(0)) for x in optional_prompts]
+
+    final_optional_prompts = []
+    if len(optional_prompts) != 0:
+        # Add left
+        left = optional_prompts[0]
+        l = left[0][0]
+        if l != 0: final_optional_prompts.append(combined_prompt[:l])
+
+        # Add in between
+        for left, right in zip(optional_prompts[:-1], optional_prompts[1:]):
+            l, r = left[0][-1], right[0][0]
+            final_optional_prompts.append(left)
+            if l != r: final_optional_prompts.append(combined_prompt[l : r])
+        pass
+        final_optional_prompts.append(optional_prompts[-1])
+
+        # Add right
+        right = optional_prompts[-1]
+        r = right[0][1]
+        if r != len(combined_prompt): final_optional_prompts.append(combined_prompt[r:])
+    else:
+        # Just add in the entire string
+        final_optional_prompts.append(combined_prompt)
+    pass
+
+    check_combined = "".join(x if type(x) is str else x[1] for x in final_optional_prompts)
+    assert(combined_prompt == check_combined)
+
+    return possible_columns, final_optional_prompts
+pass
+
+def _create_formatter(possible_columns, final_optional_prompts, user_column_name):
+    # Start final prompt!
+    function = ["def __combined_prompt_processor__(examples):"]
+    columns = list(set(possible_columns))
+    for column in columns:
+        function.append(f"{' '*4}{column}__ = examples['{column}']")
+    function.append(f"{' '*4}texts = []")
+    function.append(f"{' '*4}for ({', '.join(columns)}) in zip({', '.join(f'{x}__' for x in columns)}):")
+
+    # Add optional tags as well!
+    final_prompt = ""
+    formatter = []
+
+    for j, optional_prompt in enumerate(final_optional_prompts):
+        if type(optional_prompt) is str:
+            columns = re.findall(r"\{(.+?)\}", optional_prompt)
+            formatter += columns
+            # Must escape \n \r
+            final_prompt += optional_prompt.encode("unicode-escape").decode("utf-8")
+        else:
+            where, prompt = optional_prompt
+            # Strip [[...]]
+            # Must escape \n \r
+            prompt = prompt[2:-2].encode("unicode-escape").decode("utf-8")
+            columns = re.findall(r"\{(.+?)\}", prompt)
+            x = f"__optional_{j}__"
+            prompt = f"{' '*8}{x} = '{prompt}'.format({', '.join(f'{x} = {x}' for x in columns)}) if input else ''"
+            function.append(prompt)
+            formatter.append(x)
+            final_prompt += "{" + x + "}"
+        pass
+    pass
+
+    function.insert(1, f"{' '*4}__combined_prompt__ = '{final_prompt}'")
+    function.append(f"{' '*8}texts.append("\
+                    f"__combined_prompt__.format({', '.join(f'{x} = {x}' for x in formatter)}))")
+    function.append(f"{' '*4}return " + "{ " + f"'{user_column_name}' : texts" + " }")
+    return "\n".join(function)
+pass
+
+
+def standardize_dataset(
+    dataset,
+    merged_prompt = "",
+    merged_column_name = "instruction",
+    output_column_name = "output",
+    remove_unsued_columns = True,
+    conversation_length = 1,
+    random_state = 3407,
+):
+    """
+    
+    """
+    possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
+    function = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
+    exec(function, globals())
+    dataset = dataset.map(__combined_prompt_processor__, batched = True, desc = "Merging columns")
+
+    def __convert_to_sharegpt__(examples):
+        users      = examples[merged_column_name]
+        assistants = examples[output_column_name]
+        texts = []
+        for user, assistant in zip(users, assistants):
+            texts.append([
+                {"from" : "user",      "content" : user     },
+                {"from" : "assistant", "content" : assistant},
+            ])
+        pass
+        return { "conversations" : texts, }
+    pass
+
+    dataset = dataset.map(
+        __convert_to_sharegpt__,
+        batched = True,
+        desc = "Converting to ShareGPT",
+        # Remove unsued columns!
+        remove_columns = dataset.column_names if remove_unsued_columns else None,
+    )
+
+    # Randomnly concat conversations to create a long stream!
+    from datasets import concatenate_datasets
+    n_extensions = max(conversation_length-1, 0)
+    if n_extensions == 0: return dataset
+
+    dataset = dataset.rename_columns({"conversations" : f"conversations0"})
+    all_shuffled = [dataset]
+    for j in range(1, n_extensions+1):
+        shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
+        all_shuffled.append(shuffled)
+    pass
+    dataset = concatenate_datasets(all_shuffled, axis = 1)
+
+    # Combine them into 1
+    function = "def __combine_conversations__(examples):\n"
+    n_extensions += 1
+    for j in range(n_extensions):
+        function += f"{' '*4}conversations{j}__ = examples['conversations{j}']\n"
+    function += f"{' '*4}convos = []\n"
+    function += f"{' '*4}for ({', '.join(f'conversations{j}' for j in range(n_extensions))}) "\
+                f"in zip({', '.join(f'conversations{j}__' for j in range(n_extensions))}):\n"
+    function += f"{' '*8}convos.append("\
+                f"{'+'.join(f'conversations{j}' for j in range(n_extensions))})\n"
+    function += f"{' '*4}return " + "{ " + f"'conversations' : convos" + " }"
+
+    # Map function
+    exec(function, globals())
+    dataset = dataset.map(
+        __combine_conversations__,
+        batched = True,
+        desc = "Extending conversations",
+        # Remove unsued columns!
+        remove_columns = dataset.column_names if remove_unsued_columns else None,
+    )
+    return dataset
+pass
+
+
 def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     added_tokens_decoder = tokenizer.added_tokens_decoder.values()
     added_tokens_decoder = [str(x) for x in added_tokens_decoder]
