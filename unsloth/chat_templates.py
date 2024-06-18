@@ -17,9 +17,11 @@ __all__ = [
     "test_chat_templates",
     "test_hf_gguf_equivalence",
     "remove_special_tokens",
-    "standardize_dataset",
 
+    "to_sharegpt",
+    "standardize_sharegpt",
     "construct_chat_template",
+
     "test_construct_chat_template",
     "create_ollama_modelfile",
 ]
@@ -713,84 +715,6 @@ def remove_special_tokens(tokenizer, prompt):
 pass
 
 
-def standardize_dataset(
-    dataset,
-    conversation_key = "conversations",
-    system_message = None,
-    aliases_for_system    = ["system",],
-    aliases_for_user      = ["user", "human", "input",],
-    aliases_for_assistant = ["gpt", "assistant", "output",],
-):
-    """
-        Standardizes ShareGPT and other formats to user/assistant Hugging Face format.
-    """
-    import collections
-    import itertools
-
-    convos = dataset[:10][conversation_key]
-    uniques = collections.defaultdict(list)
-    for convo in convos:
-        for message in convo:
-            for key, value in message.items():
-                uniques[key].append(value)
-    pass
-
-    # Must be only 2 entries
-    assert(len(uniques.keys()) == 2)
-
-    keys = list(uniques.keys())
-    length_first  = len(set(uniques[keys[0]]))
-    length_second = len(set(uniques[keys[1]]))
-
-    if length_first < length_second:
-        # Role is assigned to the first element
-        role_key    = keys[0]
-        content_key = keys[1]
-    else:
-        role_key    = keys[1]
-        content_key = keys[0]
-    pass
-
-    # Check roles are in aliases
-    all_aliases = set(aliases_for_system + aliases_for_user + aliases_for_assistant)
-    roles = set(uniques[role_key])
-    leftover_aliases = (all_aliases | roles) - all_aliases
-    if len(leftover_aliases) != 0:
-        raise TypeError(
-            f"Unsloth: {list(leftover_aliases)} are not in aliases. Please update aliases."
-        )
-    pass
-
-    # Mapping for aliases
-    aliases_mapping = {}
-    for x in aliases_for_system:    aliases_mapping[x] = "system"
-    for x in aliases_for_user:      aliases_mapping[x] = "user"
-    for x in aliases_for_assistant: aliases_mapping[x] = "assistant"
-
-    def _standardize_dataset(examples):
-        convos = examples[conversation_key]
-        all_convos = []
-        for convo in convos:
-            new_convo = []
-            if len(convo) == 0: continue
-            has_system = aliases_mapping[convo[0][role_key]] == "system"
-            if not has_system and system_message is not None:
-                new_convo.append({ "role" : "system", "content" : system_message, })
-            for message in convo:
-                role = aliases_mapping[message[role_key]]
-                new_convo.append({ "role" : role, "content" : message[content_key], })
-            pass
-            all_convos.append(new_convo)
-        pass
-        return { conversation_key : all_convos, }
-    pass
-
-    return dataset.map(_standardize_dataset, batched = True,)
-pass
-
-
-import re
-
 def _parse_combined_prompt(combined_prompt, dataset):
     # Find {...}
     possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
@@ -838,6 +762,7 @@ def _parse_combined_prompt(combined_prompt, dataset):
     return possible_columns, final_optional_prompts
 pass
 
+
 def _create_formatter(possible_columns, final_optional_prompts, user_column_name):
     # Start final prompt!
     function = ["def __combined_prompt_processor__(examples):"]
@@ -879,18 +804,36 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 pass
 
 
-def standardize_dataset(
+def to_sharegpt(
     dataset,
     merged_prompt = "",
     merged_column_name = "instruction",
     output_column_name = "output",
     remove_unsued_columns = True,
-    conversation_length = 1,
+    conversation_extension = 1,
     random_state = 3407,
 ):
     """
-    
+    Converts a dataset to ShareGPT style.
+    ShareGPT requires only 1 input and 1 output field.
+    This means one has to merge multiple columns into 1 for 1 input field.
+    Use `conversation_extension` to increase the length of each conversation by randomnly
+    selecting a few and packing them into 1.
+
+    merged_prompt = "",                 Prompt to merge columns into 1 input
+    merged_column_name = "instruction", Final column name for the input  field
+    output_column_name = "output",      Final column name for the output field
+    remove_unsued_columns = True,
+    conversation_extension = 1,         Automatically combines `conversation_extension` convos into 1
+    random_state = 3407,
     """
+    if "conversations" in dataset.column_names:
+        convo = dataset[0]["conversations"]
+        if type(convo) is list:
+            raise TypeError("Unsloth: Your dataset is probably already in ShareGPT format!")
+        pass
+    pass
+
     possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
     function = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
     exec(function, globals())
@@ -919,7 +862,7 @@ def standardize_dataset(
 
     # Randomnly concat conversations to create a long stream!
     from datasets import concatenate_datasets
-    n_extensions = max(conversation_length-1, 0)
+    n_extensions = max(conversation_extension-1, 0)
     if n_extensions == 0: return dataset
 
     dataset = dataset.rename_columns({"conversations" : f"conversations0"})
@@ -952,6 +895,82 @@ def standardize_dataset(
         remove_columns = dataset.column_names if remove_unsued_columns else None,
     )
     return dataset
+pass
+
+
+def standardize_sharegpt(
+    dataset,
+    aliases_for_system    = ["system",],
+    aliases_for_user      = ["user", "human", "input",],
+    aliases_for_assistant = ["gpt", "assistant", "output",],
+):
+    """
+    Standardizes ShareGPT and other formats to user/assistant Hugging Face format.
+    
+    Get aliases for the system, user and assistant roles.
+    These shall map to "system", "user" and "assistant" respectively.
+    
+    aliases_for_system    = ["system",],
+    aliases_for_user      = ["user", "human", "input",],
+    aliases_for_assistant = ["gpt", "assistant", "output",],
+    """
+    import collections
+    import itertools
+
+    convos = dataset[:10]["conversations"]
+    uniques = collections.defaultdict(list)
+    for convo in convos:
+        for message in convo:
+            for key, value in message.items():
+                uniques[key].append(value)
+    pass
+
+    # Must be only 2 entries
+    assert(len(uniques.keys()) == 2)
+
+    keys = list(uniques.keys())
+    length_first  = len(set(uniques[keys[0]]))
+    length_second = len(set(uniques[keys[1]]))
+
+    if length_first < length_second:
+        # Role is assigned to the first element
+        role_key    = keys[0]
+        content_key = keys[1]
+    else:
+        role_key    = keys[1]
+        content_key = keys[0]
+    pass
+
+    # Check roles are in aliases
+    all_aliases = set(aliases_for_system + aliases_for_user + aliases_for_assistant)
+    roles = set(uniques[role_key])
+    leftover_aliases = (all_aliases | roles) - all_aliases
+    if len(leftover_aliases) != 0:
+        raise TypeError(
+            f"Unsloth: {list(leftover_aliases)} are not in aliases. Please update aliases."
+        )
+    pass
+
+    # Mapping for aliases
+    aliases_mapping = {}
+    for x in aliases_for_system:    aliases_mapping[x] = "system"
+    for x in aliases_for_user:      aliases_mapping[x] = "user"
+    for x in aliases_for_assistant: aliases_mapping[x] = "assistant"
+
+    def _standardize_dataset(examples):
+        convos = examples["conversations"]
+        all_convos = []
+        for convo in convos:
+            new_convo = [
+                { "role" : aliases_mapping[message[role_key]], "content" : message[content_key], }
+                for message in convo
+            ]
+            all_convos.append(new_convo)
+        pass
+        return { "conversations" : all_convos, }
+    pass
+
+    return dataset.map(_standardize_dataset, batched = True, desc = "Standardizing format")
 pass
 
 
@@ -1003,7 +1022,7 @@ def construct_chat_template( \
 
 tokenizer = None,
 
-template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+chat_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 {SYSTEM}<|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -1031,6 +1050,7 @@ extra_eos_tokens = None,
     assert(tokenizer is not None)
 
     if extra_eos_tokens is None: extra_eos_tokens = []
+    elif type(extra_eos_tokens) is str: extra_eos_tokens = [extra_eos_tokens,]
 
     vocab = tokenizer.get_vocab()
     for extra_eos in extra_eos_tokens:
@@ -1049,11 +1069,30 @@ extra_eos_tokens = None,
         "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"\
         "### Input:\\n{INPUT}\\n\\n### Response:\\n{OUTPUT}\\n"
 
+    # Check for EOS after {OUTPUT}
+    if tokenizer.eos_token is not None:
+        extra_eos_tokens.insert(0, tokenizer.eos_token)
+    if len(extra_eos_tokens) == 0:
+        raise RuntimeError(
+            "Unsloth: Your tokenizer does not have an EOS token? Please provide one via extra_eos_tokens!"
+        )
+    pass
+
+    count_eos = 0
+    for eos in extra_eos_tokens:
+        count_eos += len(re.findall(r"{OUTPUT}" + eos.encode("unicode-escape").decode("utf-8"), chat_template))
+    pass
+    if count_eos == 0:
+        logger.warning("Unsloth: We automatically added an EOS token to stop endless generations.")
+        eos = extra_eos_tokens[0]
+        chat_template = re.sub(r"{OUTPUT}", r"{OUTPUT}" + eos.encode("unicode-escape").decode("utf-8"), chat_template)
+    pass
+
     # O(N^2) search finding 2 repeatted pieces of text
-    j = len(template)-1
+    j = len(chat_template)-1
     at_least_one = False
     while j > 0:
-        found = template.rfind(template[j:], 0, j)
+        found = chat_template.rfind(chat_template[j:], 0, j)
         if found == -1: break
         j -= 1
         at_least_one = True
@@ -1061,19 +1100,18 @@ extra_eos_tokens = None,
     if j > 0: j += 1
     else: raise RuntimeError(error_msg)
 
-
     if not at_least_one: raise RuntimeError(error_msg)
 
     # Repeatted text
-    instruction_response = template[j:]
+    instruction_response = chat_template[j:]
     if instruction_response.count("{INPUT}") != 1 or instruction_response.count("{OUTPUT}") != 1:
         raise RuntimeError(error_msg)
     pass
 
     # 1st System, Instruction, Output pair
-    left  = template[:j]
+    left  = chat_template[:j]
     # 2nd Instruction, Output pair
-    right = template[j:]
+    right = chat_template[j:]
 
     # Isolate input
     extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in extra_eos_tokens)
