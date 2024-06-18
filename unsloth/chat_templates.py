@@ -34,6 +34,7 @@ import os
 import shutil
 from .tokenizer_utils import *
 from .models._utils import patch_tokenizer
+import re
 
 CHAT_TEMPLATES = {}
 
