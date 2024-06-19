@@ -1536,6 +1536,7 @@ def unsloth_save_pretrained_gguf(
         with open(modelfile_location, "w") as file:
             file.write(modelfile)
         pass
+        print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
     pass
 
     if fix_bos_token:
@@ -1709,6 +1710,7 @@ def unsloth_push_to_hub_gguf(
         with open(modelfile_location, "w") as file:
             file.write(modelfile)
         pass
+        print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
     pass
 
     for file_location in all_file_locations:
