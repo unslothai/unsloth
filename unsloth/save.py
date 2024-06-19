@@ -1365,6 +1365,29 @@ def fix_tokenizer_bos_token(tokenizer):
 pass
 
 
+def create_ollama_modelfile(tokenizer, gguf_location):
+    """
+        Creates an Ollama Modelfile.
+        Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
+    """
+    modelfile = getattr(tokenizer, "_ollama_modelfile", None)
+    if modelfile is None: return None
+
+    modelfile = modelfile\
+        .replace("{{", "⚫@✅#🦥")\
+        .replace("}}", "⚡@🦥#⛵")\
+        .format(
+            __FILE_LOCATION__  = gguf_location,
+        )\
+        .replace("⚫@✅#🦥", "{{")\
+        .replace("⚡@🦥#⛵", "}}")\
+        .rstrip()
+    pass
+
+    return modelfile
+pass
+
+
 def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
@@ -1499,6 +1522,14 @@ def unsloth_save_pretrained_gguf(
     all_file_locations = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
+
+    # Save Ollama modelfile
+    modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
+    if modelfile is not None:
+        with open(os.path.join(new_save_directory, "Modelfile"), "w") as file:
+            file.write(modelfile)
+        pass
+    pass
 
     if fix_bos_token:
         logger.warning(
@@ -1653,6 +1684,14 @@ def unsloth_push_to_hub_gguf(
     all_file_locations = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
+
+    # Save Ollama modelfile
+    modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
+    if modelfile is not None:
+        with open(os.path.join(new_save_directory, "Modelfile"), "w") as file:
+            file.write(modelfile)
+        pass
+    pass
 
     for file_location in all_file_locations:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")

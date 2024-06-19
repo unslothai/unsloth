@@ -23,7 +23,6 @@ __all__ = [
     "apply_chat_template",
 
     "test_construct_chat_template",
-    "create_ollama_modelfile",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
@@ -1371,43 +1370,6 @@ extra_eos_tokens = None,
     tokenizer.chat_template = jinja_template
     tokenizer._ollama_modelfile = modelfile
     return dataset.map(formatting_prompts_func, batched = True,)
-pass
-
-
-def create_ollama_modelfile(tokenizer, gguf_location):
-    """
-        Creates an Ollama Modelfile.
-        Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
-    """
-    modelfile = getattr(tokenizer, "_ollama_modelfile", None)
-    if modelfile is None:
-        raise RuntimeError(
-            "Unsloth: Tokenizer does not have a `ollama_modelfile` attribute.\n"\
-            "Please use get_chat_template(...)."
-        )
-    pass
-
-    system_message = getattr(tokenizer, "_system_message", None)
-    if system_message is None:
-        __SYSTEM_MESSAGE__ = ""
-    else:
-        __SYSTEM_MESSAGE__ = f'SYSTEM """{system_message}"""'
-    pass
-
-    modelfile = modelfile\
-        .replace("{{", "⚫@✅#🦥")\
-        .replace("}}", "⚡@🦥#⛵")\
-        .format(
-            __FILE_LOCATION__  = gguf_location,
-            __SYSTEM_MESSAGE__ = __SYSTEM_MESSAGE__,
-            __EOS_TOKEN__      = tokenizer.eos_token,
-        )\
-        .replace("⚫@✅#🦥", "{{")\
-        .replace("⚡@🦥#⛵", "}}")\
-        .rstrip()
-    pass
-
-    return modelfile
 pass
 
 
