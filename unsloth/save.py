@@ -1541,7 +1541,7 @@ def unsloth_save_pretrained_gguf(
     if fix_bos_token:
         logger.warning(
             f"Unsloth: ##### The current model auto adds a BOS token.\n"\
-            "Unsloth: ##### We removed in GGUF's chat template for you."
+            "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
 
@@ -1565,6 +1565,7 @@ def unsloth_save_pretrained_gguf(
                 self, save_directory, token,
                 "GGUF converted", "gguf", modelfile_location, old_username, private,
             )
+            print(f"Saved Ollama Modelfile to https://huggingface.co/{link}")
         pass
     pass
 pass
@@ -1729,12 +1730,13 @@ def unsloth_push_to_hub_gguf(
             self, repo_id, token,
             "GGUF converted", "gguf", modelfile_location, old_username, private,
         )
+        print(f"Saved Ollama Modelfile to https://huggingface.co/{link}")
     pass
 
     if fix_bos_token:
         logger.warning(
             f"Unsloth: ##### The current model auto adds a BOS token.\n"\
-            "Unsloth: ##### We removed in GGUF's chat template for you."
+            "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
 pass
