@@ -1530,8 +1530,10 @@ def unsloth_save_pretrained_gguf(
 
     # Save Ollama modelfile
     modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
+    modelfile_location = None
     if modelfile is not None:
-        with open(os.path.join(new_save_directory, "Modelfile"), "w") as file:
+        modelfile_location = os.path.join(new_save_directory, "Modelfile")
+        with open(modelfile_location, "w") as file:
             file.write(modelfile)
         pass
     pass
@@ -1555,6 +1557,14 @@ def unsloth_save_pretrained_gguf(
                 if username not in new_save_directory else \
                 new_save_directory.lstrip('/.')
             print(f"Saved GGUF to https://huggingface.co/{link}")
+        pass
+
+        # Save modelfile
+        if modelfile_location is not None:
+            username = upload_to_huggingface(
+                self, save_directory, token,
+                "GGUF converted", "gguf", modelfile_location, old_username, private,
+            )
         pass
     pass
 pass
