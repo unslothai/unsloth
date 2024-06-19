@@ -978,6 +978,11 @@ def save_to_gguf(
         pass
     pass
 
+    # If only q8_0:
+    if len(quantization_method) == 1 and quantization_method[0] == "q8_0":
+        strength = 0
+    pass
+
     if   strength >= 3: first_conversion = "f32"
     elif strength >= 2: first_conversion = "f16"
     elif strength >= 1: first_conversion = "bf16"
@@ -1008,7 +1013,7 @@ def save_to_gguf(
     n_cpus *= 2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
     
-    final_location = f"./{model_directory}-unsloth.{first_conversion.upper()}.gguf"
+    final_location = f"./{model_directory}/unsloth.{first_conversion.upper()}.gguf"
 
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
@@ -1077,7 +1082,7 @@ def save_to_gguf(
     for quant_method in quantization_method:
         if quant_method != first_conversion:
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This will take 20 minutes...")
-            final_location = f"./{model_directory}-unsloth.{quant_method.upper()}.gguf"
+            final_location = f"./{model_directory}/unsloth.{quant_method.upper()}.gguf"
 
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
@@ -1519,6 +1524,7 @@ def unsloth_save_pretrained_gguf(
     is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
+    print(new_save_directory)
     all_file_locations = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
