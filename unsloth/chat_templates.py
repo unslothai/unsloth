@@ -1266,8 +1266,9 @@ extra_eos_tokens = None,
     jinja_template = re.sub(
         r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.+?)' \}\}"\
         r"\{\% set loop\_messages \= messages\[1\:\] \%\}"\
-        r"\{\% else \%\}\{\{ '\1' \}\}\{\% set loop\_messages \= messages \%\}\{\% endif \%\}",
-        r"{{ '\1' }}",
+        r"\{\% else \%\}\{\{ '\1' \}\}\{\% set loop\_messages \= messages \%\}\{\% endif \%\}"\
+        r"\{\% for message in loop\_messages \%\}",
+        r"{{ '\1' }}{% for message in messages %}",
         jinja_template, flags = re.MULTILINE | re.DOTALL,
     )
 
