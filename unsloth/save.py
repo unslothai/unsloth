@@ -891,10 +891,10 @@ def save_to_gguf(
     # Map quant methods
     new_quantization_method = []
     for quant_method in quantization_method:
-        if   quant_method == "not_quantized":  quantization_method = model_dtype
-        elif quant_method == "fast_quantized": quantization_method = "q8_0"
-        elif quant_method == "quantized":      quantization_method = "q4_k_m"
-        elif quant_method is None:             quantization_method = "q8_0"
+        if   quant_method == "not_quantized":  quant_method = model_dtype
+        elif quant_method == "fast_quantized": quant_method = "q8_0"
+        elif quant_method == "quantized":      quant_method = "q4_k_m"
+        elif quant_method is None:             quant_method = "q8_0"
 
         # Check if wrong method
         if quant_method not in ALLOWED_QUANTS.keys():
