@@ -1077,7 +1077,7 @@ def save_to_gguf(
 
     full_precision_location = final_location
 
-    all_saved_locations = []
+    all_saved_locations = [full_precision_location,]
     # Convert each type!
     for quant_method in quantization_method:
         if quant_method != first_conversion:
@@ -1524,7 +1524,6 @@ def unsloth_save_pretrained_gguf(
     is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
-    print(new_save_directory)
     all_file_locations = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
