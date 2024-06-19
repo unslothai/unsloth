@@ -891,10 +891,10 @@ def save_to_gguf(
     # Map quant methods
     new_quantization_method = []
     for quant_method in quantization_method:
-        if   quant_method == "not_quantized":  quantization_method = model_dtype
-        elif quant_method == "fast_quantized": quantization_method = "q8_0"
-        elif quant_method == "quantized":      quantization_method = "q4_k_m"
-        elif quant_method is None:             quantization_method = "q8_0"
+        if   quant_method == "not_quantized":  quant_method = model_dtype
+        elif quant_method == "fast_quantized": quant_method = "q8_0"
+        elif quant_method == "quantized":      quant_method = "q4_k_m"
+        elif quant_method is None:             quant_method = "q8_0"
 
         # Check if wrong method
         if quant_method not in ALLOWED_QUANTS.keys():
@@ -978,6 +978,11 @@ def save_to_gguf(
         pass
     pass
 
+    # If only q8_0:
+    if len(quantization_method) == 1 and quantization_method[0] == "q8_0":
+        strength = 0
+    pass
+
     if   strength >= 3: first_conversion = "f32"
     elif strength >= 2: first_conversion = "f16"
     elif strength >= 1: first_conversion = "bf16"
@@ -1008,7 +1013,7 @@ def save_to_gguf(
     n_cpus *= 2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
     
-    final_location = f"./{model_directory}-unsloth.{first_conversion.upper()}.gguf"
+    final_location = f"./{model_directory}/unsloth.{first_conversion.upper()}.gguf"
 
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
@@ -1072,12 +1077,12 @@ def save_to_gguf(
 
     full_precision_location = final_location
 
-    all_saved_locations = []
+    all_saved_locations = [full_precision_location,]
     # Convert each type!
     for quant_method in quantization_method:
         if quant_method != first_conversion:
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This will take 20 minutes...")
-            final_location = f"./{model_directory}-unsloth.{quant_method.upper()}.gguf"
+            final_location = f"./{model_directory}/unsloth.{quant_method.upper()}.gguf"
 
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
@@ -1365,6 +1370,29 @@ def fix_tokenizer_bos_token(tokenizer):
 pass
 
 
+def create_ollama_modelfile(tokenizer, gguf_location):
+    """
+        Creates an Ollama Modelfile.
+        Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
+    """
+    modelfile = getattr(tokenizer, "_ollama_modelfile", None)
+    if modelfile is None: return None
+
+    modelfile = modelfile\
+        .replace("{{", "⚫@✅#🦥")\
+        .replace("}}", "⚡@🦥#⛵")\
+        .format(
+            __FILE_LOCATION__  = gguf_location,
+        )\
+        .replace("⚫@✅#🦥", "{{")\
+        .replace("⚡@🦥#⛵", "}}")\
+        .rstrip()
+    pass
+
+    return modelfile
+pass
+
+
 def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
@@ -1500,10 +1528,21 @@ def unsloth_save_pretrained_gguf(
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
+    # Save Ollama modelfile
+    modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
+    modelfile_location = None
+    if modelfile is not None:
+        modelfile_location = os.path.join(new_save_directory, "Modelfile")
+        with open(modelfile_location, "w") as file:
+            file.write(modelfile)
+        pass
+        print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
+    pass
+
     if fix_bos_token:
         logger.warning(
             f"Unsloth: ##### The current model auto adds a BOS token.\n"\
-            "Unsloth: ##### We removed in GGUF's chat template for you."
+            "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
 
@@ -1519,6 +1558,15 @@ def unsloth_save_pretrained_gguf(
                 if username not in new_save_directory else \
                 new_save_directory.lstrip('/.')
             print(f"Saved GGUF to https://huggingface.co/{link}")
+        pass
+
+        # Save modelfile
+        if modelfile_location is not None:
+            username = upload_to_huggingface(
+                self, save_directory, token,
+                "GGUF converted", "gguf", modelfile_location, old_username, private,
+            )
+            print(f"Saved Ollama Modelfile to https://huggingface.co/{link}")
         pass
     pass
 pass
@@ -1654,6 +1702,17 @@ def unsloth_push_to_hub_gguf(
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
+    # Save Ollama modelfile
+    modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
+    modelfile_location = None
+    if modelfile is not None:
+        modelfile_location = os.path.join(new_save_directory, "Modelfile")
+        with open(modelfile_location, "w") as file:
+            file.write(modelfile)
+        pass
+        print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
+    pass
+
     for file_location in all_file_locations:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
@@ -1667,10 +1726,19 @@ def unsloth_push_to_hub_gguf(
         print(f"Saved GGUF to https://huggingface.co/{link}")
     pass
 
+    # Save modelfile
+    if modelfile_location is not None:
+        username = upload_to_huggingface(
+            self, repo_id, token,
+            "GGUF converted", "gguf", modelfile_location, old_username, private,
+        )
+        print(f"Saved Ollama Modelfile to https://huggingface.co/{link}")
+    pass
+
     if fix_bos_token:
         logger.warning(
             f"Unsloth: ##### The current model auto adds a BOS token.\n"\
-            "Unsloth: ##### We removed in GGUF's chat template for you."
+            "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
 pass

@@ -47,9 +47,11 @@ __INT_TO_FLOAT_MAPPER = \
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     ),
     "unsloth/mistral-7b-instruct-v0.1-bnb-4bit" : (
+        "unsloth/mistral-7b-instruct-v0.1",
         "mistralai/Mistral-7B-Instruct-v0.1",
     ),
     "unsloth/mistral-7b-instruct-v0.2-bnb-4bit" : (
+        "unsloth/mistral-7b-instruct-v0.2",
         "mistralai/Mistral-7B-Instruct-v0.2",
     ),
     "unsloth/llama-2-7b-chat-bnb-4bit" : (
