@@ -23,7 +23,6 @@ __all__ = [
     "apply_chat_template",
 
     "test_construct_chat_template",
-    "create_ollama_modelfile",
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
@@ -1079,14 +1078,29 @@ extra_eos_tokens = None,
         )
     pass
 
+    # Check tokenizer types
+    tokenizer_name = tokenizer.name_or_path.lower()
+    if tokenizer_name.startswith(("unsloth/llama-3-8b-instruct", "unsloth/llama-3-70b-instruct")):
+        # Add <|eot_id|>
+        extra_eos_tokens.append("<|eot_id|>")
+    elif ("<|eot_id|>" in extra_eos_tokens or "<|eot_id|>" in chat_template) and \
+        tokenizer_name.startswith(("unsloth/llama-3-8b", "unsloth/llama-3-70b")):
+        # Warn
+        logger.warning(
+            "Unsloth: Base llama-3 models did not train <|eot_id|>.\n"\
+            "Please use the instruct version or use <|end_of_text|>"
+        )
+    pass
+    extra_eos_tokens = list(set(extra_eos_tokens))
+
     count_eos = 0
     for eos in extra_eos_tokens:
-        count_eos += len(re.findall(r"{OUTPUT}" + eos.encode("unicode-escape").decode("utf-8"), chat_template))
+        count_eos += len(re.findall(r"{OUTPUT}" + re.escape(eos), chat_template))
     pass
     if count_eos == 0:
         logger.warning("Unsloth: We automatically added an EOS token to stop endless generations.")
         eos = extra_eos_tokens[0]
-        chat_template = re.sub(r"{OUTPUT}", r"{OUTPUT}" + eos.encode("unicode-escape").decode("utf-8"), chat_template)
+        chat_template = re.sub(r"{OUTPUT}", r"{OUTPUT}" + eos, chat_template)
     pass
 
     # O(N^2) search finding 2 repeatted pieces of text
@@ -1151,7 +1165,9 @@ extra_eos_tokens = None,
     # Check bos_token is in system prompt
     ollama_system = system_part
     has_bos_token = False
+    always_bos_token = False
     if tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None):
+        always_bos_token = True
         if ollama_system.startswith(tokenizer.bos_token):
             has_bos_token = True
             ollama_system = ollama_system[len(tokenizer.bos_token):]
@@ -1165,11 +1181,6 @@ extra_eos_tokens = None,
     pass
     input_modelfile  = "{{ if .Prompt }}" + input_part .replace("{INPUT}",  "{{ .Prompt }}") + "{{ end }}"
     output_modelfile = output_part.replace("{OUTPUT}", "{{ .Response }}")
-
-    # Check if EOS token is at the end of the output
-    if not output_modelfile.endswith(tuple(extra_eos_tokens)):
-        output_modelfile += "{__EOS_TOKEN__}"
-    pass
 
     # Ollama EOS
     ollama_eos = get_ollama_eos_tokens(tokenizer, extra_eos_tokens)
@@ -1215,10 +1226,7 @@ extra_eos_tokens = None,
         partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
         partial_system = partial_system.replace("{SYSTEM}", "")
 
-        # If {SYSTEM} is non existent, simply just use the content
-        if "{SYSTEM}" not in partial_system:
-            partial_system = "messages[0]['content']"
-        else:
+        if "{SYSTEM}" in partial_system:
             if default_system_message is None:
                 raise RuntimeError("Unsloth: Please specify a default system message!")
         pass
@@ -1226,21 +1234,22 @@ extra_eos_tokens = None,
         # Separate the BOS
         if has_bos_token:
             partial_system = partial_system.replace(tokenizer.bos_token, "", 1)
+            system_part    = system_part   .replace(tokenizer.bos_token, "", 1)
         pass
-
+        
         partial_system = \
             "{% if messages[0]['role'] == 'system' %}"\
                 "{{ " + partial_system + " }}"\
                 "{% set loop_messages = messages[1:] %}"
         if default_system_message is not None:
             full_system = system_part.replace("{SYSTEM}", default_system_message)
+            if "{SYSTEM}" in system_part:
+                modelfile += '\nSYSTEM: "' + default_system_message + '"'
+            pass
             partial_system += "{% else %}"\
                 "{{ '" + full_system + "' }}"\
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
-
-            # Add to modelfile
-            modelfile += '\nSYSTEM "' + full_system + '"'
         else:
             partial_system += "{% endif %}"
         pass
@@ -1251,6 +1260,22 @@ extra_eos_tokens = None,
             jinja_template = "{{ bos_token }}" + jinja_template
     pass
 
+    # Check if system part is the same!
+    jinja_template = re.sub(
+        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.+?)' \}\}"\
+        r"\{\% set loop\_messages \= messages\[1\:\] \%\}"\
+        r"\{\% else \%\}\{\{ '\1' \}\}\{\% set loop\_messages \= messages \%\}\{\% endif \%\}"\
+        r"\{\% for message in loop\_messages \%\}",
+        r"{{ '\1' }}{% for message in messages %}",
+        jinja_template, flags = re.MULTILINE | re.DOTALL,
+    )
+
+    # Check jinja tempate for bos
+    if always_bos_token:
+        if not jinja_template.startswith("{{ bos_token }}"):
+            jinja_template = "{{ bos_token }}" + jinja_template
+    pass
+    
     return modelfile, jinja_template
 pass
 
@@ -1260,7 +1285,7 @@ def test_construct_chat_template():
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct", token = token)
 
-    template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    chat_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 {SYSTEM}<|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -1277,7 +1302,11 @@ def test_construct_chat_template():
       
     extra_eos_tokens = None
 
-    modelfile, jinja_template = construct_chat_template(template, default_system_message, extra_eos_tokens)
+    modelfile, jinja_template = construct_chat_template(
+        tokenizer = tokenizer,
+        chat_template = chat_template,
+        extra_eos_tokens = extra_eos_tokens,
+    )
 
     messages = [
         {"role": "system", "content": "You are an assistant"},
@@ -1291,7 +1320,6 @@ def test_construct_chat_template():
 
     tokenizer.chat_template = jinja_template
     new_output = tokenizer.apply_chat_template(messages, tokenize = False, add_generation_prompt = True)
-
     assert(correct_output == new_output)
     pass
 pass
@@ -1341,43 +1369,6 @@ extra_eos_tokens = None,
     tokenizer.chat_template = jinja_template
     tokenizer._ollama_modelfile = modelfile
     return dataset.map(formatting_prompts_func, batched = True,)
-pass
-
-
-def create_ollama_modelfile(tokenizer, gguf_location):
-    """
-        Creates an Ollama Modelfile.
-        Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
-    """
-    modelfile = getattr(tokenizer, "_ollama_modelfile", None)
-    if modelfile is None:
-        raise RuntimeError(
-            "Unsloth: Tokenizer does not have a `ollama_modelfile` attribute.\n"\
-            "Please use get_chat_template(...)."
-        )
-    pass
-
-    system_message = getattr(tokenizer, "_system_message", None)
-    if system_message is None:
-        __SYSTEM_MESSAGE__ = ""
-    else:
-        __SYSTEM_MESSAGE__ = f'SYSTEM """{system_message}"""'
-    pass
-
-    modelfile = modelfile\
-        .replace("{{", "⚫@✅#🦥")\
-        .replace("}}", "⚡@🦥#⛵")\
-        .format(
-            __FILE_LOCATION__  = gguf_location,
-            __SYSTEM_MESSAGE__ = __SYSTEM_MESSAGE__,
-            __EOS_TOKEN__      = tokenizer.eos_token,
-        )\
-        .replace("⚫@✅#🦥", "{{")\
-        .replace("⚡@🦥#⛵", "}}")\
-        .rstrip()
-    pass
-
-    return modelfile
 pass
 
 
