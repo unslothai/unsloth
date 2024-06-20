@@ -1905,6 +1905,7 @@ class FastLlamaModel:
         device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
         device = device_ids[:device_ids.find(',')] # Unsloth only works on NVIDIA GPUs for now
         device = f"cuda:{device if device.isdigit() else '0'}"
+        print(device)
         extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = device)
         model.model.extra_ignored_labels = extra_ignored_labels
         internal_model = model
