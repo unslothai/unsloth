@@ -789,7 +789,7 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
             prompt = prompt[2:-2].encode("unicode-escape").decode("utf-8").replace("'", "\\'").replace('"', '\\"')
             columns = re.findall(r"\{(.+?)\}", prompt)
             x = f"__optional_{j}__"
-            prompt = f"{' '*8}{x} = '{prompt}'.format({', '.join(f'{x} = str({x})' for x in columns)}) if str({columns[0]}) else ''"
+            prompt = f"{' '*8}{x} = '{prompt}'.format({', '.join(f'{x} = {x}' for x in columns)}) if {columns[0]} else ''"
             function.append(prompt)
             formatter.append(x)
             final_prompt += "{" + x + "}"
@@ -842,13 +842,13 @@ def to_sharegpt(
     def __convert_to_sharegpt__(examples):
         users      = examples[merged_column_name]
         assistants = examples[output_column_name]
-        texts = []
-        for user, assistant in zip(users, assistants):
-            texts.append([
-                {"from" : "user",      "content" : user     },
-                {"from" : "assistant", "content" : assistant},
-            ])
-        pass
+        texts = [
+            [
+                {"from" : "user",      "content" : str(user)     },
+                {"from" : "assistant", "content" : str(assistant)},
+            ] \
+            for user, assistant in zip(users, assistants)
+        ]
         return { "conversations" : texts, }
     pass
 
