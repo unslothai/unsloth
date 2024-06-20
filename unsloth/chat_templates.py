@@ -1244,7 +1244,7 @@ extra_eos_tokens = None,
         if default_system_message is not None:
             full_system = system_part.replace("{SYSTEM}", default_system_message)
             if "{SYSTEM}" in system_part:
-                modelfile += '\nSYSTEM: "' + default_system_message + '"'
+                modelfile += '\nSYSTEM "' + default_system_message + '"'
             pass
             partial_system += "{% else %}"\
                 "{{ '" + full_system + "' }}"\
