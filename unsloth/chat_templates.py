@@ -789,7 +789,7 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
             prompt = prompt[2:-2].encode("unicode-escape").decode("utf-8")
             columns = re.findall(r"\{(.+?)\}", prompt)
             x = f"__optional_{j}__"
-            prompt = f"{' '*8}{x} = '{prompt}'.format({', '.join(f'{x} = {x}' for x in columns)}) if input else ''"
+            prompt = f"{' '*8}{x} = '{prompt}'.format({', '.join(f'{x} = {x}' for x in columns)}) if {x} else ''"
             function.append(prompt)
             formatter.append(x)
             final_prompt += "{" + x + "}"
@@ -1236,7 +1236,7 @@ extra_eos_tokens = None,
             partial_system = partial_system.replace(tokenizer.bos_token, "", 1)
             system_part    = system_part   .replace(tokenizer.bos_token, "", 1)
         pass
-        
+
         partial_system = \
             "{% if messages[0]['role'] == 'system' %}"\
                 "{{ " + partial_system + " }}"\
