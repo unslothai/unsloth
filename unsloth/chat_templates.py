@@ -781,12 +781,12 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
             columns = re.findall(r"\{(.+?)\}", optional_prompt)
             formatter += columns
             # Must escape \n \r
-            final_prompt += optional_prompt.encode("unicode-escape").decode("utf-8")
+            final_prompt += optional_prompt.encode("unicode-escape").decode("utf-8").replace("'", "\\'").replace('"', '\\"')
         else:
             where, prompt = optional_prompt
             # Strip [[...]]
             # Must escape \n \r
-            prompt = prompt[2:-2].encode("unicode-escape").decode("utf-8")
+            prompt = prompt[2:-2].encode("unicode-escape").decode("utf-8").replace("'", "\\'").replace('"', '\\"')
             columns = re.findall(r"\{(.+?)\}", prompt)
             x = f"__optional_{j}__"
             prompt = f"{' '*8}{x} = '{prompt}'.format({', '.join(f'{x} = {x}' for x in columns)}) if {columns[0]} else ''"
@@ -842,13 +842,13 @@ def to_sharegpt(
     def __convert_to_sharegpt__(examples):
         users      = examples[merged_column_name]
         assistants = examples[output_column_name]
-        texts = []
-        for user, assistant in zip(users, assistants):
-            texts.append([
-                {"from" : "user",      "content" : user     },
-                {"from" : "assistant", "content" : assistant},
-            ])
-        pass
+        texts = [
+            [
+                {"from" : "user",      "content" : str(user)     },
+                {"from" : "assistant", "content" : str(assistant)},
+            ] \
+            for user, assistant in zip(users, assistants)
+        ]
         return { "conversations" : texts, }
     pass
 
@@ -1236,7 +1236,7 @@ extra_eos_tokens = None,
             partial_system = partial_system.replace(tokenizer.bos_token, "", 1)
             system_part    = system_part   .replace(tokenizer.bos_token, "", 1)
         pass
-
+        
         partial_system = \
             "{% if messages[0]['role'] == 'system' %}"\
                 "{{ " + partial_system + " }}"\
@@ -1244,7 +1244,7 @@ extra_eos_tokens = None,
         if default_system_message is not None:
             full_system = system_part.replace("{SYSTEM}", default_system_message)
             if "{SYSTEM}" in system_part:
-                modelfile += '\nSYSTEM: "' + default_system_message + '"'
+                modelfile += '\nSYSTEM "' + default_system_message + '"'
             pass
             partial_system += "{% else %}"\
                 "{{ '" + full_system + "' }}"\
