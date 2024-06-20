@@ -239,11 +239,8 @@ def MistralForCausalLM_fast_forward(
     if labels is not None:
         shift_logits = logits
         if not hasattr(self, "extra_ignored_labels"):
-            device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
-            device = device_ids[:device_ids.find(',')] # Unsloth only works on NVIDIA GPUs for now
-            device = f"cuda:{device if device.isdigit() else '0'}"
             # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = device)
+            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
         pass
         
         shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
