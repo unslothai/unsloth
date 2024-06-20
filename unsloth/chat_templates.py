@@ -781,12 +781,12 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
             columns = re.findall(r"\{(.+?)\}", optional_prompt)
             formatter += columns
             # Must escape \n \r
-            final_prompt += optional_prompt.encode("unicode-escape").decode("utf-8")
+            final_prompt += optional_prompt.encode("unicode-escape").decode("utf-8").replace("'", "\\'").replace('"', '\\"')
         else:
             where, prompt = optional_prompt
             # Strip [[...]]
             # Must escape \n \r
-            prompt = prompt[2:-2].encode("unicode-escape").decode("utf-8")
+            prompt = prompt[2:-2].encode("unicode-escape").decode("utf-8").replace("'", "\\'").replace('"', '\\"')
             columns = re.findall(r"\{(.+?)\}", prompt)
             x = f"__optional_{j}__"
             prompt = f"{' '*8}{x} = '{prompt}'.format({', '.join(f'{x} = {x}' for x in columns)}) if {columns[0]} else ''"
