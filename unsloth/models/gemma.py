@@ -38,9 +38,6 @@ except:
     GemmaFlashAttention2 = GemmaAttention
 pass
 
-import os
-device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
-device = f"cuda:{device_ids[:device_ids.find(',')]}" # Unsloth only works on NVIDIA GPUs for now
 
 torch_nn_functional_gelu = torch.nn.functional.gelu
 def fast_geglu_inference(self, X):
@@ -48,7 +45,7 @@ def fast_geglu_inference(self, X):
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     # mlp_size = self.config.intermediate_size
-    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = device)
+    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
 
     gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
     up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
@@ -75,7 +72,7 @@ def GemmaDecoderLayer_fast_forward(
     *args, **kwargs,
 ):
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
-        out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = device)
+        out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda:0")
 
         # Self Attention
         residual = hidden_states
@@ -137,7 +134,7 @@ def GemmaModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = device)
+    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -220,8 +217,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device = device, non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = device, non_blocking = True)#, dtype = dtype)
+        cos = emb.cos().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
         self.register_buffer("cos_cached", cos, persistent = False)
         self.register_buffer("sin_cached", sin, persistent = False)
     pass
