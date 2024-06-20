@@ -372,11 +372,6 @@ def prepare_n_gradient_checkpoints(
 pass
 
 
-# Unsloth only works on NVIDIA GPUs for now
-device_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0") + ","
-device = device_ids[:device_ids.find(',')] # Unsloth only works on NVIDIA GPUs for now
-device = f"cuda:{device if device.isdigit() else '0'}"
-
 class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     """
     Saves VRAM by smartly offloading to RAM.
@@ -398,7 +393,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @torch.cuda.amp.custom_bwd
     def backward(ctx, dY):
         (hidden_states,) = ctx.saved_tensors
-        hidden_states = hidden_states.to(device, non_blocking = True).detach()
+        hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
         hidden_states.requires_grad = True
         with torch.enable_grad():
             (output,) = ctx.forward_function(hidden_states, *ctx.args)
