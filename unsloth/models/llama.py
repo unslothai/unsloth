@@ -1165,9 +1165,9 @@ class FastLlamaModel:
                 inner_training_loop = Trainer._original_training_loop
         except:
             raise RuntimeError(
-                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '
-                'enabling it will require much more work, so we have to prioritize. Please understand!\n'
-                'We do have a beta version, which you can contact us about!\n'
+                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
+                'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
+                'We do have a beta version, which you can contact us about!\n'\
                 'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
@@ -1219,7 +1219,8 @@ class FastLlamaModel:
             logger.warning_once(
                 '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so ' \\
                 '* enabling it will require much more work, so we have to prioritize. Please understand!\\n' \\
-                '* We do have a beta version, which you can contact us about!'
+                '* We do have a beta version, which you can contact us about!\\n'\\
+                '* Thank you for your understanding and we appreciate it immensely!'
             )
         debug_info ="""
         debug_info = debug_info.split('\n')
@@ -1246,10 +1247,10 @@ class FastLlamaModel:
         n_total_devices = total_batches // ga // bsz
         if n_total_devices > 1:
             logger.warning_once(
-                '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '
-                '* enabling it will require much more work, so we have to prioritize. Please understand!\n'
-                '* We do have a beta version, which you can contact us about!\n'
-                '* Thank you for your understanding and we appreciate it immensely!',
+                '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so ' \\
+                '* enabling it will require much more work, so we have to prioritize. Please understand!\n' \\
+                '* We do have a beta version, which you can contact us about!\n' \\
+                '* Thank you for your understanding and we appreciate it immensely!'
             )
             divisor = n_total_devices / 1
             bsz = self._train_batch_size = max(int(bsz / divisor), 1)
@@ -1275,9 +1276,9 @@ class FastLlamaModel:
         )
         if "n_total_devices >" not in inner_training_loop:
             raise RuntimeError(
-                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '
-                'enabling it will require much more work, so we have to prioritize. Please understand!\n'
-                'We do have a beta version, which you can contact us about!\n'
+                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
+                'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
+                'We do have a beta version, which you can contact us about!\n'\
                 'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
@@ -1787,7 +1788,7 @@ class FastLlamaModel:
             raise RuntimeError(
                 'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
                 'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
-                'We do have a beta version, which you can contact us about!\n'
+                'We do have a beta version, which you can contact us about!\n'\
                 'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
