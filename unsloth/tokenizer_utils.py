@@ -954,7 +954,7 @@ def patch_sft_trainer_tokenizer():
     "\n"\
     "if self._inner_training_loop.__name__ != '_fast_inner_training_loop':\n"\
     "    raise RuntimeError(\n"\
-    "       'Do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'\n"\
+    "       'Please do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'\n"\
     "    )\n"\
     "pass\n"\
     "n_devices = torch.cuda.device_count()\n"\
@@ -964,7 +964,10 @@ def patch_sft_trainer_tokenizer():
     "output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)\n"\
     "output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)\n"\
     "if output > 1: raise RuntimeError(\n"\
-    "    'Error: More than 1 GPUs have a lot of VRAM usage. Please obtain a commercial license.')\n"\
+    "    'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\\\n"\
+    "    'enabling it will require much more work, so we have to prioritize. Please understand!\\n'\\\n"\
+    "    'We do have a separate beta version, which you can contact us about!\\n'\\\n"\
+    "    'Thank you for your understanding and we appreciate it immensely!')\n"\
     "for _ in range(3):\n"\
     "    gc.collect()\n"\
     "    torch.cuda.empty_cache()\n"\

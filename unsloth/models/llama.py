@@ -1165,10 +1165,10 @@ class FastLlamaModel:
                 inner_training_loop = Trainer._original_training_loop
         except:
             raise RuntimeError(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
+                'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
+                'We do have a separate beta version, which you can contact us about!\n'\
+                'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
 
@@ -1201,7 +1201,10 @@ class FastLlamaModel:
         output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)
         output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)
         if output > 1: raise RuntimeError(
-            'Error: More than 1 GPUs have a lot of VRAM usage. Please obtain a commercial license.')
+            'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\\
+            'enabling it will require much more work, so we have to prioritize. Please understand!\\n'\\
+            'We do have a separate beta version, which you can contact us about!\\n'\\
+            'Thank you for your understanding and we appreciate it immensely!')
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
@@ -1214,10 +1217,10 @@ class FastLlamaModel:
             args.gradient_accumulation_steps // self._train_batch_size
         if n_total_devices > 1:
             logger.warning_once(
-                "* Our OSS was designed for people with few GPU resources to level the playing field.\\n"
-                "* The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
-                "* We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
-                "* If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so ' \\
+                '* enabling it will require much more work, so we have to prioritize. Please understand!\\n' \\
+                '* We do have a separate beta version, which you can contact us about!\\n'\\
+                '* Thank you for your understanding and we appreciate it immensely!'
             )
         debug_info ="""
         debug_info = debug_info.split('\n')
@@ -1244,10 +1247,10 @@ class FastLlamaModel:
         n_total_devices = total_batches // ga // bsz
         if n_total_devices > 1:
             logger.warning_once(
-                "* Our OSS was designed for people with few GPU resources to level the playing field.\\n"
-                "* The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\\n"
-                "* We're a 2 person team, so we still have to fund our development costs - thanks!\\n"
-                "* If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so ' \\
+                '* enabling it will require much more work, so we have to prioritize. Please understand!\\n' \\
+                '* We do have a separate beta version, which you can contact us about!\\n'\\
+                '* Thank you for your understanding and we appreciate it immensely!'
             )
             divisor = n_total_devices / 1
             bsz = self._train_batch_size = max(int(bsz / divisor), 1)
@@ -1273,10 +1276,10 @@ class FastLlamaModel:
         )
         if "n_total_devices >" not in inner_training_loop:
             raise RuntimeError(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
+                'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
+                'We do have a separate beta version, which you can contact us about!\n'\
+                'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
         inner_training_loop = inner_training_loop.replace(
@@ -1783,10 +1786,10 @@ class FastLlamaModel:
         from transformers.trainer import Trainer 
         if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
             raise RuntimeError(
-                "Our OSS was designed for people with few GPU resources to level the playing field.\n"
-                "The OSS Apache 2 license only supports one GPU - please obtain a commercial license.\n"
-                "We're a 2 person team, so we still have to fund our development costs - thanks!\n"
-                "If you don't, please consider at least sponsoring us through Ko-fi! Appreciate it!",
+                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
+                'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
+                'We do have a separate beta version, which you can contact us about!\n'\
+                'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
 
