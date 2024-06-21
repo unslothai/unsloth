@@ -964,10 +964,10 @@ def patch_sft_trainer_tokenizer():
     "output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)\n"\
     "output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)\n"\
     "if output > 1: raise RuntimeError(\n"\
-    "    'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '"
-    "    'enabling it will require much more work, so we have to prioritize. Please understand!\\n'"
-    "    'We do have a beta version, which you can contact us about!\\n'"
-    "    'Thank you for your understanding and we appreciate it immensely!)'\n"
+    "    'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\\\n"\
+    "    'enabling it will require much more work, so we have to prioritize. Please understand!\\n'\\\n"\
+    "    'We do have a beta version, which you can contact us about!\\n'\\\n"\
+    "    'Thank you for your understanding and we appreciate it immensely!')\n"\
     "for _ in range(3):\n"\
     "    gc.collect()\n"\
     "    torch.cuda.empty_cache()\n"\
