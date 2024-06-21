@@ -1167,7 +1167,7 @@ class FastLlamaModel:
             raise RuntimeError(
                 'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
                 'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
-                'We do have a beta version, which you can contact us about!\n'\
+                'We do have a separate beta version, which you can contact us about!\n'\
                 'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
@@ -1203,7 +1203,7 @@ class FastLlamaModel:
         if output > 1: raise RuntimeError(
             'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\\
             'enabling it will require much more work, so we have to prioritize. Please understand!\\n'\\
-            'We do have a beta version, which you can contact us about!\\n'\\
+            'We do have a separate beta version, which you can contact us about!\\n'\\
             'Thank you for your understanding and we appreciate it immensely!')
         for _ in range(3):
             gc.collect()
@@ -1219,7 +1219,7 @@ class FastLlamaModel:
             logger.warning_once(
                 '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so ' \\
                 '* enabling it will require much more work, so we have to prioritize. Please understand!\\n' \\
-                '* We do have a beta version, which you can contact us about!\\n'\\
+                '* We do have a separate beta version, which you can contact us about!\\n'\\
                 '* Thank you for your understanding and we appreciate it immensely!'
             )
         debug_info ="""
@@ -1272,7 +1272,7 @@ class FastLlamaModel:
             raise RuntimeError(
                 'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
                 'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
-                'We do have a beta version, which you can contact us about!\n'\
+                'We do have a separate beta version, which you can contact us about!\n'\
                 'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
@@ -1782,7 +1782,7 @@ class FastLlamaModel:
             raise RuntimeError(
                 'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
                 'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
-                'We do have a beta version, which you can contact us about!\n'\
+                'We do have a separate beta version, which you can contact us about!\n'\
                 'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
