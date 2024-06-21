@@ -1246,6 +1246,12 @@ class FastLlamaModel:
         total_batches = bsz * ga * args.world_size
         n_total_devices = total_batches // ga // bsz
         if n_total_devices > 1:
+            logger.warning_once(
+                '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so ' \\
+                '* enabling it will require much more work, so we have to prioritize. Please understand!\\n' \\
+                '* We do have a separate beta version, which you can contact us about!\\n'\\
+                '* Thank you for your understanding and we appreciate it immensely!'
+            )
             divisor = n_total_devices / 1
             bsz = self._train_batch_size = max(int(bsz / divisor), 1)
             if total_batches // ga // bsz > 1:
