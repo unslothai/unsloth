@@ -17,17 +17,20 @@ import importlib
 import sys
 from packaging.version import Version
 
-# Define a list of modules to check
-MODULES_TO_CHECK = ["bitsandbytes"]
+# # Define a list of modules to check
+# MODULES_TO_CHECK = ["bitsandbytes"]
 
-# Check if any of the modules in the list have been imported
-for module in MODULES_TO_CHECK:
-    if module in sys.modules:
-        raise ImportError(f"Unsloth: Please import Unsloth before {module}.")
-    pass
-pass
+# # Check if any of the modules in the list have been imported
+# for module in MODULES_TO_CHECK:
+#     if module in sys.modules:
+#         raise ImportError(f"Unsloth: Please import Unsloth before {module}.")
+#     pass
+# pass
 
-# Currently only supports 1 GPU, or else seg faults will occur.    
+# Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
+# enabling it will require much more work, so we have to prioritize. Please understand!
+# We do have a beta version, which you can contact us about!
+# Thank you for your understanding and we appreciate it immensely!
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     devices = os.environ["CUDA_VISIBLE_DEVICES"]
