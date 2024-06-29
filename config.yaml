@@ -1,0 +1,74 @@
+# 🤖 Model Options
+model:
+  name: "unsloth/llama-3-8b"
+  max_seq_length: 8192
+  dtype: null
+  load_in_4bit: true
+  dataset: "yahma/alpaca-cleaned"
+
+# 🧠 LoRA Options
+lora:
+  r: 64
+  alpha: 32
+  dropout: 0.1
+  bias: "none"
+  use_gradient_checkpointing: "unsloth"
+  random_state: 3407
+  use_rslora: true
+  loftq_config: null
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+# 🎓 Training Options
+training:
+  dataset_num_proc: 2
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 8
+  warmup_steps: 5
+  packing: False
+  max_steps: 400
+  learning_rate: 2.0e-6
+  optim: "adamw_8bit"
+  weight_decay: 0.005
+  lr_scheduler_type: "linear"
+  seed: 3407
+  unsloth_template: |
+    {{ bos_token }}
+    {% for message in messages %}
+      {% if message['role'] == 'user' %}
+          >>> User: {{ message['content'] }}
+      {% elif message['role'] == 'assistant' %}
+          >>> Assistant: {{ message['content'] }}
+      {% endif %}
+    {% endfor %}
+    {% if add_generation_prompt %}
+        >>> Assistant:
+    {% endif %}
+  unsloth_eos_token: "eos_token"
+
+# 📊 Report Options
+report:
+  to: "tensorboard"
+  logging_steps: 1
+
+# 💾 Save Model Options
+save:
+  output_dir: "outputs"
+  save_model: true
+  save_method: "merged_16bit"
+  save_gguf: false
+  save_path: "model"
+  quantization: "f16"
+
+# 🚀 Push Model Options
+push:
+  push_model: true
+  push_gguf: false
+  hub_path: "hf/model"
+  hub_token: "your_hf_token"
