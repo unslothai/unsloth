@@ -191,6 +191,14 @@ __INT_TO_FLOAT_MAPPER = \
     "mistralai/Codestral-22B-v0.1" : (
         "mistral-community/Codestral-22B-v0.1",
     ),
+    "unsloth/gemma-2-9b-bnb-4bit" : (
+        "unsloth/gemma-2-9b",
+        "google/gemma-2-9b",
+    ),
+    "unsloth/gemma-2-27b-bnb-4bit" : (
+        "unsloth/gemma-2-27b",
+        "google/gemma-2-27b",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}

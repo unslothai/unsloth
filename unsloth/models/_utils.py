@@ -80,7 +80,31 @@ __all__ = [
     "offload_output_embeddings",
     "is_bfloat16_supported",
     "unsloth_offloaded_gradient_checkpoint",
+    "torch_compile_options",
 ]
+
+# Torch compile arguments
+torch_compile_arguments = [
+    "config.coordinate_descent_tuning = True",
+    "config.max_autotune_gemm = False", # GEMM is unnecessary
+    "config.autotune_multi_device = False",
+    "config.max_autotune_gemm_backends = 'TRITON,CUTLASS,ATEN'",
+    "config.cuda.enable_cuda_lto = True",
+    "config.cuda.use_fast_math = True",
+    "config.cuda.compile_opt_level = '-O2'",
+]
+import torch._inductor.config as config
+for _try_compile_argument in torch_compile_arguments:
+    try:    exec(_try_compile_argument)
+    except: pass
+pass
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
+    "shape_padding"     : True,
+    "trace.enabled"     : False, # Output Triton kernel outputs!
+    "triton.cudagraphs" : False,
+}
 
 
 def prepare_model_for_kbit_training(

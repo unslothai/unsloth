@@ -542,7 +542,8 @@ def LlamaModel_fast_forward(
     inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
 
     # Normalized from Gemma
-    IS_GEMMA = self.config.model_type == "gemma"
+    IS_GEMMA  = self.config.model_type.startswith("gemma")
+    IS_GEMMA2 = self.config.model_type.startswith("gemma2")
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
     if IS_GEMMA:
@@ -642,17 +643,38 @@ def LlamaModel_fast_forward(
             offloaded_gradient_checkpointing = True
     pass
 
+    # Gemma2 has alternating SWA and global attn
+    if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
+        from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+        n = self.config.max_position_embeddings
+        self.SWA_mask = AttentionMaskConverter(
+            is_causal = True,
+            sliding_window = self.config.sliding_window,
+        )\
+            .to_causal_4d(1, n, n, dtype = X.dtype, device = "cuda:0",)\
+            .squeeze(0).squeeze(0)
+
+        self.GA_mask = AttentionMaskConverter(
+            is_causal = True,
+        )\
+            .to_causal_4d(1, n, n, dtype = X.dtype, device = "cuda:0",)\
+            .squeeze(0).squeeze(0)
+    pass
+
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
 
         if output_hidden_states: all_hidden_states += (hidden_states,)
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
+        mask = causal_mask
+        if IS_GEMMA: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
+
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
                 decoder_layer,
                 hidden_states,
-                causal_mask,
+                mask,
                 attention_mask,
                 position_ids,
                 past_key_values,
@@ -670,7 +692,7 @@ def LlamaModel_fast_forward(
             layer_outputs = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(decoder_layer),
                 hidden_states,
-                causal_mask,
+                mask,
                 attention_mask,
                 position_ids,
                 use_reentrant = True,
@@ -681,7 +703,7 @@ def LlamaModel_fast_forward(
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
-                causal_mask=causal_mask,
+                causal_mask=mask,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_value=past_key_value,
