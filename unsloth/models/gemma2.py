@@ -503,6 +503,8 @@ class FastGemma2Model(FastLlamaModel):
         # PeftModelForCausalLM .forward = PeftModelForCausalLM_fast_forward
         Gemma2RMSNorm.forward = Gemma2RMSNorm_forward
         Gemma2Attention.forward = Gemma2Attention_forward
+        Gemma2SdpaAttention.forward = Gemma2Attention_forward
+        Gemma2FlashAttention2.forward = Gemma2Attention_forward
         Gemma2ForCausalLM .forward = Gemma2ForCausalLM_forward
         Gemma2Model       .forward = Gemma2Model_forward
         Gemma2DecoderLayer.forward = Gemma2DecoderLayer_forward
