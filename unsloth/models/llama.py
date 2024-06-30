@@ -651,13 +651,13 @@ def LlamaModel_fast_forward(
             is_causal = True,
             sliding_window = self.config.sliding_window,
         )\
-            .to_causal_4d(1, n, n, dtype = X.dtype, device = "cuda:0",)\
+            .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
             .squeeze(0).squeeze(0)
 
         self.GA_mask = AttentionMaskConverter(
             is_causal = True,
         )\
-            .to_causal_4d(1, n, n, dtype = X.dtype, device = "cuda:0",)\
+            .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
             .squeeze(0).squeeze(0)
     pass
 
