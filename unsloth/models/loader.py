@@ -26,7 +26,7 @@ major, minor = transformers_version.split(".")[:2]
 major, minor = int(major), int(minor)
 SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
 SUPPORTS_GEMMA   = (major > 4) or (major == 4 and minor >= 38)
-SUPPORTS_GEMMA2  = (major > 4) or (major == 4 and minor >= 43)
+SUPPORTS_GEMMA2  = (major > 4) or (major == 4 and minor >= 42)
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
