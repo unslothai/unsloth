@@ -279,7 +279,10 @@ def Gemma2DecoderLayer_forward(
             attention_mask = attention_mask[:, :, :, -self.sliding_window :]
 
     residual = hidden_states
-    hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
+
+    hidden_states = self.input_layernorm(hidden_states)
+
+    # Self Attention
     hidden_states, self_attn_weights, present_key_value = self.self_attn(
         hidden_states=hidden_states,
         attention_mask=attention_mask,
@@ -289,13 +292,13 @@ def Gemma2DecoderLayer_forward(
         use_cache=use_cache,
         cache_position=cache_position,
     )
-    hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
+    hidden_states = self.post_attention_layernorm(hidden_states)
     hidden_states = residual + hidden_states
 
     residual = hidden_states
-    hidden_states = fast_rms_layernorm(self. pre_feedforward_layernorm, hidden_states, gemma = True)
+    hidden_states = self.pre_feedforward_layernorm(hidden_states)
     hidden_states = self.mlp(hidden_states)
-    hidden_states = fast_rms_layernorm(self.post_feedforward_layernorm, hidden_states, gemma = True)
+    hidden_states = self.post_feedforward_layernorm(hidden_states)
     hidden_states = residual + hidden_states
 
     outputs = (hidden_states,)
