@@ -511,8 +511,8 @@ class FastGemma2Model(FastLlamaModel):
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
-        import transformers.models.gemma2.modeling_gemma2
-        transformers.models.gemma2.modeling_gemma2.Gemma2RotaryEmbedding = GemmaFixedRotaryEmbedding
+        # import transformers.models.gemma2.modeling_gemma2
+        # transformers.models.gemma2.modeling_gemma2.Gemma2RotaryEmbedding = GemmaFixedRotaryEmbedding
         return
     pass
 
