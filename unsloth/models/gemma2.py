@@ -14,7 +14,10 @@
 
 from .llama import *
 from ._utils import __version__
-
+from .gemma import (
+    GemmaFixedRotaryEmbedding,
+    fast_geglu_inference,
+)
 from transformers.models.gemma2.modeling_gemma2 import (
     Gemma2Attention,
     Gemma2DecoderLayer,
@@ -36,25 +39,6 @@ try:
 except:
     Gemma2SdpaAttention   = Gemma2Attention
     Gemma2FlashAttention2 = Gemma2Attention
-pass
-
-
-torch_nn_functional_gelu = torch.nn.functional.gelu
-def fast_geglu_inference(self, X):
-    # gate = self.gate_proj(X)
-    # up   = self.up_proj(X)
-    bsz, _, hd = X.shape
-    # mlp_size = self.config.intermediate_size
-    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
-
-    gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
-    up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
-    gate = torch_nn_functional_gelu(gate, approximate = "tanh")
-    gate *= up
-
-    # X = self.down_proj(gate)
-    down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
-    return down
 pass
 
 
@@ -107,12 +91,14 @@ def Gemma2DecoderLayer_fast_forward(
             use_cache=use_cache,
             padding_mask=padding_mask,
         )
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm(self. pre_feedforward_layernorm, hidden_states, gemma = True)
         hidden_states = self.mlp(hidden_states)
+        hidden_states = fast_rms_layernorm(self.post_feedforward_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
     pass
 
@@ -182,57 +168,6 @@ def Gemma2Model_fast_forward_inference(
         hidden_states = [],
         attentions = [],
     )
-pass
-
-
-# Follows line by line https://github.com/google-deepmind/gemma/blob/main/gemma/positional_embeddings.py#L45
-# Formulates cos and sin differently from Llama!
-class GemmaFixedRotaryEmbedding(torch.nn.Module):
-    # Fixes https://github.com/huggingface/transformers/pull/28837
-    # https://github.com/microsoft/DeepSpeed/issues/4932
-    # The precision of RoPE buffers is not correct, so we cast to int64.
-    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
-        super().__init__()
-        self.dim = dim
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-
-        # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
-    pass
-
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
-        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
-        # in FP32. They are applied (multiplied) in FP32 as well.
-        self.max_seq_len_cached = seq_len
-
-        # The difference is we do division explicity instead of t * (1/x) ie we do t/x.
-        freq_exponents = (2.0 / self.dim) * (
-            torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
-        )
-        timescale = self.base**freq_exponents
-        positions = torch.arange(self.max_seq_len_cached, device = "cpu", dtype = torch.int64).float()
-        radians_new = positions[..., None] / timescale[None, None, :]
-        radians_new = radians_new.squeeze(0)
-
-        emb = torch.cat((radians_new, radians_new), dim = -1)
-        # We must do RoPE in float32!
-        cos = emb.cos().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
-        self.register_buffer("cos_cached", cos, persistent = False)
-        self.register_buffer("sin_cached", sin, persistent = False)
-    pass
-
-    def forward(self, x, position_ids=None, seq_len=None):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
-
-        return (
-            self.cos_cached[:seq_len].to(dtype=x.dtype),
-            self.sin_cached[:seq_len].to(dtype=x.dtype),
-        )
-    pass
 pass
 
 
