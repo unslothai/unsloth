@@ -51,8 +51,8 @@ pass
 def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
     old_dtype = X.dtype
     X = X.float()
-    X = X * torch.rsqrt(X.pow(2).mean(-1, keepdim = True) + layernorm.eps)
-    X = X * (1.0 + layernorm.weight.float())
+    X = X * torch.rsqrt(X.square().mean(-1, keepdim = True) + layernorm.eps) * \
+        (1.0 + layernorm.weight.float())
     return X.to(old_dtype)
 pass
 
