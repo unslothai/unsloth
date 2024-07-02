@@ -145,39 +145,19 @@ def Gemma2Attention_fast_forward(
     K = repeat_kv(K, self.num_key_value_groups)
     V = repeat_kv(V, self.num_key_value_groups)
 
-    self.scaling = self.config.query_pre_attn_scalar**-0.5
-    attn_weights = torch.matmul(Q, K.transpose(2, 3)) * self.scaling
+    s = self.config.query_pre_attn_scalar**-0.5
+    t = self.config.attn_logit_softcapping
 
-    if self.config.attn_logit_softcapping is not None:
-        attn_weights = attn_weights / self.config.attn_logit_softcapping
-        attn_weights = torch.tanh(attn_weights)
-        attn_weights = attn_weights * self.config.attn_logit_softcapping
+    A = torch.matmul(Q, K.transpose(2, 3)) * s
+    A = t * torch.tanh(A / t)
+    A += causal_mask[:kv_seq_len, :kv_seq_len]
+    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
+    A = torch.matmul(A, V)
+    A = A.transpose(1, 2).contiguous()
 
-    attention_mask = causal_mask
-    if attention_mask is not None:  # no matter the length, we just slice it
-        causal_mask = attention_mask[:kv_seq_len, :kv_seq_len]
-        attn_weights = attn_weights + causal_mask
-
-    # upcast attention to fp32
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(Q.dtype)
-    attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-    attn_output = torch.matmul(attn_weights, V)
-
-    if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
-        raise ValueError(
-            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
-            f" {attn_output.size()}"
-        )
-
-    attn_output = attn_output.transpose(1, 2).contiguous()
-
-    attn_output = attn_output.view(bsz, q_len, -1)
-    attn_output = self.o_proj(attn_output)
-
-    if not output_attentions:
-        attn_weights = None
-
-    return attn_output, attn_weights, past_key_value
+    A = A.view(bsz, q_len, -1)
+    A = self.o_proj(A)
+    return A, None, past_key_value
 pass
 
 
