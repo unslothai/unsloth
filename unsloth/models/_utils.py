@@ -89,9 +89,9 @@ torch_compile_arguments = [
     "config.memory_planning = True",
     "config.memory_pool = 'combined'",
     "config.coordinate_descent_tuning = True",
-    "config.max_autotune_gemm = False", # GEMM is unnecessary
+    "config.max_autotune_gemm = True", # GEMM is unnecessary
     "config.autotune_multi_device = False",
-    "config.max_autotune_gemm_backends = 'TRITON,ATEN'",
+    "config.max_autotune_gemm_backends = 'TRITON,CUTLASS,CPP,ATEN'",
     "config.aggressive_fusion = True",
     "config.cuda.enable_cuda_lto = True",
     "config.cuda.use_fast_math = True",
@@ -106,7 +106,7 @@ torch_compile_options = {
     "epilogue_fusion"   : True,
     "max_autotune"      : True,
     "shape_padding"     : True,
-    "trace.enabled"     : False, # Output Triton kernel outputs!
+    "trace.enabled"     : True, # Output Triton kernel outputs!
     "triton.cudagraphs" : False,
 }
 
