@@ -109,14 +109,14 @@ def Gemma2DecoderLayer_fast_forward(
             use_cache=use_cache,
             padding_mask=padding_mask,
         )
-        # hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        # hidden_states = fast_rms_layernorm_gemma2_compiled(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = self.pre_feedforward_layernorm(hidden_states)
-        # hidden_states = fast_rms_layernorm_gemma2_compiled(self. pre_feedforward_layernorm, hidden_states, gemma = True)
+        # hidden_states = self.pre_feedforward_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(self. pre_feedforward_layernorm, hidden_states, gemma = True)
         hidden_states = self.mlp(hidden_states)
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         # hidden_states = fast_rms_layernorm_gemma2_compiled(self.post_feedforward_layernorm, hidden_states, gemma = True)
