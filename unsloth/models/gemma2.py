@@ -148,10 +148,11 @@ def Gemma2Attention_fast_forward(
     K = K.reshape(bsz, n_heads, q_len, head_dim)
     V = V.reshape(bsz, n_heads, q_len, head_dim)
 
-    s = self.config.query_pre_attn_scalar**-0.5
+    s = self.config.query_pre_attn_scalar
     t = self.config.attn_logit_softcapping
 
-    A = torch.matmul(Q, K.transpose(2, 3)) * s
+    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
+    A = torch.matmul(Q, K.transpose(2, 3))
     A = t * torch.tanh(A / t)
     A += causal_mask[:kv_seq_len, :kv_seq_len]
     A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
