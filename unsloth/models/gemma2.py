@@ -148,7 +148,7 @@ def Gemma2Attention_fast_forward(
     K = K.reshape(bsz, n_heads, q_len, head_dim)
     V = V.reshape(bsz, n_heads, q_len, head_dim)
 
-    s = self.config.query_pre_attn_scalar
+    s = self.config.hidden_size // self.config.num_attention_heads
     t = self.config.attn_logit_softcapping
 
     Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
