@@ -80,7 +80,72 @@ def gemma2_attention(Q, K, V, mask, self, bsz, q_len):
     A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)
     A = A.to(Q.dtype)
     A = torch.matmul(A, V)
+    A = A.reshape(bsz, q_len, n_heads*head_dim)
     return A
+pass
+
+
+# Logit softcapping
+def Gemma2Attention_fast_forward(
+    self,
+    hidden_states:        torch.Tensor,
+    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    attention_mask:       Optional[torch.Tensor] = None,
+    position_ids:         Optional[torch.LongTensor] = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:    bool = False,
+    use_cache:            bool = False,
+    padding_mask:         Optional[torch.LongTensor] = None,
+    *args, **kwargs,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    
+    # Clear inference
+    if hasattr(self, "paged_attention"):
+        del self.paged_attention_K
+        del self.paged_attention_V
+        del self.paged_attention
+        del self.temp_QA
+        del self.temp_KV
+        del self.RH_Q
+        del self.attention
+    pass
+
+    bsz, q_len, _ = hidden_states.size()
+
+    n_heads    = self.num_heads
+    n_groups   = self.num_key_value_groups
+    n_kv_heads = self.num_key_value_heads
+    head_dim   = self.head_dim
+    assert(n_kv_heads * n_groups == n_heads)
+
+    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
+    K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+    V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
+
+    kv_seq_len = K.shape[-2]
+    if past_key_value is not None:
+        kv_seq_len += past_key_value[0].shape[-2]
+
+    if position_ids is None:
+        cos = self.rotary_emb.cos_cached
+        sin = self.rotary_emb.sin_cached
+        Q, K = fast_rope_embedding(Q, K, cos, sin)
+    else:
+        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
+        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
+    pass
+
+    if past_key_value is not None:
+        K = torch.cat([past_key_value[0], K], dim = 2)
+        V = torch.cat([past_key_value[1], V], dim = 2)
+    pass
+    past_key_value = (K, V) if use_cache else None
+
+    A = gemma2_attention(Q, K, V, causal_mask, self, bsz, kv_seq_len)
+    attn_output = self.apply_o(self, attn_output)
+    attn_weights = None
+    return attn_output, attn_weights, past_key_value
 pass
 
 
@@ -225,9 +290,9 @@ class FastGemma2Model(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
-        Gemma2Attention      .forward = LlamaAttention_fast_forward
-        Gemma2SdpaAttention  .forward = LlamaAttention_fast_forward
-        Gemma2FlashAttention2.forward = LlamaAttention_fast_forward
+        Gemma2Attention      .forward = Gemma2Attention_fast_forward
+        Gemma2SdpaAttention  .forward = Gemma2Attention_fast_forward
+        Gemma2FlashAttention2.forward = Gemma2Attention_fast_forward
         Gemma2DecoderLayer   .forward = Gemma2DecoderLayer_fast_forward
         Gemma2Model          .forward = LlamaModel_fast_forward
         Gemma2ForCausalLM    .forward = CausalLM_fast_forward(Gemma2Model_fast_forward_inference)
