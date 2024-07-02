@@ -86,8 +86,8 @@ __all__ = [
 # Torch compile arguments
 torch_compile_arguments = [
     "config.dce = True",
-    # "config.memory_planning = True",
-    # "config.memory_pool = 'combined'",
+    "config.memory_planning = True",
+    "config.memory_pool = 'combined'",
     "config.coordinate_descent_tuning = True",
     "config.max_autotune_gemm = False", # GEMM is unnecessary
     "config.autotune_multi_device = False",
