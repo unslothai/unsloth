@@ -71,15 +71,16 @@ def gemma2_attention(Q, K, V, mask, self, bsz, q_len):
     K = K.reshape(bsz, n_heads, q_len, head_dim)
     V = V.reshape(bsz, n_heads, q_len, head_dim)
 
-    t = self.config.attn_logit_softcapping
     s = self.config.hidden_size // self.config.num_attention_heads
+    t = self.config.attn_logit_softcapping
 
     Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
-    A = t * torch.tanh(torch.matmul(Q, K.transpose(2, 3)) / t)
-    A += mask[:q_len, :q_len]
-    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)
-    A = A.to(Q.dtype)
+    A = torch.matmul(Q, K.transpose(2, 3))
+    A = t * torch.tanh(A / t)
+    A += causal_mask[:kv_seq_len, :kv_seq_len]
+    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
     A = torch.matmul(A, V)
+    A = A.transpose(1, 2).contiguous()
     A = A.reshape(bsz, q_len, n_heads*head_dim)
     return A
 pass
@@ -141,25 +142,8 @@ def Gemma2Attention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
     past_key_value = (K, V) if use_cache else None
-    
-    # Grouped query attention
-    K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-    V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-    K = K.reshape(bsz, n_heads, q_len, head_dim)
-    V = V.reshape(bsz, n_heads, q_len, head_dim)
 
-    s = self.config.hidden_size // self.config.num_attention_heads
-    t = self.config.attn_logit_softcapping
-
-    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
-    A = torch.matmul(Q, K.transpose(2, 3))
-    A = t * torch.tanh(A / t)
-    A += causal_mask[:kv_seq_len, :kv_seq_len]
-    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
-    A = torch.matmul(A, V)
-    A = A.transpose(1, 2).contiguous()
-    A = A.reshape(bsz, q_len, n_heads*head_dim)
-
+    A = gemma2_attention(Q, K, V, causal_mask, self, bsz, kv_seq_len)
     A = self.apply_o(self, A)
     return A, None, past_key_value
 pass
