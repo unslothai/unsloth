@@ -97,8 +97,8 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        # hidden_states = fast_rms_layernorm_gemma2_compiled(self.input_layernorm, hidden_states, gemma = True)
+        # hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             causal_mask=causal_mask,
