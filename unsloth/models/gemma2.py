@@ -142,7 +142,7 @@ def Gemma2Attention_fast_forward(
     pass
     past_key_value = (K, V) if use_cache else None
 
-    A = gemma2_attention(Q, K, V, causal_mask, self, bsz, kv_seq_len)
+    attn_output = gemma2_attention(Q, K, V, causal_mask, self, bsz, kv_seq_len)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
