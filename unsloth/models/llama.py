@@ -644,22 +644,22 @@ def LlamaModel_fast_forward(
     pass
 
     # Gemma2 has alternating SWA and global attn
-    # if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
-    #     from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-    #     n = self.config.max_position_embeddings
-    #     self.SWA_mask = AttentionMaskConverter(
-    #         is_causal = True,
-    #         sliding_window = self.config.sliding_window,
-    #     )\
-    #         .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-    #         .squeeze(0).squeeze(0)
+    if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
+        from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+        n = self.config.max_position_embeddings
+        self.SWA_mask = AttentionMaskConverter(
+            is_causal = True,
+            sliding_window = self.config.sliding_window,
+        )\
+            .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+            .squeeze(0).squeeze(0)
 
-    #     self.GA_mask = AttentionMaskConverter(
-    #         is_causal = True,
-    #     )\
-    #         .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-    #         .squeeze(0).squeeze(0)
-    # pass
+        self.GA_mask = AttentionMaskConverter(
+            is_causal = True,
+        )\
+            .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+            .squeeze(0).squeeze(0)
+    pass
 
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
