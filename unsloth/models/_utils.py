@@ -86,7 +86,7 @@ __all__ = [
 # Torch compile arguments
 torch_compile_arguments = [
     "config.coordinate_descent_tuning = True",
-    "config.max_autotune_gemm = True", # GEMM is unnecessary
+    "config.max_autotune_gemm = False", # GEMM is unnecessary
     "config.autotune_multi_device = False",
     "config.max_autotune_gemm_backends = 'TRITON,ATEN'",
     "config.cuda.enable_cuda_lto = True",
@@ -102,7 +102,7 @@ torch_compile_options = {
     "epilogue_fusion"   : True,
     "max_autotune"      : True,
     "shape_padding"     : True,
-    "trace.enabled"     : True, # Output Triton kernel outputs!
+    "trace.enabled"     : False, # Output Triton kernel outputs!
     "triton.cudagraphs" : False,
 }
 
