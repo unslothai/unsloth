@@ -58,7 +58,7 @@ pass
 
 
 # Logit softcapping
-@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+# @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
 def gemma2_attention(Q, K, V, mask, self, bsz, q_len):
     n_heads    = self.num_heads
     head_dim   = self.head_dim
