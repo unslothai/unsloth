@@ -858,6 +858,11 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
         logits = logits.to(self.config.torch_dtype)
+        if self.config.final_logit_softcapping is not None:
+            logits = logits / self.config.final_logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * self.config.final_logit_softcapping
+        pass
 
         loss = None
         if labels is not None:
