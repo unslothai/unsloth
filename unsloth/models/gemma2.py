@@ -48,10 +48,10 @@ pass
 # I checked the gradients and formulas and I'm sure it's correct.
 # I'm stumped :(
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
-def fast_rms_layernorm_gemma2_compiled(layernorm, X):
+def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
     old_dtype = X.dtype
     X = X.float()
-    X = X * torch.rsqrt(X.pow(2).mean(-1, keepdim=True) + layernorm.eps)
+    X = X * torch.rsqrt(X.pow(2).mean(-1, keepdim = True) + layernorm.eps)
     X = X * (1.0 + layernorm.weight.float())
     return X.to(old_dtype)
 pass
@@ -97,7 +97,7 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm_gemma2_compiled(self.input_layernorm, hidden_states, gemma = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             causal_mask=causal_mask,
@@ -108,14 +108,14 @@ def Gemma2DecoderLayer_fast_forward(
             use_cache=use_cache,
             padding_mask=padding_mask,
         )
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm_gemma2_compiled(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self. pre_feedforward_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm_gemma2_compiled(self. pre_feedforward_layernorm, hidden_states, gemma = True)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = fast_rms_layernorm_gemma2_compiled(self.post_feedforward_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_gemma2_compiled(self.post_feedforward_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
     pass
 
