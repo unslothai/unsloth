@@ -212,8 +212,7 @@ def _cross_entropy_backward(
 
     if DO_SOFTCAPPING:
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
-        xx = tl.math.tanh(x / SOFTCAP)
-        y = y * (1.0 - xx*xx)
+        y = y * (1.0 - partial*partial)
     pass
 
     # If y == 0: dC/dx = 0 ==> we already masked it to be = 0, so dloss = 0.
