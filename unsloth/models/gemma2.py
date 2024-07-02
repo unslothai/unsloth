@@ -47,13 +47,40 @@ pass
 # [TODO] We must randomnly use torch.compile?
 # I checked the gradients and formulas and I'm sure it's correct.
 # I'm stumped :(
-@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
     old_dtype = X.dtype
     X = X.float()
     X = X * torch.rsqrt(X.square().mean(-1, keepdim = True) + layernorm.eps) * \
         (1.0 + layernorm.weight.float())
     return X.to(old_dtype)
+pass
+
+
+# Logit softcapping
+@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+def gemma2_attention(Q, K, V, mask, self, bsz, q_len):
+    n_heads    = self.num_heads
+    head_dim   = self.head_dim
+    n_kv_heads = self.num_key_value_heads
+    n_groups   = self.num_key_value_groups
+    
+    # Grouped query attention
+    K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
+    V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
+    K = K.reshape(bsz, n_heads, q_len, head_dim)
+    V = V.reshape(bsz, n_heads, q_len, head_dim)
+
+    t = self.config.attn_logit_softcapping
+    s = self.config.hidden_size // self.config.num_attention_heads
+
+    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
+    A = t * torch.tanh(torch.matmul(Q, K.transpose(2, 3)) / t)
+    A += mask[:q_len, :q_len]
+    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32)
+    A = A.to(Q.dtype)
+    A = torch.matmul(A, V)
+    return A
 pass
 
 
