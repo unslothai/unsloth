@@ -142,54 +142,41 @@ def Gemma2Attention_fast_forward(
     pass
     past_key_value = (K, V) if use_cache else None
 
-    # Attention module
-    if False:#(not HAS_FLASH_ATTENTION and attention_mask is None):
-        # Xformers memory efficient attention
-        # Also has Flash Attention v2 dispatching
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
+    key_states   = repeat_kv(key_states, self.num_key_value_groups)
+    value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        # Group query attention
-        if n_groups != 1:
-            K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
-            V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
-            K = K.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
-            V = V.expand(bsz, kv_seq_len, n_kv_heads, n_groups, head_dim)
-            if hidden_states.requires_grad:
-                K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
-                V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
-            else:
-                Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-        pass
-        A = xformers_attention(Q, K, V, attn_bias = causal_mask)
-        A = A.view(bsz, q_len, n_heads, head_dim)
+    self.scaling = self.config.query_pre_attn_scalar**-0.5
+    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
 
-    elif False:#HAS_FLASH_ATTENTION and attention_mask is None:
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        A = flash_attn_func(Q, K, V, causal = True)
-    else:
-        # Grouped query attention
-        if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
-        pass
-        # Must be contiguous or else results are False!
-        # https://github.com/pytorch/pytorch/issues/112577
-        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = causal_mask, is_causal = False)
-        # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2).contiguous()
-    pass
-    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
-    attn_output = self.apply_o(self, attn_output)
-    attn_weights = None
+    if self.config.attn_logit_softcapping is not None:
+        attn_weights = attn_weights / self.config.attn_logit_softcapping
+        attn_weights = torch.tanh(attn_weights)
+        attn_weights = attn_weights * self.config.attn_logit_softcapping
+
+    attention_mask = causal_mask
+    if attention_mask is not None:  # no matter the length, we just slice it
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask
+
+    # upcast attention to fp32
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+    attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+    attn_output = torch.matmul(attn_weights, value_states)
+
+    if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+        raise ValueError(
+            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+            f" {attn_output.size()}"
+        )
+
+    attn_output = attn_output.transpose(1, 2).contiguous()
+
+    attn_output = attn_output.view(bsz, q_len, -1)
+    attn_output = self.o_proj(attn_output)
+
+    if not output_attentions:
+        attn_weights = None
+
     return attn_output, attn_weights, past_key_value
 pass
 
