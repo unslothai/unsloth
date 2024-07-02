@@ -43,7 +43,6 @@ except:
 pass
 
 
-# Weirdly the 4th Post MLP layernorm does not function well with Triton?
 # [TODO] We must randomnly use torch.compile?
 # I checked the gradients and formulas and I'm sure it's correct.
 # I'm stumped :(
@@ -74,7 +73,7 @@ def gemma2_attention(Q, K, V, causal_mask, self, bsz, q_len):
     s = self.config.hidden_size // self.config.num_attention_heads
     t = self.config.attn_logit_softcapping
 
-    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
+    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
     A = torch.matmul(Q, K.transpose(2, 3))
     A = t * torch.tanh(A / t)
     A += causal_mask[:q_len, :q_len]
@@ -189,7 +188,6 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        # hidden_states = self.input_layernorm(hidden_states)
         hidden_states = fast_rms_layernorm_gemma2_compiled(self.input_layernorm, hidden_states, gemma = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
@@ -201,16 +199,13 @@ def Gemma2DecoderLayer_fast_forward(
             use_cache=use_cache,
             padding_mask=padding_mask,
         )
-        # hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = fast_rms_layernorm_gemma2_compiled(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
-        # hidden_states = self.pre_feedforward_layernorm(hidden_states)
         hidden_states = fast_rms_layernorm_gemma2_compiled(self. pre_feedforward_layernorm, hidden_states, gemma = True)
         hidden_states = self.mlp(hidden_states)
-        # hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = fast_rms_layernorm_gemma2_compiled(self.post_feedforward_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
     pass
