@@ -157,9 +157,9 @@ def Gemma2Attention_fast_forward(
     A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
     A = torch.matmul(A, V)
     A = A.transpose(1, 2).contiguous()
+    A = A.reshape(bsz, q_len, n_heads*head_dim)
 
-    A = A.view(bsz, q_len, -1)
-    A = self.o_proj(A)
+    A = self.apply_o(self, A)
     return A, None, past_key_value
 pass
 
