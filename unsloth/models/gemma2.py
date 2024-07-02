@@ -142,11 +142,11 @@ def Gemma2Attention_fast_forward(
     pass
     past_key_value = (K, V) if use_cache else None
 
-    key_states   = repeat_kv(key_states, self.num_key_value_groups)
-    value_states = repeat_kv(value_states, self.num_key_value_groups)
+    K = repeat_kv(K, self.num_key_value_groups)
+    V = repeat_kv(V, self.num_key_value_groups)
 
     self.scaling = self.config.query_pre_attn_scalar**-0.5
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
+    attn_weights = torch.matmul(Q, key_states.transpose(2, 3)) * self.scaling
 
     if self.config.attn_logit_softcapping is not None:
         attn_weights = attn_weights / self.config.attn_logit_softcapping
