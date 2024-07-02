@@ -871,7 +871,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
                 labels = shift_labels,
-                logit_softcapping = getattr(self.config, "final_logit_softcapping", 0),
             )
         pass
 
