@@ -155,7 +155,7 @@ def Gemma2Attention_fast_forward(
 
     attention_mask = causal_mask
     if attention_mask is not None:  # no matter the length, we just slice it
-        causal_mask = attention_mask[:, :, :, : K.shape[-2]]
+        causal_mask = attention_mask[:kv_seq_len, :kv_seq_len]
         attn_weights = attn_weights + causal_mask
 
     # upcast attention to fp32
