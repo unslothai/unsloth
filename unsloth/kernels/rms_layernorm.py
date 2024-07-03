@@ -137,8 +137,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda")
-        r = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
+        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
+        r = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
         fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
         fx[(n_rows,)](
