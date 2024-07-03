@@ -24,7 +24,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 |-----------|---------|--------|----------|
 | **Llama 3 (8B)**      | [▶️ Start for free](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing)               | 2x faster | 60% less |
 | **Mistral v0.3 (7B)**    | [▶️ Start for free](https://colab.research.google.com/drive/1_yNCks4BTD5zOnjozppphh5GzMFaMKq_?usp=sharing)               | 2.2x faster | 73% less |
-| **Gemma 2 (9B)**      | [▶️ Start for free](https://colab.research.google.com/drive/10NbwlsRChbma1v55m8LAPYG15uQv6HLo?usp=sharing)               | 2.4x faster | 71% less |
+| **Gemma 2 (9B)**      | [▶️ Start for free](https://colab.research.google.com/drive/1vIrqH5uYDQwsJ4-OO3DErvuv4pBgVwk4?usp=sharing)               | 2.4x faster | 71% less |
 | **Phi-3 (mini)** | [▶️ Start for free](https://colab.research.google.com/drive/1lN6hPQveB_mHSnTOYifygFcrO8C1bxq4?usp=sharing)               | 2x faster | 50% less |
 | **Phi-3 (medium)** | [▶️ Start for free](https://colab.research.google.com/drive/1hhdhBa1j_hsymiW9m-WzxQtgqTH_NHqi?usp=sharing)               | 2x faster | 50% less |
 | **Ollama**     | [▶️ Start for free](https://colab.research.google.com/drive/1WZDi7APtQ9VsvOrQSSC5DDtxq159j8iZ?usp=sharing)               | 1.9x faster | 43% less |
@@ -39,7 +39,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - Click [here](https://github.com/unslothai/unsloth/wiki) for detailed documentation for Unsloth.
 
 ## 🦥 Unsloth.ai News
-- 📣 NEW! [Gemma-2-9b](https://colab.research.google.com/drive/135ced7oHytdxu3N2DNe1Z0kqjyYIkDXp?usp=sharing) and Gemma-2-27b now supported
+- 📣 NEW! [Gemma-2-9b](https://colab.research.google.com/drive/1vIrqH5uYDQwsJ4-OO3DErvuv4pBgVwk4?usp=sharing) and Gemma-2-27b now supported
 - 📣 UPDATE! [Phi-3 mini](https://colab.research.google.com/drive/1hhdhBa1j_hsymiW9m-WzxQtgqTH_NHqi?usp=sharing) model updated
 - 📣 NEW! Continued Pretraining [notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) for other languages like Korean!
 - 📣 NEW! Qwen2 now works
