@@ -107,7 +107,7 @@ def _get_pad_token_id(self, pad_token_id: int = None, eos_token_id: int = None) 
         # logger.warning(f"Setting `pad_token_id` to `eos_token_id`:{eos_token_id} for open-end generation.")
         pad_token_id = eos_token_id
     return pad_token_id
-from transformers.generation_utils import GenerationMixin
+from transformers import GenerationMixin
 GenerationMixin._get_pad_token_id = _get_pad_token_id
 
 
