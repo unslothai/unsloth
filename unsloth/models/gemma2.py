@@ -433,6 +433,8 @@ class FastGemma2Model(FastLlamaModel):
         Gemma2Model          .forward = LlamaModel_fast_forward
         Gemma2ForCausalLM    .forward = CausalLM_fast_forward(Gemma2Model_fast_forward_inference)
         PeftModelForCausalLM .forward = PeftModelForCausalLM_fast_forward
+        fix_prepare_inputs_for_generation(Gemma2ForCausalLM)
+        
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.

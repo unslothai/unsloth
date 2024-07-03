@@ -78,6 +78,24 @@ from math import sqrt as math_sqrt
 KV_CACHE_INCREMENT = 256 # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
 
+# Fix new HF's inference code
+def _fast_prepare_inputs_for_generation(input_ids, **kwargs,):
+    if "past_key_values" in kwargs:
+        input_ids = input_ids[:,[-1]]
+        kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
+    kwargs["position_ids"] = kwargs["cache_position"]
+    return { "input_ids" : input_ids, **kwargs, }
+pass
+
+
+def fix_prepare_inputs_for_generation(module):
+    # Fix prepare_inputs_for_generation
+    if hasttar(module, "prepare_inputs_for_generation"):
+        module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
+    pass
+pass
+
+
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
@@ -1006,6 +1024,9 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         pass
         internal_model._flag_for_generation = True
 
+        # For newer HF
+        kwargs["cache_implementation"] = "dynamic"
+
         # Autocasted
         with torch.autocast(device_type = device_type, dtype = dtype):
             output = generate(*args, **kwargs)
@@ -1036,7 +1057,8 @@ class FastLlamaModel:
         LlamaModel          .forward = LlamaModel_fast_forward
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
-
+        fix_prepare_inputs_for_generation(LlamaForCausalLM)
+        
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
