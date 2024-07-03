@@ -21,6 +21,12 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
+
+# Stop "Special tokens have been added in the vocabulary, ..."
+import logging
+logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
+
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
@@ -31,7 +37,7 @@ import numpy as np
 import os
 import psutil
 
-__version__ = "2024.6"
+__version__ = "2024.7"
 
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()
@@ -80,7 +86,48 @@ __all__ = [
     "offload_output_embeddings",
     "is_bfloat16_supported",
     "unsloth_offloaded_gradient_checkpoint",
+    "torch_compile_options",
 ]
+
+# Just remove max_autotune_gemm warning
+import functools
+@functools.lru_cache(None)
+def is_big_gpu(index):
+    sms = torch.cuda.get_device_properties(index).multi_processor_count
+    if sms < 80:  # V100
+        # log.warning("not enough SMs to use max_autotune_gemm mode")
+        return False
+    return True
+import torch._inductor.utils
+torch._inductor.utils.is_big_gpu = is_big_gpu
+
+
+# Torch compile arguments
+torch_compile_arguments = [
+    "config.dce = True",
+    "config.memory_planning = True",
+    "config.memory_pool = 'combined'",
+    "config.coordinate_descent_tuning = True",
+    "config.max_autotune_gemm = False", # GEMM is unnecessary
+    "config.autotune_multi_device = False",
+    "config.max_autotune_gemm_backends = 'ATEN'", # Not much faster
+    "config.aggressive_fusion = False", # Careful changes results!
+    "config.cuda.enable_cuda_lto = True",
+    "config.cuda.use_fast_math = True",
+    "config.cuda.compile_opt_level = '-O2'",
+]
+import torch._inductor.config as config
+for _try_compile_argument in torch_compile_arguments:
+    try:    exec(_try_compile_argument)
+    except: pass
+pass
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
+    "shape_padding"     : True,
+    "trace.enabled"     : False, # Output Triton kernel outputs!
+    "triton.cudagraphs" : False,
+}
 
 
 def prepare_model_for_kbit_training(
