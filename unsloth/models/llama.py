@@ -15,6 +15,8 @@
 import torch
 import gc
 from typing import Optional, Tuple, List, Union
+from ._utils import *
+from ._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
 from transformers.models.llama.modeling_llama import (
     logger,
@@ -25,8 +27,6 @@ from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from ..kernels import *
-from ._utils import *
-from ._utils import __version__
 from ..tokenizer_utils import *
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func
