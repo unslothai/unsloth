@@ -878,6 +878,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         logits = logits.to(self.config.torch_dtype)
 
         loss = None
+        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         if labels is not None:
             shift_logits = logits
             if not hasattr(self, "extra_ignored_labels"):
@@ -889,8 +890,12 @@ def CausalLM_fast_forward(fast_forward_inference):
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
                 labels = shift_labels,
-                logit_softcapping = getattr(self.config, "final_logit_softcapping", 0),
+                logit_softcapping = logit_softcapping,
             )
+        elif logit_softcapping != 0:
+            logits *= (1.0 / logit_softcapping)
+            torch.tanh(logits, out = logits)
+            logits *= logit_softcapping
         pass
 
         if not return_dict:
