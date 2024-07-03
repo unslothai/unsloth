@@ -105,14 +105,14 @@ def fast_dequantize(W, quant_state = None, out = None):
 
     # Create weight matrix
     if out is None:
-        out = torch.empty(shape, dtype = dtype, device = "cuda")
+        out = torch.empty(shape, dtype = dtype, device = "cuda:0")
     else:
         assert(out.shape == shape)
         assert(out.dtype == dtype)
 
     # NF4 dequantization of statistics
     n_elements_absmax = absmax.numel()
-    out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda")
+    out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda:0")
 
     # Do dequantization
     ptr_out_absmax = get_ptr(out_absmax)
@@ -161,7 +161,7 @@ def fast_gemv(X, W, quant_state, out = None):
     bout = shape[0]
 
     if out is None:
-        out = torch.empty((1, 1, bout,), dtype = dtype, device = "cuda")
+        out = torch.empty((1, 1, bout,), dtype = dtype, device = "cuda:0")
     # else:
     #     assert(out.shape == (1, 1, bout,))
     # pass
@@ -179,7 +179,7 @@ def fast_gemv(X, W, quant_state, out = None):
     ldb = ctypes.c_int32(ldb)
     ldc = ctypes.c_int32(ldc)
 
-    df = torch.empty(absmax.shape, dtype = torch.float32, device = "cuda")
+    df = torch.empty(absmax.shape, dtype = torch.float32, device = "cuda:0")
     cdequantize_blockwise_fp32(
         get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
         ctypes.c_int(blocksize2), ctypes.c_int(df.numel()),
