@@ -100,6 +100,17 @@ def is_big_gpu(index):
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
 
+
+# Remove generation "Setting `pad_token_id` to `eos_token_id`:..."
+def _get_pad_token_id(self, pad_token_id: int = None, eos_token_id: int = None) -> int:
+    if pad_token_id is None and eos_token_id is not None:
+        # logger.warning(f"Setting `pad_token_id` to `eos_token_id`:{eos_token_id} for open-end generation.")
+        pad_token_id = eos_token_id
+    return pad_token_id
+from transformers.generation_utils import GenerationMixin
+GenerationMixin._get_pad_token_id = _get_pad_token_id
+
+
 # Torch compile arguments
 torch_compile_arguments = [
     "config.dce = True",
