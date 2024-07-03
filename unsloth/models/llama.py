@@ -79,7 +79,7 @@ KV_CACHE_INCREMENT = 256 # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
 
 # Fix new HF's inference code
-def _fast_prepare_inputs_for_generation(input_ids, **kwargs,):
+def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
     if "past_key_values" in kwargs:
         input_ids = input_ids[:,[-1]]
         kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
