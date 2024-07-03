@@ -218,6 +218,132 @@ pass
 
 
 from math import sqrt as math_sqrt
+KV_CACHE_INCREMENT = 256 # KV Cache update size
+torch_nn_functional_softmax = torch.nn.functional.softmax
+
+def Gemma2Attention_fast_forward_inference(
+    self,
+    hidden_states:  torch.Tensor,
+    past_key_value: Optional[Tuple[torch.Tensor]],
+    position_ids,
+    do_prefill = False,
+    attention_mask = None,
+    use_sliding_window = False,
+):
+    Xn = hidden_states
+    bsz, _, hd = hidden_states.size()
+    K1, V1 = past_key_value
+    dtype = Xn.dtype
+
+    n_heads    = self.num_heads
+    n_groups   = self.num_key_value_groups
+    n_kv_heads = self.num_key_value_heads
+    head_dim   = self.head_dim
+    attention_size = n_heads*head_dim
+    # assert(n_kv_heads * n_groups == n_heads)
+    seq_len = K1.shape[-2]
+    kv_seq_len = seq_len + 1
+
+    # Prefill phase
+    # if not hasattr(self, "paged_attention"):
+    if do_prefill:
+        self.paged_attention = torch.empty((KV_CACHE_INCREMENT+seq_len+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = "cuda:0")
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
+        self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
+        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda:0")
+        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda:0")
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
+        self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
+        self.scalar = 1.0 / math_sqrt(self.config.hidden_size // self.config.num_attention_heads)
+        self.half_head_dim = head_dim // 2
+    elif kv_seq_len >= self.paged_attention.shape[0]:
+        self.paged_attention.resize_((self.paged_attention.shape[0]+KV_CACHE_INCREMENT, 2, bsz, n_kv_heads, head_dim))
+        self.paged_attention_K = self.paged_attention[:,0]
+        self.paged_attention_V = self.paged_attention[:,1]
+        self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1]+KV_CACHE_INCREMENT))
+    pass
+
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
+    Qn = Qn.view(bsz, 1, n_heads,    head_dim).transpose(1, 2)
+    Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
+    Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
+
+    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
+    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+    cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
+    sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
+    h = self.half_head_dim
+
+    RH_Q = self.RH_Q
+    RH_Q[:,:,:,:h] = Qn[:,:,:,h:]
+    RH_Q[:,:,:,h:] = Qn[:,:,:,:h]
+    torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
+    Qn *= cos
+    Qn.addcmul_(RH_Q, sin)
+
+    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
+    RH_K[:,:,:,:h] = Kn[:,:,:,h:]
+    RH_K[:,:,:,h:] = Kn[:,:,:,:h]
+    torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
+    Kn *= cos
+    Kn.addcmul_(RH_K, sin)
+    
+    # New KV cache
+    # Kn = torch.cat([K1, Kn], dim = 2)
+    # Vn = torch.cat([V1, Vn], dim = 2)
+    self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
+    self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
+    Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
+    Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
+
+    # Handle sliding windows
+    sliding_window = self.config.sliding_window
+    if use_sliding_window and kv_seq_len > sliding_window:
+        # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
+        slicing_tokens = 1 - sliding_window
+        Knn = Kn[:, :, slicing_tokens:, :]#.contiguous()
+        Vnn = Vn[:, :, slicing_tokens:, :]#.contiguous()
+    else:
+        Knn, Vnn = Kn, Vn
+    pass
+
+    # Grouped query attention
+    _, _, cached_len, _ = Knn.shape
+    if n_groups != 1:
+        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
+        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
+    pass
+    # else:
+    #     Knn, Vnn = Knn, Vnn
+    # pass
+
+    # Attention
+    # if bsz == 1:
+    Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
+    # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
+    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
+    # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
+    
+    t = self.config.attn_logit_softcapping
+    A *= (1.0 / t); torch.tanh(A, out = A); A *= t;  # Logit softcapping
+
+    A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
+    A = torch.matmul(A, Vnn, out = Qn)
+    # else:
+    #     A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
+    # pass
+    A = A.transpose(1, 2)
+    A = A.reshape(bsz, 1, attention_size)
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
+    return A, (Kn, Vn)
+pass
+
 
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 # @torch.inference_mode
@@ -239,16 +365,29 @@ def Gemma2Model_fast_forward_inference(
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
-        attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+        SWA = _prepare_4d_causal_attention_mask_for_sdpa(
+            attention_mask,
+            (bsz, q_len),
+            hidden_states,
+            seq_len,
+            sliding_window = self.config.sliding_window,
+        )
+        GA = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
             (bsz, q_len),
             hidden_states,
             seq_len,
         )
+    else:
+        SWA = attention_mask
+        GA  = attention_mask
     pass
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
+
+        use_sliding_window = idx % 2 == 0
+
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
@@ -256,10 +395,11 @@ def Gemma2Model_fast_forward_inference(
             hidden_states = hidden_states,
             past_key_value = past_key_values[idx],
             position_ids = position_ids,
-            attention_mask = attention_mask,
+            attention_mask = SWA if use_sliding_window else GA,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+            use_sliding_window = use_sliding_window,
         )
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
         hidden_states += residual
 
         residual = hidden_states
