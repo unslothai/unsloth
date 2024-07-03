@@ -119,7 +119,7 @@ def _gemma_rms_layernorm_forward(
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
-    inv_var = 1.0 / tl.sqrt(row_var + eps) # Must be 1/sqrt to match Deepmind's impl
+    inv_var = tl.math.rsqrt(row_var + eps)
     tl.store(r, inv_var)
     normed = X_row * inv_var
     output = normed * (W_row + 1.0)
@@ -137,8 +137,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda")
-        r = torch.empty(n_rows, dtype = torch.float32, device = "cuda")
+        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
+        r = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
         fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
         fx[(n_rows,)](

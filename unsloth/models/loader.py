@@ -26,8 +26,11 @@ major, minor = transformers_version.split(".")[:2]
 major, minor = int(major), int(minor)
 SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
 SUPPORTS_GEMMA   = (major > 4) or (major == 4 and minor >= 38)
+SUPPORTS_GEMMA2  = (major > 4) or (major == 4 and minor >= 42)
 if SUPPORTS_GEMMA:
-    from .gemma import FastGemmaModel
+    from .gemma  import FastGemmaModel
+if SUPPORTS_GEMMA2:
+    from .gemma2 import FastGemma2Model
 del major, minor
 
 
@@ -138,6 +141,15 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."\
                 )
             dispatch_model = FastGemmaModel
+        elif model_type == "gemma2":
+            if not SUPPORTS_GEMMA2:
+                raise RuntimeError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support Gemma2.\n"\
+                    f"The minimum required version is 4.43.\n"\
+                    f'Try `pip install --upgrade "transformers>=4.43"`\n'\
+                    f"to obtain the latest transformers build, then restart this session."\
+                )
+            dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
         else:
