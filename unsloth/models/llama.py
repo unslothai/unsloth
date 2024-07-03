@@ -90,7 +90,7 @@ pass
 
 def fix_prepare_inputs_for_generation(module):
     # Fix prepare_inputs_for_generation
-    if hasttar(module, "prepare_inputs_for_generation"):
+    if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
     pass
 pass
@@ -1058,7 +1058,7 @@ class FastLlamaModel:
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
-        
+
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
