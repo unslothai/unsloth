@@ -391,7 +391,7 @@ def Gemma2Model_fast_forward_inference(
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
-        hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
+        hidden_states, present_key_value = Gemma2Attention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states = hidden_states,
             past_key_value = past_key_values[idx],
