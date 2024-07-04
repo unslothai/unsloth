@@ -108,7 +108,7 @@ class FastLanguageModel(FastLlamaModel):
         # Cannot be both!
         if is_model and is_peft:
             raise RuntimeError(
-                "Unsloth: You repo has a LoRA adapter and a base model.\n"\
+                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
                 "You have 2 files `config.json` and `adapter_config.json`.\n"\
                 "We must only allow one config file.\n"\
                 "Please separate the LoRA and base models to 2 repos."
