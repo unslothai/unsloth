@@ -199,6 +199,17 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-2-27b",
         "google/gemma-2-27b",
     ),
+    "unsloth/gemma-2-9b-it-bnb-4bit" : (
+        "unsloth/gemma-2-9b-it",
+        "google/gemma-2-9b-it",
+    ),
+    "unsloth/gemma-2-27b-it-bnb-4bit" : (
+        "unsloth/gemma-2-27b-it",
+        "google/gemma-2-27b-it",
+    ),
+    "unsloth/Phi-3-mini-4k-instruct-v0-bnb-4bit" : ( # Old Phi pre July
+        "unsloth/Phi-3-mini-4k-instruct-v0",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}

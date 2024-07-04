@@ -376,7 +376,7 @@ def fix_sentencepiece_gguf(saved_location):
     """
         Fixes sentencepiece tokenizers which did not extend the vocabulary with
         user defined tokens.
-        Inspiration from https://github.com/ggerganov/llama.cpp/blob/master/convert-hf-to-gguf.py
+        Inspiration from https://github.com/ggerganov/llama.cpp/blob/master/convert_hf_to_gguf.py
     """
     from copy import deepcopy
     from transformers.utils import sentencepiece_model_pb2
