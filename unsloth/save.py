@@ -800,8 +800,8 @@ def install_llama_cpp_old(version = -10):
     # Check if successful
     if not os.path.exists("llama.cpp/quantize") and not os.path.exists("llama.cpp/llama-quantize"):
         raise RuntimeError(
-            "Unsloth: llama.cpp GGUF seems to be too buggy to install.\n"\
-            "File a report to llama.cpp's main repo since this is not an Unsloth issue."
+            "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
+            "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
         )
     pass
 pass
@@ -945,9 +945,28 @@ def save_to_gguf(
         quantize_location = "llama.cpp/quantize"
     elif os.path.exists("llama.cpp/llama-quantize"):
         quantize_location = "llama.cpp/llama-quantize"
+    else:
+        raise RuntimeError(
+            "Unsloth: The file 'llama.cpp/llama-quantize' or 'llama.cpp/quantize' does not exist.\n"\
+            "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+        )
     pass
 
-    if error != 0 or quantize_location is None:
+    # See https://github.com/unslothai/unsloth/pull/730
+    # Filenames changed again!
+    convert_location = None
+    if os.path.exists("llama.cpp/convert-hf-to-gguf.py"):
+        convert_location = "llama.cpp/convert-hf-to-gguf.py"
+    elif os.path.exists("llama.cpp/convert_hf_to_gguf.py"):
+        convert_location = "llama.cpp/convert_hf_to_gguf.py"
+    else:
+        raise RuntimeError(
+            "Unsloth: The file 'llama.cpp/convert-hf-to-gguf.py' or 'llama.cpp/convert_hf_to_gguf.py' does not exist.\n"\
+            "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+        )
+    pass
+
+    if error != 0 or quantize_location is None or convert_location is None:
         print(f"Unsloth: llama.cpp error code = {error}.")
         install_llama_cpp_old(-10)
     pass
@@ -1035,7 +1054,7 @@ def save_to_gguf(
             f"--outfile {final_location} --vocab-type {vocab_type} "\
             f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
     else:
-        command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
+        command = f"python {convert_location} {model_directory} "\
             f"--outfile {final_location} "\
             f"--outtype {first_conversion}"
     pass
