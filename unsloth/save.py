@@ -1035,7 +1035,7 @@ def save_to_gguf(
             f"--outfile {final_location} --vocab-type {vocab_type} "\
             f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
     else:
-        command = f"python llama.cpp/convert-hf-to-gguf.py {model_directory} "\
+        command = f"python llama.cpp/convert_hf_to_gguf.py {model_directory} "\
             f"--outfile {final_location} "\
             f"--outtype {first_conversion}"
     pass
