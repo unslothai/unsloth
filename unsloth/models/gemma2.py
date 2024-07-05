@@ -465,7 +465,7 @@ def patch_linear_scaling(
     function = function.replace("def __init__", f"def {init_name}")
     function = function.replace(
         "super().__init__()",
-        f"super({model_name.title()}Attention}, self).__init__()",
+        f"super({model_name.title()}Attention, self).__init__()",
     )
     fix_rope_function = """
     if getattr(self.config, "rope_scaling", None) is None:
