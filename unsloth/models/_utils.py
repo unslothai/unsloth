@@ -68,6 +68,7 @@ from transformers import PretrainedConfig
 filenames = os.listdir()
 remove_filenames = frozenset(("__init__.py", "_utils.py", "dpo.py", "loader.py", "mapper.py",))
 filenames = [x for x in filenames if x not in remove_filenames]
+print(filenames)
 
 for model_name in filenames:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
