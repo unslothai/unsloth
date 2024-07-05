@@ -29,7 +29,7 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 
 from transformers import PretrainedConfig
 import inspect, re
-for model_name in ["gemma2"]:
+for model_name in ["gemma2", "qwen2", "gemma", "mistral",]:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title()}Config"
@@ -110,6 +110,7 @@ __all__ = [
     "is_bfloat16_supported",
     "unsloth_offloaded_gradient_checkpoint",
     "torch_compile_options",
+    "patch_linear_scaling",
 ]
 
 # Just remove max_autotune_gemm warning
@@ -571,4 +572,65 @@ pass
 # Fixes a weird Torch 2.3 bug which says T4s have bfloat16
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
+pass
+
+
+# Patches models to add RoPE Scaling
+def patch_linear_scaling(
+    model_name = "gemma2",
+    rope_module = None,
+    scaled_rope_module = None,
+):
+    assert(rope_module is not None and scaled_rope_module is not None)
+
+    rope_name = rope_module.__name__
+    scaled_rope_name = scaled_rope_module.__name__
+    model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
+    exec(f"from {model_filepath} import logger, "\
+         f"{model_name.title()}Attention, {model_name.title()}Config", globals())
+
+    function = inspect.getsource(eval(f"{model_name.title()}Attention").__init__)
+    where = function.find("def")
+    function = function.split("\n")
+    function = "\n".join(x[where:] for x in function)
+    init_name = f"{model_name.title()}Attention__init__"
+    function = function.replace("def __init__", f"def {init_name}")
+    function = function.replace(
+        "super().__init__()",
+        f"super({model_name.title()}Attention, self).__init__()",
+    )
+    fix_rope_function = """
+    if getattr(self.config, "rope_scaling", None) is None:
+        self.rotary_emb = {rope_function}(
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
+        )
+    else:
+        scaling_type = self.config.rope_scaling["type"]
+        scaling_factor = self.config.rope_scaling["factor"]
+        if scaling_type == "linear":
+            self.rotary_emb = {scaled_rope_function}(
+                self.head_dim,
+                max_position_embeddings=self.max_position_embeddings,
+                scaling_factor=scaling_factor,
+                base=self.rope_theta,
+            )
+        else:
+            raise ValueError(f"Unknown RoPE scaling type {{scaling_type}}")
+    pass
+    """
+    fix_rope_function = fix_rope_function.format(
+        rope_function        = rope_module.__name__,
+        scaled_rope_function = scaled_rope_module.__name__,
+    )
+    rotary_emb = re.findall(
+        "self.rotary_emb = .+?\)", function,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    if len(rotary_emb) == 0: return
+    rotary_emb = rotary_emb[0]
+    function = function.replace(rotary_emb, fix_rope_function, 1)
+    exec(function, globals())
+    return init_name
 pass

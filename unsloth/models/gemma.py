@@ -275,6 +275,12 @@ class FastGemmaModel(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
+        init_name = patch_linear_scaling(
+            model_name         = "gemma",
+            rope_module        = GemmaFixedRotaryEmbedding,
+            scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
+        )
+        GemmaAttention.__init__      = eval(init_name)
         GemmaAttention      .forward = LlamaAttention_fast_forward
         GemmaSdpaAttention  .forward = LlamaAttention_fast_forward
         GemmaFlashAttention2.forward = LlamaAttention_fast_forward
