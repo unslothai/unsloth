@@ -1139,6 +1139,7 @@ class FastLlamaModel:
             with open(inspect.getfile(model_function), "r") as file:
                 has_rope_scaling = "self.config.rope_scaling" in file.read()
         except: pass
+        has_rope_scaling = True
 
         # If max_seq_length is not specified, use maximum fron config
         if max_seq_length is None:
