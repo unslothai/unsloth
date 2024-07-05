@@ -665,6 +665,7 @@ def LlamaModel_fast_forward(
     if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
         from transformers.modeling_attn_mask_utils import AttentionMaskConverter
         n = self.config.max_position_embeddings
+        print(self.train_dataset)
         self.SWA_mask = AttentionMaskConverter(
             is_causal = True,
             sliding_window = self.config.sliding_window,
