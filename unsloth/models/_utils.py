@@ -27,6 +27,34 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
 
+def patch_config(model_name = "gemma2"):
+
+    from typing import List, Optional, Tuple, Union
+    from transformers import PretrainedConfig
+
+    config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
+    model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
+    config_filename = f"{model_name.title()}Config"
+    exec(f"from {config_filepath} import {config_filename}", globals())
+    
+    config = inspect.getsource(eval(config_filename))
+    if "rope_scaling" in config: return
+    config = re.sub(
+        r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
+        r"rope_scaling=None,"\
+        r"\n        **kwargs):\n"\
+        r"\n        self.rope_scaling = rope_scaling\n",
+        config,
+    )
+    exec(config, globals())
+
+    exec(f"import {config_filepath}", globals())
+    exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+pass
+# Patch for RoPE Scaling
+patch_config("gemma2")
+
+
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
