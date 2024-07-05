@@ -462,7 +462,8 @@ def patch_linear_scaling(
     rope_name = rope_module.__name__
     scaled_rope_name = scaled_rope_module.__name__
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    exec(f"from {model_filepath} import logger, {model_name.title()}Attention", globals())
+    exec(f"from {model_filepath} import logger, "\
+         f"{model_name.title()}Attention, {model_name.title()}Config", globals())
 
     function = inspect.getsource(eval(f"{model_name.title()}Attention").__init__)
     where = function.find("def")
