@@ -606,8 +606,10 @@ def patch_linear_scaling(
     scaled_rope_name = scaled_rope_module.__name__
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     exec_code = \
+        f"import torch.nn as nn\n"\
+        f"from typing import Union, Optional, List, Any, Callable, Tuple\n"\
         f"from {model_filepath} import logger, "\
-         f"{model_name.title()}Attention, {model_name.title()}Config"
+        f"{model_name.title()}Attention, {model_name.title()}Config"
 
     function = inspect.getsource(attention_module.__init__)
     where = function.find("def")
@@ -651,5 +653,6 @@ def patch_linear_scaling(
     if len(rotary_emb) == 0: return
     rotary_emb = rotary_emb[0]
     function = function.replace(rotary_emb, fix_rope_function, 1)
-    return init_name, exec_code, function
+    function = exec_code + "\n\n" + function
+    return init_name, function
 pass
