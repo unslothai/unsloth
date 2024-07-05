@@ -27,7 +27,6 @@ from transformers.models.gemma2.modeling_gemma2 import (
     apply_rotary_pos_emb,
     repeat_kv,
 )
-from transformers.models.gemma2.modeling_gemma2 import *
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
