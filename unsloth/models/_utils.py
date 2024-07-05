@@ -36,7 +36,7 @@ for model_name in ["gemma2"]:
     exec(f"from {config_filepath} import {config_filename}", globals())
 
     config = inspect.getsource(eval(config_filename))
-    if "rope_scaling" in config: return
+    if "rope_scaling" in config: continue
     config = re.sub(
         r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
         r"rope_scaling=None,"\
