@@ -422,19 +422,18 @@ def Gemma2Model_fast_forward_inference(
 pass
 
 
+import torch
+import re, inspect
+import torch
+import torch.nn as nn
+from typing import List, Optional, Tuple, Union
+from transformers import PretrainedConfig
+
 def patch_linear_scaling(
     model_name = "gemma2",
     rope_module = GemmaFixedRotaryEmbedding,
     scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
 ):
-    import torch
-    import re, inspect
-    import torch
-    import torch.nn as nn
-    from typing import List, Optional, Tuple, Union
-
-    from transformers import PretrainedConfig
-
     rope_name = rope_module.__name__
     scaled_rope_name = scaled_rope_module.__name__
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
