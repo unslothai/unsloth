@@ -16,6 +16,7 @@ from .llama import *
 from ._utils import __version__
 from .gemma import (
     GemmaFixedRotaryEmbedding,
+    GemmaFixedLinearScalingRotaryEmbedding,
     fast_geglu_inference,
 )
 from transformers.models.gemma2.modeling_gemma2 import (
@@ -421,11 +422,98 @@ def Gemma2Model_fast_forward_inference(
 pass
 
 
+def patch_linear_scaling(
+    model_name = "gemma2",
+    rope_module = GemmaFixedRotaryEmbedding,
+    scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
+):
+    import torch
+    import re, inspect
+    import torch
+    import torch.nn as nn
+    from typing import List, Optional, Tuple, Union
+
+    from transformers import PretrainedConfig
+
+    rope_name = rope_module.__name__
+    scaled_rope_name = scaled_rope_module.__name__
+    config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
+    model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
+    config_filename = f"{model_name.title()}Config"
+    exec(f"from {config_filepath} import {config_filename}", globals())
+    
+    config = inspect.getsource(eval(config_filename))
+    config = re.sub(
+        r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
+        r"rope_scaling=None,"\
+        r"\n        **kwargs):\n"\
+        r"\n        self.rope_scaling = rope_scaling\n",
+        config,
+    )
+    exec(config, globals())
+
+    exec(f"import {config_filepath}", globals())
+    exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+
+    exec(f"from {model_filepath} import logger, {model_name.title()}Attention", globals())
+
+    function = inspect.getsource(eval(f"{model_name.title()}Attention").__init__)
+    where = function.find("def")
+    function = function.split("\n")
+    function = "\n".join(x[where:] for x in function)
+    init_name = f"{model_name.title()}Attention__init__"
+    function = function.replace("def __init__", f"def {init_name}")
+    function = function.replace(
+        "super().__init__()",
+        f"super({model_name.title()}Attention}, self).__init__()",
+    )
+    fix_rope_function = """
+    if getattr(self.config, "rope_scaling", None) is None:
+        self.rotary_emb = {rope_function}(
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
+        )
+    else:
+        scaling_type = self.config.rope_scaling["type"]
+        scaling_factor = self.config.rope_scaling["factor"]
+        if scaling_type == "linear":
+            self.rotary_emb = {scaled_rope_function}(
+                self.head_dim,
+                max_position_embeddings=self.max_position_embeddings,
+                scaling_factor=scaling_factor,
+                base=self.rope_theta,
+            )
+        else:
+            raise ValueError(f"Unknown RoPE scaling type {{scaling_type}}")
+    pass
+    """
+    fix_rope_function = fix_rope_function.format(
+        rope_function        = rope_module.__name__,
+        scaled_rope_function = scaled_rope_module.__name__,
+    )
+    rotary_emb = re.findall(
+        "self.rotary_emb = .+?\)", function,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    if len(rotary_emb) == 0: return
+    rotary_emb = rotary_emb[0]
+    function = function.replace(rotary_emb, fix_rope_function, 1)
+    exec(function, globals())
+    return init_name
+pass
+
+
 class FastGemma2Model(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
-        print(Gemma2Attention, Gemma2Attention.__name__)
+        init_name = patch_linear_scaling(
+            model_name = "gemma2",
+            rope_module = GemmaFixedRotaryEmbedding,
+            scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
+        )
+        Gemma2Attention.__init__      = eval(init_name)
         Gemma2Attention      .forward = Gemma2Attention_fast_forward
         Gemma2SdpaAttention  .forward = Gemma2Attention_fast_forward
         Gemma2FlashAttention2.forward = Gemma2Attention_fast_forward
