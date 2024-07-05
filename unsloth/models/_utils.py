@@ -27,14 +27,14 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
 
-def patch_config(model_name = "gemma2"):
-    from transformers import PretrainedConfig
-    import inspect, re
+from transformers import PretrainedConfig
+import inspect, re
+for model_name in ["gemma2"]:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title()}Config"
     exec(f"from {config_filepath} import {config_filename}", globals())
-    
+
     config = inspect.getsource(eval(config_filename))
     if "rope_scaling" in config: return
     config = re.sub(
@@ -48,11 +48,7 @@ def patch_config(model_name = "gemma2"):
 
     exec(f"import {config_filepath}", globals())
     exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
-    print(1)
 pass
-# Patch for RoPE Scaling
-patch_config("gemma2")
-
 
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
