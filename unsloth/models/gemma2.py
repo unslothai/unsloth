@@ -425,6 +425,7 @@ class FastGemma2Model(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
+        print(Gemma2Attention, Gemma2Attention.__name__)
         Gemma2Attention      .forward = Gemma2Attention_fast_forward
         Gemma2SdpaAttention  .forward = Gemma2Attention_fast_forward
         Gemma2FlashAttention2.forward = Gemma2Attention_fast_forward
