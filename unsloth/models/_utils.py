@@ -65,12 +65,9 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 # Edits all Config files to enable RoPE Scaling for all models
 from transformers import PretrainedConfig
 
-filenames = os.listdir()
-remove_filenames = frozenset(("__init__.py", "_utils.py", "dpo.py", "loader.py", "mapper.py",))
-filenames = [x for x in filenames if x not in remove_filenames]
-print(filenames)
+model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2",]
 
-for model_name in filenames:
+for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title()}Config"
