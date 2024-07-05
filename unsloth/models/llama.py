@@ -1099,6 +1099,13 @@ class FastLlamaModel:
         trust_remote_code = False,
         **kwargs,
     ):
+        if trust_remote_code:
+            print(
+                "Unsloth: WARNING `trust_remote_code` is True.\n"\
+                "Are you certain you want to do remote code execution?"
+            )
+        pass
+        
         if token is None and "HF_TOKEN" in os.environ:
             token = os.environ["HF_TOKEN"]
 
