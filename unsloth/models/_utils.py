@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import torch
-from typing import Union, Optional, List, Any, Callable
+from typing import Union, Optional, List, Any, Callable, Tuple
 import warnings
+from transformers import PretrainedConfig
+import inspect, re
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
@@ -28,10 +30,6 @@ import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
 
 def patch_config(model_name = "gemma2"):
-
-    from typing import List, Optional, Tuple, Union
-    from transformers import PretrainedConfig
-
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title()}Config"
