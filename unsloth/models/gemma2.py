@@ -429,6 +429,31 @@ import torch.nn as nn
 from typing import List, Optional, Tuple, Union
 from transformers import PretrainedConfig
 
+def patch_config(model_name = "gemma2"):
+
+    from typing import List, Optional, Tuple, Union
+    from transformers import PretrainedConfig
+
+    config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
+    model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
+    config_filename = f"{model_name.title()}Config"
+    exec(f"from {config_filepath} import {config_filename}", globals())
+    
+    config = inspect.getsource(eval(config_filename))
+    config = re.sub(
+        r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
+        r"rope_scaling=None,"\
+        r"\n        **kwargs):\n"\
+        r"\n        self.rope_scaling = rope_scaling\n",
+        config,
+    )
+    exec(config, globals())
+
+    exec(f"import {config_filepath}", globals())
+    exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+pass
+
+
 def patch_linear_scaling(
     model_name = "gemma2",
     rope_module = GemmaFixedRotaryEmbedding,
@@ -507,12 +532,12 @@ class FastGemma2Model(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
-        init_name = patch_linear_scaling(
-            model_name = "gemma2",
-            rope_module = GemmaFixedRotaryEmbedding,
-            scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
-        )
-        Gemma2Attention.__init__      = eval(init_name)
+        # init_name = patch_linear_scaling(
+        #     model_name = "gemma2",
+        #     rope_module = GemmaFixedRotaryEmbedding,
+        #     scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
+        # )
+        # Gemma2Attention.__init__      = eval(init_name)
         Gemma2Attention      .forward = Gemma2Attention_fast_forward
         Gemma2SdpaAttention  .forward = Gemma2Attention_fast_forward
         Gemma2FlashAttention2.forward = Gemma2Attention_fast_forward
