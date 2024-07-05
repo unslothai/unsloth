@@ -430,7 +430,7 @@ class FastGemma2Model(FastLlamaModel):
             model_name         = "gemma2",
             rope_module        = GemmaFixedRotaryEmbedding,
             scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
-            Gemma2Attention,
+            attention_module   = Gemma2Attention,
         )
         exec(exec_code, globals())
         exec(function, globals())
