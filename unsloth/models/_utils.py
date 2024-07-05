@@ -12,9 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+__version__ = "2024.7"
+
+__all__ = [
+    "prepare_model_for_kbit_training",
+    "xformers",
+    "xformers_attention",
+    "xformers_version",
+    "__version__",
+    "HAS_FLASH_ATTENTION",
+    "platform_system",
+    "patch_tokenizer",
+    "get_statistics",
+    "Unsloth_Offloaded_Gradient_Checkpointer",
+    "offload_to_disk",
+    "offload_input_embeddings",
+    "offload_output_embeddings",
+    "is_bfloat16_supported",
+    "unsloth_offloaded_gradient_checkpoint",
+    "torch_compile_options",
+    "patch_linear_scaling",
+]
+
 import torch
 from typing import Union, Optional, List, Any, Callable, Tuple
 import warnings
+from platform import system as platform_system
+platform_system = platform_system()
+import math
+import numpy as np
+import os
+import psutil
+import inspect
+import re
+
+# =============================================
+# Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
@@ -26,10 +59,17 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
+# =============================================
 
+# =============================================
+# Edits all Config files to enable RoPE Scaling for all models
 from transformers import PretrainedConfig
-import inspect, re
-for model_name in ["gemma2", "qwen2", "gemma", "mistral",]:
+
+filenames = os.listdir()
+remove_filenames = frozenset(("__init__.py", "_utils.py", "dpo.py", "loader.py", "mapper.py",))
+filenames = [x for x in filenames if x not in remove_filenames]
+
+for model_name in filenames:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title()}Config"
@@ -49,20 +89,14 @@ for model_name in ["gemma2", "qwen2", "gemma", "mistral",]:
     exec(f"import {config_filepath}", globals())
     exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
 pass
+# =============================================
 
+# =============================================
+# Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
-from platform import system as platform_system
-platform_system = platform_system()
-import math
-import numpy as np
-import os
-import psutil
 
-__version__ = "2024.7"
-
-# Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = False
 
@@ -92,26 +126,10 @@ pass
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
+# =============================================
 
-__all__ = [
-    "prepare_model_for_kbit_training",
-    "xformers",
-    "xformers_attention",
-    "xformers_version",
-    "__version__",
-    "HAS_FLASH_ATTENTION",
-    "platform_system",
-    "patch_tokenizer",
-    "get_statistics",
-    "Unsloth_Offloaded_Gradient_Checkpointer",
-    "offload_to_disk",
-    "offload_input_embeddings",
-    "offload_output_embeddings",
-    "is_bfloat16_supported",
-    "unsloth_offloaded_gradient_checkpoint",
-    "torch_compile_options",
-    "patch_linear_scaling",
-]
+# =============================================
+# Torch compile settings
 
 # Just remove max_autotune_gemm warning
 import functools
@@ -152,7 +170,7 @@ torch_compile_options = {
     "trace.enabled"     : False, # Output Triton kernel outputs!
     "triton.cudagraphs" : False,
 }
-
+# =============================================
 
 def prepare_model_for_kbit_training(
     model                      : Any,
@@ -290,6 +308,7 @@ def patch_tokenizer(model, tokenizer):
 pass
 
 
+# =============================================
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
 from peft.tuners.lora.layer import LoraLayer
@@ -319,6 +338,7 @@ except:
         "Luckily, your training run will still work in the meantime!"
     )
 pass
+# =============================================
 
 
 def get_statistics():
@@ -480,9 +500,8 @@ def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None,
 pass
 
 
-"""
-    Remove warnings about missing kwargs and patch stuff
-"""
+# =============================================
+# Fixes Bitsandbytes to remove missing warnings
 from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
 from inspect import getsource
 from accelerate.utils.dataclasses import DistributedType
@@ -525,7 +544,7 @@ exec(BitsAndBytesConfig__init__, globals())
 
 import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
-
+# =============================================
 
 # Offloading to disk for modules (lm_head, embed_tokens)
 import pickle
