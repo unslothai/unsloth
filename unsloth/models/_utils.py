@@ -597,9 +597,11 @@ def patch_linear_scaling(
     model_name = "gemma2",
     rope_module = None,
     scaled_rope_module = None,
+    Attention_Module = None,
 ):
     assert(rope_module is not None and scaled_rope_module is not None)
-
+    assert(Attention_Module is not None)
+    
     rope_name = rope_module.__name__
     scaled_rope_name = scaled_rope_module.__name__
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
@@ -607,7 +609,7 @@ def patch_linear_scaling(
         f"from {model_filepath} import logger, "\
          f"{model_name.title()}Attention, {model_name.title()}Config"
 
-    function = inspect.getsource(eval(f"{model_name.title()}Attention").__init__)
+    function = inspect.getsource(Attention_Module.__init__)
     where = function.find("def")
     function = function.split("\n")
     function = "\n".join(x[where:] for x in function)
