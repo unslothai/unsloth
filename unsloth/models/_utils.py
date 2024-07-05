@@ -603,8 +603,9 @@ def patch_linear_scaling(
     rope_name = rope_module.__name__
     scaled_rope_name = scaled_rope_module.__name__
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    exec(f"from {model_filepath} import logger, "\
-         f"{model_name.title()}Attention, {model_name.title()}Config", globals())
+    exec_code = \
+        f"from {model_filepath} import logger, "\
+         f"{model_name.title()}Attention, {model_name.title()}Config"
 
     function = inspect.getsource(eval(f"{model_name.title()}Attention").__init__)
     where = function.find("def")
@@ -648,5 +649,5 @@ def patch_linear_scaling(
     if len(rotary_emb) == 0: return
     rotary_emb = rotary_emb[0]
     function = function.replace(rotary_emb, fix_rope_function, 1)
-    return init_name, function
+    return init_name, exec_code, function
 pass
