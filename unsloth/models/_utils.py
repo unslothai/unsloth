@@ -365,20 +365,20 @@ def get_statistics():
         elif "\nINVOCATION_ID" in keynames: statistics = "lambda"
 
         if statistics is not None:
-            disabled = False
-            if not are_progress_bars_disabled():
-                disable_progress_bars()
-                disabled = True
-            pass
+            # disabled = False
+            # if not are_progress_bars_disabled():
+            #     disable_progress_bars()
+            #     disabled = True
+            # pass
             snapshot_download(
                 f"unslothai/statistics-{statistics}",
                 force_download = True,
                 max_workers = 1,
                 etag_timeout = 3,
             )
-            if disabled:
-                enable_progress_bars()
-            pass
+            # if disabled:
+            #     enable_progress_bars()
+            # pass
         pass
     except:
         pass
