@@ -15,7 +15,10 @@
 from .llama import *
 import os
 from ._utils import __version__
-
+from .llama import (
+    LlamaRotaryEmbedding,
+    LlamaLinearScalingRotaryEmbedding,
+)
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
     MistralDecoderLayer,
@@ -268,6 +271,14 @@ class FastMistralModel(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
+        init_name, function = patch_linear_scaling(
+            model_name         = "mistral",
+            rope_module        = LlamaRotaryEmbedding,
+            scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
+            attention_module   = MistralAttention,
+        )
+        exec(function, globals())
+        MistralAttention.__init__      = eval(init_name)
         MistralAttention      .forward = MistralAttention_fast_forward
         MistralSdpaAttention  .forward = MistralAttention_fast_forward
         MistralFlashAttention2.forward = MistralAttention_fast_forward

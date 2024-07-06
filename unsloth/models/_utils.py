@@ -12,9 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+__version__ = "2024.7"
+
+__all__ = [
+    "prepare_model_for_kbit_training",
+    "xformers",
+    "xformers_attention",
+    "xformers_version",
+    "__version__",
+    "HAS_FLASH_ATTENTION",
+    "platform_system",
+    "patch_tokenizer",
+    "get_statistics",
+    "Unsloth_Offloaded_Gradient_Checkpointer",
+    "offload_to_disk",
+    "offload_input_embeddings",
+    "offload_output_embeddings",
+    "is_bfloat16_supported",
+    "unsloth_offloaded_gradient_checkpoint",
+    "torch_compile_options",
+    "patch_linear_scaling",
+    "create_boolean_mask",
+]
+
 import torch
-from typing import Union, Optional, List, Any, Callable
+from typing import Union, Optional, List, Any, Callable, Tuple
 import warnings
+from platform import system as platform_system
+platform_system = platform_system()
+import math
+import numpy as np
+import os
+import psutil
+import inspect
+import re
+
+# =============================================
+# Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
@@ -26,20 +60,42 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
+# =============================================
 
+# =============================================
+# Edits all Config files to enable RoPE Scaling for all models
+from transformers import PretrainedConfig
+
+model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2",]
+
+for model_name in model_architectures:
+    config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
+    model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
+    config_filename = f"{model_name.title()}Config"
+    exec(f"from {config_filepath} import {config_filename}", globals())
+
+    config = inspect.getsource(eval(config_filename))
+    if "rope_scaling" in config: continue
+    config = re.sub(
+        r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
+        r"rope_scaling=None,"\
+        r"\n        **kwargs):\n"\
+        r"\n        self.rope_scaling = rope_scaling\n",
+        config,
+    )
+    exec(config, globals())
+
+    exec(f"import {config_filepath}", globals())
+    exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+pass
+# =============================================
+
+# =============================================
+# Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 import bitsandbytes as bnb
 from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
-from platform import system as platform_system
-platform_system = platform_system()
-import math
-import numpy as np
-import os
-import psutil
 
-__version__ = "2024.7"
-
-# Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = False
 
@@ -69,25 +125,10 @@ pass
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
+# =============================================
 
-__all__ = [
-    "prepare_model_for_kbit_training",
-    "xformers",
-    "xformers_attention",
-    "xformers_version",
-    "__version__",
-    "HAS_FLASH_ATTENTION",
-    "platform_system",
-    "patch_tokenizer",
-    "get_statistics",
-    "Unsloth_Offloaded_Gradient_Checkpointer",
-    "offload_to_disk",
-    "offload_input_embeddings",
-    "offload_output_embeddings",
-    "is_bfloat16_supported",
-    "unsloth_offloaded_gradient_checkpoint",
-    "torch_compile_options",
-]
+# =============================================
+# Torch compile settings
 
 # Just remove max_autotune_gemm warning
 import functools
@@ -128,7 +169,7 @@ torch_compile_options = {
     "trace.enabled"     : False, # Output Triton kernel outputs!
     "triton.cudagraphs" : False,
 }
-
+# =============================================
 
 def prepare_model_for_kbit_training(
     model                      : Any,
@@ -266,6 +307,7 @@ def patch_tokenizer(model, tokenizer):
 pass
 
 
+# =============================================
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
 from peft.tuners.lora.layer import LoraLayer
@@ -295,6 +337,7 @@ except:
         "Luckily, your training run will still work in the meantime!"
     )
 pass
+# =============================================
 
 
 def get_statistics():
@@ -456,9 +499,8 @@ def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None,
 pass
 
 
-"""
-    Remove warnings about missing kwargs and patch stuff
-"""
+# =============================================
+# Fixes Bitsandbytes to remove missing warnings
 from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
 from inspect import getsource
 from accelerate.utils.dataclasses import DistributedType
@@ -501,7 +543,7 @@ exec(BitsAndBytesConfig__init__, globals())
 
 import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
-
+# =============================================
 
 # Offloading to disk for modules (lm_head, embed_tokens)
 import pickle
@@ -548,4 +590,107 @@ pass
 # Fixes a weird Torch 2.3 bug which says T4s have bfloat16
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
+pass
+
+
+# Patches models to add RoPE Scaling
+def patch_linear_scaling(
+    model_name = "gemma2",
+    rope_module = None,
+    scaled_rope_module = None,
+    attention_module = None,
+):
+    assert(rope_module is not None and scaled_rope_module is not None)
+    assert(attention_module is not None)
+
+    rope_name = rope_module.__name__
+    scaled_rope_name = scaled_rope_module.__name__
+    model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
+    exec_code = \
+        f"import torch.nn as nn\n"\
+        f"from typing import Union, Optional, List, Any, Callable, Tuple\n"\
+        f"from {model_filepath} import logger, "\
+        f"{model_name.title()}Attention, {model_name.title()}Config"
+
+    function = inspect.getsource(attention_module.__init__)
+    where = function.find("def")
+    function = function.split("\n")
+    function = "\n".join(x[where:] for x in function)
+    init_name = f"{model_name.title()}Attention__init__"
+    function = function.replace("def __init__", f"def {init_name}")
+    function = function.replace(
+        "super().__init__()",
+        f"super({model_name.title()}Attention, self).__init__()",
+    )
+    fix_rope_function = """
+    if getattr(self.config, "rope_scaling", None) is None:
+        self.rotary_emb = {rope_function}(
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
+        )
+    else:
+        scaling_type = self.config.rope_scaling["type"]
+        scaling_factor = self.config.rope_scaling["factor"]
+        if scaling_type == "linear":
+            self.rotary_emb = {scaled_rope_function}(
+                self.head_dim,
+                max_position_embeddings=self.max_position_embeddings,
+                scaling_factor=scaling_factor,
+                base=self.rope_theta,
+            )
+        else:
+            raise ValueError(f"Unknown RoPE scaling type {{scaling_type}}")
+    pass
+    """
+    fix_rope_function = fix_rope_function.format(
+        rope_function        = rope_module.__name__,
+        scaled_rope_function = scaled_rope_module.__name__,
+    )
+    rotary_emb = re.findall(
+        "self.rotary_emb = .+?\)", function,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    if len(rotary_emb) == 0: return
+    rotary_emb = rotary_emb[0]
+    function = function.replace(rotary_emb, fix_rope_function, 1)
+    function = exec_code + "\n\n" + function
+    return init_name, function
+pass
+
+
+def create_boolean_mask(n = 4096, sliding_window = 2048):
+    # Creates a boolean mask for attention
+    mask = torch.ones(n, n, dtype = torch.bool)
+    if sliding_window == 0:
+        return torch.triu(mask, diagonal = 1, out = mask)
+    pass
+    torch.triu(mask, diagonal = 0, out = mask)
+    torch.triu(mask.T, diagonal = -sliding_window, out = mask.T)
+    mask = mask.T
+    torch.logical_not(mask, out = mask)
+    return mask
+pass
+
+
+def test_mask_creation():
+    from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+    for n in range(2, 23):
+        for s in range(1, 23):
+            correct_mask = AttentionMaskConverter(
+                is_causal = True,
+                sliding_window = s,
+            ).to_causal_4d(1, n, n, dtype = torch.float16,).squeeze(0).squeeze(0)
+            correct_mask = (correct_mask == correct_mask.min())
+            our_mask = create_boolean_mask(n = n, sliding_window = s)
+            assert(torch.all(correct_mask == our_mask))
+        pass
+        correct_mask = AttentionMaskConverter(
+            is_causal = True,
+            sliding_window = None,
+        ).to_causal_4d(1, n, n, dtype = torch.float16,).squeeze(0).squeeze(0)
+        correct_mask = (correct_mask == correct_mask.min())
+        our_mask = create_boolean_mask(n = n, sliding_window = 0)
+        assert(torch.all(correct_mask == our_mask))
+    pass
 pass

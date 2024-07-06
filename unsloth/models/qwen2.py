@@ -13,7 +13,10 @@
 # limitations under the License.
 
 from .llama import *
-
+from .llama import (
+    LlamaRotaryEmbedding,
+    LlamaLinearScalingRotaryEmbedding,
+)
 from transformers.models.qwen2.modeling_qwen2 import (
     Qwen2Attention,
     Qwen2DecoderLayer,
@@ -36,6 +39,14 @@ class FastQwen2Model(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
+        init_name, function = patch_linear_scaling(
+            model_name         = "qwen2",
+            rope_module        = LlamaRotaryEmbedding,
+            scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
+            attention_module   = Qwen2Attention,
+        )
+        exec(function, globals())
+        Qwen2Attention.__init__      = eval(init_name)
         Qwen2Attention      .forward = LlamaAttention_fast_forward
         Qwen2SdpaAttention  .forward = LlamaAttention_fast_forward
         Qwen2FlashAttention2.forward = LlamaAttention_fast_forward
