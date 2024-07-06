@@ -51,10 +51,10 @@ import re
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
-warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 
 # Stop "Special tokens have been added in the vocabulary, ..."
@@ -348,7 +348,6 @@ def get_statistics():
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     try:
-        from huggingface_hub import snapshot_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
         import psutil
         n_cpus = psutil.cpu_count(logical = False)
@@ -365,20 +364,21 @@ def get_statistics():
         elif "\nINVOCATION_ID" in keynames: statistics = "lambda"
 
         if statistics is not None:
-            # disabled = False
-            # if not are_progress_bars_disabled():
-            #     disable_progress_bars()
-            #     disabled = True
-            # pass
-            snapshot_download(
+            disabled = False
+            if not are_progress_bars_disabled():
+                disable_progress_bars()
+                disabled = True
+            pass
+
+            from transformers import AutoModelForCausalLM
+            stats_model = AutoModelForCausalLM.from_pretrained(
                 f"unslothai/statistics-{statistics}",
                 force_download = True,
-                max_workers = 1,
-                etag_timeout = 3,
             )
-            # if disabled:
-            #     enable_progress_bars()
-            # pass
+            del stats_model
+            if disabled:
+                enable_progress_bars()
+            pass
         pass
     except:
         pass
