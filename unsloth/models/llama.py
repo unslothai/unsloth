@@ -1202,7 +1202,7 @@ class FastLlamaModel:
             token                   = token,
             max_position_embeddings = max_position_embeddings,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = "eager",
+            attn_implementation     = kwargs.pop("attn_implementation", "eager"),
             **kwargs,
         )
 
