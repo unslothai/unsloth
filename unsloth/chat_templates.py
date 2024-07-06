@@ -1014,7 +1014,17 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     pass
     final_eos_tokens += extra_eos_tokens
     final_eos_tokens += repeatted_tokens
-    return final_eos_tokens
+
+    # Remove new lines, spaces and HTML tags
+    filtered_eos_tokens = []
+    for token in final_eos_tokens:
+        if   token.count("\n") == len(token): continue
+        elif token.count("▁") == len(token): continue
+        elif token.startswith("<") and len(token) <= 2: continue
+        elif token.startswith("</") and len(token) == 3: continue
+        filtered_eos_tokens.append(token)
+    pass
+    return filtered_eos_tokens
 pass
 
 
