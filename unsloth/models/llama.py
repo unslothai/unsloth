@@ -663,8 +663,11 @@ def LlamaModel_fast_forward(
 
     # Gemma2 has alternating SWA and global attn
     if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
-        from transformers.modeling_attn_mask_utils import AttentionMaskConverter
         n = self.config.max_position_embeddings
+        # masked_fill is making stuff slower!
+        # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
+        # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
+        from transformers.modeling_attn_mask_utils import AttentionMaskConverter
         self.SWA_mask = AttentionMaskConverter(
             is_causal = True,
             sliding_window = self.config.sliding_window,
@@ -1099,6 +1102,13 @@ class FastLlamaModel:
         trust_remote_code = False,
         **kwargs,
     ):
+        if trust_remote_code:
+            print(
+                "Unsloth: WARNING `trust_remote_code` is True.\n"\
+                "Are you certain you want to do remote code execution?"
+            )
+        pass
+
         if token is None and "HF_TOKEN" in os.environ:
             token = os.environ["HF_TOKEN"]
 
@@ -1139,6 +1149,7 @@ class FastLlamaModel:
             with open(inspect.getfile(model_function), "r") as file:
                 has_rope_scaling = "self.config.rope_scaling" in file.read()
         except: pass
+        has_rope_scaling = True
 
         # If max_seq_length is not specified, use maximum fron config
         if max_seq_length is None:
@@ -1183,6 +1194,7 @@ class FastLlamaModel:
         # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
         # RoPE Scaling's max_position_embeddings must be updated
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
+        kwargs.pop("attn_implementation", None); # No need since we auto call it
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map              = device_map,
@@ -1191,6 +1203,7 @@ class FastLlamaModel:
             token                   = token,
             max_position_embeddings = max_position_embeddings,
             trust_remote_code       = trust_remote_code,
+            attn_implementation     = "eager",
             **kwargs,
         )
 

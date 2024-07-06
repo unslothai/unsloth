@@ -16,6 +16,7 @@ from .llama import *
 from ._utils import __version__
 from .gemma import (
     GemmaFixedRotaryEmbedding,
+    GemmaFixedLinearScalingRotaryEmbedding,
     fast_geglu_inference,
 )
 from transformers.models.gemma2.modeling_gemma2 import (
@@ -27,7 +28,6 @@ from transformers.models.gemma2.modeling_gemma2 import (
     apply_rotary_pos_emb,
     repeat_kv,
 )
-from transformers.models.gemma2.modeling_gemma2 import *
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
@@ -46,7 +46,7 @@ pass
 # [TODO] We must randomnly use torch.compile?
 # I checked the gradients and formulas and I'm sure it's correct.
 # I'm stumped :(
-@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+@torch.compile(fullgraph = True, dynamic = True)#, options = torch_compile_options)
 def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
     old_dtype = X.dtype
     X = X.float()
@@ -77,6 +77,8 @@ def gemma2_attention(Q, K, V, causal_mask, self, bsz, q_len):
     A = torch.matmul(Q, K.transpose(2, 3))
     A = t * torch.tanh(A / t) # Logit softcapping
     A += causal_mask[:q_len, :q_len]
+    # Much slower in torch compile!
+    # A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
     A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
     A = torch.matmul(A, V)
     A = A.transpose(1, 2).contiguous()
@@ -255,6 +257,8 @@ def Gemma2Attention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda:0")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda:0")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
+        # Only for Gemma2
+        self.temp_O  = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = "cuda:0")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
         self.scalar = 1.0 / math_sqrt(self.config.hidden_size // self.config.num_attention_heads)
         self.half_head_dim = head_dim // 2
@@ -341,7 +345,7 @@ def Gemma2Attention_fast_forward_inference(
     # pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
 pass
 
@@ -426,6 +430,14 @@ class FastGemma2Model(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
+        init_name, function = patch_linear_scaling(
+            model_name         = "gemma2",
+            rope_module        = GemmaFixedRotaryEmbedding,
+            scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
+            attention_module   = Gemma2Attention,
+        )
+        exec(function, globals())
+        Gemma2Attention.__init__      = eval(init_name)
         Gemma2Attention      .forward = Gemma2Attention_fast_forward
         Gemma2SdpaAttention  .forward = Gemma2Attention_fast_forward
         Gemma2FlashAttention2.forward = Gemma2Attention_fast_forward

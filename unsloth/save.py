@@ -49,6 +49,7 @@ LLAMA_WEIGHTS = (
 )
 LLAMA_LAYERNORMS = (
     "input_layernorm", "post_attention_layernorm",
+    "pre_feedforward_layernorm", "post_feedforward_layernorm",
 )
 
 # https://github.com/ggerganov/llama.cpp/blob/master/examples/quantize/quantize.cpp#L19
@@ -557,7 +558,11 @@ def unsloth_save_model(
                 state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True)
         pass
         for item in LLAMA_LAYERNORMS:
-            state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight.data")
+            try:
+                # Skip for Gemma 2
+                state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight.data")
+            except:
+                continue
         pass
     pass
 
