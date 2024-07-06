@@ -32,6 +32,7 @@ __all__ = [
     "unsloth_offloaded_gradient_checkpoint",
     "torch_compile_options",
     "patch_linear_scaling",
+    "create_boolean_mask",
 ]
 
 import torch
@@ -655,4 +656,41 @@ def patch_linear_scaling(
     function = function.replace(rotary_emb, fix_rope_function, 1)
     function = exec_code + "\n\n" + function
     return init_name, function
+pass
+
+
+def create_boolean_mask(n = 4096, sliding_window = 2048):
+    # Creates a boolean mask for attention
+    mask = torch.ones(n, n, dtype = torch.bool)
+    if sliding_window == 0:
+        return torch.triu(mask, diagonal = 1, out = mask)
+    pass
+    torch.triu(mask, diagonal = 0, out = mask)
+    torch.triu(mask.T, diagonal = -sliding_window, out = mask.T)
+    mask = mask.T
+    torch.logical_not(mask, out = mask)
+    return mask
+pass
+
+
+def test_mask_creation():
+    from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+    for n in range(2, 23):
+        for s in range(1, 23):
+            correct_mask = AttentionMaskConverter(
+                is_causal = True,
+                sliding_window = s,
+            ).to_causal_4d(1, n, n, dtype = torch.float16,).squeeze(0).squeeze(0)
+            correct_mask = (correct_mask == correct_mask.min())
+            our_mask = create_boolean_mask(n = n, sliding_window = s)
+            assert(torch.all(correct_mask == our_mask))
+        pass
+        correct_mask = AttentionMaskConverter(
+            is_causal = True,
+            sliding_window = None,
+        ).to_causal_4d(1, n, n, dtype = torch.float16,).squeeze(0).squeeze(0)
+        correct_mask = (correct_mask == correct_mask.min())
+        our_mask = create_boolean_mask(n = n, sliding_window = 0)
+        assert(torch.all(correct_mask == our_mask))
+    pass
 pass
