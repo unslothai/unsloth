@@ -345,6 +345,7 @@ def Gemma2Attention_fast_forward_inference(
     # pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
+    print(self.temp_O.shape)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
 pass
