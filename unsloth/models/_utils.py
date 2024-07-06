@@ -74,7 +74,10 @@ for model_name in model_architectures:
     config_filename = f"{model_name.title()}Config"
     exec(f"from {config_filepath} import {config_filename}", globals())
 
-    config = inspect.getsource(eval(config_filename))
+    try:
+        config = inspect.getsource(eval(config_filename))
+    except:
+        continue
     if "rope_scaling" in config: continue
     config = re.sub(
         r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",

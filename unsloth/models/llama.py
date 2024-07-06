@@ -83,7 +83,8 @@ def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
     if "past_key_values" in kwargs:
         input_ids = input_ids[:,[-1]]
         kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
-    kwargs["position_ids"] = kwargs["cache_position"]
+    if "cache_position" in kwargs:
+        kwargs["position_ids"] = kwargs["cache_position"]
     return { "input_ids" : input_ids, **kwargs, }
 pass
 
