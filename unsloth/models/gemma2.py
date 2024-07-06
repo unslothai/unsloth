@@ -76,8 +76,9 @@ def gemma2_attention(Q, K, V, causal_mask, self, bsz, q_len):
     Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
     A = torch.matmul(Q, K.transpose(2, 3))
     A = t * torch.tanh(A / t) # Logit softcapping
-    # A += causal_mask[:q_len, :q_len]
-    A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
+    A += causal_mask[:q_len, :q_len]
+    # Much slower in torch compile!
+    # A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
     A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
     A = torch.matmul(A, V)
     A = A.transpose(1, 2).contiguous()
