@@ -416,6 +416,21 @@ gemma_chatml_eos_token = (
 CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token, True, gemma_chatml_ollama,)
 pass
 
+# =========================================== Gemma 2
+# Same as Gemma 1, but with sliding window attention!
+# https://ollama.com/library/gemma2/blobs/6522ca797f47
+gemma2_template = gemma_template
+gemma2_ollama = gemma_ollama + "PARAMETER num_ctx 4096\n"
+gemma2_eos_token = "<end_of_turn>"
+CHAT_TEMPLATES["gemma2"] = (gemma2_template, gemma2_eos_token, True, gemma2_ollama,)
+
+# =========================================== Gemma 2 with ChatML instead
+gemma2_chatml_template = gemma_chatml_template
+gemma2_chatml_ollama = gemma_chatml_ollama + "PARAMETER num_ctx 4096\n"
+gemma2_chatml_eos_token = gemma_chatml_eos_token
+CHAT_TEMPLATES["gemma2_chatml"] = (gemma2_chatml_template, gemma2_chatml_eos_token, True, gemma2_chatml_ollama,)
+pass
+
 # =========================================== Llama-3
 # Weirdly \n\n is needed?
 llama3_template = \
@@ -1014,7 +1029,17 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     pass
     final_eos_tokens += extra_eos_tokens
     final_eos_tokens += repeatted_tokens
-    return final_eos_tokens
+
+    # Remove new lines, spaces and HTML tags
+    filtered_eos_tokens = []
+    for token in final_eos_tokens:
+        if   token.count("\n") == len(token): continue
+        elif token.count("▁") == len(token): continue
+        elif token.startswith("<") and len(token) <= 2: continue
+        elif token.startswith("</") and len(token) == 3: continue
+        filtered_eos_tokens.append(token)
+    pass
+    return filtered_eos_tokens
 pass
 
 
