@@ -378,6 +378,7 @@ def get_statistics():
     except:
         pass
 pass
+get_statistics()
 
 
 def _calculate_n_gradient_checkpoints(
