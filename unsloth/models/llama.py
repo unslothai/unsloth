@@ -1194,6 +1194,7 @@ class FastLlamaModel:
         # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
         # RoPE Scaling's max_position_embeddings must be updated
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
+        kwargs.pop("attn_implementation", None); # No need since we auto call it
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map              = device_map,
@@ -1202,7 +1203,7 @@ class FastLlamaModel:
             token                   = token,
             max_position_embeddings = max_position_embeddings,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = kwargs.pop("attn_implementation", "eager"),
+            attn_implementation     = "eager",
             **kwargs,
         )
 
