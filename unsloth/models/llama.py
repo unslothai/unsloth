@@ -238,6 +238,7 @@ def LlamaAttention_fast_forward_inference(
     pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
+    print(self.hidden_size)
     A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
     return A, (Kn, Vn)
 pass
