@@ -257,6 +257,8 @@ def Gemma2Attention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda:0")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda:0")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
+        # Only for Gemma2
+        self.temp_O  = torch.empty((1, bsz, 1, self.hidden_size), dtype = dtype, device = "cuda:0")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
         self.scalar = 1.0 / math_sqrt(self.config.hidden_size // self.config.num_attention_heads)
         self.half_head_dim = head_dim // 2
@@ -343,7 +345,7 @@ def Gemma2Attention_fast_forward_inference(
     # pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
 pass
 
