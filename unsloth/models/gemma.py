@@ -236,10 +236,53 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 pass
 
 
+class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
+    """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
+    # Fixes https://github.com/huggingface/transformers/pull/28837
+    # https://github.com/microsoft/DeepSpeed/issues/4932
+    # The precision of RoPE buffers is not correct, so we cast to int64.
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None, scaling_factor=1.0):
+        self.scaling_factor = scaling_factor
+        super().__init__(dim, max_position_embeddings, base, device)
+    pass
+
+    def _set_cos_sin_cache(self, seq_len, device, dtype):
+# Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
+        # in FP32. They are applied (multiplied) in FP32 as well.
+        self.max_seq_len_cached = seq_len
+
+        # The difference is we do division explicity instead of t * (1/x) ie we do t/x.
+        freq_exponents = (2.0 / self.dim) * (
+            torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
+        )
+        timescale = self.base**freq_exponents
+        positions = torch.arange(self.max_seq_len_cached, device = "cpu", dtype = torch.int64).float()
+        positions = positions /  self.scaling_factor
+        radians_new = positions[..., None] / timescale[None, None, :]
+        radians_new = radians_new.squeeze(0)
+
+        emb = torch.cat((radians_new, radians_new), dim = -1)
+        # We must do RoPE in float32!
+        cos = emb.cos().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
+        self.register_buffer("cos_cached", cos, persistent = False)
+        self.register_buffer("sin_cached", sin, persistent = False)
+    pass
+pass
+
+
 class FastGemmaModel(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
+        init_name, function = patch_linear_scaling(
+            model_name         = "gemma",
+            rope_module        = GemmaFixedRotaryEmbedding,
+            scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
+            attention_module   = GemmaAttention,
+        )
+        exec(function, globals())
+        GemmaAttention.__init__      = eval(init_name)
         GemmaAttention      .forward = LlamaAttention_fast_forward
         GemmaSdpaAttention  .forward = LlamaAttention_fast_forward
         GemmaFlashAttention2.forward = LlamaAttention_fast_forward
