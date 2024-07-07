@@ -21,6 +21,7 @@ __all__ = [
     "xformers_version",
     "__version__",
     "HAS_FLASH_ATTENTION",
+    "PRE_CHECK",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
@@ -32,20 +33,16 @@ __all__ = [
     "unsloth_offloaded_gradient_checkpoint",
     "torch_compile_options",
     "patch_linear_scaling",
+    "check_nvidia",
     "create_boolean_mask",
 ]
 
 import torch
 from typing import Union, Optional, List, Any, Callable, Tuple
-import warnings
 from platform import system as platform_system
 platform_system = platform_system()
-import math
 import numpy as np
-import os
-import psutil
-import inspect
-import re
+import warnings, subprocess, re, inspect, psutil, os, math
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -665,6 +662,19 @@ def patch_linear_scaling(
     function = exec_code + "\n\n" + function
     return init_name, function
 pass
+
+
+def check_nvidia():
+    # Unsloth doesn't work yet on AMD devices - we're working on it!
+    try:
+        output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
+    except:
+        raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
+    output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
+    output = np.array([int(x.decode('utf-8'))/1024 for x in output])
+    return output
+pass
+PRE_CHECK = check_nvidia()
 
 
 def create_boolean_mask(n = 4096, sliding_window = 2048):

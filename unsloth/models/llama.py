@@ -1129,7 +1129,7 @@ class FastLlamaModel:
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
         model_patcher.pre_patch()
-        get_statistics()
+        get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -1181,6 +1181,8 @@ class FastLlamaModel:
             # Add to kwargs
             kwargs["rope_scaling"] = rope_scaling
         pass
+        # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
+        pre_check = check_nvidia()
 
         bnb_config = None
         if load_in_4bit:
@@ -1207,6 +1209,8 @@ class FastLlamaModel:
             attn_implementation     = "eager",
             **kwargs,
         )
+        # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
+        post_check = check_nvidia()
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
@@ -1236,13 +1240,11 @@ class FastLlamaModel:
             else:
                 inner_training_loop = Trainer._original_training_loop
         except:
-            raise RuntimeError(
-                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
-                'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
-                'We do have a separate beta version, which you can contact us about!\n'\
-                'Thank you for your understanding and we appreciate it immensely!'
-            )
+            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
         pass
+
+        if ((post_check - post_check) >= 1).sum() > 1:
+            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
 
         import transformers.trainer
         items_in_trainer = dir(transformers.trainer)
@@ -1267,16 +1269,15 @@ class FastLlamaModel:
         f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
         logger.warning(debug_info)
-        import subprocess, re, gc
-        output = subprocess.check_output(
-            'nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
-        output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)
-        output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)
-        if output > 1: print(
-            '********************\\nUnsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\\
-            'enabling it will require much more work, so we have to prioritize. Please understand!\\n'\\
-            '********************\\nWe do have a separate beta version, which you can contact us about!\\n'\\
-            '********************\\nThank you for your understanding and we appreciate it immensely!')
+        import subprocess, re, gc, numpy as np
+        try:
+            a = subprocess.check_output('nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
+        except:
+            raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')
+        a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)
+        a = np.array([int(x.decode('utf-8'))/1024 for x in a])
+        if ((a - PRE_CHECK) >= 1).sum() > 1:
+            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
@@ -1288,12 +1289,7 @@ class FastLlamaModel:
         debug_info = """n_total_devices = total_train_batch_size // \\
             args.gradient_accumulation_steps // self._train_batch_size
         if n_total_devices > 1:
-            logger.warning_once(
-                '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so ' \\
-                '* enabling it will require much more work, so we have to prioritize. Please understand!\\n' \\
-                '* We do have a separate beta version, which you can contact us about!\\n'\\
-                '* Thank you for your understanding and we appreciate it immensely!'
-            )
+            logger.warning_once('Unsloth currently does not support multi GPU setups - but we are working on it!')
         debug_info ="""
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -1318,12 +1314,7 @@ class FastLlamaModel:
         total_batches = bsz * ga * args.world_size
         n_total_devices = total_batches // ga // bsz
         if n_total_devices > 1:
-            logger.warning_once(
-                '* Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so ' \\
-                '* enabling it will require much more work, so we have to prioritize. Please understand!\\n' \\
-                '* We do have a separate beta version, which you can contact us about!\\n'\\
-                '* Thank you for your understanding and we appreciate it immensely!'
-            )
+            logger.warning_once('Unsloth currently does not support multi GPU setups - but we are working on it!')
             divisor = n_total_devices / 1
             bsz = self._train_batch_size = max(int(bsz / divisor), 1)
             if total_batches // ga // bsz > 1:
@@ -1347,12 +1338,7 @@ class FastLlamaModel:
             "False",
         )
         if "n_total_devices >" not in inner_training_loop:
-            raise RuntimeError(
-                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
-                'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
-                'We do have a separate beta version, which you can contact us about!\n'\
-                'Thank you for your understanding and we appreciate it immensely!'
-            )
+            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
         pass
         inner_training_loop = inner_training_loop.replace(
             "is_sagemaker_mp_enabled()",
