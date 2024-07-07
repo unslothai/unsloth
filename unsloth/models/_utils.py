@@ -341,18 +341,19 @@ pass
 # =============================================
 
 
-def get_statistics():
+def _get_statistics(statistics = None):
     # We log some basic stats about which environment is being used.
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
+    # You can disable this by commenting the below out
     try:
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
         import psutil
         n_cpus = psutil.cpu_count(logical = False)
 
         keynames = "\n" + "\n".join(os.environ.keys())
-        statistics = None
-        if   "\nCOLAB_"  in keynames and n_cpus == 1: statistics = "colab"
+        if statistics is not None: pass
+        elif "\nCOLAB_"  in keynames and n_cpus == 1: statistics = "colab"
         elif "\nCOLAB_"  in keynames: statistics = "colabpro"
         elif "\nKAGGLE_" in keynames: statistics = "kaggle"
         elif "\nRUNPOD_" in keynames: statistics = "runpod"
@@ -371,7 +372,7 @@ def get_statistics():
 
             from transformers import AutoModelForCausalLM
             stats_model = AutoModelForCausalLM.from_pretrained(
-                f"unslothai/statistics-{statistics}",
+                f"unslothai/{statistics}",
                 force_download = True,
             )
             del stats_model
@@ -381,6 +382,29 @@ def get_statistics():
         pass
     except:
         pass
+pass
+
+
+def get_statistics():
+    # We log some basic stats about which environment is being used.
+    # We simply download a README.md file from HF - all data is made public.
+    # This is simply so we can check if some envs are broken or not.
+    # You can disable this by commenting the below out
+    _get_statistics(None)
+    try:
+        vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
+        if   vram <= 8 : vram = 8
+        elif vram <= 16: vram = 16
+        elif vram <= 20: vram = 20
+        elif vram <= 24: vram = 24
+        elif vram <= 40: vram = 40
+        elif vram <= 48: vram = 48
+        elif vram <= 80: vram = 80
+        else: vram = "80+"
+        _get_statistics(f"vram-{vram}")
+    except:
+        pass
+    pass
 pass
 
 
