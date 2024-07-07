@@ -360,6 +360,7 @@ def get_statistics():
         elif "\nAZURE_"  in keynames: statistics = "azure"
         elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
         elif "\nINVOCATION_ID" in keynames: statistics = "lambda"
+        else: statistics = "other"
 
         if statistics is not None:
             disabled = False
