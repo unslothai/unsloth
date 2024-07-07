@@ -149,14 +149,14 @@ def fast_rms_layernorm_forward(X, W, eps, gemma = False):
         BLOCK_SIZE = BLOCK_SIZE,
         num_warps  = num_warps,
     )
-    return Y, r
+    return Y, r, BLOCK_SIZE
 pass
 
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, eps, gemma = False):
-        Y, r = fast_rms_layernorm_forward(X, W, eps, gemma)
+        Y, r, BLOCK_SIZE = fast_rms_layernorm_forward(X, W, eps, gemma)
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
