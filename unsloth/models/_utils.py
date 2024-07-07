@@ -372,7 +372,7 @@ def _get_statistics(statistics = None):
 
             from transformers import AutoModelForCausalLM
             stats_model = AutoModelForCausalLM.from_pretrained(
-                f"unslothai/statistics-{statistics}",
+                f"unslothai/{statistics}",
                 force_download = True,
             )
             del stats_model
