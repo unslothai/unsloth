@@ -913,7 +913,7 @@ def check_nvidia():
     try:
         output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
     except:
-        raise RuntimeError("Unsloth: We don't support AMD / Intel machines yet - it is a work in progress!")
+        raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
     output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
     output = np.array([int(x.decode('utf-8'))/1024 for x in output])
     return output
@@ -975,7 +975,7 @@ def patch_sft_trainer_tokenizer():
     "try:\n"\
     "    a = subprocess.check_output('nvidia-smi --query-gpu=memory.used --format=csv', shell = True)\n"\
     "except:\n"\
-    "    raise RuntimeError('Unsloth: We don't support AMD / Intel machines yet - it is a work in progress!')\n"\
+    "    raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')\n"\
     "a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)\n"\
     "a = np.array([int(x.decode('utf-8'))/1024 for x in a])\n"\
     "if ((a - PRE_CHECK) >= 1).sum() > 1:\n"\
