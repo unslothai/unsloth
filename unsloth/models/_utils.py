@@ -618,7 +618,11 @@ def patch_linear_scaling(
         f"from {model_filepath} import logger, "\
         f"{model_name.title()}Attention, {model_name.title()}Config"
 
-    function = inspect.getsource(attention_module.__init__)
+    try:
+        function = inspect.getsource(attention_module.__init__)
+    except:
+        # Most likely already patched!
+        return None, None
     where = function.find("def")
     function = function.split("\n")
     function = "\n".join(x[where:] for x in function)

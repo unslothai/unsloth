@@ -45,8 +45,10 @@ class FastQwen2Model(FastLlamaModel):
             scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
             attention_module   = Qwen2Attention,
         )
-        exec(function, globals())
-        Qwen2Attention.__init__      = eval(init_name)
+        if init_name is not None:
+            exec(function, globals())
+            Qwen2Attention.__init__  = eval(init_name)
+        pass
         Qwen2Attention      .forward = LlamaAttention_fast_forward
         Qwen2SdpaAttention  .forward = LlamaAttention_fast_forward
         Qwen2FlashAttention2.forward = LlamaAttention_fast_forward
