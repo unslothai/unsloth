@@ -53,6 +53,7 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
+warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
