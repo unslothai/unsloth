@@ -277,8 +277,10 @@ class FastMistralModel(FastLlamaModel):
             scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
             attention_module   = MistralAttention,
         )
-        exec(function, globals())
-        MistralAttention.__init__      = eval(init_name)
+        if init_name is not None:
+            exec(function, globals())
+            MistralAttention.__init__  = eval(init_name)
+        pass
         MistralAttention      .forward = MistralAttention_fast_forward
         MistralSdpaAttention  .forward = MistralAttention_fast_forward
         MistralFlashAttention2.forward = MistralAttention_fast_forward
