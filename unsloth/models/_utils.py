@@ -21,6 +21,7 @@ __all__ = [
     "xformers_version",
     "__version__",
     "HAS_FLASH_ATTENTION",
+    "PRE_CHECK",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
@@ -32,30 +33,27 @@ __all__ = [
     "unsloth_offloaded_gradient_checkpoint",
     "torch_compile_options",
     "patch_linear_scaling",
+    "check_nvidia",
     "create_boolean_mask",
 ]
 
 import torch
 from typing import Union, Optional, List, Any, Callable, Tuple
-import warnings
 from platform import system as platform_system
 platform_system = platform_system()
-import math
 import numpy as np
-import os
-import psutil
-import inspect
-import re
+import warnings, subprocess, re, inspect, psutil, os, math
 
 # =============================================
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
-warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
+warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
@@ -74,7 +72,10 @@ for model_name in model_architectures:
     config_filename = f"{model_name.title()}Config"
     exec(f"from {config_filepath} import {config_filename}", globals())
 
-    config = inspect.getsource(eval(config_filename))
+    try:
+        config = inspect.getsource(eval(config_filename))
+    except:
+        continue
     if "rope_scaling" in config: continue
     config = re.sub(
         r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
@@ -345,7 +346,6 @@ def get_statistics():
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     try:
-        from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
         import psutil
         n_cpus = psutil.cpu_count(logical = False)
@@ -367,7 +367,13 @@ def get_statistics():
                 disable_progress_bars()
                 disabled = True
             pass
-            hf_hub_download(f"unslothai/statistics-{statistics}", "README.md", force_download = True)
+
+            from transformers import AutoModelForCausalLM
+            stats_model = AutoModelForCausalLM.from_pretrained(
+                f"unslothai/statistics-{statistics}",
+                force_download = True,
+            )
+            del stats_model
             if disabled:
                 enable_progress_bars()
             pass
@@ -657,6 +663,19 @@ def patch_linear_scaling(
     function = exec_code + "\n\n" + function
     return init_name, function
 pass
+
+
+def check_nvidia():
+    # Unsloth doesn't work yet on AMD devices - we're working on it!
+    try:
+        output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
+    except:
+        raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
+    output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
+    output = np.array([int(x.decode('utf-8'))/1024 for x in output])
+    return output
+pass
+PRE_CHECK = check_nvidia()
 
 
 def create_boolean_mask(n = 4096, sliding_window = 2048):
