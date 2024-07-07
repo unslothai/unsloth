@@ -25,7 +25,8 @@ def _rms_layernorm_forward(
     W, W_row_stride,
     r, r_row_stride,
     n_cols, eps,
-    BLOCK_SIZE : tl.constexpr
+    BLOCK_SIZE : tl.constexpr,
+    num_warps  : tl.constexpr,
 ):
     """
         Fast RMS Layernorm kernel
@@ -64,6 +65,7 @@ def _rms_layernorm_backward(
     n_cols, eps,
     GEMMA      : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
+    num_warps  : tl.constexpr,
 ):
     """
         Fast RMS Layernorm kernel for the backward pass
@@ -103,6 +105,7 @@ def _gemma_rms_layernorm_forward(
     r, r_row_stride,
     n_cols, eps,
     BLOCK_SIZE : tl.constexpr,
+    num_warps  : tl.constexpr,
 ):
     # Copies https://github.com/google-deepmind/gemma/blob/main/gemma/layers.py#L31
     # and https://github.com/keras-team/keras-nlp/blob/v0.8.2/keras_nlp/models/gemma/rms_normalization.py#L33
