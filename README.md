@@ -170,6 +170,17 @@ pip install "unsloth[cu121-ampere-torch230] @ git+https://github.com/unslothai/u
 nvcc
 python -m xformers.info
 python -m bitsandbytes
+```  
+
+### Docker Installation
+1. Edit Dockerfile to match required CUDA and Pytorch version. By default, CUDA 12.1.1 and Pytorch 2.3 are used, but you modify to use CUDA 11.8 and Pytorch 2.x instead as well as install optional dependencies by changing `unsloth[cu121-torch230]`.  
+2. Build docker image
+```bash
+docker build -t unsloth:latest .
+```
+3. Run unsloth docker image
+```bash
+docker run --gpus all -it --rm -v $PWD:/workspace --ulimit memlock=-1 --ulimit stack=67108864 --ipc host unsloth:latest
 ```
 
 ## 📜 Documentation
