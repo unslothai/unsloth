@@ -24,6 +24,7 @@ import itertools
 import collections
 import numpy as np
 import gc
+import subprocess
 
 __all__ = [
     "load_correct_tokenizer",
@@ -907,6 +908,19 @@ def add_new_tokens(
 pass
 
 
+def check_nvidia():
+    # Unsloth doesn't work yet on AMD devices - we're working on it!
+    try:
+        output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
+    except:
+        raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
+    output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
+    output = np.array([int(x.decode('utf-8'))/1024 for x in output])
+    return output
+pass
+PRE_CHECK = check_nvidia()
+
+
 from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
@@ -957,17 +971,15 @@ def patch_sft_trainer_tokenizer():
     "       'Please do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'\n"\
     "    )\n"\
     "pass\n"\
-    "n_devices = torch.cuda.device_count()\n"\
-    "import subprocess, re\n"\
-    "output = subprocess.check_output(\n"\
-    "    'nvidia-smi --query-gpu=memory.used --format=csv', shell = True)\n"\
-    "output = re.findall(rb'([\\d]{1,})[\\s]{1,}M', output)\n"\
-    "output = sum(int(x.decode('utf-8'))/1024 > 4 for x in output)\n"\
-    "if output > 1: print(\n"\
-    "    '********************\\nUnsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\\\n"\
-    "    'enabling it will require much more work, so we have to prioritize. Please understand!\\n'\\\n"\
-    "    '********************\\nWe do have a separate beta version, which you can contact us about!\\n'\\\n"\
-    "    '********************\\nThank you for your understanding and we appreciate it immensely!')\n"\
+    "import subprocess, re, gc, numpy as np\n"\
+    "try:\n"\
+    "    a = subprocess.check_output('nvidia-smi --query-gpu=memory.used --format=csv', shell = True)\n"\
+    "except:\n"\
+    "    raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')\n"\
+    "a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)\n"\
+    "a = np.array([int(x.decode('utf-8'))/1024 for x in a])\n"\
+    "if ((a - PRE_CHECK) >= 1).sum() > 1:\n"\
+    "    raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')\n"\
     "for _ in range(3):\n"\
     "    gc.collect()\n"\
     "    torch.cuda.empty_cache()\n"\
