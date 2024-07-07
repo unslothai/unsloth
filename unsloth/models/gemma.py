@@ -281,8 +281,10 @@ class FastGemmaModel(FastLlamaModel):
             scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
             attention_module   = GemmaAttention,
         )
-        exec(function, globals())
-        GemmaAttention.__init__      = eval(init_name)
+        if init_name is not None:
+            exec(function, globals())
+            GemmaAttention.__init__  = eval(init_name)
+        pass
         GemmaAttention      .forward = LlamaAttention_fast_forward
         GemmaSdpaAttention  .forward = LlamaAttention_fast_forward
         GemmaFlashAttention2.forward = LlamaAttention_fast_forward
