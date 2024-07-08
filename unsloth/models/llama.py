@@ -898,7 +898,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             )
         elif logit_softcapping != 0:
             logits *= (1.0 / logit_softcapping)
-            torch.tanh(logits, out = logits)
+            logits = torch.tanh(logits, out = logits if not logits.requires_grad else None)
             logits *= logit_softcapping
         pass
 
