@@ -400,7 +400,7 @@ def get_statistics():
         elif vram <= 40: vram = 40
         elif vram <= 48: vram = 48
         elif vram <= 80: vram = 80
-        else: vram = "80+"
+        else: vram = 96
         _get_statistics(f"vram-{vram}")
     except:
         pass
