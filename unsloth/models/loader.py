@@ -100,7 +100,7 @@ class FastLanguageModel(FastLlamaModel):
         except:
             is_model = False
         try:
-            peft_config = PeftConfig .from_pretrained(model_name, token = token, revision = revision)
+            peft_config = PeftConfig.from_pretrained(model_name, token = token, revision = revision)
             is_peft = True
         except:
             is_peft = False
