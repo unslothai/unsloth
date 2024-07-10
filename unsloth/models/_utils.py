@@ -43,6 +43,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import warnings, subprocess, re, inspect, psutil, os, math
+from packaging.version import Version
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -126,6 +127,23 @@ pass
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
+# Temporarily disable 0.0.27 and higher - inference issues
+if Version(xformers_version) >= Version("0.0.27"):
+    raise ImportError(
+        f"Unsloth: Your xformers version of {xformers_version} is too new.\n"\
+        'Please downgrade xformers via `pip install --force-reinstall "xformers<0.0.27"'
+    )
+pass
+
+# Check TRL version
+from trl import __version__ as trl_version
+if Version(xformers_version) >= Version("0.9.0"):
+    raise ImportError(
+        f"Unsloth: Your TRL version of {trl_version} is too new.\n"\
+        'Please downgrade TRL via `pip install --force-reinstall "trl<0.9.0"'
+    )
+pass
+
 # =============================================
 
 # =============================================
@@ -696,12 +714,14 @@ pass
 
 def check_nvidia():
     # Unsloth doesn't work yet on AMD devices - we're working on it!
+    output = np.array([0,])
     try:
         output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
+        output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
+        output = np.array([int(x.decode('utf-8'))/1024 for x in output])
     except:
-        raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
-    output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
-    output = np.array([int(x.decode('utf-8'))/1024 for x in output])
+        if not torch.cuda.is_available():
+            raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")    
     return output
 pass
 PRE_CHECK = check_nvidia()

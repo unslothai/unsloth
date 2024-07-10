@@ -15,15 +15,29 @@
 from .llama import *
 from ._utils import __version__
 
-from transformers.models.gemma.modeling_gemma import (
-    GemmaAttention,
-    GemmaDecoderLayer,
-    GemmaModel,
-    GemmaForCausalLM,
-    GemmaRotaryEmbedding,
-    apply_rotary_pos_emb,
-    repeat_kv,
-)
+try:
+    from transformers.models.gemma.modeling_gemma import (
+        GemmaAttention,
+        GemmaDecoderLayer,
+        GemmaModel,
+        GemmaForCausalLM,
+        GemmaRotaryEmbedding,
+        apply_rotary_pos_emb,
+        repeat_kv,
+    )
+except:
+    from packaging.version import Version
+    transformers_version = Version(transformers_version)
+    if not transformers_version >= Version("4.38"):
+        raise ImportError(
+            f"Unsloth: Your transformers version of {transformers_version} does not support Gemma.\n"\
+            f"The minimum required version is 4.38.\n"\
+            f'Try `pip install --upgrade "transformers>=4.38"`\n'\
+            f"to obtain the latest transformers build, then restart this session."\
+        )
+    pass
+pass
+
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
