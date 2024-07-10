@@ -43,6 +43,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import warnings, subprocess, re, inspect, psutil, os, math
+from packaging.version import Version
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -127,11 +128,19 @@ import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
 # Temporarily disable 0.0.27 and higher - inference issues
-from packaging.version import Version
 if Version(xformers_version) >= Version("0.0.27"):
     raise ImportError(
-        f"Unsloth: Your Xformers version of {xformers_version} is too new.\n"\
+        f"Unsloth: Your xformers version of {xformers_version} is too new.\n"\
         'Please downgrade xformers via `pip install --force-reinstall "xformers<0.0.27"'
+    )
+pass
+
+# Check TRL version
+from trl import __version__ as trl_version
+if Version(xformers_version) >= Version("0.9.0"):
+    raise ImportError(
+        f"Unsloth: Your TRL version of {trl_version} is too new.\n"\
+        'Please downgrade TRL via `pip install --force-reinstall "trl<0.9.0"'
     )
 pass
 
