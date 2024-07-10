@@ -910,12 +910,14 @@ pass
 
 def check_nvidia():
     # Unsloth doesn't work yet on AMD devices - we're working on it!
+    output = np.array([0,])
     try:
         output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
+        output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
+        output = np.array([int(x.decode('utf-8'))/1024 for x in output])
     except:
-        raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
-    output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
-    output = np.array([int(x.decode('utf-8'))/1024 for x in output])
+        if not torch.cuda.is_available():
+            raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
     return output
 pass
 PRE_CHECK = check_nvidia()
@@ -972,12 +974,14 @@ def patch_sft_trainer_tokenizer():
     "    )\n"\
     "pass\n"\
     "import subprocess, re, gc, numpy as np\n"\
+    "a = np.array([0,])\n"\
     "try:\n"\
     "    a = subprocess.check_output('nvidia-smi --query-gpu=memory.used --format=csv', shell = True)\n"\
+    "    a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)\n"\
+    "    a = np.array([int(x.decode('utf-8'))/1024 for x in a])\n"\
     "except:\n"\
-    "    raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')\n"\
-    "a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)\n"\
-    "a = np.array([int(x.decode('utf-8'))/1024 for x in a])\n"\
+    "    if not torch.cuda.is_available():\n"\
+    "        raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')\n"\
     "if ((a - PRE_CHECK) >= 1).sum() > 1:\n"\
     "    raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')\n"\
     "for _ in range(3):\n"\

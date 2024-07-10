@@ -22,16 +22,16 @@ from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER
 import os
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
-major, minor = transformers_version.split(".")[:2]
-major, minor = int(major), int(minor)
-SUPPORTS_FOURBIT = (major > 4) or (major == 4 and minor >= 37)
-SUPPORTS_GEMMA   = (major > 4) or (major == 4 and minor >= 38)
-SUPPORTS_GEMMA2  = (major > 4) or (major == 4 and minor >= 42)
+from packaging.version import Version
+transformers_version = Version(transformers_version)
+SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
+SUPPORTS_GEMMA   = transformers_version >= Version("4.38")
+SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
-del major, minor
+pass
 
 
 def _get_model_name(model_name, load_in_4bit = True):
@@ -134,7 +134,7 @@ class FastLanguageModel(FastLlamaModel):
         elif model_type == "mistral": dispatch_model = FastMistralModel
         elif model_type == "gemma":
             if not SUPPORTS_GEMMA:
-                raise RuntimeError(
+                raise ImportError(
                     f"Unsloth: Your transformers version of {transformers_version} does not support Gemma.\n"\
                     f"The minimum required version is 4.38.\n"\
                     f'Try `pip install --upgrade "transformers>=4.38"`\n'\
@@ -143,10 +143,10 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemmaModel
         elif model_type == "gemma2":
             if not SUPPORTS_GEMMA2:
-                raise RuntimeError(
+                raise ImportError(
                     f"Unsloth: Your transformers version of {transformers_version} does not support Gemma2.\n"\
-                    f"The minimum required version is 4.43.\n"\
-                    f'Try `pip install --upgrade "transformers>=4.43"`\n'\
+                    f"The minimum required version is 4.42.3.\n"\
+                    f'Try `pip install --upgrade "transformers>=4.42.3"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 )
             dispatch_model = FastGemma2Model
