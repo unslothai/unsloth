@@ -19,15 +19,29 @@ from .gemma import (
     GemmaFixedLinearScalingRotaryEmbedding,
     fast_geglu_inference,
 )
-from transformers.models.gemma2.modeling_gemma2 import (
-    Gemma2Attention,
-    Gemma2DecoderLayer,
-    Gemma2Model,
-    Gemma2ForCausalLM,
-    Gemma2RotaryEmbedding,
-    apply_rotary_pos_emb,
-    repeat_kv,
-)
+try:
+    from transformers.models.gemma2.modeling_gemma2 import (
+        Gemma2Attention,
+        Gemma2DecoderLayer,
+        Gemma2Model,
+        Gemma2ForCausalLM,
+        Gemma2RotaryEmbedding,
+        apply_rotary_pos_emb,
+        repeat_kv,
+    )
+except:
+    from packaging.version import Version
+    transformers_version = Version(transformers_version)
+    if not transformers_version >= Version("4.42"):
+        raise ImportError(
+            f"Unsloth: Your transformers version of {transformers_version} does not support Gemma2.\n"\
+            f"The minimum required version is 4.42.3.\n"\
+            f'Try `pip install --upgrade "transformers>=4.42.3"`\n'\
+            f"to obtain the latest transformers build, then restart this session."\
+        )
+    pass
+pass
+
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
@@ -46,7 +60,7 @@ pass
 # [TODO] We must randomnly use torch.compile?
 # I checked the gradients and formulas and I'm sure it's correct.
 # I'm stumped :(
-@torch.compile(fullgraph = True, dynamic = True)#, options = torch_compile_options)
+@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
 def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
     old_dtype = X.dtype
     X = X.float()
@@ -70,7 +84,11 @@ def gemma2_attention(Q, K, V, causal_mask, self, bsz, q_len):
     K = K.reshape(bsz, n_heads, q_len, head_dim)
     V = V.reshape(bsz, n_heads, q_len, head_dim)
 
-    s = self.config.hidden_size // self.config.num_attention_heads
+    # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
+    # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
+    # We default to using the config file itself
+    # s = self.config.hidden_size // self.config.num_attention_heads
+    s = self.config.query_pre_attn_scalar
     t = self.config.attn_logit_softcapping
 
     Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
@@ -260,7 +278,13 @@ def Gemma2Attention_fast_forward_inference(
         # Only for Gemma2
         self.temp_O  = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = "cuda:0")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
-        self.scalar = 1.0 / math_sqrt(self.config.hidden_size // self.config.num_attention_heads)
+        
+        # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
+        # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
+        # We default to using the config file itself
+        # s = self.config.hidden_size // self.config.num_attention_heads
+        self.scalar = 1.0 / math_sqrt(self.config.query_pre_attn_scalar)
+        # self.scalar = 1.0 / math_sqrt(self.config.hidden_size // self.config.num_attention_heads)
         self.half_head_dim = head_dim // 2
         self.           t =       self.config.attn_logit_softcapping
         self.reciprocal_t = 1.0 / self.config.attn_logit_softcapping
