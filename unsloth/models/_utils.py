@@ -696,12 +696,14 @@ pass
 
 def check_nvidia():
     # Unsloth doesn't work yet on AMD devices - we're working on it!
+    output = np.array([0,])
     try:
         output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
+        output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
+        output = np.array([int(x.decode('utf-8'))/1024 for x in output])
     except:
-        raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
-    output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
-    output = np.array([int(x.decode('utf-8'))/1024 for x in output])
+        if not torch.cuda.is_available():
+            raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")    
     return output
 pass
 PRE_CHECK = check_nvidia()
