@@ -126,6 +126,15 @@ pass
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
+# Temporarily disable 0.0.27 and higher - inference issues
+from packaging.version import Version
+if Version(xformers_version) >= Version("0.0.27"):
+    raise ImportError(
+        f"Unsloth: Your Xformers version of {xformers_version} is too new.\n"\
+        'Please downgrade xformers via `pip install --force-reinstall "xformers<0.0.27"'
+    )
+pass
+
 # =============================================
 
 # =============================================
