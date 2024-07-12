@@ -839,6 +839,54 @@ def install_llama_cpp_blocking(use_cuda = False):
     pass
 pass
 
+def _command_path(command):
+    """
+    Check if a command is valid and executable.
+
+    Args:
+        command (str): The command to check.
+
+    Returns:
+        str or None: The full path to the command if it is valid and executable, 
+                     None otherwise.
+    """
+    # Get the system path
+    system_path = os.environ.get("PATH")
+
+    # Split the system path into individual directories
+    directories = system_path.split(os.pathsep)
+
+    # Check if the command is in any of the directories
+    for directory in directories:
+        # Construct the full path to the command
+        command_path = os.path.join(directory, command)
+
+        # Check if the command path exists and is executable
+        if os.path.exists(command_path) and os.access(command_path, os.X_OK):
+            return command_path
+        pass
+    pass
+
+    return None
+pass
+
+def _find_valid_command(*commands):
+    """
+    Finds the first valid command in a list of commands.
+
+    Args:
+        *commands (str): The commands to check.
+
+    Returns:
+        str: The first valid command found, or None if no valid command is found.
+    """
+    for command in commands:
+        if _command_path(command):
+            return command
+        pass
+    pass
+
+    return None
 
 def save_to_gguf(
     model_type           : str,
@@ -932,48 +980,64 @@ def save_to_gguf(
         )
     pass
 
-    print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
-    if _run_installer is not None:
-        error = _run_installer.wait()
+    # determine whether the system already has llama.cpp installed and the scripts are executable
+    # NOTE: although the executable python scripts have shebang and therefore can be executed directly,
+    # prepending the python interpreter works, too.
+    quantize_location = _find_valid_command("llama-quantize", "quantize")
+    convert_location = _find_valid_command("convert-hf-to-gguf.py", "convert_hf_to_gguf.py")
+    
+    if quantize_location is not None and convert_location is not None:
+        print("Unsloth: llama.cpp found in the system. We shall skip installation.")
     else:
-        error = 0
-        install_llama_cpp_blocking()
+        print("Unsloth: llama.cpp not installed. We shall install it now.")
+        quantize_location = None
+        convert_location = None
     pass
+    
+    if quantize_location is None or convert_location is None:
+        print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
+        if _run_installer is not None:
+            error = _run_installer.wait()
+        else:
+            error = 0
+            install_llama_cpp_blocking()
+        pass
 
-    # Check if successful. If not install 10th latest release
+        # Check if successful. If not install 10th latest release
 
-    # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
-    # and llama.cpp/main changed to llama.cpp/llama-cli
-    # See https://github.com/ggerganov/llama.cpp/pull/7809
-    quantize_location = None
-    if os.path.exists("llama.cpp/quantize"):
-        quantize_location = "llama.cpp/quantize"
-    elif os.path.exists("llama.cpp/llama-quantize"):
-        quantize_location = "llama.cpp/llama-quantize"
-    else:
-        raise RuntimeError(
-            "Unsloth: The file 'llama.cpp/llama-quantize' or 'llama.cpp/quantize' does not exist.\n"\
-            "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
-        )
-    pass
+        # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
+        # and llama.cpp/main changed to llama.cpp/llama-cli
+        # See https://github.com/ggerganov/llama.cpp/pull/7809
+        quantize_location = None
+        if os.path.exists("llama.cpp/quantize"):
+            quantize_location = "llama.cpp/quantize"
+        elif os.path.exists("llama.cpp/llama-quantize"):
+            quantize_location = "llama.cpp/llama-quantize"
+        else:
+            raise RuntimeError(
+                "Unsloth: The file 'llama.cpp/llama-quantize' or 'llama.cpp/quantize' does not exist.\n"\
+                "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+            )
+        pass
 
-    # See https://github.com/unslothai/unsloth/pull/730
-    # Filenames changed again!
-    convert_location = None
-    if os.path.exists("llama.cpp/convert-hf-to-gguf.py"):
-        convert_location = "llama.cpp/convert-hf-to-gguf.py"
-    elif os.path.exists("llama.cpp/convert_hf_to_gguf.py"):
-        convert_location = "llama.cpp/convert_hf_to_gguf.py"
-    else:
-        raise RuntimeError(
-            "Unsloth: The file 'llama.cpp/convert-hf-to-gguf.py' or 'llama.cpp/convert_hf_to_gguf.py' does not exist.\n"\
-            "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
-        )
-    pass
+        # See https://github.com/unslothai/unsloth/pull/730
+        # Filenames changed again!
+        convert_location = None
+        if os.path.exists("llama.cpp/convert-hf-to-gguf.py"):
+            convert_location = "llama.cpp/convert-hf-to-gguf.py"
+        elif os.path.exists("llama.cpp/convert_hf_to_gguf.py"):
+            convert_location = "llama.cpp/convert_hf_to_gguf.py"
+        else:
+            raise RuntimeError(
+                "Unsloth: The file 'llama.cpp/convert-hf-to-gguf.py' or 'llama.cpp/convert_hf_to_gguf.py' does not exist.\n"\
+                "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+            )
+        pass
 
-    if error != 0 or quantize_location is None or convert_location is None:
-        print(f"Unsloth: llama.cpp error code = {error}.")
-        install_llama_cpp_old(-10)
+        if error != 0 or quantize_location is None or convert_location is None:
+            print(f"Unsloth: llama.cpp error code = {error}.")
+            install_llama_cpp_old(-10)
+        pass
     pass
 
     # Determine maximum first_conversion state
