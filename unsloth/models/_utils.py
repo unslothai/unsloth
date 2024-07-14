@@ -358,15 +358,13 @@ except:
 pass
 # =============================================
 
-
-def _get_statistics(statistics = None):
+import psutil
+def _get_statistics(statistics = None, force_download = True):
     # We log some basic stats about which environment is being used.
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     # You can disable this by commenting the below out
     try:
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
-        import psutil
         n_cpus = psutil.cpu_count(logical = False)
 
         keynames = "\n" + "\n".join(os.environ.keys())
@@ -382,21 +380,12 @@ def _get_statistics(statistics = None):
         else: statistics = "other"
 
         if statistics is not None:
-            disabled = False
-            if not are_progress_bars_disabled():
-                disable_progress_bars()
-                disabled = True
-            pass
-
             from transformers import AutoModelForCausalLM
             stats_model = AutoModelForCausalLM.from_pretrained(
                 f"unslothai/{statistics}",
-                force_download = True,
+                force_download = force_download,
             )
             del stats_model
-            if disabled:
-                enable_progress_bars()
-            pass
         pass
     except:
         pass
@@ -408,7 +397,14 @@ def get_statistics():
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     # You can disable this by commenting the below out
+    from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
+    disabled = False
+    if not are_progress_bars_disabled():
+        disable_progress_bars()
+        disabled = True
+    pass
     _get_statistics(None)
+    _get_statistics("repeat", force_download = False)
     try:
         vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
         if   vram <= 8 : vram = 8
@@ -423,6 +419,12 @@ def get_statistics():
     except:
         pass
     pass
+    try:
+        devices = torch.cuda.device_count()
+        _get_statistics(f"{devices if devices <= 8 else 9}")
+    except:
+        pass
+    if disabled: enable_progress_bars()
 pass
 
 
@@ -517,7 +519,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     Tiny hit to performance, since we mask the movement via non blocking calls.
     """
     @staticmethod
-    @torch.cuda.amp.custom_fwd
+    @torch.amp.custom_fwd(device_type = "cuda")
     def forward(ctx, forward_function, hidden_states, *args):
         saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
         with torch.no_grad():
@@ -529,7 +531,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     pass
 
     @staticmethod
-    @torch.cuda.amp.custom_bwd
+    @torch.amp.custom_bwd(device_type = "cuda")
     def backward(ctx, dY):
         (hidden_states,) = ctx.saved_tensors
         hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
