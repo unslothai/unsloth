@@ -839,6 +839,7 @@ def install_llama_cpp_blocking(use_cuda = False):
     pass
 pass
 
+
 def get_executable(executables):
     # Get system locations (System Path).split(system separator)
     system_directories = os.environ.get("PATH").split(os.pathsep)
@@ -852,6 +853,7 @@ def get_executable(executables):
     pass
     return None
 pass
+
 
 def save_to_gguf(
     model_type           : str,
@@ -952,12 +954,6 @@ def save_to_gguf(
     if quantize_location is not None and convert_location is not None:
         print("Unsloth: llama.cpp found in the system. We shall skip installation.")
     else:
-        print("Unsloth: llama.cpp not installed. We shall install it now.")
-        quantize_location = None
-        convert_location  = None
-    pass
-    
-    if quantize_location is None or convert_location is None:
         print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
         if _run_installer is not None:
             error = _run_installer.wait()
