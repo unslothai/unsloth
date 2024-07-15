@@ -19,7 +19,7 @@ next_power_of_2 = triton.next_power_of_2
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
 from packaging.version import Version
-if Version(torch.__version__) <= Version("2.3.0"):
+if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
 else:
