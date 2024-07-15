@@ -889,8 +889,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Fixes https://github.com/unslothai/unsloth/issues/10
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
             pass
-
-            print((labels == -100).sum())
             
             shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             loss = fast_cross_entropy_loss(
