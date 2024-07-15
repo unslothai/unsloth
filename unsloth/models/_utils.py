@@ -35,6 +35,8 @@ __all__ = [
     "patch_linear_scaling",
     "check_nvidia",
     "create_boolean_mask",
+    "torch_amp_custom_fwd",
+    "torch_amp_custom_bwd",
 ]
 
 import torch
@@ -89,6 +91,19 @@ for model_name in model_architectures:
 
     exec(f"import {config_filepath}", globals())
     exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+pass
+# =============================================
+
+# =============================================
+# torch.cuda.amp.custom_fwd is deprecated >= 2.4
+import torch
+from packaging.version import Version
+if Version(torch.__version__) <= Version("2.3.0"):
+    torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
+    torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
+else:
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 pass
 # =============================================
 
@@ -176,9 +191,20 @@ torch_compile_arguments = [
     "config.cuda.use_fast_math = True",
     "config.cuda.compile_opt_level = '-O2'",
 ]
+# Torch dynamo arguments
+torch_dynamo_arguments = [
+    "config.accumulated_cache_size_limit = 512", # Bump up a bit from 256
+    "config.suppress_errors = True", # Supress errors for now
+    "config.do_not_emit_runtime_asserts = True",
+]
 import torch._inductor.config as config
 for _try_compile_argument in torch_compile_arguments:
     try:    exec(_try_compile_argument)
+    except: pass
+pass
+import torch._dynamo.config as config
+for _try_dynamo_argument in torch_dynamo_arguments:
+    try:    exec(_try_dynamo_argument)
     except: pass
 pass
 torch_compile_options = {
@@ -519,7 +545,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     Tiny hit to performance, since we mask the movement via non blocking calls.
     """
     @staticmethod
-    @torch.amp.custom_fwd(device_type = "cuda")
+    @torch_amp_custom_fwd
     def forward(ctx, forward_function, hidden_states, *args):
         saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
         with torch.no_grad():
@@ -531,7 +557,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     pass
 
     @staticmethod
-    @torch.amp.custom_bwd(device_type = "cuda")
+    @torch_amp_custom_bwd
     def backward(ctx, dY):
         (hidden_states,) = ctx.saved_tensors
         hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
