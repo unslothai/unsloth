@@ -1342,8 +1342,11 @@ extra_eos_tokens = None,
         if not jinja_template.startswith("{{ bos_token }}"):
             jinja_template = "{{ bos_token }}" + jinja_template
     pass
-    
-    return modelfile, jinja_template
+
+    # Get instruction and output parts for train_on_inputs = False
+    input_part  = input_part [:input_part .find("{INPUT}")]
+    output_part = output_part[:output_part.find("{OUTPUT}")]
+    return modelfile, jinja_template, input_part, output_part
 pass
 
 
@@ -1369,7 +1372,7 @@ def test_construct_chat_template():
       
     extra_eos_tokens = None
 
-    modelfile, jinja_template = construct_chat_template(
+    modelfile, jinja_template, _, _ = construct_chat_template(
         tokenizer = tokenizer,
         chat_template = chat_template,
         extra_eos_tokens = extra_eos_tokens,
@@ -1422,7 +1425,7 @@ extra_eos_tokens = None,
 
     You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
     """
-    modelfile, jinja_template = construct_chat_template(
+    modelfile, jinja_template, input_part, output_part = construct_chat_template(
         tokenizer = tokenizer,
         chat_template = chat_template,
         default_system_message = default_system_message,
@@ -1433,8 +1436,12 @@ extra_eos_tokens = None,
         texts = [tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False) for convo in convos]
         return { "text" : texts, }
     pass
+    
     tokenizer.chat_template = jinja_template
     tokenizer._ollama_modelfile = modelfile
+    tokenizer._unsloth_input_part  = input_part
+    tokenizer._unsloth_output_part = output_part
+
     return dataset.map(formatting_prompts_func, batched = True,)
 pass
 
