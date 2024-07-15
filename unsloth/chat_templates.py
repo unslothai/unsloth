@@ -1063,7 +1063,6 @@ default_system_message = \
     "Below are some instructions that describe some tasks. Write responses that appropriately complete each request.",
 
 extra_eos_tokens = None,
-  
 ):
     """
     Creates a Ollama modelfile and a HF Jinja template from a custom
@@ -1072,6 +1071,9 @@ extra_eos_tokens = None,
 
     You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
     """
+    # Strip only the left
+    chat_template = chat_template.lstrip()
+    
     assert(tokenizer is not None)
 
     if extra_eos_tokens is None: extra_eos_tokens = []
@@ -1128,19 +1130,47 @@ extra_eos_tokens = None,
         chat_template = re.sub(r"{OUTPUT}", r"{OUTPUT}" + eos, chat_template)
     pass
 
-    # O(N^2) search finding 2 repeatted pieces of text
-    j = len(chat_template)-1
-    at_least_one = False
-    while j > 0:
-        found = chat_template.rfind(chat_template[j:], 0, j)
-        if found == -1: break
-        j -= 1
-        at_least_one = True
-    pass
-    if j > 0: j += 1
-    else: raise RuntimeError(error_msg)
+    # This forces you to provide 2 input and outputs
+    final_combined_check = False
 
-    if not at_least_one: raise RuntimeError(error_msg)
+    try:
+        # O(N^2) search finding 2 repeatted pieces of text
+        j = len(chat_template)-1
+        at_least_one = False
+        while j > 0:
+            found = chat_template.rfind(chat_template[j:], 0, j)
+            if found == -1: break
+            j -= 1
+            at_least_one = True
+        pass
+        if j > 0: j += 1
+        else: raise RuntimeError(error_msg)
+
+        if not at_least_one: raise RuntimeError(error_msg)
+
+        # Must be equivalent to left
+        final_combined_check = True
+    except:
+        # Simple 1 singular input and output
+        system_count = chat_template.count("{SYSTEM}")
+        input_count  = chat_template.count("{INPUT}")
+        output_count = chat_template.count("{OUTPUT}")
+        if system_count > 1:
+            raise RuntimeError("You must only provide 1 {SYSTEM} in the chat template")
+        if input_count > 1:
+            raise RuntimeError("You must only provide 1 {INPUT} in the chat template")
+        if output_count > 1:
+            raise RuntimeError("You must only provide 1 {OUTPUT} in the chat template")
+
+        if system_count != 0:
+            j = next(re.finditer(r"\{SYSTEM\}[\s]{0,}", chat_template)).span(0)[1]
+        else:
+            j = 0
+        pass
+
+        # Must be equivalent to the original text
+        final_combined_check = False
+    pass
 
     # Repeatted text
     instruction_response = chat_template[j:]
@@ -1152,6 +1182,8 @@ extra_eos_tokens = None,
     left  = chat_template[:j]
     # 2nd Instruction, Output pair
     right = chat_template[j:]
+
+    final_combined_check = left if final_combined_check else chat_template
 
     # Isolate input
     extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in extra_eos_tokens)
@@ -1170,13 +1202,14 @@ extra_eos_tokens = None,
     output_part = right[input_end:]
 
     # Isolate system
-    system_part = left[:left.find(input_part)]
+    where_system = left.find(input_part)
+    system_part = left[:where_system if where_system != -1 else len(left)]
 
     # Check if the user provided a correct prompt
     combined = system_part + input_part + output_part
-    if combined != left:
-        combined_changed = combined.replace('\n', '\\n')
-        left_changed     = left    .replace('\n', '\\n')
+    if combined != final_combined_check:
+        combined_changed = combined            .replace('\n', '\\n')
+        left_changed     = final_combined_check.replace('\n', '\\n')
         raise RuntimeError(
             "Unsloth: The prompt template you provided isn't correct. You gave:\n"\
             f"{combined_changed}\n\n"\
