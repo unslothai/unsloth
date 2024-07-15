@@ -21,6 +21,7 @@ __all__ = [
     "to_sharegpt",
     "standardize_sharegpt",
     "apply_chat_template",
+    "train_on_responses_only",
 
     "test_construct_chat_template",
 ]
@@ -1436,13 +1437,87 @@ extra_eos_tokens = None,
         texts = [tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False) for convo in convos]
         return { "text" : texts, }
     pass
-    
+
     tokenizer.chat_template = jinja_template
     tokenizer._ollama_modelfile = modelfile
     tokenizer._unsloth_input_part  = input_part
     tokenizer._unsloth_output_part = output_part
 
     return dataset.map(formatting_prompts_func, batched = True,)
+pass
+
+
+def train_on_responses_only(
+    trainer,
+    instruction_part = None,
+    response_part    = None,
+):
+    """
+    Trains only on responses and not on the instruction by masking out
+    the labels with -100 for the instruction part.
+    """
+    tokenizer = trainer.tokenizer
+    
+    if  not hasattr(tokenizer, "_unsloth_input_part") or \
+        not hasattr(tokenizer, "_unsloth_output_part"):
+        
+        if instruction_part is None or response_part is None:
+            raise ValueError("Unsloth: instruction_part and response_part must be given!")
+        pass
+    elif (instruction_part is not None or response_part is not None) and \
+        (hasattr(tokenizer, "_unsloth_input_part") or hasattr(tokenizer, "_unsloth_output_part")):
+
+        raise ValueError("Unsloth: Your tokenizer already has instruction and response parts set - do not give custom ones!")
+    else:
+        instruction_part = tokenizer._unsloth_input_part
+        response_part    = tokenizer._unsloth_output_part
+    pass
+
+    instruction_ids = tokenizer(instruction_part,  add_special_tokens = False).input_ids
+    response_ids    = tokenizer(response_part, add_special_tokens = False).input_ids
+
+    instruction_length = len(instruction_ids)
+    response_length    = len(response_ids)
+    max_length = max(instruction_length, response_length)
+
+    def _train_on_responses_only(examples):
+        input_ids_ = examples["input_ids"]
+        all_labels = []
+
+        for input_ids in input_ids_:
+
+            labels = [-100] * len(input_ids)
+            m = len(input_ids) - max_length
+            first_response    = response_ids[0]
+            first_instruction = instruction_ids[0]
+            j = 0
+            while j < m:
+                if input_ids[j] == first_response:
+                    if input_ids[j : j+response_length] == response_ids:
+                        j = j + response_length
+                        start = j
+                        while j < m:
+                            if input_ids[j] == first_instruction and input_ids[j : j+instruction_length] == instruction_ids:
+                                j = j + instruction_length
+                                labels[start : j] = input_ids[start : j]
+                                break
+                            elif j == (m-1):
+                                j = m
+                                labels[start:] = input_ids[start:]
+                                break
+                            pass
+                            j += 1
+                        pass
+                    pass
+                pass
+                j += 1
+            pass
+            all_labels.append(labels)
+        pass
+        return { "labels" : all_labels }
+    pass
+    trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batched = True)
+    return trainer
 pass
 
 
