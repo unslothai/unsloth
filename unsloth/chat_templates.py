@@ -1073,7 +1073,7 @@ extra_eos_tokens = None,
     """
     # Strip only the left
     chat_template = chat_template.lstrip()
-    
+
     assert(tokenizer is not None)
 
     if extra_eos_tokens is None: extra_eos_tokens = []
@@ -1316,6 +1316,15 @@ extra_eos_tokens = None,
 
         if has_bos_token:
             jinja_template = "{{ bos_token }}" + jinja_template
+    pass
+
+    # Fix missing loop_messages
+    if "{% set loop_messages = messages %}" not in jinja_template:
+        jinja_template = jinja_template.replace(
+            "{% for message in loop_messages %}",
+            "{% for message in messages %}",
+            1, # Only replace the first one
+        )
     pass
 
     # Check if system part is the same!
