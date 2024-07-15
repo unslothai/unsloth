@@ -16,6 +16,18 @@ import triton
 MAX_FUSED_SIZE = 65536
 next_power_of_2 = triton.next_power_of_2
 
+# torch.cuda.amp.custom_fwd is deprecated >= 2.4
+import torch
+from packaging.version import Version
+if Version(torch.__version__) < Version("2.4.0"):
+    torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
+    torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
+else:
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
+pass
+
+
 def calculate_settings(n):
     BLOCK_SIZE = next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:
@@ -32,7 +44,6 @@ pass
 import bitsandbytes as bnb
 get_ptr = bnb.functional.get_ptr
 import ctypes
-import torch
 cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
 cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
 cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4

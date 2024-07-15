@@ -70,6 +70,17 @@ def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
 pass
 
 
+# Flex Attention in torch 2.5 and higher
+# try:
+#     from torch.nn.attention._flex_attention import _flex_attention
+#     from functools import lru_cache
+#     @lru_cache
+#     def create_block_mask_from_score_mod(score_mod, B, H, M, N):
+#         SPARSE_BLOCK = 128
+#         block_mask = _create_block_mask(score_mod, B, H, M, N, device = "cuda:0")
+#         return block_mask
+
+
 # Logit softcapping
 @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
 def gemma2_attention(Q, K, V, causal_mask, self, bsz, q_len):
