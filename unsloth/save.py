@@ -846,7 +846,7 @@ def get_executable(executables):
 
     for directory in system_directories:
         for executable in executables:
-            path = os.path.join(directory, command)
+            path = os.path.join(directory, executable)
             # Check if the executable exists and is executable
             if os.path.exists(path) and os.access(path, os.X_OK): return path
         pass
