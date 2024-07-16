@@ -686,6 +686,7 @@ def LlamaModel_fast_forward(
     if IS_GEMMA2:
         # Check Flex Attention
         n = seq_length
+        print(n)
         USE_FLEX_ATTENTION = can_use_flex_attention(n)
         if USE_FLEX_ATTENTION:
             SWA_FLEXMASK = flex_attention_create_block_mask(
