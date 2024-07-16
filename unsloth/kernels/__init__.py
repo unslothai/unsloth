@@ -33,7 +33,7 @@ from .fast_lora import (
 )
 from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora
 
-from .flex_attention import HAS_FLEX_ATTENTION, can_use_flex_attention
+from .flex_attention import HAS_FLEX_ATTENTION, can_use_flex_attention, slow_attention_softcapping
 
 if HAS_FLEX_ATTENTION:
     from .flex_attention import (
@@ -43,7 +43,6 @@ if HAS_FLEX_ATTENTION:
         flex_attention_softcapping_causal_mask,
         flex_attention_softcapping_causal_sliding_window_mask,
         flex_attention_dispatch,
-        slow_attention_softcapping,
     )
 pass
 
