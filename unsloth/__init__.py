@@ -79,7 +79,8 @@ SUPPORTS_BFLOAT16 = (major_version >= 8)
 
 if (major_torch == 2) and (minor_torch >= 5): 
     old_is_bf16_supported = torch.cuda.is_bf16_supported
-    def is_bf16_supported(including_emulation = False): old_is_bf16_supported(including_emulation)
+    def is_bf16_supported(including_emulation = False):
+        return old_is_bf16_supported(including_emulation)
     torch.cuda.is_bf16_supported = is_bf16_supported
 else:
     def is_bf16_supported(): SUPPORTS_BFLOAT16
