@@ -126,7 +126,7 @@ try:
     def can_use_flex_attention(q_len):
         if q_len % FLEX_ATTENTION_PADDING != 0:
             logger.warning(
-                f"Unsloth: Flex Attention does not support q_len = {q_len}.\n"\
+                f"Unsloth: Flex Attention does not support q_len = {q_len}. "\
                 f"Currently all sequence lengths must be padded to {FLEX_ATTENTION_PADDING}.\n"\
                 f"Use `DataCollatorForSeq2Seq(pad_to_multiple_of = {FLEX_ATTENTION_PADDING})`"
             )
