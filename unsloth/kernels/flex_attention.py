@@ -153,6 +153,7 @@ try:
         V = V.reshape(bsz, n_heads, q_len, head_dim)
 
         # block_mask = flex_attention_create_block_mask(causal_mask, 1, 1, q_len, q_len)
+        print(score_function, block_mask)
         A = flex_attention(
             Q, K, V,
             score_mod  = score_function,
