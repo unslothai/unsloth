@@ -719,10 +719,10 @@ def LlamaModel_fast_forward(
                 mask = \
                     (flex_attention_dispatch, (SWA_FLEXMASK, SWA_score_function,),) \
                     if (idx % 2 == 0) else \
-                    (flex_attention_dispatch, ( GA_FLEXMASK,  GA_score_function,),) \
+                    (flex_attention_dispatch, ( GA_FLEXMASK,  GA_score_function,),)
             else:
                 mask = \
-                    (slow_attention_softcapping, self.SWA_mask,)\
+                    (slow_attention_softcapping, self.SWA_mask,) \
                     if (idx % 2 == 0) else \
                     (slow_attention_softcapping, self.GA_mask,)
             pass
