@@ -128,7 +128,8 @@ try:
             logger.warning_one(
                 f"Unsloth: Flex Attention currently can only work "\
                 f"when all sequence lengths must be padded to {FLEX_ATTENTION_PADDING}.\n"\
-                f"Use `DataCollatorForSeq2Seq(pad_to_multiple_of = {FLEX_ATTENTION_PADDING})`"
+                f"Use ```from transformers import DataCollatorForSeq2Seq\n"\
+                f"data_collator = DataCollatorForSeq2Seq(tokenizer = tokenizer, pad_to_multiple_of = {FLEX_ATTENTION_PADDING})```"
             )
             return False
         return True
