@@ -124,6 +124,7 @@ try:
     pass
 
     def can_use_flex_attention(q_len):
+        print(q_len)
         if q_len % FLEX_ATTENTION_PADDING != 0:
             logger.warning(
                 f"Unsloth: Flex Attention does not support q_len = {q_len}.\n"\
