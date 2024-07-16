@@ -98,7 +98,7 @@ try:
 
     tanh_approx = TanhApprox.apply
 
-    @lru_cache
+    # @lru_cache
     def flex_attention_softcapping_causal_mask(LOGIT_SOFTCAPPING = 50.0):
         def softcapping_causal_mask(score, b, h, q_idx, kv_idx):
             score = score / LOGIT_SOFTCAPPING
@@ -112,7 +112,7 @@ try:
         return softcapping_causal_mask
     pass
 
-    @lru_cache
+    # @lru_cache
     def flex_attention_softcapping_causal_sliding_window_mask(LOGIT_SOFTCAPPING = 50.0, SLIDING_WINDOW = 4096):
         def softcapping_causal_sliding_window_mask(score, b, h, q_idx, kv_idx):
             score = score / LOGIT_SOFTCAPPING
