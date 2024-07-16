@@ -39,8 +39,8 @@ try:
     )
     
     @lru_cache
-    def flex_attention_create_block_mask(score_mod, B, H, M, N):
-        return create_block_mask(score_mod, B, H, M, N, device = "cuda:0")
+    def flex_attention_create_block_mask(score_mod, N):
+        return create_block_mask(score_mod, 1, 1, M, N, device = "cuda:0")
     pass
 
     def flex_attention_causal_mask(score, b, h, q_idx, kv_idx):
@@ -156,8 +156,8 @@ try:
         print(score_function, block_mask)
         A = flex_attention(
             Q, K, V,
-            score_mod  = score_function,
-            block_mask = block_mask,
+            score_mod  = flex_attention_softcapping_causal_sliding_window_mask(50, 4096),
+            block_mask = flex_attention_create_block_mask(flex_attention_sliding_window_mask(4096), q_len),
             scale = self.config.query_pre_attn_scalar,
         )
         A = A.transpose(1, 2).contiguous()
