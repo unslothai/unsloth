@@ -101,8 +101,11 @@ try:
     @lru_cache
     def flex_attention_softcapping_causal_mask(LOGIT_SOFTCAPPING = 50.0):
         def softcapping_causal_mask(score, b, h, q_idx, kv_idx):
+            score = score / LOGIT_SOFTCAPPING
+            score = tanh_approx(score)
+            score = LOGIT_SOFTCAPPING * score
+
             causal = (q_idx >= kv_idx)
-            score = LOGIT_SOFTCAPPING * tanh_approx(score / LOGIT_SOFTCAPPING)
             mask = causal
             return torch.where(mask, score, -float("inf"))
         pass
@@ -119,7 +122,6 @@ try:
             causal  = (q_idx >= kv_idx)
             sliding = (q_idx - kv_idx <= SLIDING_WINDOW)
             mask = causal & sliding
-
             return torch.where(mask, score, -float("inf"))
         pass
         return softcapping_causal_sliding_window_mask
