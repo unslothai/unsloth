@@ -154,6 +154,14 @@ try:
 
         # block_mask = flex_attention_create_block_mask(causal_mask, 1, 1, q_len, q_len)
         print(score_function, block_mask)
+        B=16
+        H=16
+        S=q_len
+        D=64
+        data_type = torch.float16
+        Q = torch.randn(B, H, S, D, device="cuda", dtype=data_type, requires_grad=True)
+        K = torch.randn(B, H, S, D, device="cuda", dtype=data_type, requires_grad=True)
+        V = torch.randn(B, H, S, D, device="cuda", dtype=data_type, requires_grad=True)
         A = flex_attention(
             Q, K, V,
             score_mod  = flex_attention_softcapping_causal_sliding_window_mask(50, 4096),
