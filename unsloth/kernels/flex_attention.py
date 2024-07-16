@@ -136,7 +136,7 @@ try:
     pass
 
     def flex_attention_dispatch(Q, K, V, metadata, self, bsz, q_len):
-        score_function, block_mask = metadata
+        block_mask, score_function = metadata
         n_heads    = self.num_heads
         head_dim   = self.head_dim
         n_kv_heads = self.num_key_value_heads
