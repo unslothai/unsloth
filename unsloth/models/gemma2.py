@@ -70,12 +70,6 @@ def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
 pass
 
 
-# Flex Attention in torch 2.5 and higher
-if HAS_FLEX_ATTENTION:
-
-pass
-
-
 # Logit softcapping
 def Gemma2Attention_fast_forward(
     self,
