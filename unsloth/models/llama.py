@@ -685,8 +685,9 @@ def LlamaModel_fast_forward(
 
     if IS_GEMMA2:
         # Check Flex Attention
+        USE_FLEX_ATTENTION = can_use_flex_attention(n)
         n = seq_length
-        if can_use_flex_attention(n):
+        if USE_FLEX_ATTENTION:
             SWA_FLEXMASK = flex_attention_create_block_mask(
                 flex_attention_sliding_window_mask(self.config.sliding_window),
                 1, 1, n, n,
