@@ -931,7 +931,7 @@ def save_to_gguf(
     print_info = \
         f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
         f"   \\\   /|    [0] Installing llama.cpp will take 3 minutes.\n"\
-        f"O^O/ \_/ \\    [1] Converting HF to GUUF 16bits will take 3 minutes.\n"\
+        f"O^O/ \_/ \\    [1] Converting HF to GGUF 16bits will take 3 minutes.\n"\
         f"\        /    [2] Converting GGUF 16bits to {quantization_method} will take 10 minutes each.\n"\
         f' "-____-"     In total, you will have to wait at least 16 minutes.\n'
     print(print_info)

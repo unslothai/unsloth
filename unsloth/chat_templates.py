@@ -1125,11 +1125,6 @@ extra_eos_tokens = None,
     for eos in extra_eos_tokens:
         count_eos += len(re.findall(r"{OUTPUT}" + re.escape(eos), chat_template))
     pass
-    if count_eos == 0:
-        logger.warning("Unsloth: We automatically added an EOS token to stop endless generations.")
-        eos = extra_eos_tokens[0]
-        chat_template = re.sub(r"{OUTPUT}", r"{OUTPUT}" + eos, chat_template)
-    pass
 
     # This forces you to provide 2 input and outputs
     final_combined_check = False
@@ -1151,72 +1146,83 @@ extra_eos_tokens = None,
 
         # Must be equivalent to left
         final_combined_check = True
-    except:
-        # Simple 1 singular input and output
-        system_count = chat_template.count("{SYSTEM}")
-        input_count  = chat_template.count("{INPUT}")
-        output_count = chat_template.count("{OUTPUT}")
-        if system_count > 1:
-            raise RuntimeError("You must only provide 1 {SYSTEM} in the chat template")
-        if input_count > 1:
-            raise RuntimeError("You must only provide 1 {INPUT} in the chat template")
-        if output_count > 1:
-            raise RuntimeError("You must only provide 1 {OUTPUT} in the chat template")
 
-        if system_count != 0:
-            j = next(re.finditer(r"\{SYSTEM\}[\s]{0,}", chat_template)).span(0)[1]
-        else:
-            j = 0
+        # Repeatted text
+        instruction_response = chat_template[j:]
+        if instruction_response.count("{INPUT}") != 1 or instruction_response.count("{OUTPUT}") != 1:
+            raise RuntimeError(error_msg)
         pass
 
-        # Must be equivalent to the original text
-        final_combined_check = False
+        # 1st System, Instruction, Output pair
+        left  = chat_template[:j]
+        # 2nd Instruction, Output pair
+        right = chat_template[j:]
+
+        final_combined_check = left if final_combined_check else chat_template
+
+        # Isolate input
+        extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in extra_eos_tokens)
+        if len(extra_eos_tokens_regex) != 0:
+            find_end = f"(?:{extra_eos_tokens_regex})?"
+        else:
+            find_end = ""
+        find_end = r"\{INPUT\}[\s\n]{0,}" + find_end
+        input_end = list(re.finditer(find_end, right))
+        assert(len(input_end) == 1)
+        input_end = input_end[0]
+        input_end = input_end.span(0)[1]
+        input_part = right[:input_end]
+
+        # Isolate output
+        output_part = right[input_end:]
+
+        # Isolate system
+        where_system = left.find(input_part)
+        system_part = left[:where_system if where_system != -1 else len(left)]
+
+        # Check if the user provided a correct prompt
+        combined = system_part + input_part + output_part
+        if combined != final_combined_check:
+            combined_changed = combined            .replace('\n', '\\n')
+            left_changed     = final_combined_check.replace('\n', '\\n')
+            raise RuntimeError(
+                "Unsloth: The prompt template you provided isn't correct. You gave:\n"\
+                f"{combined_changed}\n\n"\
+                "But we require the following:\n"\
+                f"{left_changed}"
+            )
+        pass
+    except:
+        ending = chat_template[chat_template.find("{OUTPUT}") + len("{OUTPUT}"):]
+
+        ending = re.escape(ending)
+        find_text = "{INPUT}" + ending + "(.+?{OUTPUT}" + ending + ")"
+        response_part = re.findall(find_text, chat_template, flags = re.DOTALL | re.MULTILINE)
+        response_part = response_part[0]
+
+        for j in range(1, len(response_part)):
+            try_find = re.escape(response_part[:j])
+            try: found = next(re.finditer("(" + try_find + ").+?\{INPUT\}", chat_template, flags = re.DOTALL | re.MULTILINE))
+            except: break
+        pass
+        separator = found.group(1)
+
+        response_start = chat_template.find(response_part)
+        start_instruction = chat_template[:response_start].rfind(separator)
+        if start_instruction == -1: start_instruction = 0
+        instruction_part = chat_template[start_instruction:response_start]
+
+        combined = instruction_part + response_part
+        where = chat_template.find(combined)
+        system_part = chat_template[:where]
+
+        system_part, input_part, output_part = system_part, instruction_part, response_part
     pass
 
-    # Repeatted text
-    instruction_response = chat_template[j:]
-    if instruction_response.count("{INPUT}") != 1 or instruction_response.count("{OUTPUT}") != 1:
-        raise RuntimeError(error_msg)
-    pass
-
-    # 1st System, Instruction, Output pair
-    left  = chat_template[:j]
-    # 2nd Instruction, Output pair
-    right = chat_template[j:]
-
-    final_combined_check = left if final_combined_check else chat_template
-
-    # Isolate input
-    extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in extra_eos_tokens)
-    if len(extra_eos_tokens_regex) != 0:
-        find_end = f"(?:{extra_eos_tokens_regex})?"
-    else:
-        find_end = ""
-    find_end = r"\{INPUT\}[\s\n]{0,}" + find_end
-    input_end = list(re.finditer(find_end, right))
-    assert(len(input_end) == 1)
-    input_end = input_end[0]
-    input_end = input_end.span(0)[1]
-    input_part = right[:input_end]
-
-    # Isolate output
-    output_part = right[input_end:]
-
-    # Isolate system
-    where_system = left.find(input_part)
-    system_part = left[:where_system if where_system != -1 else len(left)]
-
-    # Check if the user provided a correct prompt
-    combined = system_part + input_part + output_part
-    if combined != final_combined_check:
-        combined_changed = combined            .replace('\n', '\\n')
-        left_changed     = final_combined_check.replace('\n', '\\n')
-        raise RuntimeError(
-            "Unsloth: The prompt template you provided isn't correct. You gave:\n"\
-            f"{combined_changed}\n\n"\
-            "But we require the following:\n"\
-            f"{left_changed}"
-        )
+    if count_eos == 0:
+        logger.warning("Unsloth: We automatically added an EOS token to stop endless generations.")
+        eos = extra_eos_tokens[0]
+        output_part = output_part + eos
     pass
 
     # Ollama modelfile parts
