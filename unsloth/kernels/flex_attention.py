@@ -40,7 +40,7 @@ try:
     
     @lru_cache
     def flex_attention_create_block_mask(score_mod, N):
-        return create_block_mask(score_mod, 1, 1, M, N, device = "cuda:0")
+        return create_block_mask(score_mod, 1, 1, N, N, device = "cuda:0")
     pass
 
     def flex_attention_causal_mask(score, b, h, q_idx, kv_idx):
