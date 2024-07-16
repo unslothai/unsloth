@@ -170,6 +170,7 @@ try:
         )
         A = A.transpose(1, 2).contiguous()
         A = A.reshape(bsz, q_len, n_heads*head_dim)
+        print(score_function, block_mask)
         return A
     pass
 
