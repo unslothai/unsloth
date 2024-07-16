@@ -692,9 +692,17 @@ def LlamaModel_fast_forward(
                 flex_attention_sliding_window_mask(self.config.sliding_window),
                 1, 1, n, n,
             )
+            SWA_score_function = flex_attention_softcapping_causal_sliding_window_mask(
+                LOGIT_SOFTCAPPING = self.config.attn_logit_softcapping,
+                SLIDING_WINDOW    = self.config.sliding_window,
+            )
+
             GA_FLEXMASK  = flex_attention_create_block_mask(
                 flex_attention_causal_mask,
                 1, 1, n, n,
+            )
+            GA_score_function = flex_attention_softcapping_causal_mask(
+                LOGIT_SOFTCAPPING = self.config.attn_logit_softcapping,
             )
         pass
     pass
@@ -709,9 +717,9 @@ def LlamaModel_fast_forward(
         if IS_GEMMA2:
             if USE_FLEX_ATTENTION:
                 mask = \
-                    (flex_attention_dispatch, (SWA_FLEXMASK, flex_attention_softcapping_causal_sliding_window_mask,),) \
+                    (flex_attention_dispatch, (SWA_FLEXMASK, SWA_score_function,),) \
                     if (idx % 2 == 0) else \
-                    (flex_attention_dispatch, (GA_FLEXMASK,  flex_attention_softcapping_causal_mask,),)
+                    (flex_attention_dispatch, ( GA_FLEXMASK,  GA_score_function,),) \
             else:
                 mask = \
                     (slow_attention_softcapping, self.SWA_mask,)\

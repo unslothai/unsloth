@@ -110,7 +110,7 @@ try:
     pass
 
     @lru_cache
-    def flex_attention_softcapping_causal_sliding_window_mask(LOGIT_SOFTCAPPING = 50.0):
+    def flex_attention_softcapping_causal_sliding_window_mask(LOGIT_SOFTCAPPING = 50.0, SLIDING_WINDOW = 4096):
         def softcapping_causal_sliding_window_mask(score, b, h, q_idx, kv_idx):
             score = LOGIT_SOFTCAPPING * tanh_approx(score / LOGIT_SOFTCAPPING)
 
@@ -151,7 +151,7 @@ try:
         # block_mask = flex_attention_create_block_mask(causal_mask, 1, 1, q_len, q_len)
         A = flex_attention(
             Q, K, V,
-            score_mod  = score_function(self.config.attn_logit_softcapping),
+            score_mod  = score_function,
             block_mask = block_mask,
             scale = self.config.query_pre_attn_scalar,
         )
