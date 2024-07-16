@@ -112,7 +112,9 @@ try:
     @lru_cache
     def flex_attention_softcapping_causal_sliding_window_mask(LOGIT_SOFTCAPPING = 50.0, SLIDING_WINDOW = 4096):
         def softcapping_causal_sliding_window_mask(score, b, h, q_idx, kv_idx):
-            score = LOGIT_SOFTCAPPING * tanh_approx(score / LOGIT_SOFTCAPPING)
+            score = score / LOGIT_SOFTCAPPING
+            score = tanh_approx(score)
+            score = LOGIT_SOFTCAPPING * score
 
             causal  = (q_idx >= kv_idx)
             sliding = (q_idx - kv_idx <= SLIDING_WINDOW)
