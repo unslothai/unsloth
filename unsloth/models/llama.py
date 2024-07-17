@@ -683,28 +683,6 @@ def LlamaModel_fast_forward(
             .squeeze(0).squeeze(0)
     pass
 
-    if IS_GEMMA2:
-        # Check Flex Attention
-        n = seq_length
-        USE_FLEX_ATTENTION = can_use_flex_attention(n)
-        if USE_FLEX_ATTENTION:
-            SWA_FLEXMASK = flex_attention_create_block_mask(
-                flex_attention_sliding_window_mask(self.config.sliding_window), n,
-            )
-            SWA_score_function = flex_attention_softcapping_causal_sliding_window_mask(
-                LOGIT_SOFTCAPPING = self.config.attn_logit_softcapping,
-                SLIDING_WINDOW    = self.config.sliding_window,
-            )
-
-            GA_FLEXMASK  = flex_attention_create_block_mask(
-                flex_attention_causal_mask, n,
-            )
-            GA_score_function = flex_attention_softcapping_causal_mask(
-                LOGIT_SOFTCAPPING = self.config.attn_logit_softcapping,
-            )
-        pass
-    pass
-
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
 
@@ -712,19 +690,7 @@ def LlamaModel_fast_forward(
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         mask = causal_mask
-        if IS_GEMMA2:
-            if USE_FLEX_ATTENTION:
-                mask = \
-                    (flex_attention_dispatch, (SWA_FLEXMASK, SWA_score_function,),) \
-                    if (idx % 2 == 0) else \
-                    (flex_attention_dispatch, ( GA_FLEXMASK,  GA_score_function,),)
-            else:
-                mask = \
-                    (slow_attention_softcapping, self.SWA_mask,) \
-                    if (idx % 2 == 0) else \
-                    (slow_attention_softcapping, self.GA_mask,)
-            pass
-        pass
+        if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
 
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
