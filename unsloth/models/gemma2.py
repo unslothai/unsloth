@@ -126,9 +126,8 @@ def Gemma2Attention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
     past_key_value = (K, V) if use_cache else None
-
-    attention_fn, metadata = causal_mask
-    A = attention_fn(Q, K, V, metadata, self, bsz, kv_seq_len)
+    
+    A = slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_seq_len)
     A = self.apply_o(self, A)
     return A, None, past_key_value
 pass
