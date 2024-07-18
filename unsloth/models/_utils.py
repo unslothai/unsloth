@@ -142,7 +142,7 @@ pass
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
-Temporarily disable 0.0.27 and higher - inference issues
+# Temporarily disable 0.0.27 and higher - inference issues
 if Version(xformers_version) >= Version("0.0.27"):
     raise ImportError(
         "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
