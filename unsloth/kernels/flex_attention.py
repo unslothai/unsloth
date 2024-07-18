@@ -26,27 +26,15 @@ torch_compile_options = {
 
 # Flex Attention supported from torch 2.5 onwards only
 import torch.nn.attention
-if hasattr(torch.nn.attention, "_flex_attention") or hasattr(torch.nn.attention, "flex_attention"):
-    
-    if hasattr(torch.nn.attention, "_flex_attention"):
-        import torch.nn.attention._flex_attention
-        from torch.nn.attention._flex_attention import _flex_attention as flex_attention
-        from torch.nn.attention._flex_attention import create_block_mask
-        FLEX_ATTENTION_PADDING = getattr(
-            torch.nn.attention._flex_attention,
-            "_DEFAULT_SPARSE_BLOCK_SIZE",
-            1,
-        )
-    else:
-        import torch.nn.attention.flex_attention
-        from torch.nn.attention.flex_attention import flex_attention
-        from torch.nn.attention.flex_attention import create_block_mask
-        FLEX_ATTENTION_PADDING = getattr(
-            torch.nn.attention.flex_attention,
-            "_DEFAULT_SPARSE_BLOCK_SIZE",
-            1,
-        )
-    pass
+if hasattr(torch.nn.attention, "flex_attention"):
+    import torch.nn.attention.flex_attention
+    from torch.nn.attention.flex_attention import flex_attention
+    from torch.nn.attention.flex_attention import create_block_mask
+    FLEX_ATTENTION_PADDING = getattr(
+        torch.nn.attention.flex_attention,
+        "_DEFAULT_SPARSE_BLOCK_SIZE",
+        1,
+    )
     flex_attention = torch.compile(flex_attention, dynamic = False)
     HAS_FLEX_ATTENTION = True
 else:
