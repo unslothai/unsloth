@@ -60,12 +60,6 @@ except:
                       "We have some installation instructions on our Github page.")
 pass
 
-# Fix up is_bf16_supported https://github.com/unslothai/unsloth/issues/504
-major_version, minor_version = torch.cuda.get_device_capability()
-SUPPORTS_BFLOAT16 = (major_version >= 8)
-def is_bf16_supported(): return SUPPORTS_BFLOAT16
-torch.cuda.is_bf16_supported = is_bf16_supported
-
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
 torch_version = torch.__version__.split(".")
@@ -79,6 +73,19 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
+# Torch 2.5 has including_emulation
+major_version, minor_version = torch.cuda.get_device_capability()
+SUPPORTS_BFLOAT16 = (major_version >= 8)
+
+if (major_torch == 2) and (minor_torch >= 5): 
+    old_is_bf16_supported = torch.cuda.is_bf16_supported
+    def is_bf16_supported(including_emulation = False):
+        return old_is_bf16_supported(including_emulation)
+    torch.cuda.is_bf16_supported = is_bf16_supported
+else:
+    def is_bf16_supported(): SUPPORTS_BFLOAT16
+    torch.cuda.is_bf16_supported = is_bf16_supported
+pass
 
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb

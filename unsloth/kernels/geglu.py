@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings
+from .utils import calculate_settings, triton_tanh
 
 
 @triton.jit
@@ -119,7 +119,7 @@ def _approx_forward_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
     g_row = tl.load(g + offsets, mask = mask, other = 0)#.to(tl.float32)
 
     f_row = 0.5 * e_row * (
-        tl.math.tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) \
+        triton_tanh(s * e_row * (1.0 + 0.044715 * e_row * e_row)) \
         + 1.0
     )
     f_row = f_row.to(g_row.dtype) # Exact copy from HF
@@ -168,7 +168,7 @@ def _approx_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
     s = 0.7978845608028654 # math.sqrt(2 / math.pi)
     a = s * e_row # a = sqrt(2 / pi) * x
     b = a * 0.044715 * e_row * e_row # b = a * 0.044715 * x^2
-    T = 1.0 + tl.math.tanh(a + b)
+    T = 1.0 + triton_tanh(a + b)
     T2 = 0.5 * T
     # Q = 0.5 * -T * (T - 2.0) * (a + 3.0 * b)
     Q2 = -T2 * (T - 2.0) * (a + 3.0 * b) 

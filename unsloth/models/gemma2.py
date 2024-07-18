@@ -70,52 +70,6 @@ def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
 pass
 
 
-# Flex Attention in torch 2.5 and higher
-# try:
-#     from torch.nn.attention._flex_attention import _flex_attention
-#     from functools import lru_cache
-#     @lru_cache
-#     def create_block_mask_from_score_mod(score_mod, B, H, M, N):
-#         SPARSE_BLOCK = 128
-#         block_mask = _create_block_mask(score_mod, B, H, M, N, device = "cuda:0")
-#         return block_mask
-
-
-# Logit softcapping
-@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-def gemma2_attention(Q, K, V, causal_mask, self, bsz, q_len):
-    n_heads    = self.num_heads
-    head_dim   = self.head_dim
-    n_kv_heads = self.num_key_value_heads
-    n_groups   = self.num_key_value_groups
-    
-    # Grouped query attention
-    K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-    V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-    K = K.reshape(bsz, n_heads, q_len, head_dim)
-    V = V.reshape(bsz, n_heads, q_len, head_dim)
-
-    # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
-    # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
-    # We default to using the config file itself
-    # s = self.config.hidden_size // self.config.num_attention_heads
-    s = self.config.query_pre_attn_scalar
-    t = self.config.attn_logit_softcapping
-
-    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
-    A = torch.matmul(Q, K.transpose(2, 3))
-    A = t * torch.tanh(A / t) # Logit softcapping
-    A += causal_mask[:q_len, :q_len]
-    # Much slower in torch compile!
-    # A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
-    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
-    A = torch.matmul(A, V)
-    A = A.transpose(1, 2).contiguous()
-    A = A.reshape(bsz, q_len, n_heads*head_dim)
-    return A
-pass
-
-
 # Logit softcapping
 def Gemma2Attention_fast_forward(
     self,
@@ -172,8 +126,8 @@ def Gemma2Attention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
     past_key_value = (K, V) if use_cache else None
-
-    A = gemma2_attention(Q, K, V, causal_mask, self, bsz, kv_seq_len)
+    
+    A = slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_seq_len)
     A = self.apply_o(self, A)
     return A, None, past_key_value
 pass

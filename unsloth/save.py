@@ -1359,6 +1359,20 @@ def upload_to_huggingface(
             uploaded_location = file_location
         pass
 
+        # find ftevent file from tensorboard and upload it
+        import glob
+        ftevent_files = glob.glob("*out.tfevents*", recursive = True)
+        if len(ftevent_files) > 0:
+            print("Unsloth: Uploading tensorboard files... Please wait...", file_location + "*out.tfevents*")
+            for ftevent_file in ftevent_files:
+                hf_api.upload_file(
+                    path_or_fileobj = ftevent_file,
+                    path_in_repo    = ftevent_file.replace(file_location, ""),
+                    repo_id         = save_directory,
+                    repo_type       = "model",
+                    commit_message  = "(Trained with Unsloth)",
+                )
+
         hf_api.upload_file(
             path_or_fileobj = file_location,
             path_in_repo    = uploaded_location,
