@@ -61,10 +61,10 @@ except:
 pass
 
 # Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
-# keynames = "\n" + "\n".join(os.environ.keys())
-# if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
-#     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-# pass
+keynames = "\n" + "\n".join(os.environ.keys())
+if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+pass
 
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
