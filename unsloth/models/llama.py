@@ -1152,6 +1152,12 @@ class FastLlamaModel:
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
+        
+        # Warn about fast transfers
+        if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0") == "1":
+            logger.warning_once("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
+        pass
+
         model_patcher.pre_patch()
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
 
