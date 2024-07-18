@@ -38,6 +38,17 @@ __all__ = [
 IGNORED_TOKENIZER_CHECKING = frozenset((
     "CodeLlamaTokenizerFast",
     "CodeLlamaTokenizer",
+    ""
+))
+
+
+IGNORED_TOKENIZER_NAMES = frozenset((
+    "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
+    "unsloth/Mistral-Nemo-Instruct-2407",
+    "mistralai/Mistral-Nemo-Instruct-2407",
+    "unsloth/Mistral-Nemo-Base-2407-bnb-4bit",
+    "unsloth/Mistral-Nemo-Base-2407",
+    "mistralai/Mistral-Nemo-Base-2407",
 ))
 
 # Check environments
@@ -488,7 +499,7 @@ def load_correct_tokenizer(
         cache_dir         = cache_dir,
     )
 
-    if slow_tokenizer is not None:
+    if tokenizer_name not in IGNORED_TOKENIZER_NAMES and slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
         if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
