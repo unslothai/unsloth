@@ -46,6 +46,7 @@ huggingface = [
     "trl>=0.7.9,<0.9.0",
     "peft>=0.7.1,!=0.11.0",
     "protobuf<4.0.0",
+    "huggingface_hub[hf_transfer]",
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
@@ -195,6 +196,7 @@ colab-new = [
     "wheel>=0.42.0",
     "numpy",
     "protobuf<4.0.0",
+    "huggingface_hub[hf_transfer]",
 ]
 colab-no-deps = [
     "accelerate>=0.26.1",
