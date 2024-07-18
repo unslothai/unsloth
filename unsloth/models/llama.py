@@ -666,8 +666,7 @@ def LlamaModel_fast_forward(
     if IS_GEMMA2 and HAS_FLEX_ATTENTION:
         if not (seq_length % FLEX_ATTENTION_PADDING == 0):
         USE_FLEX_ATTENTION = True
-    # else:
-        
+
 
     # Gemma2 has alternating SWA and global attn
     if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
