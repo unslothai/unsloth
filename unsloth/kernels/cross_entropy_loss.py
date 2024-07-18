@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, MAX_FUSED_SIZE
+from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh
 from transformers.models.llama.modeling_llama import logger
 
 
@@ -63,7 +63,7 @@ def _cross_entropy_forward(
     label_idx = tl.load(labels_ptr).to(tl.int32)
     logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-    if DO_SOFTCAPPING: logits = SOFTCAP * tl.math.tanh(logits / SOFTCAP)
+    if DO_SOFTCAPPING: logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
 
     logits = logits.to(tl.float32)
     c = tl.max(logits, 0)
@@ -72,7 +72,7 @@ def _cross_entropy_forward(
     if label_idx != -100:
         x = tl.load(logits_ptr + label_idx)
         # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-        if DO_SOFTCAPPING: x = SOFTCAP * tl.math.tanh(x / SOFTCAP)
+        if DO_SOFTCAPPING: x = SOFTCAP * triton_tanh(x / SOFTCAP)
         loss = logsumexp - x.to(tl.float32)
     else:
         loss = 0.0
@@ -131,7 +131,7 @@ def _chunked_cross_entropy_forward(
     label_idx = tl.load(labels_ptr).to(tl.int32)
     logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-    if DO_SOFTCAPPING: logits = SOFTCAP * tl.math.tanh(logits / SOFTCAP)
+    if DO_SOFTCAPPING: logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
 
     logits = logits.to(tl.float32)
     c = tl.max(logits, 0)
@@ -143,7 +143,7 @@ def _chunked_cross_entropy_forward(
         if label_idx != -100:
             x = tl.load(logits_ptr + label_idx).to(tl.float32)
             # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-            if DO_SOFTCAPPING: x = SOFTCAP * tl.math.tanh(x / SOFTCAP)
+            if DO_SOFTCAPPING: x = SOFTCAP * triton_tanh(x / SOFTCAP)
             loss = -1.0 * x.to(tl.float32)
         else:
             loss = 0.0
@@ -198,7 +198,7 @@ def _cross_entropy_backward(
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
-        partial = tl.math.tanh(x / SOFTCAP)
+        partial = triton_tanh(x / SOFTCAP)
         x = SOFTCAP * partial
     pass
 
