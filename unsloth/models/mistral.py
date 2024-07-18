@@ -161,7 +161,7 @@ def MistralAttention_fast_forward(
         A = A.transpose(1, 2).contiguous()
     pass
     
-    attn_output = A.reshape(bsz, q_len, self.hidden_size)
+    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
