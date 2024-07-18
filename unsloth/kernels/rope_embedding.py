@@ -16,7 +16,6 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings
-
 ROPE_GROUP_SIZE = 4
 
 @triton.heuristics({"BACKWARD_PASS": lambda args: args["BACKWARD_PASS"],})
@@ -36,6 +35,7 @@ def _rope_embedding(
         RoPE is Q * cos + rotate_half(Q) * sin
         See our blog post for more info
     """
+    ROPE_GROUP_SIZE = 4
     row_position  = tl.program_id(0)
     group_head_position = tl.program_id(1)
     col_offsets  = tl.arange(0, BLOCK_SIZE)

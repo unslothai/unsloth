@@ -662,6 +662,12 @@ def LlamaModel_fast_forward(
             offloaded_gradient_checkpointing = True
     pass
 
+    # Check for Flex Attention
+    # if IS_GEMMA2 and HAS_FLEX_ATTENTION:
+    #     if not (seq_length % FLEX_ATTENTION_PADDING == 0):
+    #     USE_FLEX_ATTENTION = True
+
+
     # Gemma2 has alternating SWA and global attn
     if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
         n = self.config.max_position_embeddings

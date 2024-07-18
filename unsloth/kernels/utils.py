@@ -28,6 +28,18 @@ else:
 pass
 
 
+# tl.math.tanh now is libdevice.tanh
+from packaging.version import Version
+import triton
+if Version(triton.__version__) >= Version("3.0.0"):
+    from triton.language.extra import libdevice
+    triton_tanh = libdevice.tanh
+else:
+    import triton.language as tl
+    triton_tanh = tl.math.tanh
+pass
+
+
 def calculate_settings(n):
     BLOCK_SIZE = next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:

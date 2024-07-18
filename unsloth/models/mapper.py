@@ -210,6 +210,14 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/Phi-3-mini-4k-instruct-v0-bnb-4bit" : ( # Old Phi pre July
         "unsloth/Phi-3-mini-4k-instruct-v0",
     ),
+    "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit" : ( # New 12b Mistral models
+        "unsloth/Mistral-Nemo-Instruct-2407",
+        "mistralai/Mistral-Nemo-Instruct-2407",
+    ),
+    "unsloth/Mistral-Nemo-Base-2407-bnb-4bit" : ( # New 12b Mistral models
+        "unsloth/Mistral-Nemo-Base-2407",
+        "mistralai/Mistral-Nemo-Base-2407",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
