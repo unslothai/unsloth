@@ -78,6 +78,9 @@ def MistralAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    # Extend RoPE dynamically to fit in VRAM
+    self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
+
     if position_ids is None:
         cos = self.rotary_emb.cos_cached
         sin = self.rotary_emb.sin_cached
@@ -158,7 +161,7 @@ def MistralAttention_fast_forward(
         A = A.transpose(1, 2).contiguous()
     pass
     
-    attn_output = A.reshape(bsz, q_len, self.hidden_size)
+    attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
