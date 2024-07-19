@@ -41,14 +41,17 @@ IGNORED_TOKENIZER_CHECKING = frozenset((
 ))
 
 
-IGNORED_TOKENIZER_NAMES = frozenset((
+IGNORED_TOKENIZER_NAMES = [
     "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
     "unsloth/Mistral-Nemo-Instruct-2407",
     "mistralai/Mistral-Nemo-Instruct-2407",
     "unsloth/Mistral-Nemo-Base-2407-bnb-4bit",
     "unsloth/Mistral-Nemo-Base-2407",
     "mistralai/Mistral-Nemo-Base-2407",
-))
+]
+IGNORED_TOKENIZER_NAMES = frozenset(
+    [x.lower() for x in IGNORED_TOKENIZER_NAMES]
+)
 
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
@@ -498,7 +501,8 @@ def load_correct_tokenizer(
         cache_dir         = cache_dir,
     )
 
-    if tokenizer_name in IGNORED_TOKENIZER_NAMES: pass
+    if tokenizer_name in IGNORED_TOKENIZER_NAMES:
+        return fast_tokenizer
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
