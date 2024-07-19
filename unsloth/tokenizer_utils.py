@@ -38,7 +38,6 @@ __all__ = [
 IGNORED_TOKENIZER_CHECKING = frozenset((
     "CodeLlamaTokenizerFast",
     "CodeLlamaTokenizer",
-    ""
 ))
 
 
@@ -499,7 +498,8 @@ def load_correct_tokenizer(
         cache_dir         = cache_dir,
     )
 
-    if tokenizer_name not in IGNORED_TOKENIZER_NAMES and slow_tokenizer is not None:
+    if tokenizer_name in IGNORED_TOKENIZER_NAMES: pass
+    elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
         if hasattr(fast_tokenizer, "add_eos_token") and hasattr(slow_tokenizer, "add_eos_token"):
