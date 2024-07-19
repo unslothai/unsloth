@@ -158,6 +158,14 @@ def LlamaAttention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda:0")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda:0")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
+        
+        # Mistral Nemo 12b has weird dimensions
+        if attention_size != self.hidden_size:
+            self.temp_O = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = "cuda:0")
+        else:
+            self.temp_O = self.temp_QA[1][:,:,:self.hidden_size]
+        pass
+        
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -239,7 +247,7 @@ def LlamaAttention_fast_forward_inference(
     pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A, out = self.temp_QA[1][:,:,:self.hidden_size])
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
 pass
 
@@ -334,6 +342,9 @@ def LlamaAttention_fast_forward(
     kv_seq_len = K.shape[-2]
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
+
+    # Extend RoPE dynamically to fit in VRAM
+    self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
 
     if position_ids is None:
         cos = self.rotary_emb.cos_cached
@@ -662,6 +673,12 @@ def LlamaModel_fast_forward(
             offloaded_gradient_checkpointing = True
     pass
 
+    # Check for Flex Attention
+    # if IS_GEMMA2 and HAS_FLEX_ATTENTION:
+    #     if not (seq_length % FLEX_ATTENTION_PADDING == 0):
+    #     USE_FLEX_ATTENTION = True
+
+
     # Gemma2 has alternating SWA and global attn
     if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
         n = self.config.max_position_embeddings
@@ -965,19 +982,21 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
+        # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
+        self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
+        self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
-        self.max_seq_len_cached = seq_len
+        self.current_rope_size = seq_len
         inv_freq = 1.0 / (
             self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
         )
-        t = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).float()
+        t = torch.arange(self.current_rope_size, device="cpu", dtype=torch.int64).float()
 
         freqs = torch.outer(t, inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
@@ -988,13 +1007,20 @@ class LlamaRotaryEmbedding(torch.nn.Module):
 
     def forward(self, x, position_ids=None, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.max_seq_len_cached:
+        if seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
         return (
-            self.cos_cached[:seq_len].to(dtype=x.dtype),
-            self.sin_cached[:seq_len].to(dtype=x.dtype),
+            self.cos_cached[:seq_len].to(dtype = x.dtype),
+            self.sin_cached[:seq_len].to(dtype = x.dtype),
         )
+    pass
+
+    def extend_rope_embedding(self, x, seq_len):
+        if seq_len <= self.current_rope_size: return
+        # Iteratively grow by increments of 8192
+        self.current_rope_size = int(round(seq_len / 8192)) * 8192
+        self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
 
@@ -1010,11 +1036,11 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        self.max_seq_len_cached = seq_len
+        self.current_rope_size = seq_len
         inv_freq = 1.0 / (
             self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
         )
-        t = torch.arange(self.max_seq_len_cached, device="cpu", dtype=torch.int64).float()
+        t = torch.arange(self.current_rope_size, device="cpu", dtype=torch.int64).float()
         t = t / self.scaling_factor
 
         freqs = torch.outer(t, inv_freq)
@@ -1134,6 +1160,15 @@ class FastLlamaModel:
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
+
+        # Warn about fast transfers
+        old_hf_transfer = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0")
+        if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0") == "1":
+            print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
+        pass
+        # Return old flag
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+
         model_patcher.pre_patch()
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
 
@@ -1215,6 +1250,8 @@ class FastLlamaModel:
             attn_implementation     = "eager",
             **kwargs,
         )
+        # Return old flag
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
         # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
         post_check = check_nvidia()
 
@@ -2082,3 +2119,4 @@ class FastLlamaModel:
         pass
     pass
 pass
+
