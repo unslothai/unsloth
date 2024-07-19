@@ -498,7 +498,8 @@ def load_correct_tokenizer(
         cache_dir         = cache_dir,
     )
 
-    if tokenizer_name in IGNORED_TOKENIZER_NAMES: pass
+    if tokenizer_name in IGNORED_TOKENIZER_NAMES:
+        return fast_tokenizer
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
