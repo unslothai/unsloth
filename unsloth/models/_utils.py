@@ -65,8 +65,26 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 
 # =============================================
 # Edits all Config files to enable RoPE Scaling for all models
-from transformers import PretrainedConfig
 
+# Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
+def patch_mistral_nemo_config(config):
+    if "head_dim (" not in config:
+        add_head_dim = "If it is not specified, will default to `8`.\n"\
+            "        head_dim (`int`, *optional*, defaults to `hidden_size // num_attention_heads`):\n"\
+            "            The attention head dimension."
+        config = config.replace("If it is not specified, will default to `8`.", add_head_dim)
+
+        add_head_dim = "num_key_value_heads=8,\n        head_dim=None,"
+        config = config.replace("num_key_value_heads=8,", add_head_dim)
+
+        add_head_dim = "self.sliding_window = sliding_window\n        self.head_dim = head_dim or hidden_size // num_attention_heads\n"
+        config = config.replace("self.sliding_window = sliding_window", add_head_dim)
+    pass
+    return config
+pass
+
+from transformers import __version__ as transformers_version
+from transformers import PretrainedConfig
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2",]
 
 for model_name in model_architectures:
@@ -87,8 +105,14 @@ for model_name in model_architectures:
         r"\n        self.rope_scaling = rope_scaling\n",
         config,
     )
-    exec(config, globals())
 
+    # Just for Mistral Nemo
+    if model_name == "mistral":
+        if Version(transformers_version) <= Version("4.42.4"):
+            config = patch_mistral_nemo_config(config)
+    pass
+
+    exec(config, globals())
     exec(f"import {config_filepath}", globals())
     exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
 pass
@@ -97,7 +121,6 @@ pass
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
-from packaging.version import Version
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
@@ -748,7 +771,7 @@ def patch_linear_scaling(
         "self.rotary_emb = .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
-    if len(rotary_emb) == 0: return
+    if len(rotary_emb) == 0: return None, function
     rotary_emb = rotary_emb[0]
     function = function.replace(rotary_emb, fix_rope_function, 1)
     function = exec_code + "\n\n" + function
