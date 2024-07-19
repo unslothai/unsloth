@@ -682,6 +682,11 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     embedding_matrix = model.get_input_embeddings ().weight
     lm_head_matrix   = model.get_output_embeddings().weight
 
+    # Ignore some model checks for now
+    if model.config._name_or_path in  IGNORED_TOKENIZER_NAMES:
+        return
+    pass
+
     # Get untrained tokens
     indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
     where_untrained = torch.where(indicator_untrained)[0]
