@@ -89,7 +89,7 @@ if (major_torch == 2) and (minor_torch >= 5):
         return old_is_bf16_supported(including_emulation)
     torch.cuda.is_bf16_supported = is_bf16_supported
 else:
-    def is_bf16_supported(): SUPPORTS_BFLOAT16
+    def is_bf16_supported(): return SUPPORTS_BFLOAT16
     torch.cuda.is_bf16_supported = is_bf16_supported
 pass
 
