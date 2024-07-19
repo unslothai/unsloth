@@ -1163,7 +1163,7 @@ class FastLlamaModel:
 
         # Warn about fast transfers
         if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0") == "1":
-            logger.warning_once("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
+            print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
         pass
 
         model_patcher.pre_patch()
