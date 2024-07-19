@@ -1162,9 +1162,12 @@ class FastLlamaModel:
         print(statistics)
 
         # Warn about fast transfers
+        old_hf_transfer = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0")
         if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0") == "1":
-            logger.warning_once("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
+            print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
         pass
+        # Return old flag
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
         model_patcher.pre_patch()
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
@@ -1247,6 +1250,8 @@ class FastLlamaModel:
             attn_implementation     = "eager",
             **kwargs,
         )
+        # Return old flag
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
         # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
         post_check = check_nvidia()
 
