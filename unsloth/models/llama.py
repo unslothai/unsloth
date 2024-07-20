@@ -1068,6 +1068,8 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         # For newer HF
         kwargs["cache_implementation"] = "dynamic"
 
+        print(kwargs)
+
         # Set pad token
         # old_pad_token_id = getattr(model.config, "pad_token_id", None)
         # old_eos_token_id = getattr(model.config, "eos_token_id", None)
