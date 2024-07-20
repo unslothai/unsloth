@@ -210,22 +210,24 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
+        # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
+        self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(seq_len=max_position_embeddings, device=device, dtype=torch.get_default_dtype())
+        self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
-        self.max_seq_len_cached = seq_len
+        self.current_rope_size = seq_len
 
         # The difference is we do division explicity instead of t * (1/x) ie we do t/x.
         freq_exponents = (2.0 / self.dim) * (
             torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
         timescale = self.base**freq_exponents
-        positions = torch.arange(self.max_seq_len_cached, device = "cpu", dtype = torch.int64).float()
+        positions = torch.arange(self.current_rope_size, device = "cpu", dtype = torch.int64).float()
         radians_new = positions[..., None] / timescale[None, None, :]
         radians_new = radians_new.squeeze(0)
 
@@ -239,13 +241,20 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
     def forward(self, x, position_ids=None, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.max_seq_len_cached:
+        if seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
         return (
             self.cos_cached[:seq_len].to(dtype=x.dtype),
             self.sin_cached[:seq_len].to(dtype=x.dtype),
         )
+    pass
+
+    def extend_rope_embedding(self, x, seq_len):
+        if seq_len <= self.current_rope_size: return
+        # Iteratively grow by increments of 8192
+        self.current_rope_size = int(round(seq_len / 8192)) * 8192
+        self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
 
@@ -263,14 +272,14 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
     def _set_cos_sin_cache(self, seq_len, device, dtype):
 # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
-        self.max_seq_len_cached = seq_len
+        self.current_rope_size = seq_len
 
         # The difference is we do division explicity instead of t * (1/x) ie we do t/x.
         freq_exponents = (2.0 / self.dim) * (
             torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
         timescale = self.base**freq_exponents
-        positions = torch.arange(self.max_seq_len_cached, device = "cpu", dtype = torch.int64).float()
+        positions = torch.arange(self.current_rope_size, device = "cpu", dtype = torch.int64).float()
         positions = positions /  self.scaling_factor
         radians_new = positions[..., None] / timescale[None, None, :]
         radians_new = radians_new.squeeze(0)
