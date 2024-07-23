@@ -826,22 +826,17 @@ def patch_llama_rope_scaling(
     )
     fix_rope_function = """
     if getattr(self.config, "rope_scaling", None) is None:
-        # Hack to check for Llama-3.1
-        if 'llama-3.1' in str(self.config.config._name_or_path).lower():
-            self.rotary_emb = {extended_rope_function}(
-                self.head_dim,
-                max_position_embeddings=self.max_position_embeddings,
-                base=self.rope_theta,
-            )
-        else:
-            self.rotary_emb = {rope_function}(
-                self.head_dim,
-                max_position_embeddings=self.max_position_embeddings,
-                base=self.rope_theta,
-            )
+        self.rotary_emb = {rope_function}(
+            self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
+        )
     else:
-        scaling_type = self.config.rope_scaling["type"]
+        scaling_type1 = self.config.rope_scaling.get("type", None)
+        scaling_type2 = self.config.rope_scaling.get("rope_type", None)
+        scaling_type = scaling_type1 if scaling_type1 is not None else scaling_type2
         scaling_factor = self.config.rope_scaling.get("factor")
+        
         if scaling_type == "linear":
             self.rotary_emb = {scaled_rope_function}(
                 self.head_dim,
@@ -849,7 +844,7 @@ def patch_llama_rope_scaling(
                 scaling_factor=scaling_factor,
                 base=self.rope_theta,
             )
-        elif scaling_type == "extended":
+        elif scaling_type == "llama3":
             self.rotary_emb = {extended_rope_function}(
                 self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
