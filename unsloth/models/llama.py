@@ -1073,7 +1073,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             device = "cuda"
             max_position_embeddings = config.max_position_embeddings
         pass
-            
+        
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
