@@ -868,9 +868,11 @@ def patch_llama_rope_scaling(
         "self.rotary_emb = .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
+    print(rotary_emb)
     if len(rotary_emb) == 0: return None, function
     rotary_emb = rotary_emb[0]
     function = function.replace(rotary_emb, fix_rope_function, 1)
+    print(function)
     function = exec_code + "\n\n" + function
     return init_name, function
 pass
