@@ -980,8 +980,9 @@ class LlamaRotaryEmbedding(torch.nn.Module):
     def __init__(self, dim = None, max_position_embeddings=2048, base=10000, device=None,
         config = None, # [TODO] Hack to pass in config - need to remove later
     ):
-        if config is not None: return # [TODO] Hack to pass in config - need to remove later
         super().__init__()
+        if config is not None: return # [TODO] Hack to pass in config - need to remove later
+        
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
@@ -1036,9 +1037,8 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(self, dim = None, max_position_embeddings=2048, base=10000, device=None, scaling_factor=1.0,
         config = None, # [TODO] Hack to pass in config - need to remove later
     ):
-        if config is not None: return # [TODO] Hack to pass in config - need to remove later
         self.scaling_factor = scaling_factor
-        super().__init__(dim, max_position_embeddings, base, device)
+        super().__init__(dim = dim, max_position_embeddings = max_position_embeddings, base = base, device = device, config = config)
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -1064,8 +1064,9 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
     def __init__(self, dim = None, max_position_embeddings=2048, base=10000, device=None,
         config = None, # [TODO] Hack to pass in config - need to remove later
     ):
-        if config is not None: return # [TODO] Hack to pass in config - need to remove later
         super().__init__()
+        if config is not None: return # [TODO] Hack to pass in config - need to remove later
+        
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
