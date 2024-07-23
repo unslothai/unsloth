@@ -1052,6 +1052,68 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
 pass
 
 
+# See https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/rotary_embedding.py#L736
+# For Llama 3.1
+class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
+        super().__init__()
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
+        self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
+
+        # Normal Llama-3 RoPE
+        inv_freq = 1.0 / (
+            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64, device="cpu").float() / self.dim)
+        )
+        inv_freq = self.apply_scaling(inv_freq)
+        self.register_buffer("inv_freq", inv_freq, persistent = False)
+
+        # Build here to make `torch.jit.trace` work.
+        self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
+    pass
+
+    def _set_cos_sin_cache(self, seq_len, device, dtype):
+        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
+        # in FP32. They are applied (multiplied) in FP32 as well.
+        self.current_rope_size = seq_len
+        
+        t = torch.arange(self.current_rope_size, device="cpu", dtype=torch.int64).float()
+
+        freqs = torch.outer(t, self.inv_freq)
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+    pass
+
+    def apply_scaling(self, freqs: torch.Tensor):
+        scale_factor = 8
+        low_freq_factor = 1
+        high_freq_factor = 4
+        old_context_len = 8192
+
+        low_freq_wavelen = old_context_len / low_freq_factor
+        high_freq_wavelen = old_context_len / high_freq_factor
+        new_freqs = []
+        for freq in freqs:
+            wavelen = 2 * math.pi / freq
+            if wavelen < high_freq_wavelen:
+                new_freqs.append(freq)
+            elif wavelen > low_freq_wavelen:
+                new_freqs.append(freq / scale_factor)
+            else:
+                assert low_freq_wavelen != high_freq_wavelen
+                smooth = (old_context_len / wavelen - low_freq_factor) / (
+                    high_freq_factor - low_freq_factor)
+                new_freqs.append((1 - smooth) * freq / scale_factor +
+                                 smooth * freq)
+        return torch.tensor(new_freqs, dtype=freqs.dtype, device=freqs.device)
+    pass
+pass
+
+
 def _wrap_fast_inference(generate, device_type, dtype, model):
     # Wraps inference with bfloat16 / float16
     @torch.inference_mode
@@ -1108,6 +1170,17 @@ class FastLlamaModel:
 
     @staticmethod
     def pre_patch():
+        init_name, function = patch_llama_rope_scaling(
+            model_name           = "llama",
+            rope_module          = LlamaRotaryEmbedding,
+            scaled_rope_module   = LlamaLinearScalingRotaryEmbedding,
+            extended_rope_module = LlamaExtendedRotaryEmbedding,
+            attention_module     = LlamaAttention,
+        )
+        if init_name is not None:
+            exec(function, globals())
+            LlamaAttention.__init__  = eval(init_name)
+        pass
         LlamaAttention      .forward = LlamaAttention_fast_forward
         LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
         LlamaFlashAttention2.forward = LlamaAttention_fast_forward
