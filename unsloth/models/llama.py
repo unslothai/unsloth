@@ -983,7 +983,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            print(2)
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
@@ -1075,7 +1074,6 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         super().__init__()
         if config is not None:
             # [TODO] Hack to pass in config - need to remove later
-            print(1)
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
