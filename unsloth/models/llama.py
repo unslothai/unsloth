@@ -1088,11 +1088,13 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
         self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
     pass
 
-    def apply_scaling(self, freqs: torch.Tensor):
+    # From https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py#L41
+    def apply_scaling(freqs: torch.Tensor):
+        # Values obtained from grid search
         scale_factor = 8
         low_freq_factor = 1
         high_freq_factor = 4
-        old_context_len = 8192
+        old_context_len = 8192  # original llama3 length
 
         low_freq_wavelen = old_context_len / low_freq_factor
         high_freq_wavelen = old_context_len / high_freq_factor
@@ -1106,9 +1108,9 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
             else:
                 assert low_freq_wavelen != high_freq_wavelen
                 smooth = (old_context_len / wavelen - low_freq_factor) / (
-                    high_freq_factor - low_freq_factor)
-                new_freqs.append((1 - smooth) * freq / scale_factor +
-                                 smooth * freq)
+                    high_freq_factor - low_freq_factor
+                )
+                new_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
         return torch.tensor(new_freqs, dtype=freqs.dtype, device=freqs.device)
     pass
 pass
