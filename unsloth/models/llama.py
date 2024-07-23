@@ -1065,7 +1065,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         config = None, # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
-        print(__FILE__, __LINE__)
+        print(__LINE__)
         # if config is not None: return # [TODO] Hack to pass in config - need to remove later
         
         self.dim = dim
