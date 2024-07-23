@@ -1065,7 +1065,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         config = None, # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
-        if config is not None: return # [TODO] Hack to pass in config - need to remove later
+        # if config is not None: return # [TODO] Hack to pass in config - need to remove later
         
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
