@@ -1010,7 +1010,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
     pass
 
     def forward(self, x, position_ids=None, seq_len=None):
-        print(x, position_ids, seq_len)
+        print(__LINE__, x, position_ids, seq_len)
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
@@ -1127,6 +1127,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
 
     def forward(self, x, position_ids=None, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
+        print(__LINE__, x, position_ids, seq_len)
         if seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
