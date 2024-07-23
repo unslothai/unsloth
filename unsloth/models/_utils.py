@@ -33,6 +33,7 @@ __all__ = [
     "unsloth_offloaded_gradient_checkpoint",
     "torch_compile_options",
     "patch_linear_scaling",
+    "patch_llama_rope_scaling",
     "check_nvidia",
     "create_boolean_mask",
     "torch_amp_custom_fwd",
@@ -332,7 +333,13 @@ def patch_tokenizer(model, tokenizer):
         Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
         Fixes https://github.com/unslothai/unsloth/issues/5
     """
-    possible_reserved_tokens = ("<|reserved", "<|placeholder", "[control")
+    possible_reserved_tokens = (
+        "<|reserved",                # Llama-3
+        "<|placeholder",             # Phi-3
+        "[control",                  # Forgot where lol
+        "<pad>",                     # Mistral Nemo
+        "<|finetune_right_pad_id|>", # Llama-3.1
+    )
 
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
@@ -745,7 +752,7 @@ def patch_linear_scaling(
     fix_rope_function = """
     if getattr(self.config, "rope_scaling", None) is None:
         self.rotary_emb = {rope_function}(
-            self.head_dim,
+            dim = self.head_dim,
             max_position_embeddings=self.max_position_embeddings,
             base=self.rope_theta,
         )
@@ -754,7 +761,7 @@ def patch_linear_scaling(
         scaling_factor = self.config.rope_scaling["factor"]
         if scaling_type == "linear":
             self.rotary_emb = {scaled_rope_function}(
-                self.head_dim,
+                dim = self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
                 scaling_factor=scaling_factor,
                 base=self.rope_theta,
@@ -766,6 +773,91 @@ def patch_linear_scaling(
     fix_rope_function = fix_rope_function.format(
         rope_function        = rope_module.__name__,
         scaled_rope_function = scaled_rope_module.__name__,
+    )
+    rotary_emb = re.findall(
+        "self.rotary_emb = .+?\)", function,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    if len(rotary_emb) == 0: return None, function
+    rotary_emb = rotary_emb[0]
+    function = function.replace(rotary_emb, fix_rope_function, 1)
+    function = exec_code + "\n\n" + function
+    return init_name, function
+pass
+
+
+# Patches for Llama-3 LlamaExtendedRotaryEmbedding
+def patch_llama_rope_scaling(
+    model_name = "llama",
+    rope_module = None,
+    scaled_rope_module = None,
+    extended_rope_module = None,
+    attention_module = None,
+):
+    assert(\
+        rope_module is not None and \
+        scaled_rope_module is not None and \
+        extended_rope_module is not None
+    )
+    assert(attention_module is not None)
+
+    rope_name = rope_module.__name__
+    scaled_rope_name = scaled_rope_module.__name__
+    model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
+    exec_code = \
+        f"import torch.nn as nn\n"\
+        f"from typing import Union, Optional, List, Any, Callable, Tuple\n"\
+        f"from {model_filepath} import logger, "\
+        f"{model_name.title()}Attention, {model_name.title()}Config"
+
+    try:
+        function = inspect.getsource(attention_module.__init__)
+    except:
+        # Most likely already patched!
+        return None, None
+    where = function.find("def")
+    function = function.split("\n")
+    function = "\n".join(x[where:] for x in function)
+    init_name = f"{model_name.title()}Attention__init__"
+    function = function.replace("def __init__", f"def {init_name}")
+    function = function.replace(
+        "super().__init__()",
+        f"super({model_name.title()}Attention, self).__init__()",
+    )
+    fix_rope_function = """
+    if getattr(self.config, "rope_scaling", None) is None:
+        self.rotary_emb = {rope_function}(
+            dim = self.head_dim,
+            max_position_embeddings=self.max_position_embeddings,
+            base=self.rope_theta,
+        )
+    else:
+        scaling_type1 = self.config.rope_scaling.get("type", None)
+        scaling_type2 = self.config.rope_scaling.get("rope_type", None)
+        scaling_type = scaling_type1 if scaling_type1 is not None else scaling_type2
+        scaling_factor = self.config.rope_scaling.get("factor")
+
+        if scaling_type == "linear":
+            self.rotary_emb = {scaled_rope_function}(
+                dim = self.head_dim,
+                max_position_embeddings=self.max_position_embeddings,
+                scaling_factor=scaling_factor,
+                base=self.rope_theta,
+            )
+        elif scaling_type == "llama3":
+            self.rotary_emb = {extended_rope_function}(
+                dim = self.head_dim,
+                max_position_embeddings=self.max_position_embeddings,
+                base=self.rope_theta,
+            )
+        else:
+            raise ValueError(f"Unknown RoPE scaling type {{scaling_type}}")
+    pass
+    """
+    fix_rope_function = fix_rope_function.format(
+        rope_function          = rope_module.__name__,
+        scaled_rope_function   = scaled_rope_module.__name__,
+        extended_rope_function = extended_rope_module.__name__,
     )
     rotary_emb = re.findall(
         "self.rotary_emb = .+?\)", function,

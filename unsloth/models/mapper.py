@@ -218,6 +218,22 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Mistral-Nemo-Base-2407",
         "mistralai/Mistral-Nemo-Base-2407",
     ),
+    "unsloth/Meta-Llama-3.1-8B-bnb-4bit" : (
+        "unsloth/Meta-Llama-3.1-8B",
+        "meta-llama/Meta-Llama-3.1-8B",
+    ),
+    "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit" : (
+        "unsloth/Meta-Llama-3.1-8B-Instruct",
+        "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    ),
+    "unsloth/Meta-Llama-3.1-70B-bnb-4bit" : (
+        "unsloth/Meta-Llama-3.1-70B",
+        "meta-llama/Meta-Llama-3.1-70B",
+    ),
+    "unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit" : (
+        "unsloth/Meta-Llama-3.1-70B-Instruct",
+        "meta-llama/Meta-Llama-3.1-70B-Instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}
