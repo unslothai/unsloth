@@ -1010,7 +1010,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
     pass
 
     def forward(self, x, position_ids=None, seq_len=None):
-        print(__LINE__, x, position_ids, seq_len)
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
@@ -1066,6 +1065,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         config = None, # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
+        print(__FILE__, __LINE__)
         # if config is not None: return # [TODO] Hack to pass in config - need to remove later
         
         self.dim = dim
@@ -1080,6 +1080,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         )
         inv_freq = self.apply_scaling(inv_freq)
         self.register_buffer("inv_freq", inv_freq, persistent = False)
+        print(__FILE__, __LINE__)
 
         # Build here to make `torch.jit.trace` work.
         self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
@@ -1089,6 +1090,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
+        print(__FILE__, __LINE__)
         
         t = torch.arange(self.current_rope_size, device="cpu", dtype=torch.int64).float()
 
@@ -1127,7 +1129,6 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
 
     def forward(self, x, position_ids=None, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        print(__LINE__, x, position_ids, seq_len)
         if seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
