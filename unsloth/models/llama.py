@@ -1089,7 +1089,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
     pass
 
     # From https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py#L41
-    def apply_scaling(freqs: torch.Tensor):
+    def apply_scaling(self, freqs: torch.Tensor):
         # Values obtained from grid search
         scale_factor = 8
         low_freq_factor = 1
