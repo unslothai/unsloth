@@ -1353,53 +1353,39 @@ class FastLlamaModelSequenceClassification:
         # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
         # RoPE Scaling's max_position_embeddings must be updated
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
-        try:
-            if num_labels is not None:
-                model = AutoModelForSequenceClassification.from_pretrained(
-                    model_name,
-                    device_map              = device_map,
-                    torch_dtype             = dtype,
-                    quantization_config     = bnb_config,
-                    token                   = token,
-                    rope_scaling            = rope_scaling,
-                    max_position_embeddings = max_position_embeddings,
-                    trust_remote_code       = trust_remote_code,
-                    num_labels              = num_labels,
-                    **kwargs,
-                )
-            else:
-                model = AutoModelForSequenceClassification.from_pretrained(
-                    model_name,
-                    device_map              = device_map,
-                    torch_dtype             = dtype,
-                    quantization_config     = bnb_config,
-                    token                   = token,
-                    rope_scaling            = rope_scaling,
-                    max_position_embeddings = max_position_embeddings,
-                    trust_remote_code       = trust_remote_code,
-                    **kwargs,
-                )
-        except Exception as error:
-            if "rope_scaling" in str(error):
-                if rope_scaling is not None:
-                    raise TypeError("Unsloth: {model_name} does not support rope_scaling.")
-                pass
+        kwargs.pop("attn_implementation", None); # No need since we auto call it
 
-                # Counteract missing rope_scaling
-                model = AutoModelForSequenceClassification.from_pretrained(
-                    model_name,
-                    device_map              = device_map,
-                    torch_dtype             = dtype,
-                    quantization_config     = bnb_config,
-                    token                   = token,
-                    max_position_embeddings = max_position_embeddings,
-                    trust_remote_code       = trust_remote_code,
-                    **kwargs,
-                )
-            else:
-                raise error
-            pass
-        pass
+        if num_labels is not None:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = dtype,
+                quantization_config     = bnb_config,
+                token                   = token,
+                rope_scaling            = rope_scaling,
+                max_position_embeddings = max_position_embeddings,
+                trust_remote_code       = trust_remote_code,
+                num_labels              = num_labels,
+                attn_implementation     = "eager",
+                **kwargs,
+            )
+        else:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = dtype,
+                quantization_config     = bnb_config,
+                token                   = token,
+                rope_scaling            = rope_scaling,
+                max_position_embeddings = max_position_embeddings,
+                trust_remote_code       = trust_remote_code,
+                attn_implementation     = "eager",
+                **kwargs,
+            )
+        # Return old flag
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
+        post_check = check_nvidia()
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
