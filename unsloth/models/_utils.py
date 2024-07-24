@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.7"
+__version__ = "2024.8"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -336,7 +336,7 @@ def patch_tokenizer(model, tokenizer):
     possible_reserved_tokens = (
         "<|reserved",                # Llama-3
         "<|placeholder",             # Phi-3
-        "[control",                  # Forgot where lol
+        "[control",                  # Mistral type models
         "<pad>",                     # Mistral Nemo
         "<|finetune_right_pad_id|>", # Llama-3.1
     )
