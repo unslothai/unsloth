@@ -393,7 +393,10 @@ def patch_tokenizer(model, tokenizer):
         tokenizer.pad_token = possible_pad_token
         if model is not None:
             config = model.config.update({"pad_token_id" : tokenizer.pad_token_id})
-    pass
+    else:
+        if model is not None:
+            if model.config.pad_token_id is None:
+                config = model.config.update({"pad_token_id" : tokenizer.pad_token_id})
     return model, tokenizer
 pass
 
