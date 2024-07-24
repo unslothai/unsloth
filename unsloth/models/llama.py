@@ -1901,7 +1901,7 @@ class FastLlamaModel:
 
         # First offload lm_head and embed_tokens to disk
         input_embeddings_device  = model. get_input_embeddings().weight.device
-        output_embeddings_device = model.get_output_embeddings().weight.device
+        output_embeddings_device = model.lm_head.weight.device
 
         if use_gradient_checkpointing == "unsloth":
             if train_embed_tokens:
