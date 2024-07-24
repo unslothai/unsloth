@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 import torch
-from typing import Union, Optional, List, Any, Callable, Tuple
+from typing import Union, Optional, List, Any, Callable, Tuple, Literal
 from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
@@ -258,7 +258,7 @@ torch_compile_options = {
 
 def prepare_model_for_kbit_training(
     model                      : Any,
-    use_gradient_checkpointing : Optional = True,
+    use_gradient_checkpointing : Optional[bool | Literal["unsloth"]] = "unsloth",
     use_reentrant              : Optional[bool] = True,
 ) -> Any:
     """

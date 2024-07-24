@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import FastLlamaModel, logger
+from .llama_seq import FastLlamaModelSequenceClassification
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from transformers import AutoConfig
@@ -72,7 +73,7 @@ class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
         model_name                 = "unsloth/llama-3-8b-bnb-4bit",
-        max_seq_length             = None,
+        max_seq_length             = 4096,
         dtype                      = None,
         load_in_4bit               = True,
         token                      = None,
@@ -83,6 +84,8 @@ class FastLanguageModel(FastLlamaModel):
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab         = None,
         revision                   = None,
+        sequence_classification = False,
+        num_labels = None,
         *args, **kwargs,
     ):
         if token is None and "HF_TOKEN" in os.environ:
@@ -146,7 +149,10 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.1"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 )
-            dispatch_model = FastLlamaModel
+            if sequence_classification == True:   
+                dispatch_model = FastLlamaModelSequenceClassification
+            else:
+                dispatch_model = FastLlamaModel
         elif model_type == "mistral": dispatch_model = FastMistralModel
         elif model_type == "gemma":
             if not SUPPORTS_GEMMA:
@@ -184,22 +190,41 @@ class FastLanguageModel(FastLlamaModel):
         else:
             tokenizer_name = None
         pass
-
-        model, tokenizer = dispatch_model.from_pretrained(
-            model_name        = model_name,
-            max_seq_length    = max_seq_length,
-            dtype             = dtype,
-            load_in_4bit      = load_in_4bit,
-            token             = token,
-            device_map        = device_map,
-            rope_scaling      = rope_scaling,
-            fix_tokenizer     = fix_tokenizer,
-            model_patcher     = dispatch_model,
-            tokenizer_name    = tokenizer_name,
-            trust_remote_code = trust_remote_code,
-            revision          = revision if not is_peft else None,
-            *args, **kwargs,
-        )
+        
+        if sequence_classification == True and num_labels is not None:
+            model, tokenizer = dispatch_model.from_pretrained(
+                model_name     = model_name,
+                max_seq_length = max_seq_length,
+                dtype          = dtype,
+                load_in_4bit   = load_in_4bit,
+                token          = token,
+                device_map     = device_map,
+                rope_scaling   = rope_scaling,
+                fix_tokenizer  = fix_tokenizer,
+                model_patcher  = dispatch_model,
+                tokenizer_name = tokenizer_name,
+                trust_remote_code = trust_remote_code,
+                revision          = revision if not is_peft else None,
+                num_labels     = num_labels,
+                *args, **kwargs,
+            )
+            
+        else:
+            model, tokenizer = dispatch_model.from_pretrained(
+                model_name     = model_name,
+                max_seq_length = max_seq_length,
+                dtype          = dtype,
+                load_in_4bit   = load_in_4bit,
+                token          = token,
+                device_map     = device_map,
+                rope_scaling   = rope_scaling,
+                fix_tokenizer  = fix_tokenizer,
+                model_patcher  = dispatch_model,
+                tokenizer_name = tokenizer_name,
+                trust_remote_code = trust_remote_code,
+                revision          = revision if not is_peft else None,
+                *args, **kwargs,
+            )
         
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
