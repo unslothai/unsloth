@@ -132,9 +132,12 @@ class FastLanguageModel(FastLlamaModel):
         model_type = model_config.model_type
 
         if   model_type == "llama":
-            scaling_type1 = model_config.rope_scaling.get("type", None)
-            scaling_type2 = model_config.rope_scaling.get("rope_type", None)
-            scaling_type = scaling_type1 if scaling_type1 is not None else scaling_type2
+            scaling_type = None
+            if getattr(model_config, "rope_scaling", None) is not None:
+                scaling_type1 = model_config.rope_scaling.get("type", None)
+                scaling_type2 = model_config.rope_scaling.get("rope_type", None)
+                scaling_type = scaling_type1 if scaling_type1 is not None else scaling_type2
+            pass
 
             if scaling_type == "llama3" and not SUPPORTS_LLAMA31:
                 raise ImportError(

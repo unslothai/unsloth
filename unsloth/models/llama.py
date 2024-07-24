@@ -1178,10 +1178,11 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         kwargs.pop("token_type_ids", None)
 
         # Check pad_token
-        kwargs["pad_token_id"] = kwargs.pop(
-            "pad_token_id",
-            getattr(model.config, "eos_token_id", None),
-        )
+        model_eos_token_id = getattr(model.config, "eos_token_id", None)
+        if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
+            model_eos_token_id = model_eos_token_id[0]
+
+        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
         # Set pad token
         # old_pad_token_id = getattr(model.config, "pad_token_id", None)
