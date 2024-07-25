@@ -891,8 +891,6 @@ def Sequence_fast_forward(fast_forward_inference):
 
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
-        self.lm_head = self.score
-        self.get_output_embeddings = lambda: self.lm_head
         lm_head = self.lm_head.weight
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
@@ -1415,6 +1413,8 @@ class FastLlamaModelSequenceClassification:
             trust_remote_code = trust_remote_code,
         )
 
+        model.lm_head = model.score
+        model.get_output_embeddings = lambda: model.lm_head
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = model_patcher.post_patch(model)
 
@@ -1605,13 +1605,12 @@ class FastLlamaModelSequenceClassification:
         model.config.update({"unsloth_version" : __version__})
 
         # We also do this for the lm_head
-        # lm_head = torch.nn.Linear(1, 1, bias = None)
-        # del lm_head.weight
-        # lm_head.weight = model.get_output_embeddings().weight
-        # lm_head.in_features  = lm_head.weight.shape[1]
-        # lm_head.out_features = lm_head.weight.shape[0]
-        # model.lm_head = lm_head
-        lm_head = model.lm_head
+        lm_head = torch.nn.Linear(1, 1, bias = None)
+        del lm_head.weight
+        lm_head.weight = model.get_output_embeddings().weight
+        lm_head.in_features  = lm_head.weight.shape[1]
+        lm_head.out_features = lm_head.weight.shape[0]
+        model.lm_head = lm_head
         
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
