@@ -1605,12 +1605,13 @@ class FastLlamaModelSequenceClassification:
         model.config.update({"unsloth_version" : __version__})
 
         # We also do this for the lm_head
-        lm_head = torch.nn.Linear(1, 1, bias = None)
-        del lm_head.weight
-        lm_head.weight = model.get_output_embeddings().weight
-        lm_head.in_features  = lm_head.weight.shape[1]
-        lm_head.out_features = lm_head.weight.shape[0]
-        model.lm_head = lm_head
+        # lm_head = torch.nn.Linear(1, 1, bias = None)
+        # del lm_head.weight
+        # lm_head.weight = model.get_output_embeddings().weight
+        # lm_head.in_features  = lm_head.weight.shape[1]
+        # lm_head.out_features = lm_head.weight.shape[0]
+        # model.lm_head = lm_head
+        lm_head = model.lm_head
         
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
