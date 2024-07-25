@@ -95,6 +95,9 @@ class FastLanguageModel(FastLlamaModel):
         model_name = _get_model_name(model_name, load_in_4bit)
 
         # First check if it's a normal model via AutoConfig
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
+        was_disabled = are_progress_bars_disabled()
+        disable_progress_bars()
         try:
             model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
             is_model = True
@@ -128,6 +131,8 @@ class FastLanguageModel(FastLlamaModel):
             model_name = _get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
             model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
         pass
+
+        if not was_disabled: enable_progress_bars()
 
         model_type = model_config.model_type
 
