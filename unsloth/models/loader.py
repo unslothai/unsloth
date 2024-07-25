@@ -69,7 +69,7 @@ def _get_model_name(model_name, load_in_4bit = True):
 pass
 
 
-class FastLanguageModel(FastLlamaModel):
+class FastLanguageModel(FastLlamaModelSequenceClassification):
     @staticmethod
     def from_pretrained(
         model_name                 = "unsloth/llama-3-8b-bnb-4bit",
