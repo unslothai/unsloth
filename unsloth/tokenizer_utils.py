@@ -680,7 +680,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     We reset them to the mean of the rest of the tokens
     """
     embedding_matrix = model.get_input_embeddings ().weight
-    lm_head_matrix   = model.get_output_embeddings().weight
+    # lm_head_matrix   = model.get_output_embeddings().weight
 
     # Ignore some model checks for now
     if model.config._name_or_path in  IGNORED_TOKENIZER_NAMES:
@@ -688,11 +688,11 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     pass
 
     # Get untrained tokens
-    indicator_untrained1 = torch.amax(embedding_matrix, axis = 1) <= eps
+    indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
     # Check lm_head as well
-    indicator_untrained2 = torch.amax(lm_head_matrix,   axis = 1) <= eps
+    # indicator_untrained2 = torch.amax(lm_head_matrix,   axis = 1) <= eps
     # Combine both checks
-    indicator_untrained = indicator_untrained1 & indicator_untrained2
+    # indicator_untrained = indicator_untrained1 & indicator_untrained2
     
     where_untrained = torch.where(indicator_untrained)[0]
     n_untrained = where_untrained.shape[0]
@@ -755,7 +755,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     # Check if lm_head / embed_token are trainable!
     bad_not_trainable = False
     if not embedding_matrix.requires_grad: bad_not_trainable = True
-    if not lm_head_matrix  .requires_grad: bad_not_trainable = True
+    # if not lm_head_matrix  .requires_grad: bad_not_trainable = True
 
     if bad_not_trainable:
         raise ValueError(
@@ -777,32 +777,32 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
 
     # Get sum of all items
     sum_embedding = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
-    sum_lm_head   = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
+    # sum_lm_head   = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
 
     # Remove bad tokens
     sum_embedding -= torch.sum(embedding_matrix[where_untrained], dtype = torch.float32, axis = 0)
-    sum_lm_head   -= torch.sum(lm_head_matrix  [where_untrained], dtype = torch.float32, axis = 0)
+    # sum_lm_head   -= torch.sum(lm_head_matrix  [where_untrained], dtype = torch.float32, axis = 0)
 
     # Find correct average by dividing by sum of trained tokens
     mean_embedding = (sum_embedding / n_trained)
-    mean_lm_head   = (sum_lm_head   / n_trained)
+    # mean_lm_head   = (sum_lm_head   / n_trained)
 
     # Scale each to be equal to 1/max_frequency. Also set some to 0 if none seen
     scaling = final_counts[where_untrained] / max(final_counts.max(), 1)
     scaling = torch.tensor(scaling, device = mean_embedding.device).unsqueeze(1)
     mean_embedding = mean_embedding.repeat((n_untrained, 1,)) * scaling
-    mean_lm_head   = mean_lm_head  .repeat((n_untrained, 1,)) * scaling
+    # mean_lm_head   = mean_lm_head  .repeat((n_untrained, 1,)) * scaling
     where_null = scaling.ravel() == 0
     mean_embedding[where_null] = 0
-    mean_lm_head  [where_null] = 0
+    # mean_lm_head  [where_null] = 0
 
     # Set them to the mean
     logger.warning(
-        "Unsloth: Setting embed_tokens & lm_head untrained tokens to "\
+        "Unsloth: Setting embed_tokens untrained tokens to "\
         "mean(trained) to counteract NaNs during training."
     )
     embedding_matrix[where_untrained] = mean_embedding.to(embedding_matrix.dtype)
-    lm_head_matrix  [where_untrained] = mean_lm_head  .to(lm_head_matrix  .dtype)
+    # lm_head_matrix  [where_untrained] = mean_lm_head  .to(lm_head_matrix  .dtype)
 
     # Clean up
     for _ in range(3):
@@ -821,7 +821,7 @@ def mean_of_trained_tokens(model, eps = 1e-16):
     We reset them to the mean of the rest of the tokens
     """
     embedding_matrix = model.get_input_embeddings ().weight.clone()
-    lm_head_matrix   = model.get_output_embeddings().weight.clone()
+    # lm_head_matrix   = model.get_output_embeddings().weight.clone()
 
     # Get untrained tokens
     indicator_untrained = torch.amax(embedding_matrix, axis = 1) <= eps
@@ -837,17 +837,17 @@ def mean_of_trained_tokens(model, eps = 1e-16):
 
     # Get sum of all items
     sum_embedding = torch.sum(embedding_matrix, dtype = torch.float32, axis = 0)
-    sum_lm_head   = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
+    # sum_lm_head   = torch.sum(lm_head_matrix,   dtype = torch.float32, axis = 0)
 
     # Remove bad tokens
     sum_embedding -= torch.sum(embedding_matrix[where_untrained], dtype = torch.float32, axis = 0)
-    sum_lm_head   -= torch.sum(lm_head_matrix  [where_untrained], dtype = torch.float32, axis = 0)
+    # sum_lm_head   -= torch.sum(lm_head_matrix  [where_untrained], dtype = torch.float32, axis = 0)
 
     # Find correct average by dividing by sum of trained tokens
     mean_embedding = (sum_embedding / n_trained)
-    mean_lm_head   = (sum_lm_head   / n_trained)
+    # mean_lm_head   = (sum_lm_head   / n_trained)
 
-    return mean_embedding, mean_lm_head
+    return mean_embedding#, mean_lm_head
 pass
 
 
@@ -883,9 +883,9 @@ def add_new_tokens(
     # mean_embedding, mean_lm_head = fix_untrained_tokens(model)
 
     # Weirdly be careful reserved tokens can pop out
-    mean_embedding, mean_lm_head = mean_of_trained_tokens(model)
+    mean_embedding = mean_of_trained_tokens(model)
     mean_embedding = mean_embedding.to(torch.float32)
-    mean_lm_head   = mean_lm_head  .to(torch.float32)
+    # mean_lm_head   = mean_lm_head  .to(torch.float32)
 
     # Add tokens!
     old_length = len(tokenizer)
@@ -895,7 +895,7 @@ def add_new_tokens(
     # If we use interpolation, we interpolate between the mean embeddings and
     # the Word2Vec sum of the other vectors
     embedding_matrix = model.get_input_embeddings ().weight
-    lm_head_matrix   = model.get_output_embeddings().weight
+    # lm_head_matrix   = model.get_output_embeddings().weight
 
     if method == "interpolation":
         print(
@@ -905,20 +905,20 @@ def add_new_tokens(
         for j, token in enumerate(new_tokens):
             input_ids = tokenizer(token, add_special_tokens = False).input_ids
             mean_embedding_token = embedding_matrix[input_ids].mean(axis = 0, dtype = torch.float32)
-            mean_lm_head_token   = lm_head_matrix  [input_ids].mean(axis = 0, dtype = torch.float32)
+            # mean_lm_head_token   = lm_head_matrix  [input_ids].mean(axis = 0, dtype = torch.float32)
 
             # Interpolate
             mean_embedding_token = mean_embedding*(1-interpolation) + mean_embedding_token*interpolation
-            mean_lm_head_token   = mean_lm_head  *(1-interpolation) + mean_lm_head_token  *interpolation
+            # mean_lm_head_token   = mean_lm_head  *(1-interpolation) + mean_lm_head_token  *interpolation
 
             # Set the new vector
             embedding_matrix[old_length+j] = mean_embedding_token
-            lm_head_matrix  [old_length+j] = mean_lm_head_token
+            # lm_head_matrix  [old_length+j] = mean_lm_head_token
         pass
     else:
         # Now set the new tokens to the mean!
         embedding_matrix[old_length:] = mean_embedding
-        lm_head_matrix  [old_length:] = mean_lm_head
+        # lm_head_matrix  [old_length:] = mean_lm_head
     pass
 
     # We set a flag to say we need to train embeddings
