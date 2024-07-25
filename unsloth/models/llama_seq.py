@@ -98,7 +98,7 @@ def fix_prepare_inputs_for_generation(module):
     pass
 pass
 
-
+torch_matmul = torch.matmul
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
@@ -240,10 +240,10 @@ def LlamaAttention_fast_forward_inference(
     if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
-        A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
+        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
         # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-        A = torch.matmul(A, Vnn, out = Qn)
+        A = torch_matmul(A, Vnn, out = Qn)
     else:
         A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
     pass
@@ -891,12 +891,14 @@ def Sequence_fast_forward(fast_forward_inference):
 
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
-        score = self.score.weight
+        self.lm_head = self.score
+        self.get_output_embeddings = lambda: self.lm_head
+        lm_head = self.lm_head.weight
         if bsz == 1 and q_len == 1:
-            logits = torch.mv(score, hidden_states.ravel().to(score.dtype))
+            logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         else:
-            logits = self.score(hidden_states.to(score.dtype))
+            logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
         logits = logits.to(self.config.torch_dtype)
         
@@ -1161,7 +1163,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
 pass
 
 
-def _wrap_fast_inference(generate, device_type, dtype):
+def _wrap_fast_inference(generate, device_type, dtype, model):
     # Wraps inference with bfloat16 / float16
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
@@ -1236,6 +1238,7 @@ class FastLlamaModelSequenceClassification:
         LlamaModel          .forward = LlamaModel_fast_forward
         LlamaForSequenceClassification    .forward = Sequence_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForSequenceClassification.forward = PeftModelForSequenceClassification_fast_forward
+        fix_prepare_inputs_for_generation(LlamaForSequenceClassification)
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
@@ -1300,7 +1303,7 @@ class FastLlamaModelSequenceClassification:
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
         model_patcher.pre_patch()
-        # get_statistics()
+        get_statistics()
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -1601,17 +1604,17 @@ class FastLlamaModelSequenceClassification:
         model.set_input_embeddings(torch.nn.Embedding.from_pretrained(model.get_input_embeddings().weight))
         model.config.update({"unsloth_version" : __version__})
 
-        # We also do this for the score
-        score = torch.nn.Linear(1, 1, bias = None)
-        del score.weight
-        score.weight = model.score.weight
-        score.in_features  = score.weight.shape[1]
-        score.out_features = score.weight.shape[0]
-        model.score = score
-
+        # We also do this for the lm_head
+        lm_head = torch.nn.Linear(1, 1, bias = None)
+        del lm_head.weight
+        lm_head.weight = model.get_output_embeddings().weight
+        lm_head.in_features  = lm_head.weight.shape[1]
+        lm_head.out_features = lm_head.weight.shape[0]
+        model.lm_head = lm_head
+        
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
-        correct_dtype = score.weight.dtype
+        correct_dtype = lm_head.weight.dtype
 
         for name, module in model.named_modules():
             if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
@@ -1752,18 +1755,18 @@ class FastLlamaModelSequenceClassification:
             modules_to_save = list(modules_to_save)
         pass
 
-        train_score = False
+        train_lm_head = False
         train_embed_tokens = False
         final_modules = []
         for module in target_modules:
-            if module == "score":
+            if module == "lm_head":
                 # logger.warning_once(
-                #     "Unsloth: `score` should be placed in `modules_to_save` and not `target_modules`. "\
+                #     "Unsloth: `lm_head` should be placed in `modules_to_save` and not `target_modules`. "\
                 #     "Luckily, we shall do it for you!"
                 # )
-                train_score = True
-                if modules_to_save is None: modules_to_save = ["score"]
-                else: modules_to_save.append("score")
+                train_lm_head = True
+                if modules_to_save is None: modules_to_save = ["lm_head"]
+                else: modules_to_save.append("lm_head")
 
             elif module == "embed_tokens":
                 # logger.warning_once(
@@ -1781,37 +1784,43 @@ class FastLlamaModelSequenceClassification:
 
         # Check if we added new tokens!
         if hasattr(model, "_need_to_train_embeddings"):
-            if not train_score or not train_embed_tokens:
+            if not train_lm_head or not train_embed_tokens:
                 print(
                     "Unsloth: You added new tokens but did not specify if you wanted to "\
-                    "train the score and embed_tokens.\nWe must turn it on for you."
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
                 )
-                train_score = True
+                train_lm_head = True
                 train_embed_tokens = True
 
                 if modules_to_save is None: modules_to_save = ["embed_tokens"]
                 else: modules_to_save.append("embed_tokens")
 
-                if modules_to_save is None: modules_to_save = ["score"]
-                else: modules_to_save.append("score")
+                if modules_to_save is None: modules_to_save = ["lm_head"]
+                else: modules_to_save.append("lm_head")
             pass
         pass
 
+        # Check for Llama-3
+        # if hasattr(model._saved_temp_tokenizer, "_using_llama3_template"):
+        #     if not train_embed_tokens and not train_lm_head:
+        #         raise RuntimeError("")
+
         # First fix untrained tokens
-        # if train_embed_tokens or train_score:
+        # Wrong - can cause reserved tokens to pop out!!
+        # if train_embed_tokens or train_lm_head:
         #     fix_untrained_tokens(model, eps = 1e-16)
         # pass
 
         # Check modules_to_save
         if modules_to_save is not None:
             for module in modules_to_save:
-                if module == "score":
-                    train_score = True
+                if module == "lm_head":
+                    train_lm_head = True
                 elif module == "embed_tokens":
                     train_embed_tokens = True
                 else:
                     raise TypeError(
-                        f"Unsloth: Module = {module} is not allowed. Only 'score' and 'embed_tokens' is allowed."
+                        f"Unsloth: Module = {module} is not allowed. Only 'lm_head' and 'embed_tokens' is allowed."
                     )
             pass
         pass
@@ -1839,13 +1848,42 @@ class FastLlamaModelSequenceClassification:
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
         lora_config = LoraConfig(**arguments)
+        
+        # First offload lm_head and embed_tokens to disk
+        input_embeddings_device  = model. get_input_embeddings().weight.device
+        output_embeddings_device = model.get_output_embeddings().weight.device
+
+        if use_gradient_checkpointing == "unsloth":
+            if train_embed_tokens:
+                print("Unsloth: Offloading input_embeddings to disk to save VRAM")
+                offload_input_embeddings(model, temporary_location)
+            pass
+
+            # Remove old items to save VRAM
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
+            pass
+
+            if train_lm_head:
+                print("Unsloth: Offloading output_embeddings to disk to save VRAM")
+                offload_output_embeddings(model, temporary_location)
+            pass
+
+            # Remove old items to save VRAM
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
+            pass
+        pass
+
         model = _get_peft_model(model, lora_config)
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModelSequenceClassification.patch_peft_model(model, use_gradient_checkpointing)
 
-        # Now patch score and embed_tokens
+        # Now patch lm_head and embed_tokens
         if train_embed_tokens:
             print("Unsloth: Casting embed_tokens to float32")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
@@ -1854,13 +1892,14 @@ class FastLlamaModelSequenceClassification:
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
-        if train_score:
-            print("Unsloth: Casting score to float32")
-            assert(hasattr(model.model.score, "modules_to_save"))
-            model.model.score.modules_to_save.default\
+        if train_lm_head:
+            print("Unsloth: Casting lm_head to float32")
+            assert(hasattr(model.model.lm_head, "modules_to_save"))
+            model.model.lm_head.modules_to_save.default\
                 .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
-            model.model.score.modules_to_save.default.requires_grad_(True)
+            model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
+
         # Patch tokenizer to pad to the right
         internal_model = model
         while hasattr(internal_model, "model"):
@@ -1974,9 +2013,9 @@ class FastLlamaModelSequenceClassification:
                     (getattr(gate_proj, "base_layer", gate_proj).bias is None) and \
                     (getattr(  up_proj, "base_layer",   up_proj).bias is None) and \
                     (getattr(down_proj, "base_layer", down_proj).bias is None) and \
-                    (getattr(gate_proj, "lora_magnitude_vector", None) is None) and \
-                    (getattr(  up_proj, "lora_magnitude_vector", None) is None) and \
-                    (getattr(down_proj, "lora_magnitude_vector", None) is None):
+                    (len(getattr(gate_proj, "lora_magnitude_vector", [])) == 0) and \
+                    (len(getattr(  up_proj, "lora_magnitude_vector", [])) == 0) and \
+                    (len(getattr(down_proj, "lora_magnitude_vector", [])) == 0):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
                     layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
@@ -1996,11 +2035,11 @@ class FastLlamaModelSequenceClassification:
                     hasattr(k_proj, "lora_A") and \
                     hasattr(v_proj, "lora_A") and \
                     (getattr(q_proj, "base_layer", q_proj).bias is None) and \
-                    (getattr(q_proj, "base_layer", k_proj).bias is None) and \
-                    (getattr(q_proj, "base_layer", v_proj).bias is None) and \
-                    (getattr(q_proj, "lora_magnitude_vector", None) is None) and \
-                    (getattr(k_proj, "lora_magnitude_vector", None) is None) and \
-                    (getattr(v_proj, "lora_magnitude_vector", None) is None):
+                    (getattr(k_proj, "base_layer", k_proj).bias is None) and \
+                    (getattr(v_proj, "base_layer", v_proj).bias is None) and \
+                    (len(getattr(q_proj, "lora_magnitude_vector", [])) == 0) and \
+                    (len(getattr(k_proj, "lora_magnitude_vector", [])) == 0) and \
+                    (len(getattr(v_proj, "lora_magnitude_vector", [])) == 0):
 
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -2017,7 +2056,7 @@ class FastLlamaModelSequenceClassification:
                 o_proj = layer.self_attn.o_proj
                 if hasattr(o_proj, "lora_A") and \
                     (getattr(o_proj, "base_layer", o_proj).bias is None) and \
-                    (getattr(o_proj, "lora_magnitude_vector", None) is None):
+                    (len(getattr(o_proj, "lora_magnitude_vector", [])) == 0):
 
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
@@ -2071,6 +2110,11 @@ class FastLlamaModelSequenceClassification:
 
     @staticmethod
     def for_inference(model):
+        # if model.config.model_type == "qwen2":
+        #     FastLlamaModel.for_training(model)
+        #     return
+        # pass
+
         internal_model = model
         internal_model.gradient_checkpointing = False
         internal_model.training = False
@@ -2081,13 +2125,13 @@ class FastLlamaModelSequenceClassification:
             internal_model.training = False
         pass
 
-        # Also check if score / embeddings are trained
+        # Also check if lm_head / embeddings are trained
         internal_model = model
-        while not hasattr(internal_model, "score"):
+        while not hasattr(internal_model, "lm_head"):
             internal_model = internal_model.model
         pass
-        score = internal_model.score.weight
-        device_type = score.device.type
+        lm_head = internal_model.lm_head.weight
+        device_type = lm_head.device.type
         dtype = model.config.torch_dtype
         
         if type(dtype) is str:
@@ -2100,6 +2144,7 @@ class FastLlamaModelSequenceClassification:
             model._unwrapped_old_generate = model.generate
             model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
         pass
+        
         # Patch tokenizer to pad to the left
         internal_model = model
         while hasattr(internal_model, "model"):
