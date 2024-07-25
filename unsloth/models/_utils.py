@@ -404,8 +404,8 @@ pass
 # =============================================
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
-from peft import __version__
-if Version(__version__) < Version("0.12.0"):
+from peft import __version__ as peft_version
+if Version(peft_version) < Version("0.12.0"):
     from peft.tuners.lora.layer import LoraLayer
     import inspect, re
     try:
