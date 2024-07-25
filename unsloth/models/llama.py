@@ -96,7 +96,7 @@ def fix_prepare_inputs_for_generation(module):
     pass
 pass
 
-
+torch_matmul = torch.matmul
 def LlamaAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
@@ -238,10 +238,10 @@ def LlamaAttention_fast_forward_inference(
     if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
-        A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
+        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
         # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-        A = torch.matmul(A, Vnn, out = Qn)
+        A = torch_matmul(A, Vnn, out = Qn)
     else:
         A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
     pass
@@ -2063,9 +2063,9 @@ class FastLlamaModel:
                     (getattr(gate_proj, "base_layer", gate_proj).bias is None) and \
                     (getattr(  up_proj, "base_layer",   up_proj).bias is None) and \
                     (getattr(down_proj, "base_layer", down_proj).bias is None) and \
-                    (getattr(gate_proj, "lora_magnitude_vector", None) is None) and \
-                    (getattr(  up_proj, "lora_magnitude_vector", None) is None) and \
-                    (getattr(down_proj, "lora_magnitude_vector", None) is None):
+                    (len(getattr(gate_proj, "lora_magnitude_vector", [])) == 0) and \
+                    (len(getattr(  up_proj, "lora_magnitude_vector", [])) == 0) and \
+                    (len(getattr(down_proj, "lora_magnitude_vector", [])) == 0):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
                     layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
@@ -2085,11 +2085,11 @@ class FastLlamaModel:
                     hasattr(k_proj, "lora_A") and \
                     hasattr(v_proj, "lora_A") and \
                     (getattr(q_proj, "base_layer", q_proj).bias is None) and \
-                    (getattr(q_proj, "base_layer", k_proj).bias is None) and \
-                    (getattr(q_proj, "base_layer", v_proj).bias is None) and \
-                    (getattr(q_proj, "lora_magnitude_vector", None) is None) and \
-                    (getattr(k_proj, "lora_magnitude_vector", None) is None) and \
-                    (getattr(v_proj, "lora_magnitude_vector", None) is None):
+                    (getattr(k_proj, "base_layer", k_proj).bias is None) and \
+                    (getattr(v_proj, "base_layer", v_proj).bias is None) and \
+                    (len(getattr(q_proj, "lora_magnitude_vector", [])) == 0) and \
+                    (len(getattr(k_proj, "lora_magnitude_vector", [])) == 0) and \
+                    (len(getattr(v_proj, "lora_magnitude_vector", [])) == 0):
 
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -2106,7 +2106,7 @@ class FastLlamaModel:
                 o_proj = layer.self_attn.o_proj
                 if hasattr(o_proj, "lora_A") and \
                     (getattr(o_proj, "base_layer", o_proj).bias is None) and \
-                    (getattr(o_proj, "lora_magnitude_vector", None) is None):
+                    (len(getattr(o_proj, "lora_magnitude_vector", [])) == 0):
 
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
