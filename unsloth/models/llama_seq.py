@@ -2013,9 +2013,9 @@ class FastLlamaModelSequenceClassification:
                     (getattr(gate_proj, "base_layer", gate_proj).bias is None) and \
                     (getattr(  up_proj, "base_layer",   up_proj).bias is None) and \
                     (getattr(down_proj, "base_layer", down_proj).bias is None) and \
-                    (len(getattr(gate_proj, "lora_magnitude_vector", [])) == 0) and \
-                    (len(getattr(  up_proj, "lora_magnitude_vector", [])) == 0) and \
-                    (len(getattr(down_proj, "lora_magnitude_vector", [])) == 0):
+                    (getattr(gate_proj, "lora_magnitude_vector", None) is None) and \
+                    (getattr(  up_proj, "lora_magnitude_vector", None) is None) and \
+                    (getattr(down_proj, "lora_magnitude_vector", None) is None):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
                     layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
@@ -2035,11 +2035,11 @@ class FastLlamaModelSequenceClassification:
                     hasattr(k_proj, "lora_A") and \
                     hasattr(v_proj, "lora_A") and \
                     (getattr(q_proj, "base_layer", q_proj).bias is None) and \
-                    (getattr(k_proj, "base_layer", k_proj).bias is None) and \
-                    (getattr(v_proj, "base_layer", v_proj).bias is None) and \
-                    (len(getattr(q_proj, "lora_magnitude_vector", [])) == 0) and \
-                    (len(getattr(k_proj, "lora_magnitude_vector", [])) == 0) and \
-                    (len(getattr(v_proj, "lora_magnitude_vector", [])) == 0):
+                    (getattr(q_proj, "base_layer", k_proj).bias is None) and \
+                    (getattr(q_proj, "base_layer", v_proj).bias is None) and \
+                    (getattr(q_proj, "lora_magnitude_vector", None) is None) and \
+                    (getattr(k_proj, "lora_magnitude_vector", None) is None) and \
+                    (getattr(v_proj, "lora_magnitude_vector", None) is None):
 
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -2056,7 +2056,7 @@ class FastLlamaModelSequenceClassification:
                 o_proj = layer.self_attn.o_proj
                 if hasattr(o_proj, "lora_A") and \
                     (getattr(o_proj, "base_layer", o_proj).bias is None) and \
-                    (len(getattr(o_proj, "lora_magnitude_vector", [])) == 0):
+                    (getattr(o_proj, "lora_magnitude_vector", None) is None):
 
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
