@@ -60,6 +60,37 @@ except:
                       "We have some installation instructions on our Github page.")
 pass
 
+# =============================================
+# Check if Unsloth's model list has been updated
+import os, requests, inspect, re
+import numpy as np
+import subprocess
+
+try:
+    file_location = inspect.getfile(torch)
+    package, _ = os.path.split(file_location)
+    dist_packages, package = os.path.split(package)
+    old_mapper = os.path.join(dist_packages, "unsloth", "models", "mapper.py")
+    new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
+    with open(old_mapper, "r") as old_mapper: old_mapper = old_mapper.read()
+    with requests.get(new_mapper) as new_mapper: new_mapper = new_mapper.text
+    old_mapper = re.findall(r'\"unsloth\/([^\"]{1,})\-bnb\-4bit\" \: \(', old_mapper)
+    new_mapper = re.findall(r'\"unsloth\/([^\"]{1,})\-bnb\-4bit\" \: \(', new_mapper)
+    new_models = list(frozenset(new_mapper) - frozenset(old_mapper))
+
+    print(1)
+    if len(new_models) != 0:
+        warnings.warn(
+            f"Unsloth: Some new models including {new_models} have dropped!\n"\
+            "If you want to try them out, please update Unsloth via:\n\n"
+            'pip install --upgrade --force-reinstall --no-cache-dir \\\n    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"'
+        )
+    pass
+    del new_models, old_mapper, dist_packages, package, file_location
+except:
+    pass
+# =============================================
+
 # Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
 keynames = "\n" + "\n".join(os.environ.keys())
 if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
@@ -102,11 +133,6 @@ if Version(triton.__version__) >= Version("3.0.0"):
     try: from triton.backends.nvidia.driver import libcuda_dirs
     except: pass
 else: from triton.common.build import libcuda_dirs
-
-import os
-import re
-import numpy as np
-import subprocess
 
 try:
     cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
