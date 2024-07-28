@@ -135,35 +135,36 @@ pass
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 import bitsandbytes as bnb
-from transformers.models.llama.modeling_llama import logger
 from transformers import AutoTokenizer
+from transformers.utils.import_utils import _is_package_available
 
 major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = False
 
 if major_version >= 8:
     SUPPORTS_BFLOAT16 = True
-    try:
-        from flash_attn import flash_attn_func
+    if _is_package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
             from flash_attn.flash_attn_interface import flash_attn_cuda
             HAS_FLASH_ATTENTION = True
         except:
-            logger.warning_once(
+            print(
                 "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
                 "A possible explanation is you have a new CUDA version which isn't\n"\
                 "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
-                "We shall now use Xformers instead, which gets a 0.01% performance hit.\n"\
+                "We shall now use Xformers instead, which does not have any performance hits!\n"\
                 "We found this negligible impact by benchmarking on 1x A100."
             )
             HAS_FLASH_ATTENTION = False
-    except:
+    else:
         HAS_FLASH_ATTENTION = False
 else:
     # Tri Dao's benchmark shows xformers is faster for now.
     HAS_FLASH_ATTENTION = False
 pass
+
+from transformers.models.llama.modeling_llama import logger
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
