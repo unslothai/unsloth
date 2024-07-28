@@ -60,6 +60,10 @@ except:
                       "We have some installation instructions on our Github page.")
 pass
 
+import os, re
+import numpy as np
+import subprocess
+
 # Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
 keynames = "\n" + "\n".join(os.environ.keys())
 if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
@@ -102,11 +106,6 @@ if Version(triton.__version__) >= Version("3.0.0"):
     try: from triton.backends.nvidia.driver import libcuda_dirs
     except: pass
 else: from triton.common.build import libcuda_dirs
-
-import os
-import re
-import numpy as np
-import subprocess
 
 try:
     cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
