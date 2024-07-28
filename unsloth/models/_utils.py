@@ -176,21 +176,6 @@ from transformers.models.llama.modeling_llama import logger
 
 # =============================================
 # Get Xformers
-from xformers._cpp_lib import _register_extensions
-try:
-    _register_extensions() # Check if C++ modules are loaded correctly
-except Exception as error:
-    raise ImportError(
-        "Unsloth: Xformers was not installed correctly. "\
-        "Please install xformers separately first. "\
-        "Then confirm if it's correctly installed by running:\n"\
-        "python -m xformers.info\n\n"
-        "Longer error message:\n" + str(error)
-    )
-pass
-
-import xformers.ops.fmha as xformers
-xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
 # Temporarily disable 0.0.27 and higher - inference issues
 if Version(xformers_version) >= Version("0.0.27"):
@@ -208,25 +193,6 @@ if Version(xformers_version) >= Version("0.0.27"):
     )
 pass
 
-# Check TRL version
-from trl import __version__ as trl_version
-if Version(trl_version) >= Version("0.9.0"):
-    raise ImportError(
-        "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
-        "then press Disconnect Runtime and then Restart it.\n"\
-        "\n"\
-        "%%capture\n"
-        "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
-        '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-        '!pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes\n'\
-        '\n'\
-        f"Otherwise in local machines, your TRL version of {trl_version} is too new.\n"\
-        'Please downgrade TRL via `pip install --force-reinstall "trl<0.9.0"'
-    )
-pass
-
-# Confirm versions
-# =============================================
 if   Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
     raise ImportError(
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
@@ -241,6 +207,38 @@ elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) >= 
     raise ImportError(
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
         f"Please install xformers < 0.0.27 for torch = {torch_version}."
+    )
+pass
+
+from xformers._cpp_lib import _register_extensions
+try:
+    _register_extensions() # Check if C++ modules are loaded correctly
+except Exception as error:
+    raise ImportError(
+        "Unsloth: Xformers was not installed correctly.\n"\
+        "Please install xformers separately first.\n"\
+        "Then confirm if it's correctly installed by running:\n"\
+        "python -m xformers.info\n\n"
+        "Longer error message:\n" + str(error)
+    )
+pass
+import xformers.ops.fmha as xformers
+xformers_attention = xformers.memory_efficient_attention
+
+# Check TRL version
+from trl import __version__ as trl_version
+if Version(trl_version) >= Version("0.9.0"):
+    raise ImportError(
+        "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
+        "then press Disconnect Runtime and then Restart it.\n"\
+        "\n"\
+        "%%capture\n"
+        "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
+        '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
+        '!pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes\n'\
+        '\n'\
+        f"Otherwise in local machines, your TRL version of {trl_version} is too new.\n"\
+        'Please downgrade TRL via `pip install --force-reinstall "trl<0.9.0"'
     )
 pass
 
