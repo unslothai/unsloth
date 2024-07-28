@@ -97,6 +97,7 @@ def _get_model_name(model_name, load_in_4bit = True):
         INT_TO_FLOAT_MAPPER = INT_TO_FLOAT_MAPPER,
         FLOAT_TO_INT_MAPPER = FLOAT_TO_INT_MAPPER,
     )
+    print(new_model_name)
     if new_model_name is None and \
         model_name.count("/") == 1 and \
         model_name[0].isalnum():
@@ -108,6 +109,7 @@ def _get_model_name(model_name, load_in_4bit = True):
             INT_TO_FLOAT_MAPPER = NEW_INT_TO_FLOAT_MAPPER,
             FLOAT_TO_INT_MAPPER = NEW_FLOAT_TO_INT_MAPPER,
         )
+        print(upgraded_model_name)
         if upgraded_model_name is not None:
             raise NotImplementedError(
                 f"Unsloth: {model_name} is not supported in your current Unsloth version! Please update Unsloth via:\n\n"\
