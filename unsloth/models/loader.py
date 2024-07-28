@@ -111,7 +111,8 @@ def _get_model_name(model_name, load_in_4bit = True):
         if upgraded_model_name is not None:
             raise NotImplementedError(
                 f"Unsloth: {model_name} is not supported in your current Unsloth version! Please update Unsloth via:\n\n"\
-                'pip install --upgrade --force-reinstall --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"'
+                'pip uninstall unsloth -y\n'\
+                'pip install --upgrade --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"'
             )
         pass
     pass
