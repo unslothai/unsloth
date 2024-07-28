@@ -35,7 +35,7 @@ exclude = ["images*"]
 huggingface = [
     "packaging",
     "tyro",
-    "transformers>=4.43.1",
+    "transformers>=4.43.2",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -46,7 +46,8 @@ huggingface = [
     "trl>=0.7.9,<0.9.0",
     "peft>=0.7.1,!=0.11.0",
     "protobuf<4.0.0",
-    "huggingface_hub[hf_transfer]",
+    "huggingface_hub",
+    "hf-transfer",
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
@@ -188,7 +189,7 @@ colab-ampere-torch220 = [
 colab-new = [
     "packaging",
     "tyro",
-    "transformers>=4.43.1",
+    "transformers>=4.43.2",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -196,7 +197,8 @@ colab-new = [
     "wheel>=0.42.0",
     "numpy",
     "protobuf<4.0.0",
-    "huggingface_hub[hf_transfer]",
+    "huggingface_hub",
+    "hf-transfer",
 ]
 colab-no-deps = [
     "accelerate>=0.26.1",
