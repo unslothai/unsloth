@@ -82,7 +82,7 @@ def _get_new_mapper():
     new_mapper = new_mapper\
         .replace("INT_TO_FLOAT_MAPPER", "NEW_INT_TO_FLOAT_MAPPER")\
         .replace("FLOAT_TO_INT_MAPPER", "NEW_FLOAT_TO_INT_MAPPER")
-    exec(new_mapper, locals())
+    exec(new_mapper)
     return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER
     # except:
     #     return {}, {}
