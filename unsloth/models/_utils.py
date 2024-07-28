@@ -156,7 +156,15 @@ if major_version >= 8:
                 "We shall now use Xformers instead, which does not have any performance hits!\n"\
                 "We found this negligible impact by benchmarking on 1x A100."
             )
+
+            # Stop Flash Attention from importing!
+            import transformers.utils.import_utils
+            transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+            import transformers.utils
+            transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+
             HAS_FLASH_ATTENTION = False
+        pass
     else:
         HAS_FLASH_ATTENTION = False
 else:
