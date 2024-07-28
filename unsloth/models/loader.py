@@ -27,7 +27,7 @@ transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 SUPPORTS_GEMMA   = transformers_version >= Version("4.38")
 SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
-SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.1")
+SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -147,8 +147,8 @@ class FastLanguageModel(FastLlamaModel):
             if scaling_type == "llama3" and not SUPPORTS_LLAMA31:
                 raise ImportError(
                     f"Unsloth: Your transformers version of {transformers_version} does not support Llama 3.1.\n"\
-                    f"The minimum required version is 4.43.1\n"\
-                    f'Try `pip install --upgrade "transformers>=4.43.1"`\n'\
+                    f"The minimum required version is 4.43.2\n"\
+                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 )
             dispatch_model = FastLlamaModel
