@@ -75,17 +75,17 @@ pass
 
 
 def _get_new_mapper():
-    try:
-        import requests
-        new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
-        with requests.get(new_mapper, timeout = 3) as new_mapper: new_mapper = new_mapper.text
-        new_mapper = new_mapper\
-            .replace("INT_TO_FLOAT_MAPPER", "NEW_INT_TO_FLOAT_MAPPER")\
-            .replace("FLOAT_TO_INT_MAPPER", "NEW_FLOAT_TO_INT_MAPPER")
-        exec(new_mapper, locals())
-        return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER
-    except:
-        return {}, {}
+    # try:
+    import requests
+    new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
+    with requests.get(new_mapper, timeout = 3) as new_mapper: new_mapper = new_mapper.text
+    new_mapper = new_mapper\
+        .replace("INT_TO_FLOAT_MAPPER", "NEW_INT_TO_FLOAT_MAPPER")\
+        .replace("FLOAT_TO_INT_MAPPER", "NEW_FLOAT_TO_INT_MAPPER")
+    exec(new_mapper, locals())
+    return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER
+    # except:
+    #     return {}, {}
     pass
 pass
 
