@@ -122,7 +122,8 @@ pass
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
-if Version(torch.__version__) < Version("2.4.0"):
+torch_version = torch.__version__
+if Version(torch_version) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
 else:
@@ -184,7 +185,7 @@ pass
 
 # Check TRL version
 from trl import __version__ as trl_version
-if Version(xformers_version) >= Version("0.9.0"):
+if Version(trl_version) >= Version("0.9.0"):
     raise ImportError(
         "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
         "then press Disconnect Runtime and then Restart it.\n"\
@@ -199,7 +200,24 @@ if Version(xformers_version) >= Version("0.9.0"):
     )
 pass
 
+# Confirm versions
 # =============================================
+if   Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
+    raise ImportError(
+        f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
+        f"Please install xformers < 0.0.24 for torch = {torch_version}."
+    )
+elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= Version("0.0.26"):
+    raise ImportError(
+        f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
+        f"Please install xformers < 0.0.26 for torch = {torch_version}."
+    )
+elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) >= Version("0.0.27"):
+    raise ImportError(
+        f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
+        f"Please install xformers < 0.0.27 for torch = {torch_version}."
+    )
+pass
 
 # =============================================
 # Torch compile settings
