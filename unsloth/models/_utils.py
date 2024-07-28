@@ -173,6 +173,22 @@ else:
 pass
 
 from transformers.models.llama.modeling_llama import logger
+
+# =============================================
+# Get Xformers
+from xformers._cpp_lib import _register_extensions
+try:
+    _register_extensions() # Check if C++ modules are loaded correctly
+except Exception as error:
+    raise ImportError(
+        "Unsloth: Xformers was not installed correctly. "\
+        "Please install xformers separately first. "\
+        "Then confirm if it's correctly installed by running:\n"\
+        "python -m xformers.info\n\n"
+        "Longer error message:\n" + str(error)
+    )
+pass
+
 import xformers.ops.fmha as xformers
 xformers_attention = xformers.memory_efficient_attention
 from xformers import __version__ as xformers_version
