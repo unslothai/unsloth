@@ -75,18 +75,18 @@ pass
 
 
 def _get_new_mapper():
-    # try:
-    import requests
-    new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
-    with requests.get(new_mapper, timeout = 3) as new_mapper: new_mapper = new_mapper.text
-    new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER"):]
-    new_mapper = new_mapper\
-        .replace("INT_TO_FLOAT_MAPPER", "NEW_INT_TO_FLOAT_MAPPER")\
-        .replace("FLOAT_TO_INT_MAPPER", "NEW_FLOAT_TO_INT_MAPPER")
-    exec(new_mapper, globals())
-    return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER
-    # except:
-    #     return {}, {}
+    try:
+        import requests
+        new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
+        with requests.get(new_mapper, timeout = 3) as new_mapper: new_mapper = new_mapper.text
+        new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER"):]
+        new_mapper = new_mapper\
+            .replace("INT_TO_FLOAT_MAPPER", "NEW_INT_TO_FLOAT_MAPPER")\
+            .replace("FLOAT_TO_INT_MAPPER", "NEW_FLOAT_TO_INT_MAPPER")
+        exec(new_mapper, globals())
+        return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER
+    except:
+        return {}, {}
     pass
 pass
 
@@ -102,15 +102,12 @@ def _get_model_name(model_name, load_in_4bit = True):
     if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
         # Try checking if a new Unsloth version allows it!
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER = _get_new_mapper()
-        print(NEW_INT_TO_FLOAT_MAPPER)
-        print(NEW_FLOAT_TO_INT_MAPPER)
         upgraded_model_name = __get_model_name(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
             INT_TO_FLOAT_MAPPER = NEW_INT_TO_FLOAT_MAPPER,
             FLOAT_TO_INT_MAPPER = NEW_FLOAT_TO_INT_MAPPER,
         )
-        print(upgraded_model_name)
         if upgraded_model_name is not None:
             raise NotImplementedError(
                 f"Unsloth: {model_name} is not supported in your current Unsloth version! Please update Unsloth via:\n\n"\
