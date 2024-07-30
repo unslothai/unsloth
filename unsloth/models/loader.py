@@ -155,14 +155,14 @@ class FastLanguageModel(FastLlamaModel):
         try:
             model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
             is_model = True
-        except Exception as autoconfig_error:
-            autoconfig_error = str(autoconfig_error)
+        except Exception as e:
+            autoconfig_error = str(e)
             is_model = False
         try:
             peft_config = PeftConfig .from_pretrained(model_name, token = token, revision = revision)
             is_peft = True
-        except Exception as peft_error:
-            peft_error = str(peft_error)
+        except Exception as e:
+            peft_error = str(e)
             is_peft = False
         pass
 
