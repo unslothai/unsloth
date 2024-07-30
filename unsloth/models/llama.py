@@ -2012,7 +2012,8 @@ class FastLlamaModel:
                     model.peft_config[active_adapter].base_model_name_or_path = name
                 pass
             # Add revision to enable future fast inference paths
-            model.peft_config[active_adapter].revision = f"unsloth"
+            # [TODO] Bugs out!see https://github.com/unslothai/unsloth/issues/492
+            # model.peft_config[active_adapter].revision = f"unsloth"
         pass
 
         from transformers.trainer import Trainer 
