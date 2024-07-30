@@ -175,6 +175,15 @@ class FastLanguageModel(FastLlamaModel):
                 "Please separate the LoRA and base models to 2 repos."
             )
         elif not is_model and not is_peft:
+            error = autoconfig_error or peft_error
+            # Old transformers version
+            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"\
+                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"\
+                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
+                    f"to obtain the latest transformers build, then restart this session."\
+                ) 
             raise RuntimeError(autoconfig_error or peft_error)
         pass
 
