@@ -420,7 +420,7 @@ def unsloth_save_model(
         if save_method != "lora": print(" This might take 10 minutes for Llama-7b...", end = "")
 
         # [TODO] Is this correct?
-        if save_method == "lora":
+        if save_method != "lora":
             save_pretrained_settings["selected_adapters"] = None
         pass
 
