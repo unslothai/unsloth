@@ -56,6 +56,8 @@ except:
     Gemma2FlashAttention2 = Gemma2Attention
 pass
 
+if HAS_FLASH_ATTENTION_SOFTCAPPING:
+    from flash_attn import flash_attn_func
 
 # [TODO] We must randomnly use torch.compile?
 # I checked the gradients and formulas and I'm sure it's correct.
@@ -126,8 +128,36 @@ def Gemma2Attention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
     past_key_value = (K, V) if use_cache else None
-    
-    A = slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_seq_len)
+
+    # Only enable if the attention_mask is True
+    has_sliding_window = type(causal_mask) is bool and causal_mask is True
+    if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
+        window = (-1, -1)
+        if has_sliding_window:
+            sw = getattr(self.config, "sliding_window", None)
+            sw = kv_seq_len if (sw is None or sw == "null") else sw
+            window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
+        pass
+
+        # FA uses 1 / sqrt for softmax_scale!
+        if not hasattr(self, "_flash_attention_softmax_scale"):
+            self._flash_attention_softmax_scale = 1.0 / (self.config.query_pre_attn_scalar**0.5)
+        pass
+
+        Q = Q.transpose(1, 2)
+        K = K.transpose(1, 2)
+        V = V.transpose(1, 2)
+        A = flash_attn_func(
+            Q, K, V,
+            causal = True,
+            softcap = self.config.attn_logit_softcapping,
+            softmax_scale = self._flash_attention_softmax_scale,
+            window_size = window,
+        )
+        A = A.reshape(bsz, q_len, n_heads*head_dim)
+    else:
+        A = slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_seq_len)
+    pass
     A = self.apply_o(self, A)
     return A, None, past_key_value
 pass
@@ -205,6 +235,8 @@ pass
 from math import sqrt as math_sqrt
 KV_CACHE_INCREMENT = 256 # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
+torch_matmul = torch.matmul
+torch_tanh   = torch.tanh
 
 def Gemma2Attention_fast_forward_inference(
     self,
@@ -322,13 +354,13 @@ def Gemma2Attention_fast_forward_inference(
     # if bsz == 1:
     Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
     # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
-    A = torch.matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
+    A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
     # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
 
-    A *= self.reciprocal_t; torch.tanh(A, out = A); A *= self.t;  # Logit softcapping
+    A *= self.reciprocal_t; torch_tanh(A, out = A); A *= self.t;  # Logit softcapping
 
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    A = torch.matmul(A, Vnn, out = Qn)
+    A = torch_matmul(A, Vnn, out = Qn)
     # else:
     #     A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
     # pass
@@ -359,19 +391,24 @@ def Gemma2Model_fast_forward_inference(
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
-        SWA = _prepare_4d_causal_attention_mask_for_sdpa(
-            attention_mask,
-            (bsz, q_len),
-            hidden_states,
-            seq_len,
-            sliding_window = self.config.sliding_window,
-        )
-        GA = _prepare_4d_causal_attention_mask_for_sdpa(
-            attention_mask,
-            (bsz, q_len),
-            hidden_states,
-            seq_len,
-        )
+        if HAS_FLASH_ATTENTION_SOFTCAPPING:
+            SWA = True
+            GA  = False
+        else:
+            SWA = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (bsz, q_len),
+                hidden_states,
+                seq_len,
+                sliding_window = self.config.sliding_window,
+            )
+            GA = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (bsz, q_len),
+                hidden_states,
+                seq_len,
+            )
+        pass
     else:
         SWA = attention_mask
         GA  = attention_mask
