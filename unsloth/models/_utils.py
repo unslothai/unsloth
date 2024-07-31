@@ -178,20 +178,20 @@ from transformers.models.llama.modeling_llama import logger
 # Get Xformers
 from xformers import __version__ as xformers_version
 # Temporarily disable 0.0.27 and higher - inference issues
-if Version(xformers_version) >= Version("0.0.27"):
-    raise ImportError(
-        "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
-        "then press Disconnect Runtime and then Restart it.\n"\
-        "\n"\
-        "%%capture\n"
-        "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
-        '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-        '!pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes\n'\
-        '\n'\
-        f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"\
-        'Please downgrade xformers via `pip install --force-reinstall "xformers<0.0.27"'
-    )
-pass
+# if Version(xformers_version) >= Version("0.0.27"):
+#     raise ImportError(
+#         "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
+#         "then press Disconnect Runtime and then Restart it.\n"\
+#         "\n"\
+#         "%%capture\n"
+#         "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
+#         '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
+#         '!pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes\n'\
+#         '\n'\
+#         f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"\
+#         'Please downgrade xformers via `pip install --force-reinstall "xformers<0.0.27"'
+#     )
+# pass
 
 if   Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
     raise ImportError(

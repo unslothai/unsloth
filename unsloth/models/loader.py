@@ -42,6 +42,7 @@ def __get_model_name(
     FLOAT_TO_INT_MAPPER = None,
 ):
 
+    model_name = str(model_name)
     if not SUPPORTS_FOURBIT and model_name.lower() in INT_TO_FLOAT_MAPPER:
         model_name = INT_TO_FLOAT_MAPPER[model_name.lower()]
         logger.warning_once(
