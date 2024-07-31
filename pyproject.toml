@@ -171,7 +171,7 @@ colab-ampere-torch211 = [
     "unsloth[cu121onlytorch211]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 colab-torch220 = [
     "unsloth[huggingface]",
@@ -184,7 +184,7 @@ colab-ampere-torch220 = [
     "unsloth[cu121onlytorch220]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 colab-new = [
     "packaging",
@@ -215,7 +215,7 @@ colab-ampere = [
     "unsloth[colab-ampere-torch220]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 cu118-ampere = [
     "unsloth[huggingface]",
@@ -223,7 +223,7 @@ cu118-ampere = [
     "unsloth[cu118only]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 cu121-ampere = [
     "unsloth[huggingface]",
@@ -231,7 +231,7 @@ cu121-ampere = [
     "unsloth[cu121only]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 cu118-ampere-torch211 = [
     "unsloth[huggingface]",
@@ -239,7 +239,7 @@ cu118-ampere-torch211 = [
     "unsloth[cu118onlytorch211]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 cu121-ampere-torch211 = [
     "unsloth[huggingface]",
@@ -247,7 +247,7 @@ cu121-ampere-torch211 = [
     "unsloth[cu121onlytorch211]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 cu118-ampere-torch220 = [
     "unsloth[huggingface]",
@@ -255,7 +255,7 @@ cu118-ampere-torch220 = [
     "unsloth[cu118onlytorch220]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 cu121-ampere-torch220 = [
     "unsloth[huggingface]",
@@ -263,7 +263,7 @@ cu121-ampere-torch220 = [
     "unsloth[cu121onlytorch220]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 cu118-ampere-torch230 = [
     "unsloth[huggingface]",
@@ -271,7 +271,7 @@ cu118-ampere-torch230 = [
     "unsloth[cu118onlytorch230]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 cu121-ampere-torch230 = [
     "unsloth[huggingface]",
@@ -279,7 +279,7 @@ cu121-ampere-torch230 = [
     "unsloth[cu121onlytorch230]",
     "packaging",
     "ninja",
-    "flash-attn",
+    "flash-attn>=2.6.3",
 ]
 
 [project.urls]
