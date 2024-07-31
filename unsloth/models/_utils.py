@@ -203,12 +203,12 @@ elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= 
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
         f"Please install xformers < 0.0.26 for torch = {torch_version}."
     )
-elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) >= Version("0.0.27"):
-    raise ImportError(
-        f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
-        f"Please install xformers < 0.0.27 for torch = {torch_version}."
-    )
-pass
+# elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) >= Version("0.0.27"):
+#     raise ImportError(
+#         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
+#         f"Please install xformers < 0.0.27 for torch = {torch_version}."
+#     )
+# pass
 
 from xformers._cpp_lib import _register_extensions
 try:
