@@ -141,7 +141,7 @@ def Gemma2Attention_fast_forward(
 
         # FA uses 1 / sqrt for softmax_scale!
         if not hasattr(self, "_flash_attention_softmax_scale"):
-            self._flash_attention_softmax_scale = 1.0 / self.config.query_pre_attn_scalar**0.5
+            self._flash_attention_softmax_scale = 1.0 / (self.config.query_pre_attn_scalar**0.5)
         pass
 
         Q = Q.transpose(1, 2)
