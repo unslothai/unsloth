@@ -21,6 +21,7 @@ __all__ = [
     "xformers_version",
     "__version__",
     "HAS_FLASH_ATTENTION",
+    "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "PRE_CHECK",
     "platform_system",
     "patch_tokenizer",
@@ -140,6 +141,8 @@ from transformers.utils.import_utils import _is_package_available
 
 major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = False
+HAS_FLASH_ATTENTION = False
+HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
 if major_version >= 8:
     SUPPORTS_BFLOAT16 = True
@@ -148,6 +151,17 @@ if major_version >= 8:
         try:
             from flash_attn.flash_attn_interface import flash_attn_cuda
             HAS_FLASH_ATTENTION = True
+
+            # Also check for softcapping
+            from flash_attn import __version__ as flash_attn_version
+            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
+            if not HAS_FLASH_ATTENTION_SOFTCAPPING:
+                print(
+                    "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
+                    "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
+                    "To update flash-attn, do the below:\n"\
+                    '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
+                )
         except:
             print(
                 "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
