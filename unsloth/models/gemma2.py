@@ -130,11 +130,8 @@ def Gemma2Attention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Only enable if the attention_mask is True
-    has_sliding_window = type(attention_mask) is bool and attention_mask is True
-    print(HAS_FLASH_ATTENTION_SOFTCAPPING)
-    print(has_sliding_window)
-    print(attention_mask)
-    if HAS_FLASH_ATTENTION_SOFTCAPPING and type(attention_mask) is bool:
+    has_sliding_window = type(causal_mask) is bool and causal_mask is True
+    if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
         window = (-1, -1)
         if has_sliding_window:
             sw = getattr(self.config, "sliding_window", None)
