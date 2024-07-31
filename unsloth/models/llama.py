@@ -14,6 +14,7 @@
 
 import torch
 import gc
+import math
 from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import __version__
@@ -1036,7 +1037,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
-        self.current_rope_size = int(round(seq_len / 8192)) * 8192
+        self.current_rope_size = math.ceil(seq_len / 8192) * 8192
         self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
@@ -1109,7 +1110,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
         
-        t = torch.arange(self.current_rope_size, device="cpu", dtype=torch.int64).float()
+        t = torch.arange(self.current_rope_size, device=self.inv_freq.device, dtype=torch.int64).float()
 
         freqs = torch.outer(t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
@@ -1158,7 +1159,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
-        self.current_rope_size = int(round(seq_len / 8192)) * 8192
+        self.current_rope_size = math.ceil(seq_len / 8192) * 8192
         self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
