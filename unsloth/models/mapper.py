@@ -67,7 +67,6 @@ __INT_TO_FLOAT_MAPPER = \
         "codellama/CodeLlama-7b-hf",
     ),
     "unsloth/codellama-13b-bnb-4bit" : (
-        "unsloth/codellama-13b",
         "codellama/CodeLlama-13b-hf",
     ),
     "unsloth/yi-6b-bnb-4bit" : (
