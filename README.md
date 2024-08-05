@@ -37,7 +37,6 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for continued pretraining / raw text
 - This [continued pretraining notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) is for learning another language
 - Click [here](https://github.com/unslothai/unsloth/wiki) for detailed documentation for Unsloth.
-- Install Unsloth with `pip install unsloth[colab-new]` then `pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes`
 
 ## 🦥 Unsloth.ai News
 - 📣 NEW! `pip install unsloth` now works! Head over to [pypi](https://pypi.org/project/unsloth/) to check it out! This allows non git pull installs. Use `pip install unsloth[colab-new]` for non dependency installs.
@@ -94,6 +93,9 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
 ## 💾 Installation Instructions
+
+If you have Pytorch 2.3 and CUDA 12.1, install Unsloth with `pip install unsloth[colab-new]` then `pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes`
+
 ### Conda Installation
 Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
 ```bash
