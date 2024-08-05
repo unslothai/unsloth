@@ -570,7 +570,14 @@ def LlamaModel_fast_forward(
     # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
-
+        
+    if self.config.torch_dtype == "float32":
+        self.config.torch_dtype = torch.float32
+    elif self.config.torch_dtype == "bfloat16":
+        self.config.torch_dtype = torch.bfloat16
+    elif self.config.torch_dtype == "float16":
+        self.config.torch_dtype = torch.float16
+        
     inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
 
     # Normalized from Gemma
