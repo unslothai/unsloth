@@ -570,14 +570,7 @@ def LlamaModel_fast_forward(
     # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
-        
-    if self.config.torch_dtype == "float32":
-        self.config.torch_dtype = torch.float32
-    elif self.config.torch_dtype == "bfloat16":
-        self.config.torch_dtype = torch.bfloat16
-    elif self.config.torch_dtype == "float16":
-        self.config.torch_dtype = torch.float16
-        
+
     inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
 
     # Normalized from Gemma
@@ -1580,6 +1573,30 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model._saved_temp_tokenizer = tokenizer
+
+        # Also fix torch_dtype
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "config"):
+                if   internal_model.config.torch_dtype ==  "float32":
+                    internal_model.config.torch_dtype = torch.float32
+                elif internal_model.config.torch_dtype == "bfloat16":
+                    internal_model.config.torch_dtype = torch.bfloat16
+                elif internal_model.config.torch_dtype ==  "float16":
+                    internal_model.config.torch_dtype = torch.float16
+                pass
+            pass
+            internal_model = internal_model.model
+        pass
+        if hasattr(internal_model, "config"):
+            if   internal_model.config.torch_dtype ==  "float32":
+                internal_model.config.torch_dtype = torch.float32
+            elif internal_model.config.torch_dtype == "bfloat16":
+                internal_model.config.torch_dtype = torch.bfloat16
+            elif internal_model.config.torch_dtype ==  "float16":
+                internal_model.config.torch_dtype = torch.float16
+            pass
+        pass
         
         return model, tokenizer
     pass
