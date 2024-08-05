@@ -37,8 +37,10 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for continued pretraining / raw text
 - This [continued pretraining notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) is for learning another language
 - Click [here](https://github.com/unslothai/unsloth/wiki) for detailed documentation for Unsloth.
+- Install Unsloth with `pip install unsloth[colab-new]` then `pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes`
 
 ## 🦥 Unsloth.ai News
+- 📣 NEW! `pip install unsloth` now works! Head over to [pypi](https://pypi.org/project/unsloth/) to check it out! This allows non git pull installs. Use `pip install unsloth[colab-new]` for non dependency installs.
 - 📣 NEW! [Gemma-2-2b](https://colab.research.google.com/drive/1weTpKOjBZxZJ5PQ-Ql8i6ptAY2x-FWVA?usp=sharing) now supported! Gemma-2-9b and Gemma-2-27b are alrady supported! And uploaded [GGUF quants](https://huggingface.co/unsloth/gemma-2-it-GGUF) Try out [Chat interface](https://colab.research.google.com/drive/1i-8ESvtLRGNkkUQQr_-z_rcSAIo9c3lM?usp=sharing) for Gemma-2-2b Instruct!
 - 📣 NEW! [Llama 3.1 8b, 70b](https://colab.research.google.com/drive/1Ys44kVvmeZtnICzWz0xgpRnrIOjZAuxp?usp=sharing) both Base and Instruct now supported
 - 📣 NEW! [Mistral Nemo-12b](https://colab.research.google.com/drive/17d3U-CAIwzmbDRqbZ9NnpHxCkmXB6LZ0?usp=sharing) both Base and Instruct now supported
