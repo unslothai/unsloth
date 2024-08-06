@@ -454,7 +454,7 @@ def fix_sentencepiece_gguf(saved_location):
 pass
 
 
-def load_correct_tokenizer(
+def _load_correct_tokenizer(
     tokenizer_name,
     model_max_length = None,
     padding_side = "right",
@@ -519,6 +519,97 @@ def load_correct_tokenizer(
     else:
         return fast_tokenizer
     pass
+pass
+
+
+def load_correct_tokenizer(
+    tokenizer_name,
+    model_max_length = None,
+    padding_side = "right",
+    token = None,
+    trust_remote_code = False,
+    cache_dir = "huggingface_tokenizers_cache",
+):
+    tokenizer = _load_correct_tokenizer(
+        tokenizer_name = tokenizer_name,
+        model_max_length = model_max_length,
+        padding_side = padding_side,
+        token = token,
+        trust_remote_code = trust_remote_code,
+        cache_dir = cache_dir,
+    )
+
+    ### 1. Fixup tokenizer's chat_template
+    old_chat_template = getattr(tokenizer, "chat_template", None)
+    chat_template = fix_chat_template(tokenizer)
+    if old_chat_template is not None and chat_template is None:
+        raise RuntimeError(
+            "Unsloth: Fixing chat template failed - please file a report immediately!"
+        )
+    pass
+    tokenizer.chat_template = chat_template
+    return tokenizer
+pass
+
+
+def _fix_chat_template(chat_template):
+    endfor = "{% endfor %}"
+    where = chat_template.find(endfor)
+    if where == -1: return chat_template
+
+    after_endfor = chat_template[where + len(endfor):]
+
+    if "{% if" not in after_endfor and "{% set " not in after_endfor and \
+        after_endfor.startswith("{{") and after_endfor.endswith("}}") and \
+        after_endfor.count("{{") == 1 and after_endfor.count("}}") == 1:
+
+        after_endfor = "{% if add_generation_prompt %}" + after_endfor + "{% endif %}"
+
+        chat_template = chat_template[:where + len(endfor)] + after_endfor
+    pass
+    return chat_template
+pass
+
+
+def fix_chat_template(tokenizer):
+    chat_template = getattr(tokenizer, "chat_template", None)
+    if chat_template is None: return None
+
+    ### 1. Check if add_generation_prompt works
+    messages = [
+        {"role": "system", "content": "You are a pirate chatbot who always responds in pirate speak!"},
+        {"role":   "user", "content": "Who are you?"},
+    ]
+    no  = tokenizer.apply_chat_template(messages, add_generation_prompt = False, tokenize = False)
+    yes = tokenizer.apply_chat_template(messages, add_generation_prompt =  True, tokenize = False)
+
+    if no == yes:
+        # SAME?! That's not good! We check for add_generation_prompt
+        if "{% if add_generation_prompt %}" not in chat_template:
+            # Try fixing it by adding it
+            new_chat_template = _fix_chat_template(chat_template)
+            if "{% if add_generation_prompt %}" not in new_chat_template:
+                raise RuntimeError(
+                    f"Unsloth: The tokenizer `{tokenizer.name_or_path}`\n"\
+                    "does not have a {% if add_generation_prompt %} for generation purposes.\n"\
+                    "Please file a bug report immediately - thanks!"
+                )
+            else:
+                logger.warning_once(
+                    "Unsloth: We successfully patched the tokenizer to add a {% if add_generation_prompt %} to the chat_template.\n"\
+                    "This is not a bug, but please notify the Unsloth maintainers - thanks!"
+                )
+                chat_template = new_chat_template
+            pass
+        else:
+            raise RuntimeError(
+                f"Unsloth: The tokenizer `{tokenizer.name_or_path}`\n"\
+                "has a {% if add_generation_prompt %} for generation purposes, but wasn't provided correctly.\n"\
+                "Please file a bug report immediately - thanks!"
+            )
+        pass
+    pass
+    return chat_template
 pass
 
 
