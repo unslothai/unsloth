@@ -540,13 +540,20 @@ def load_correct_tokenizer(
     )
 
     ### 1. Fixup tokenizer's chat_template
+    # Ignore mistral type models
     old_chat_template = getattr(tokenizer, "chat_template", None)
-    chat_template = fix_chat_template(tokenizer)
-    if old_chat_template is not None and chat_template is None:
-        raise RuntimeError(
-            "Unsloth: Fixing chat template failed - please file a report immediately!"
-        )
+    
+    if "mistral" in str(getattr(tokenizer, "name_or_path", "")).lower():
+        chat_template = old_chat_template
+    else:
+        chat_template = fix_chat_template(tokenizer)
+        if old_chat_template is not None and chat_template is None:
+            raise RuntimeError(
+                "Unsloth: Fixing chat template failed - please file a report immediately!"
+            )
+        pass
     pass
+
     tokenizer.chat_template = chat_template
     return tokenizer
 pass
