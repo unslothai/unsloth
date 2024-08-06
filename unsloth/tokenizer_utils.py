@@ -540,9 +540,9 @@ def load_correct_tokenizer(
     )
 
     ### 1. Fixup tokenizer's chat_template
-    # Ignore mistral type models
     old_chat_template = getattr(tokenizer, "chat_template", None)
-    
+
+    # Ignore mistral type models since they don't have a add_generation_prompt
     if "mistral" in str(getattr(tokenizer, "name_or_path", "")).lower():
         chat_template = old_chat_template
     else:
