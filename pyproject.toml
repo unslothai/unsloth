@@ -47,7 +47,7 @@ huggingface = [
     "peft>=0.7.1,!=0.11.0",
     "protobuf<4.0.0",
     "huggingface_hub",
-    "hf-transfer",
+    "hf_transfer",
 ]
 cu118only = [
     "xformers==0.0.22.post7",
@@ -178,7 +178,7 @@ colab-new = [
     "numpy",
     "protobuf<4.0.0",
     "huggingface_hub",
-    "hf-transfer",
+    "hf_transfer",
 ]
 colab-no-deps = [
     "accelerate>=0.26.1",
