@@ -496,6 +496,9 @@ def patch_tokenizer(model, tokenizer):
             if model.config.pad_token_id is None:
                 model.config.update({"pad_token_id" : tokenizer.pad_token_id})
                 model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
+        pass
+    pass
+    model.generation_config.update(max_length = model.config.max_position_embeddings)
     return model, tokenizer
 pass
 
