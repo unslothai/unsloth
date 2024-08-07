@@ -332,7 +332,6 @@ def prepare_model_for_kbit_training(
     """
 
     # Freeze all parameters except LoRA
-    import re
     with torch.no_grad():
         for name, param in model.named_parameters():
             if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
@@ -389,12 +388,14 @@ def patch_tokenizer(model, tokenizer):
         Fixes https://github.com/unslothai/unsloth/issues/5
     """
     possible_reserved_tokens = (
+        "<|finetune_right_pad_id|>", # Llama-3.1
+        "<pad>",                     # Mistral Nemo
         "<|reserved",                # Llama-3
         "<|placeholder",             # Phi-3
         "[control",                  # Mistral type models
-        "<pad>",                     # Mistral Nemo
-        "<|finetune_right_pad_id|>", # Llama-3.1
     )
+    joiner = "\1\0=+=\0\1"
+    number_repetitions = 3 - 1 # Number of reserved tokens needed
 
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
@@ -412,28 +413,69 @@ def patch_tokenizer(model, tokenizer):
     if bad_pad_token:
         # Find a better pad token
         added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
-        possible_pad_token = None
-        n_possible_pad_tokens = 0
-        for added_token in added_tokens[::-1]:
-            if added_token.startswith(possible_reserved_tokens):
-                if possible_pad_token is None: possible_pad_token = added_token
-                n_possible_pad_tokens += 1
-                # We must see at least 3 of the reserved tokens
-                if n_possible_pad_tokens >= 3: break
+        all_added_tokens = joiner.join(added_tokens[::-1])
+        all_added_tokens += joiner
+
+        final_pad_token  = None
+        final_good_match = False
+
+        for possible_reserved_token in possible_reserved_tokens:
+            possible_reserved_token = re.escape(possible_reserved_token)
+            found = re.finditer(f"{possible_reserved_token}", all_added_tokens)
+            first_match = None
+            good_match  = False
+            for j, x in enumerate(found):
+                if j == 0: first_match = x
+                if j >= number_repetitions:
+                    good_match = True
+                    break
+                pass
+            pass
+
+            if first_match is None: continue
+
+            # If it ends with |> or > etc, then set it as a good pad token!
+            start = first_match.span(0)[0]
+            possible_pad_token = first_match.group(0)
+            end = all_added_tokens.find(joiner, start)
+            first_match = all_added_tokens[start:end]
+
+            if first_match is not None:
+                good_match = possible_pad_token.endswith((">", "|>", "]", ")"))
+            pass
+            possible_pad_token = first_match
+
+            # Replace current pad token if another exact match is found
+            if not final_good_match and good_match:
+                final_good_match = True
+                final_pad_token = possible_pad_token
+                break
+            else:
+                final_good_match = False
+                final_pad_token = possible_pad_token
             pass
         pass
-        if n_possible_pad_tokens < 3: possible_pad_token = None
+        possible_pad_token = final_pad_token
 
-        if possible_pad_token is None:
-            # Try unk_token
+        # Try unk_token
+        if possible_pad_token is None and hasattr(tokenizer, "unk_token"):
             possible_pad_token = tokenizer.unk_token
+        pass
+
+        # Check pad token's id must be less than vocab size
+        if possible_pad_token is not None:
+            check_pad_token = tokenizer(possible_pad_token, add_special_tokens = False).input_ids
+            if len(check_pad_token) != 1:
+                possible_pad_token = None
+            if check_pad_token[0] >= config.vocab_size:
+                possible_pad_token = None
         pass
 
         if possible_pad_token is None:
             # Failure to find a good replacement!! We shall manually add one!
             new_pad_token = "<|PAD_TOKEN|>"
             while new_pad_token in tokenizer.get_vocab():
-                new_pad_token += "#"
+                new_pad_token = f"<{new_pad_token}>"
             pass
             possible_pad_token = new_pad_token
         pass
@@ -447,11 +489,16 @@ def patch_tokenizer(model, tokenizer):
         tokenizer.add_special_tokens({"pad_token" : possible_pad_token})
         tokenizer.pad_token = possible_pad_token
         if model is not None:
-            config = model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+            model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+            model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
     else:
         if model is not None:
             if model.config.pad_token_id is None:
-                config = model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+                model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+                model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
+        pass
+    pass
+    model.generation_config.update(max_length = model.config.max_position_embeddings)
     return model, tokenizer
 pass
 
@@ -462,7 +509,6 @@ pass
 from peft import __version__ as peft_version
 if Version(peft_version) < Version("0.12.0"):
     from peft.tuners.lora.layer import LoraLayer
-    import inspect, re
     try:
         source = inspect.getsource(LoraLayer.update_layer)
         text = "if weight is not None:\n"
@@ -688,7 +734,6 @@ pass
 from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
 from inspect import getsource
 from accelerate.utils.dataclasses import DistributedType
-import re
 BitsAndBytesConfig__init__ = getsource(BitsAndBytesConfig.__init__)
 BitsAndBytesConfig__init__ = re.sub(
     r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",

@@ -1397,6 +1397,7 @@ class FastLlamaModel:
             padding_side      = "right",
             token             = token,
             trust_remote_code = trust_remote_code,
+            fix_tokenizer     = fix_tokenizer,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
