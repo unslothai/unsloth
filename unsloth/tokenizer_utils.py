@@ -553,7 +553,8 @@ def load_correct_tokenizer(
         chat_template = old_chat_template
 
     # Also check Llama-2 old style models
-    elif "[/INST]" in old_chat_template and "[INST]" in old_chat_template and \
+    elif old_chat_template is not None and \
+        "[/INST]" in old_chat_template and "[INST]" in old_chat_template and \
         "bos_token" in old_chat_template and "eos_token" in old_chat_template:
 
         chat_template = old_chat_template
