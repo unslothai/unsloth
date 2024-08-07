@@ -584,8 +584,7 @@ def fix_chat_template(tokenizer):
 
     ### 1. Check if add_generation_prompt works
     messages = [
-        {"role": "system", "content": "You are a pirate chatbot who always responds in pirate speak!"},
-        {"role":   "user", "content": "Who are you?"},
+        {"role": "user", "content": "Who are you?"},
     ]
     no  = tokenizer.apply_chat_template(messages, add_generation_prompt = False, tokenize = False)
     yes = tokenizer.apply_chat_template(messages, add_generation_prompt =  True, tokenize = False)
