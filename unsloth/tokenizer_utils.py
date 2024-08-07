@@ -461,6 +461,7 @@ def _load_correct_tokenizer(
     token = None,
     trust_remote_code = False,
     cache_dir = "huggingface_tokenizers_cache",
+    fix_tokenizer = True,
 ):
     if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
         cache_dir = cache_dir
@@ -501,7 +502,7 @@ def _load_correct_tokenizer(
         cache_dir         = cache_dir,
     )
 
-    if tokenizer_name in IGNORED_TOKENIZER_NAMES:
+    if not fix_tokenizer or tokenizer_name in IGNORED_TOKENIZER_NAMES:
         return fast_tokenizer
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
@@ -529,6 +530,7 @@ def load_correct_tokenizer(
     token = None,
     trust_remote_code = False,
     cache_dir = "huggingface_tokenizers_cache",
+    fix_tokenizer = True,
 ):
     tokenizer = _load_correct_tokenizer(
         tokenizer_name = tokenizer_name,
@@ -537,6 +539,7 @@ def load_correct_tokenizer(
         token = token,
         trust_remote_code = trust_remote_code,
         cache_dir = cache_dir,
+        fix_tokenizer = fix_tokenizer,
     )
 
     ### 1. Fixup tokenizer's chat_template
@@ -549,7 +552,7 @@ def load_correct_tokenizer(
     # Also check Llama-2 old style models
     elif "[/INST]" in old_chat_template and "[INST]" in old_chat_template and \
         "bos_token" in old_chat_template and "eos_token" in old_chat_template:
-        
+
         chat_template = old_chat_template
 
     else:
