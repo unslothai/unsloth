@@ -129,6 +129,7 @@ def Gemma2Attention_fast_forward(
     pass
     past_key_value = (K, V) if use_cache else None
 
+    print(causal_mask)
     # Only enable if the attention_mask is True
     has_sliding_window = type(causal_mask) is bool and causal_mask is True
     if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
@@ -413,7 +414,6 @@ def Gemma2Model_fast_forward_inference(
         SWA = attention_mask
         GA  = attention_mask
     pass
-    print(1)
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
 
