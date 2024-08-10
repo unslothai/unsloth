@@ -505,7 +505,8 @@ def LlamaModel_fast_forward(
     return_dict:          Optional[bool] = None,
     *args, **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
-
+    
+    print(509, causal_mask)
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     assert(output_attentions is False)
     output_hidden_states = (
@@ -526,6 +527,7 @@ def LlamaModel_fast_forward(
         raise ValueError("Unsloth: You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
     seq_length_with_past = seq_length
+    print(530, causal_mask)
 
     # Fix out of bounds tokenization
     if hasattr(self, "max_seq_length"):
@@ -561,6 +563,7 @@ def LlamaModel_fast_forward(
     else:
         position_ids = None
     pass
+    print(566, causal_mask)
 
     if position_ids is not None:
         if position_ids.shape[0] != batch_size:
@@ -618,6 +621,7 @@ def LlamaModel_fast_forward(
         inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
+    print(624, causal_mask)
 
     # Ignore attention_mask
     if attention_mask is None:
