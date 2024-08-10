@@ -707,8 +707,6 @@ def LlamaModel_fast_forward(
         pass
     pass
 
-    print(attention_mask is None, self.SWA_mask is None)
-
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
 
@@ -716,6 +714,7 @@ def LlamaModel_fast_forward(
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         mask = causal_mask
+        print(IS_GEMMA2)
         if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
 
         if offloaded_gradient_checkpointing:
@@ -882,7 +881,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
 
-            print(causal_mask)
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
