@@ -419,7 +419,7 @@ pass
 def LlamaDecoderLayer_fast_forward(
     self,
     hidden_states:        torch.Tensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    causal_mask:           = None,
     attention_mask:       Optional[torch.Tensor] = None,
     position_ids:         Optional[torch.LongTensor] = None,
     past_key_value:       Optional[Tuple[torch.Tensor]] = None,
@@ -763,6 +763,7 @@ def LlamaModel_fast_forward(
                 padding_mask=padding_mask,
             )
             hidden_states = layer_outputs[0]
+            print(766, causal_mask)
         pass
 
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
