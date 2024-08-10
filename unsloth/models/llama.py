@@ -796,7 +796,6 @@ def LlamaModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    print(1)
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -883,6 +882,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
 
+            print(causal_mask)
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
