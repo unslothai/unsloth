@@ -748,6 +748,7 @@ def LlamaModel_fast_forward(
             hidden_states = layer_outputs[0]
 
         else:
+            print(751, causal_mask)
             layer_outputs = decoder_layer(
                 hidden_states,
                 causal_mask=mask,
@@ -880,7 +881,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
-
+            print(884, causal_mask)
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
