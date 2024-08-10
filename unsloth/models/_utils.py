@@ -467,7 +467,7 @@ def patch_tokenizer(model, tokenizer):
             check_pad_token = tokenizer(possible_pad_token, add_special_tokens = False).input_ids
             if len(check_pad_token) != 1:
                 possible_pad_token = None
-            if check_pad_token[0] >= config.vocab_size:
+            if model is not None and check_pad_token[0] >= model.config.vocab_size:
                 possible_pad_token = None
         pass
 
