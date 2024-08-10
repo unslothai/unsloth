@@ -687,7 +687,6 @@ def LlamaModel_fast_forward(
             self.SWA_mask = True
             self.GA_mask  = False
         else:
-            print(1)
             n = self.max_seq_length # self.config.max_position_embeddings
             # masked_fill is making stuff slower!
             # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
@@ -716,8 +715,7 @@ def LlamaModel_fast_forward(
 
         mask = causal_mask
         if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
-
-        print(type(mask))
+        
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
                 decoder_layer,
