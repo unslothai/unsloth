@@ -28,6 +28,7 @@ import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
+from huggingface_hub import HfApi
 
 __all__ = [
     "print_quantization_methods",
@@ -676,7 +677,6 @@ def unsloth_save_model(
         # Now manually go through each file and upload them manually!
         filenames = os.listdir(new_save_directory)
 
-        from huggingface_hub import HfApi
         hf_api = HfApi(token = save_pretrained_settings["token"])
 
         print("Unsloth: Uploading all files... Please wait...")
@@ -1393,7 +1393,6 @@ def upload_to_huggingface(
 
     if file_location is not None:
         # Now upload file
-        from huggingface_hub import HfApi
         hf_api = HfApi(token = token)
 
         if "/" in file_location:
