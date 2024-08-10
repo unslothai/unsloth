@@ -413,7 +413,7 @@ def Gemma2Model_fast_forward_inference(
         SWA = attention_mask
         GA  = attention_mask
     pass
-
+    print(1)
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
 
