@@ -719,8 +719,8 @@ def LlamaModel_fast_forward(
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         mask = causal_mask
-        print(IS_GEMMA2)
         if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
+        print(mask is None)
 
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
