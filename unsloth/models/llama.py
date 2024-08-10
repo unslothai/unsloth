@@ -800,6 +800,7 @@ def LlamaModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
+    print(803)
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -867,6 +868,7 @@ def CausalLM_fast_forward(fast_forward_inference):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
         if past_key_values is not None:
+            print(871)
             outputs = fast_forward_inference(
                 self,
                 input_ids,
@@ -896,7 +898,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 return_dict=return_dict,
             )
         pass
-
+        print(900)
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
