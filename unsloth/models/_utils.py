@@ -280,18 +280,16 @@ pass
 # =============================================
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
 if Version(xformers_version) >= Version("0.0.27"):
-    print(111111111)
-    import accelerate.utils
-    if hasattr(accelerate.utils, "send_to_device"):
-        print(111111111)
-        send_to_device = inspect.getsource(accelerate.utils.send_to_device)
+    import accelerate.utils.operations
+    if hasattr(accelerate.utils.operations, "send_to_device"):
+        send_to_device = inspect.getsource(accelerate.utils.operations.send_to_device)
         send_to_device = re.sub(
             r"([ ]{4,})return tensor\.to\(device\)",
             r"\1try: return tensor.to(device)\n\1except: print(11111)",
             send_to_device,
         ).replace("def send_to_device", "def _fixed_send_to_device")
         exec(send_to_device)
-        accelerate.utils.send_to_device = _fixed_send_to_device
+        accelerate.utils.operations.send_to_device = _fixed_send_to_device
     pass
 pass
 # =============================================
