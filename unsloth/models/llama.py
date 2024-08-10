@@ -687,6 +687,7 @@ def LlamaModel_fast_forward(
             self.SWA_mask = True
             self.GA_mask  = False
         else:
+            print(1)
             n = self.max_seq_length # self.config.max_position_embeddings
             # masked_fill is making stuff slower!
             # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
