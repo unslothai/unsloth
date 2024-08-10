@@ -137,7 +137,9 @@ pass
 # =============================================
 # Fix KeyError: 'Cache only has 0 layers, attempted to access layer with index 0'
 import transformers.cache_utils
-if hasattr(transformers.cache_utils, "DynamicCache"):
+if hasattr(transformers.cache_utils, "DynamicCache") and \
+    transformers.cache_utils.DynamicCache.__getitem__.__name__ != "__cache_utils_getitem__":
+
     source = inspect.getsource(transformers.cache_utils.DynamicCache.__getitem__)
     start = source.find("def")
     spaces = start*" "
@@ -281,7 +283,9 @@ pass
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
 if Version(xformers_version) >= Version("0.0.27"):
     import accelerate.utils.operations
-    if hasattr(accelerate.utils.operations, "send_to_device"):
+    if hasattr(accelerate.utils.operations, "send_to_device") and \
+        accelerate.utils.operations.send_to_device.__name__ != "_fixed_send_to_device":
+        from accelerate.utils.operations import *
         send_to_device = inspect.getsource(accelerate.utils.operations.send_to_device)
         send_to_device = re.sub(
             r"([ ]{4,})return tensor\.to\(device\)",
