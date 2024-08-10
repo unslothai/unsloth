@@ -212,7 +212,7 @@ from transformers.models.llama.modeling_llama import logger
 # Get Xformers
 from xformers import __version__ as xformers_version
 # Temporarily disable 0.0.27 and higher - inference issues
-if Version(xformers_version) >= Version("0.0.27"):
+if False: #Version(xformers_version) >= Version("0.0.27"):
     raise ImportError(
         "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
         "then press Disconnect Runtime and then Restart it.\n"\
@@ -237,7 +237,7 @@ elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= 
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
         f"Please install xformers < 0.0.26 for torch = {torch_version}."
     )
-elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) >= Version("0.0.27"):
+elif False: #Version(torch_version) < Version("2.4.0") and Version(xformers_version) >= Version("0.0.27"):
     raise ImportError(
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
         f"Please install xformers < 0.0.27 for torch = {torch_version}."
