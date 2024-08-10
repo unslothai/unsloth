@@ -1321,6 +1321,7 @@ def upload_to_huggingface(
     file_location = None,
     old_username = None,
     private = None,
+    create_config = True,
 ):
     save_directory, username = _determine_username(save_directory, old_username, token)
 
@@ -1372,6 +1373,8 @@ def upload_to_huggingface(
                     repo_type       = "model",
                     commit_message  = "(Trained with Unsloth)",
                 )
+            pass
+        pass
 
         hf_api.upload_file(
             path_or_fileobj = file_location,
@@ -1382,18 +1385,20 @@ def upload_to_huggingface(
         )
 
         # We also upload a config.json file
-        import json
-        with open("_temporary_unsloth_config.json", "w") as file:
-            json.dump({"model_type" : model.config.model_type}, file, indent = 4)
+        if create_config:
+            import json
+            with open("_temporary_unsloth_config.json", "w") as file:
+                json.dump({"model_type" : model.config.model_type}, file, indent = 4)
+            pass
+            hf_api.upload_file(
+                path_or_fileobj = "_temporary_unsloth_config.json",
+                path_in_repo    = "config.json",
+                repo_id         = save_directory,
+                repo_type       = "model",
+                commit_message  = "(Trained with Unsloth)",
+            )
+            os.remove("_temporary_unsloth_config.json")
         pass
-        hf_api.upload_file(
-            path_or_fileobj = "_temporary_unsloth_config.json",
-            path_in_repo    = "config.json",
-            repo_id         = save_directory,
-            repo_type       = "model",
-            commit_message  = "(Trained with Unsloth)",
-        )
-        os.remove("_temporary_unsloth_config.json")
     pass
     return username
 pass
