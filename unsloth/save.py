@@ -34,6 +34,7 @@ __all__ = [
     "unsloth_save_model",
     "save_to_gguf",
     "patch_saving_functions",
+    "create_huggingface_repo",
 ]
 
 # Check environments
@@ -1309,6 +1310,47 @@ def _determine_username(save_directory, old_username, token):
         username = save_directory.split("/")[0]
     pass
     return save_directory, username
+pass
+
+
+def create_huggingface_repo(
+    model,
+    save_directory,
+    token = None,
+    private = False,
+):
+    if token is None and "HF_TOKEN" in os.environ:
+        token = os.environ["HF_TOKEN"]
+    if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+        token = os.environ["HUGGINGFACE_TOKEN"]
+    pass
+    save_directory, username = _determine_username(save_directory, "", token)
+
+    from huggingface_hub import create_repo
+    try:
+        create_repo(
+            repo_id   = save_directory,
+            token     = token,
+            repo_type = "model",
+            exist_ok  = False,
+            private   = private,
+        ) 
+
+        # Create model card
+        from huggingface_hub import ModelCard
+        content = MODEL_CARD.format(
+            username   = username,
+            base_model = model.config._name_or_path,
+            model_type = model.config.model_type,
+            method     = "",
+            extra      = extra,
+        )
+        card = ModelCard(content)
+        card.push_to_hub(save_directory, token = token)
+    except:
+        pass
+    hf_api = HfApi(token = token)
+    return save_directory, hf_api
 pass
 
 
