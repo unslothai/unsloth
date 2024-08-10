@@ -55,6 +55,7 @@ warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "xformers")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
@@ -223,10 +224,10 @@ if False: #Version(xformers_version) >= Version("0.0.27"):
         "%%capture\n"
         "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
         '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-        '!pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes\n'\
+        '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'\
         '\n'\
         f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"\
-        'Please downgrade xformers via `pip install --force-reinstall "xformers<0.0.27"'
+        'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
     )
 pass
 
@@ -240,10 +241,10 @@ elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= 
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
         f"Please install xformers < 0.0.26 for torch = {torch_version}."
     )
-elif False: #Version(torch_version) < Version("2.4.0") and Version(xformers_version) >= Version("0.0.27"):
+elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) > Version("0.0.27"):
     raise ImportError(
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
-        f"Please install xformers < 0.0.27 for torch = {torch_version}."
+        f"Please install xformers <= 0.0.27 for torch = {torch_version}."
     )
 pass
 
@@ -264,6 +265,7 @@ xformers_attention = xformers.memory_efficient_attention
 
 # Check TRL version
 from trl import __version__ as trl_version
+# Unsloth now supports all TRL versions!
 if False:#Version(trl_version) >= Version("0.9.0"):
     raise ImportError(
         "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
@@ -272,10 +274,10 @@ if False:#Version(trl_version) >= Version("0.9.0"):
         "%%capture\n"
         "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
         '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-        '!pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes\n'\
+        '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'\
         '\n'\
         f"Otherwise in local machines, your TRL version of {trl_version} is too new.\n"\
-        'Please downgrade TRL via `pip install --force-reinstall "trl<0.9.0"'
+        'Please downgrade TRL via `pip install --force-reinstall trl'
     )
 pass
 
