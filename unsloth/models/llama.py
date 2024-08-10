@@ -383,7 +383,6 @@ def LlamaAttention_fast_forward(
             else:
                 Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
         pass
-        print(1)
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
@@ -707,6 +706,8 @@ def LlamaModel_fast_forward(
                 .squeeze(0).squeeze(0)
         pass
     pass
+
+    print(attention_mask)
 
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
