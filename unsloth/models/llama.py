@@ -638,6 +638,7 @@ def LlamaModel_fast_forward(
             past_key_values_length,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
+        print(attention_mask)
     pass
 
     hidden_states = inputs_embeds
@@ -715,7 +716,7 @@ def LlamaModel_fast_forward(
 
         mask = causal_mask
         if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
-        
+
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
                 decoder_layer,
