@@ -261,7 +261,7 @@ xformers_attention = xformers.memory_efficient_attention
 
 # Check TRL version
 from trl import __version__ as trl_version
-if Version(trl_version) >= Version("0.9.0"):
+if False:#Version(trl_version) >= Version("0.9.0"):
     raise ImportError(
         "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
         "then press Disconnect Runtime and then Restart it.\n"\
