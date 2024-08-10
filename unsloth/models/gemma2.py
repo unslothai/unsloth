@@ -128,8 +128,7 @@ def Gemma2Attention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
     past_key_value = (K, V) if use_cache else None
-
-    print(causal_mask)
+    
     # Only enable if the attention_mask is True
     has_sliding_window = type(causal_mask) is bool and causal_mask is True
     if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:

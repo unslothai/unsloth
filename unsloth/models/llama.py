@@ -683,11 +683,11 @@ def LlamaModel_fast_forward(
 
     # Gemma2 has alternating SWA and global attn
     if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
-        if HAS_FLASH_ATTENTION_SOFTCAPPING:
+        if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
             self.SWA_mask = True
             self.GA_mask  = False
         else:
-            n = self.config.max_position_embeddings
+            n = self.max_seq_length # self.config.max_position_embeddings
             # masked_fill is making stuff slower!
             # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
             # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
