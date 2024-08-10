@@ -506,8 +506,6 @@ def LlamaModel_fast_forward(
     *args, **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
     
-    if past_key_values is None: causal_mask = xformers.attn_bias.LowerTriangularMask()
-
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     assert(output_attentions is False)
     output_hidden_states = (
@@ -871,6 +869,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                 attention_mask = attention_mask,
             )
         else:
+            causal_mask = xformers.attn_bias.LowerTriangularMask()
+            
             output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
             output_hidden_states = (
                 output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -881,7 +881,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             self.model._has_no_labels = labels is None
             outputs = self.model(
                 input_ids=input_ids,
-                causal_mask=None,
+                causal_mask=causal_mask,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
