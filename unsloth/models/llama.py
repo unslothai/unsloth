@@ -716,6 +716,7 @@ def LlamaModel_fast_forward(
         mask = causal_mask
         if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
 
+        print(mask)
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
                 decoder_layer,
@@ -870,7 +871,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             )
         else:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
-            
+
             output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
             output_hidden_states = (
                 output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
