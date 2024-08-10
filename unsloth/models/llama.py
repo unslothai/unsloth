@@ -708,7 +708,7 @@ def LlamaModel_fast_forward(
         pass
     pass
 
-    print(attention_mask)
+    print(attention_mask is None, self.SWA_mask is None)
 
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
