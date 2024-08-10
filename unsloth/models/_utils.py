@@ -53,6 +53,7 @@ from packaging.version import Version
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
