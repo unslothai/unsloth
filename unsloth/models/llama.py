@@ -718,7 +718,6 @@ def LlamaModel_fast_forward(
 
         mask = causal_mask
         if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
-        print(mask is None)
 
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
@@ -751,7 +750,6 @@ def LlamaModel_fast_forward(
             hidden_states = layer_outputs[0]
 
         else:
-            print(751, causal_mask)
             layer_outputs = decoder_layer(
                 hidden_states,
                 causal_mask=mask,
@@ -763,7 +761,6 @@ def LlamaModel_fast_forward(
                 padding_mask=padding_mask,
             )
             hidden_states = layer_outputs[0]
-            print(766, causal_mask)
         pass
 
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
@@ -800,7 +797,6 @@ def LlamaModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    print(803)
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -868,7 +864,6 @@ def CausalLM_fast_forward(fast_forward_inference):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
         if past_key_values is not None:
-            print(871)
             outputs = fast_forward_inference(
                 self,
                 input_ids,
@@ -898,7 +893,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 return_dict=return_dict,
             )
         pass
-        print(900)
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
