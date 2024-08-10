@@ -93,7 +93,7 @@ def _get_new_mapper():
 pass
 
 
-def _get_model_name(model_name, load_in_4bit = True):
+def get_model_name(model_name, load_in_4bit = True):
     new_model_name = __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
@@ -145,7 +145,7 @@ class FastLanguageModel(FastLlamaModel):
             token = os.environ["HUGGINGFACE_TOKEN"]
 
         old_model_name = model_name
-        model_name = _get_model_name(model_name, load_in_4bit)
+        model_name = get_model_name(model_name, load_in_4bit)
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
@@ -192,7 +192,7 @@ class FastLanguageModel(FastLlamaModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
-            model_name = _get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
             model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
         pass
 
