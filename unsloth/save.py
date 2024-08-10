@@ -1327,28 +1327,28 @@ def create_huggingface_repo(
     save_directory, username = _determine_username(save_directory, "", token)
 
     from huggingface_hub import create_repo
-    try:
-        create_repo(
-            repo_id   = save_directory,
-            token     = token,
-            repo_type = "model",
-            exist_ok  = False,
-            private   = private,
-        ) 
+    # try:
+    create_repo(
+        repo_id   = save_directory,
+        token     = token,
+        repo_type = "model",
+        exist_ok  = False,
+        private   = private,
+    ) 
 
-        # Create model card
-        from huggingface_hub import ModelCard
-        content = MODEL_CARD.format(
-            username   = username,
-            base_model = model.config._name_or_path,
-            model_type = model.config.model_type,
-            method     = "",
-            extra      = extra,
-        )
-        card = ModelCard(content)
-        card.push_to_hub(save_directory, token = token)
-    except:
-        pass
+    # Create model card
+    from huggingface_hub import ModelCard
+    content = MODEL_CARD.format(
+        username   = username,
+        base_model = model.config._name_or_path,
+        model_type = model.config.model_type,
+        method     = "",
+        extra      = extra,
+    )
+    card = ModelCard(content)
+    card.push_to_hub(save_directory, token = token)
+    # except:
+    #     pass
     hf_api = HfApi(token = token)
     return save_directory, hf_api
 pass
