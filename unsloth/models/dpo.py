@@ -115,20 +115,6 @@ def NotebookTrainingTracker_write_line(self, values):
 pass
 
 
-optimized_ce_loss_kernel = """
-def cross_entropy_loss(logits, labels):
-    if not self.is_encoder_decoder:
-        if not hasattr(self, "extra_ignored_labels"):
-            self.extra_ignored_labels = torch.full((self.max_length*2, 1), -100, device = "cuda:0")
-        pass
-        labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-    pass
-    from unsloth.kernels import fast_cross_entropy_loss
-    return fast_cross_entropy_loss(logits, labels)
-pass
-labels = concatenated_batch["concatenated_labels"]
-"""
-
 def PatchDPOTrainer():
     if HAS_NOTEBOOK:
         from transformers.trainer import is_in_notebook
@@ -167,6 +153,19 @@ def PatchDPOTrainer():
                 raise RuntimeError("Unsloth: Failed to patch DPOTrainer! Please file a bug report.")
             pass
 
+            optimized_ce_loss_kernel = """
+def cross_entropy_loss(logits, labels):
+    if not self.is_encoder_decoder:
+        if not hasattr(self, "extra_ignored_labels"):
+            self.extra_ignored_labels = torch.full((self.max_length*2, 1), -100, device = "cuda:0")
+        pass
+        labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+    pass
+    from unsloth.kernels import fast_cross_entropy_loss
+    return fast_cross_entropy_loss(logits, labels)
+pass
+labels = concatenated_batch["concatenated_labels"]
+"""
             ce_loss_kernel = optimized_ce_loss_kernel.split("\n")
             ce_loss_kernel = "\n".join(" "*spaces + x for x in ce_loss_kernel)
             concatenated_forward = \
