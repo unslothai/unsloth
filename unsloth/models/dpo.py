@@ -166,11 +166,11 @@ def cross_entropy_loss(logits, labels):
 pass
 labels = concatenated_batch["concatenated_labels"]
 """
-            ce_loss_kernel = optimized_ce_loss_kernel.split("\n")
-            ce_loss_kernel = "\n".join(" "*spaces + x for x in ce_loss_kernel)
+            optimized_ce_loss_kernel = optimized_ce_loss_kernel.split("\n")
+            optimized_ce_loss_kernel = "\n".join(" "*spaces + x for x optimized_ce_loss_kernel)
             concatenated_forward = \
                 concatenated_forward[:ce_loss_where] + \
-                ce_loss_kernel + \
+                optimized_ce_loss_kernel + \
                 concatenated_forward[ce_loss_end:]
             pass
             concatenated_forward = concatenated_forward.replace(
