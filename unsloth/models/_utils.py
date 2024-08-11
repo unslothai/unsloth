@@ -53,7 +53,9 @@ from packaging.version import Version
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "xformers")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
@@ -134,6 +136,28 @@ pass
 # =============================================
 
 # =============================================
+# Fix KeyError: 'Cache only has 0 layers, attempted to access layer with index 0'
+import transformers.cache_utils
+if hasattr(transformers.cache_utils, "DynamicCache") and \
+    transformers.cache_utils.DynamicCache.__getitem__.__name__ != "__cache_utils_getitem__":
+
+    source = inspect.getsource(transformers.cache_utils.DynamicCache.__getitem__)
+    start = source.find("def")
+    spaces = start*" "
+    source = source.split("\n")
+    source = "\n".join(x[start:] for x in source)
+    where = source.find("raise KeyError")
+    source = source[:where] + \
+        f"if len(self) == 0:\n{spaces}{spaces}"\
+        "    raise RuntimeError('Unsloth: You must call `FastLanguageModel.for_inference(model)` before doing inference for Unsloth models.')\n" + \
+        f"{spaces}{spaces}else:\n{spaces}{spaces}{spaces}" + source[where:]
+    source = source.replace("__getitem__", "__cache_utils_getitem__", 1)
+    exec(source)
+    transformers.cache_utils.DynamicCache.__getitem__ = __cache_utils_getitem__
+pass
+# =============================================
+
+# =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 import bitsandbytes as bnb
 from transformers import AutoTokenizer
@@ -192,7 +216,7 @@ from transformers.models.llama.modeling_llama import logger
 # Get Xformers
 from xformers import __version__ as xformers_version
 # Temporarily disable 0.0.27 and higher - inference issues
-if Version(xformers_version) >= Version("0.0.27"):
+if False: #Version(xformers_version) >= Version("0.0.27"):
     raise ImportError(
         "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
         "then press Disconnect Runtime and then Restart it.\n"\
@@ -200,10 +224,10 @@ if Version(xformers_version) >= Version("0.0.27"):
         "%%capture\n"
         "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
         '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-        '!pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes\n'\
+        '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'\
         '\n'\
         f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"\
-        'Please downgrade xformers via `pip install --force-reinstall "xformers<0.0.27"'
+        'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
     )
 pass
 
@@ -217,10 +241,10 @@ elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= 
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
         f"Please install xformers < 0.0.26 for torch = {torch_version}."
     )
-elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) >= Version("0.0.27"):
+elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) > Version("0.0.27"):
     raise ImportError(
         f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
-        f"Please install xformers < 0.0.27 for torch = {torch_version}."
+        f"Please install xformers <= 0.0.27 for torch = {torch_version}."
     )
 pass
 
@@ -241,7 +265,8 @@ xformers_attention = xformers.memory_efficient_attention
 
 # Check TRL version
 from trl import __version__ as trl_version
-if Version(trl_version) >= Version("0.9.0"):
+# Unsloth now supports all TRL versions!
+if False:#Version(trl_version) >= Version("0.9.0"):
     raise ImportError(
         "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
         "then press Disconnect Runtime and then Restart it.\n"\
@@ -249,12 +274,31 @@ if Version(trl_version) >= Version("0.9.0"):
         "%%capture\n"
         "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
         '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-        '!pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes\n'\
+        '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'\
         '\n'\
         f"Otherwise in local machines, your TRL version of {trl_version} is too new.\n"\
-        'Please downgrade TRL via `pip install --force-reinstall "trl<0.9.0"'
+        'Please downgrade TRL via `pip install --force-reinstall trl'
     )
 pass
+
+# =============================================
+# Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
+if Version(xformers_version) >= Version("0.0.27"):
+    import accelerate.utils.operations
+    if hasattr(accelerate.utils.operations, "send_to_device") and \
+        accelerate.utils.operations.send_to_device.__name__ != "_fixed_send_to_device":
+        from accelerate.utils.operations import *
+        send_to_device = inspect.getsource(accelerate.utils.operations.send_to_device)
+        send_to_device = re.sub(
+            r"([ ]{4,})return tensor\.to\(device\)",
+            r"\1try: return tensor.to(device)\n\1except: return tensor",
+            send_to_device,
+        ).replace("def send_to_device", "def _fixed_send_to_device")
+        exec(send_to_device)
+        accelerate.utils.operations.send_to_device = _fixed_send_to_device
+    pass
+pass
+# =============================================
 
 # =============================================
 # Torch compile settings

@@ -156,6 +156,7 @@ def Gemma2Attention_fast_forward(
         )
         A = A.reshape(bsz, q_len, n_heads*head_dim)
     else:
+        mask = causal_mask if attention_mask is None else attention_mask
         A = slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_seq_len)
     pass
     A = self.apply_o(self, A)
@@ -413,7 +414,6 @@ def Gemma2Model_fast_forward_inference(
         SWA = attention_mask
         GA  = attention_mask
     pass
-
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
 

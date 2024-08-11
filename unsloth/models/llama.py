@@ -419,7 +419,7 @@ pass
 def LlamaDecoderLayer_fast_forward(
     self,
     hidden_states:        torch.Tensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    causal_mask           = None,
     attention_mask:       Optional[torch.Tensor] = None,
     position_ids:         Optional[torch.LongTensor] = None,
     past_key_value:       Optional[Tuple[torch.Tensor]] = None,
@@ -505,7 +505,7 @@ def LlamaModel_fast_forward(
     return_dict:          Optional[bool] = None,
     *args, **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
-
+    
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     assert(output_attentions is False)
     output_hidden_states = (
@@ -682,12 +682,27 @@ def LlamaModel_fast_forward(
 
 
     # Gemma2 has alternating SWA and global attn
-    if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
-        if HAS_FLASH_ATTENTION_SOFTCAPPING:
+    if IS_GEMMA2:
+        if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
             self.SWA_mask = True
             self.GA_mask  = False
-        else:
-            n = self.config.max_position_embeddings
+        elif attention_mask is not None:
+            self.SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window = self.config.sliding_window,
+            )
+            self.GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window = None,
+            )
+        elif not hasattr(self, "SWA_mask"):
+            n = self.max_seq_length # self.config.max_position_embeddings
             # masked_fill is making stuff slower!
             # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
             # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
@@ -870,7 +885,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             )
         else:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
-    
+
             output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
             output_hidden_states = (
                 output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -879,7 +894,6 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
-
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
@@ -893,7 +907,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 return_dict=return_dict,
             )
         pass
-
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
