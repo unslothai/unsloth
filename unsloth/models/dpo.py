@@ -51,7 +51,7 @@ def NotebookProgressCallback_on_train_begin(self, args, state, control, **kwargs
     self.training_loss = 0
     self.last_log = 0
     column_names = [self.first_column] + ["Training Loss"]
-    print(1, args.evaluation_strategy)
+    print(1, args.evaluation_strategy, args.eval_strategy)
     if args.evaluation_strategy != IntervalStrategy.NO:
         column_names.append("Validation Loss")
     column_names += [x.replace("/", " / ") for x in DPOTrainer_metrics]
