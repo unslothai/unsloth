@@ -177,7 +177,7 @@ labels = concatenated_batch["concatenated_labels"]
                 "def concatenated_forward",
                 "def _unsloth_concatenated_forward",
             )
-            exec(concatenated_forward)
+            exec(concatenated_forward, globals())
             DPOTrainer.concatenated_forward = _unsloth_concatenated_forward
             DPOTrainer.concatenated_forward = \
                 torch.compile(DPOTrainer.concatenated_forward, dynamic = True, options = torch_compile_options)
