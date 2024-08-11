@@ -167,7 +167,7 @@ pass
 labels = concatenated_batch["concatenated_labels"]
 """
             optimized_ce_loss_kernel = optimized_ce_loss_kernel.split("\n")
-            optimized_ce_loss_kernel = "\n".join(" "*spaces + x for x optimized_ce_loss_kernel)
+            optimized_ce_loss_kernel = "\n".join(" "*spaces + x for x in optimized_ce_loss_kernel)
             concatenated_forward = \
                 concatenated_forward[:ce_loss_where] + \
                 optimized_ce_loss_kernel + \
