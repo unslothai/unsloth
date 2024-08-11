@@ -558,7 +558,8 @@ def unsloth_save_model(
                 logger.warning_once(f"We will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
-                state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True, weights_only = True)
+                # weights_only = True weirdly fails?
+                state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True, weights_only = False)
         pass
         for item in LLAMA_LAYERNORMS:
             try:
