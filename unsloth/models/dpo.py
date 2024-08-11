@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+__all__ = [
+    "PatchDPOTrainer",
+]
+
 try:
     from transformers.utils.notebook import (
         IntervalStrategy,
@@ -163,11 +167,11 @@ def PatchDPOTrainer():
                 raise RuntimeError("Unsloth: Failed to patch DPOTrainer! Please file a bug report.")
             pass
 
-            optimized_kernel = optimized_kernel.split("\n")
-            optimized_kernel = "\n".join(" "*spaces + x for x in optimized_kernel)
+            optimized_ce_loss_kernel = optimized_ce_loss_kernel.split("\n")
+            optimized_ce_loss_kernel = "\n".join(" "*spaces + x for x in optimized_ce_loss_kernel)
             concatenated_forward = \
                 concatenated_forward[:ce_loss_where] + \
-                optimized_kernel + \
+                optimized_ce_loss_kernel + \
                 concatenated_forward[ce_loss_end:]
             pass
             concatenated_forward = concatenated_forward.replace(
