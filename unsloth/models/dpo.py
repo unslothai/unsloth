@@ -167,11 +167,11 @@ def PatchDPOTrainer():
                 raise RuntimeError("Unsloth: Failed to patch DPOTrainer! Please file a bug report.")
             pass
 
-            optimized_ce_loss_kernel = optimized_ce_loss_kernel.split("\n")
-            optimized_ce_loss_kernel = "\n".join(" "*spaces + x for x in optimized_ce_loss_kernel)
+            ce_loss_kernel = optimized_ce_loss_kernel.split("\n")
+            ce_loss_kernel = "\n".join(" "*spaces + x for x in ce_loss_kernel)
             concatenated_forward = \
                 concatenated_forward[:ce_loss_where] + \
-                optimized_ce_loss_kernel + \
+                ce_loss_kernel + \
                 concatenated_forward[ce_loss_end:]
             pass
             concatenated_forward = concatenated_forward.replace(
