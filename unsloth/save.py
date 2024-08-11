@@ -209,8 +209,9 @@ def unsloth_save_model(
 ):
     if token is None and "HF_TOKEN" in os.environ:
         token = os.environ["HF_TOKEN"]
-
-    if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+    elif token is None and "hf_token" in os.environ:
+        token = os.environ["hf_token"]
+    elif token is None and "HUGGINGFACE_TOKEN" in os.environ:
         token = os.environ["HUGGINGFACE_TOKEN"]
 
     if commit_message is None: commit_message = ""
@@ -557,7 +558,7 @@ def unsloth_save_model(
                 logger.warning_once(f"We will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
-                state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True)
+                state_dict[name] = torch.load(filename, map_location = "cpu", mmap = True, weights_only = True)
         pass
         for item in LLAMA_LAYERNORMS:
             try:
@@ -1321,7 +1322,9 @@ def create_huggingface_repo(
 ):
     if token is None and "HF_TOKEN" in os.environ:
         token = os.environ["HF_TOKEN"]
-    if token is None and "HUGGINGFACE_TOKEN" in os.environ:
+    elif token is None and "hf_token" in os.environ:
+        token = os.environ["hf_token"]
+    elif token is None and "HUGGINGFACE_TOKEN" in os.environ:
         token = os.environ["HUGGINGFACE_TOKEN"]
     pass
     save_directory, username = _determine_username(save_directory, "", token)
