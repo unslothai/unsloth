@@ -127,7 +127,7 @@ labels = concatenated_batch["concatenated_labels"]
 
 def PatchDPOTrainer():
     if HAS_NOTEBOOK:
-        # from transformers.trainer import is_in_notebook
+        from transformers.trainer import is_in_notebook
         # if is_in_notebook():
         #     # Patch DPO notebook printing
         #     NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line
