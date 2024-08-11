@@ -60,9 +60,9 @@ pass
 
 def NotebookProgressCallback_on_log(self, args, state, control, logs=None, **kwargs):
     # Only for when there is no evaluation
+    print(logs)
     if args.evaluation_strategy == IntervalStrategy.NO and "loss" in logs:
         values = {"Training Loss": logs["loss"]}
-        print(logs)
         for metric in DPOTrainer_metrics:
             values[metric.replace("/", " / ")] = logs[metric]
         pass
