@@ -22,6 +22,12 @@ try:
 except:
     HAS_NOTEBOOK = False
 pass
+import torch
+from ._utils import torch_compile_options
+import inspect
+import torch.nn as nn
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+
 
 DPOTrainer_metrics = [
     "rewards/chosen",
@@ -105,16 +111,77 @@ def NotebookTrainingTracker_write_line(self, values):
 pass
 
 
+optimized_ce_loss_kernel = """
+def cross_entropy_loss(logits, labels):
+    if not self.is_encoder_decoder:
+        if not hasattr(self, "extra_ignored_labels"):
+            self.extra_ignored_labels = torch.full((self.max_length*2, 1), -100, device = "cuda:0")
+        pass
+        labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+    pass
+    from unsloth.kernels import fast_cross_entropy_loss
+    return fast_cross_entropy_loss(logits, labels)
+pass
+labels = concatenated_batch["concatenated_labels"]
+"""
+
 def PatchDPOTrainer():
     if HAS_NOTEBOOK:
-        from transformers.trainer import is_in_notebook
-        if is_in_notebook():
-            # Patch DPO notebook printing
-            NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line
-            from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
-            DEFAULT_PROGRESS_CALLBACK.on_train_begin = NotebookProgressCallback_on_train_begin
-            DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log
+        # from transformers.trainer import is_in_notebook
+        # if is_in_notebook():
+        #     # Patch DPO notebook printing
+        #     NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line
+        #     from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
+        #     DEFAULT_PROGRESS_CALLBACK.on_train_begin = NotebookProgressCallback_on_train_begin
+        #     DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log
+        # pass
+    pass
+
+    from trl import DPOTrainer
+    if hasattr(DPOTrainer, "_unsloth_patched_"): return
+
+    # Patch dpo_loss
+    if hasattr(DPOTrainer, "dpo_loss"):
+        DPOTrainer.dpo_loss = \
+            torch.compile(DPOTrainer.dpo_loss, dynamic = True, options = torch_compile_options)
+    pass
+
+    # Patch concatenated_forward
+    if hasattr(DPOTrainer, "concatenated_forward") and \
+        DPOTrainer.concatenated_forward.__name__ != "_unsloth_concatenated_forward":
+
+        concatenated_forward = inspect.getsource(DPOTrainer.concatenated_forward)
+        spaces = concatenated_forward.find("def")
+        concatenated_forward = concatenated_forward.split("\n")
+        concatenated_forward = "\n".join(x[spaces:] for x in concatenated_forward)
+
+        ce_loss_where = concatenated_forward.find("def cross_entropy_loss")
+        ce_loss_end   = concatenated_forward.find("nll_loss")
+
+        if ce_loss_where != -1:
+            if ce_loss_end == -1:
+                raise RuntimeError("Unsloth: Failed to patch DPOTrainer! Please file a bug report.")
+            pass
+
+            optimized_kernel = optimized_kernel.split("\n")
+            optimized_kernel = "\n".join(" "*spaces + x for x in optimized_kernel)
+            concatenated_forward = \
+                concatenated_forward[:ce_loss_where] + \
+                optimized_kernel + \
+                concatenated_forward[ce_loss_end:]
+            pass
+            concatenated_forward = concatenated_forward.replace(
+                "def concatenated_forward",
+                "def _unsloth_concatenated_forward",
+            )
+            exec(concatenated_forward)
+            DPOTrainer.concatenated_forward = _unsloth_concatenated_forward
+            DPOTrainer.concatenated_forward = \
+                torch.compile(DPOTrainer.concatenated_forward, dynamic = True, options = torch_compile_options)
+            pass
         pass
     pass
+
+    DPOTrainer._unsloth_patched_ = True
 pass
 
