@@ -124,7 +124,7 @@ def PatchDPOTrainer():
             NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line
             from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
             DEFAULT_PROGRESS_CALLBACK.on_train_begin = NotebookProgressCallback_on_train_begin
-            # DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log
+            DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log
         pass
     pass
 
