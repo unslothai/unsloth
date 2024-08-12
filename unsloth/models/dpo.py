@@ -153,8 +153,8 @@ def PatchDPOTrainer():
         exec(get_batch_logps, globals())
         DPOTrainer.get_batch_logps = _unsloth_get_batch_logps
 
-        DPOTrainer.get_batch_logps = \
-            torch.compile(DPOTrainer.get_batch_logps, dynamic = True, options = torch_compile_options)
+        # DPOTrainer.get_batch_logps = \
+        #     torch.compile(DPOTrainer.get_batch_logps, dynamic = True, options = torch_compile_options)
         pass
     pass
 
@@ -175,6 +175,7 @@ def PatchDPOTrainer():
             pass
 
             optimized_ce_loss_kernel = """
+@torch._disable_dynamo
 def cross_entropy_loss(logits, labels):
     if not self.is_encoder_decoder:
         if not hasattr(self, "extra_ignored_labels"):
@@ -200,8 +201,11 @@ labels = concatenated_batch["concatenated_labels"]
             )
             exec(concatenated_forward, globals())
             DPOTrainer.concatenated_forward = _unsloth_concatenated_forward
-            # DPOTrainer.concatenated_forward = \
-            #     torch.compile(DPOTrainer.concatenated_forward, dynamic = True, options = torch_compile_options)
+
+            # Saves more VRAM, but too many recompiles sadly
+
+            DPOTrainer.concatenated_forward = \
+                torch.compile(DPOTrainer.concatenated_forward, dynamic = True, options = torch_compile_options)
             pass
         pass
     pass
