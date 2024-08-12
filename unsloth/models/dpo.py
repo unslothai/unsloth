@@ -47,12 +47,11 @@ set_DPOTrainer_metrics = frozenset(DPOTrainer_metrics)
 
 
 def NotebookProgressCallback_on_train_begin(self, args, state, control, **kwargs):
-    self.first_column = "Epoch" if args.evaluation_strategy == IntervalStrategy.EPOCH else "Step"
+    self.first_column = "Epoch" if args.eval_strategy == IntervalStrategy.EPOCH else "Step"
     self.training_loss = 0
     self.last_log = 0
     column_names = [self.first_column] + ["Training Loss"]
-    print(1, args.evaluation_strategy, args.eval_strategy)
-    if args.evaluation_strategy != IntervalStrategy.NO:
+    if args.eval_strategy != IntervalStrategy.NO:
         column_names.append("Validation Loss")
     column_names += [x.replace("/", " / ") for x in DPOTrainer_metrics]
     self.training_tracker = NotebookTrainingTracker(state.max_steps, column_names)
@@ -61,8 +60,7 @@ pass
 
 def NotebookProgressCallback_on_log(self, args, state, control, logs=None, **kwargs):
     # Only for when there is no evaluation
-    # if args.evaluation_strategy == IntervalStrategy.NO and "loss" in logs:
-    if "loss" in logs:
+    if args.eval_strategy == IntervalStrategy.NO and "loss" in logs:
         values = {"Training Loss": logs["loss"]}
         for metric in DPOTrainer_metrics:
             values[metric.replace("/", " / ")] = logs[metric]
