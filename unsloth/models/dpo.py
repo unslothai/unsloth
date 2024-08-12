@@ -181,6 +181,8 @@ labels = concatenated_batch["concatenated_labels"]
             DPOTrainer.concatenated_forward = _unsloth_concatenated_forward
             # DPOTrainer.concatenated_forward = \
             #     torch.compile(DPOTrainer.concatenated_forward, dynamic = True, options = torch_compile_options)
+            DPOTrainer.get_batch_logps = \
+                torch.compile(DPOTrainer.get_batch_logps, dynamic = True, options = torch_compile_options)
             pass
         pass
     pass
