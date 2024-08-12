@@ -177,6 +177,10 @@ labels = concatenated_batch["concatenated_labels"]
                 "def concatenated_forward",
                 "def _unsloth_concatenated_forward",
             )
+            concatenated_forward = concatenated_forward.replace(
+                "self.label_pad_token_id",
+                "-100"
+            )
             exec(concatenated_forward, globals())
             DPOTrainer.concatenated_forward = _unsloth_concatenated_forward
             # DPOTrainer.concatenated_forward = \
