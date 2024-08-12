@@ -131,10 +131,10 @@ def PatchDPOTrainer():
     if hasattr(DPOTrainer, "_unsloth_patched_"): return
 
     # Patch dpo_loss
-    if hasattr(DPOTrainer, "dpo_loss"):
-        DPOTrainer.dpo_loss = \
-            torch.compile(DPOTrainer.dpo_loss, dynamic = True, options = torch_compile_options)
-    pass
+    # if hasattr(DPOTrainer, "dpo_loss"):
+    #     DPOTrainer.dpo_loss = \
+    #         torch.compile(DPOTrainer.dpo_loss, dynamic = True, options = torch_compile_options)
+    # pass
 
     # Patch get_batch_logps
     if hasattr(DPOTrainer, "get_batch_logps"):
@@ -204,8 +204,10 @@ labels = concatenated_batch["concatenated_labels"]
 
             # Saves more VRAM, but too many recompiles sadly
 
-            DPOTrainer.concatenated_forward = \
-                torch.compile(DPOTrainer.concatenated_forward, dynamic = True, options = torch_compile_options)
+            # DPOTrainer.concatenated_forward = \
+            #     torch.compile(DPOTrainer.concatenated_forward, dynamic = True, options = torch_compile_options)
+            DPOTrainer.get_batch_loss_metrics = \
+                torch.compile(DPOTrainer.get_batch_loss_metrics, dynamic = True, options = torch_compile_options)
             pass
         pass
     pass
