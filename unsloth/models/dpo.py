@@ -133,7 +133,7 @@ def PatchDPOTrainer():
     # Patch dpo_loss
     if hasattr(DPOTrainer, "dpo_loss"):
         DPOTrainer.dpo_loss = \
-            torch.compile(DPOTrainer.dpo_loss, dynamic = True, options = torch_compile_options)
+            torch.compile(DPOTrainer.dpo_loss, dynamic = True, options = torch_compile_options, fullgraph = True)
     pass
 
     # Patch get_batch_logps
@@ -154,7 +154,7 @@ def PatchDPOTrainer():
         DPOTrainer.get_batch_logps = _unsloth_get_batch_logps
 
         DPOTrainer.get_batch_logps = \
-            torch.compile(DPOTrainer.get_batch_logps, dynamic = True, options = torch_compile_options)
+            torch.compile(DPOTrainer.get_batch_logps, dynamic = True, options = torch_compile_options, fullgraph = True)
         pass
     pass
 
