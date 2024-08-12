@@ -136,14 +136,14 @@ def PatchDPOTrainer():
             torch.compile(DPOTrainer.dpo_loss, dynamic = True, options = torch_compile_options)
     pass
 
-    # Patch
+    # Patch get_batch_logps
     if hasattr(DPOTrainer, "get_batch_logps"):
 
         get_batch_logps = inspect.getsource(DPOTrainer.get_batch_logps)
-        get_batch_logps = get_batch_logps.replace("@staticmethod\n", "")
+        get_batch_logps = get_batch_logps.lstrip().replace("@staticmethod\n", "")
         spaces = get_batch_logps.find("def")
         get_batch_logps = get_batch_logps.split("\n")
-        get_batch_logps = "\n".join(x[spaces:] if x.startswith(" "*spaces) else x for x in get_batch_logps)
+        get_batch_logps = "\n".join(x[spaces:] for x in get_batch_logps)
         get_batch_logps = get_batch_logps.replace("(", "(self,", 1)
 
         get_batch_logps = get_batch_logps.replace(
