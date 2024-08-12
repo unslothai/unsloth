@@ -136,9 +136,30 @@ def PatchDPOTrainer():
             torch.compile(DPOTrainer.dpo_loss, dynamic = True, options = torch_compile_options)
     pass
 
+    # Patch
+    if hasattr(DPOTrainer, "get_batch_logps"):
+
+        get_batch_logps = inspect.getsource(DPOTrainer.get_batch_logps)
+        get_batch_logps = get_batch_logps.replace("@staticmethod\n", "")
+        spaces = get_batch_logps.find("def")
+        get_batch_logps = get_batch_logps.split("\n")
+        get_batch_logps = "\n".join(x[spaces:] if x.startswith(" "*spaces) else x for x in get_batch_logps)
+        get_batch_logps = get_batch_logps.replace("(", "(self,", 1)
+
+        get_batch_logps = get_batch_logps.replace(
+            "def get_batch_logps",
+            "def _unsloth_get_batch_logps",
+        )
+        exec(get_batch_logps, globals())
+        DPOTrainer.get_batch_logps = _unsloth_get_batch_logps
+
+        DPOTrainer.get_batch_logps = \
+            torch.compile(DPOTrainer.get_batch_logps, dynamic = True, options = torch_compile_options)
+        pass
+    pass
+
     # Patch concatenated_forward
-    if hasattr(DPOTrainer, "concatenated_forward") and \
-        DPOTrainer.concatenated_forward.__name__ != "_unsloth_concatenated_forward":
+    if hasattr(DPOTrainer, "concatenated_forward"):
 
         concatenated_forward = inspect.getsource(DPOTrainer.concatenated_forward)
         spaces = concatenated_forward.find("def")
@@ -177,16 +198,10 @@ labels = concatenated_batch["concatenated_labels"]
                 "def concatenated_forward",
                 "def _unsloth_concatenated_forward",
             )
-            concatenated_forward = concatenated_forward.replace(
-                "self.label_pad_token_id",
-                "-100"
-            )
             exec(concatenated_forward, globals())
             DPOTrainer.concatenated_forward = _unsloth_concatenated_forward
             # DPOTrainer.concatenated_forward = \
             #     torch.compile(DPOTrainer.concatenated_forward, dynamic = True, options = torch_compile_options)
-            DPOTrainer.get_batch_logps = \
-                torch.compile(DPOTrainer.get_batch_logps, dynamic = True, options = torch_compile_options)
             pass
         pass
     pass
