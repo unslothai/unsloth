@@ -699,7 +699,7 @@ PARAMETER stop "<|eom_id|>"
 
 llama31_template_eos_token = "eos_token"
 CHAT_TEMPLATES["llama-3.1"] = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
-CHAT_TEMPLATES["llama-31"] = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
+CHAT_TEMPLATES["llama-31"]  = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
 pass
 
 

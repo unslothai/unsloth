@@ -2262,6 +2262,8 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "left"
         pass
+
+        return model
     pass
 
 
@@ -2300,6 +2302,8 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
         pass
+
+        return model
     pass
 pass
 
