@@ -241,6 +241,14 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/Mistral-Large-Instruct-2407-bnb-4bit" : (
         "mistralai/Mistral-Large-Instruct-2407",
     ),
+    "unsloth/gemma-2-2b-bnb-4bit" : (
+        "unsloth/gemma-2-2b",
+        "google/gemma-2-2b",
+    ),
+    "unsloth/gemma-2-2b-it-bnb-4bit" : (
+        "unsloth/gemma-2-2b-it",
+        "google/gemma-2-2b-it",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER = {}

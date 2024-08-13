@@ -303,6 +303,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 pass
 
 
+@torch._disable_dynamo
 def fast_cross_entropy_loss(logits, labels, logit_softcapping = 0):
     """
     Arguments:

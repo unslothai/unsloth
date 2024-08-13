@@ -14,10 +14,12 @@
 
 import torch
 import gc
+import math
 from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
+from transformers import __version__ as transformers_version
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
@@ -417,7 +419,7 @@ pass
 def LlamaDecoderLayer_fast_forward(
     self,
     hidden_states:        torch.Tensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    causal_mask           = None,
     attention_mask:       Optional[torch.Tensor] = None,
     position_ids:         Optional[torch.LongTensor] = None,
     past_key_value:       Optional[Tuple[torch.Tensor]] = None,
@@ -503,7 +505,7 @@ def LlamaModel_fast_forward(
     return_dict:          Optional[bool] = None,
     *args, **kwargs,
 ) -> Union[Tuple, BaseModelOutputWithPast]:
-
+    
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     assert(output_attentions is False)
     output_hidden_states = (
@@ -680,24 +682,44 @@ def LlamaModel_fast_forward(
 
 
     # Gemma2 has alternating SWA and global attn
-    if IS_GEMMA2 and not hasattr(self, "SWA_mask"):
-        n = self.config.max_position_embeddings
-        # masked_fill is making stuff slower!
-        # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
-        # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
-        from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-        self.SWA_mask = AttentionMaskConverter(
-            is_causal = True,
-            sliding_window = self.config.sliding_window,
-        )\
-            .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-            .squeeze(0).squeeze(0)
+    if IS_GEMMA2:
+        if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
+            self.SWA_mask = True
+            self.GA_mask  = False
+        elif attention_mask is not None:
+            self.SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window = self.config.sliding_window,
+            )
+            self.GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (batch_size, seq_length),
+                inputs_embeds,
+                past_key_values_length,
+                sliding_window = None,
+            )
+        elif not hasattr(self, "SWA_mask"):
+            n = self.max_seq_length # self.config.max_position_embeddings
+            # masked_fill is making stuff slower!
+            # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
+            # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
+            from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+            self.SWA_mask = AttentionMaskConverter(
+                is_causal = True,
+                sliding_window = self.config.sliding_window,
+            )\
+                .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+                .squeeze(0).squeeze(0)
 
-        self.GA_mask = AttentionMaskConverter(
-            is_causal = True,
-        )\
-            .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-            .squeeze(0).squeeze(0)
+            self.GA_mask = AttentionMaskConverter(
+                is_causal = True,
+            )\
+                .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+                .squeeze(0).squeeze(0)
+        pass
     pass
 
     # Go through every layer!
@@ -863,7 +885,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             )
         else:
             causal_mask = xformers.attn_bias.LowerTriangularMask()
-    
+
             output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
             output_hidden_states = (
                 output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -872,7 +894,6 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
-
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
@@ -886,7 +907,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 return_dict=return_dict,
             )
         pass
-
         hidden_states = outputs[0]
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
@@ -941,6 +961,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 pass
 
 
+@torch._disable_dynamo
 def PeftModelForCausalLM_fast_forward(
     self,
     input_ids=None,
@@ -1030,7 +1051,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
-        self.current_rope_size = int(round(seq_len / 8192)) * 8192
+        self.current_rope_size = math.ceil(seq_len / 8192) * 8192
         self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
@@ -1103,7 +1124,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
         
-        t = torch.arange(self.current_rope_size, device="cpu", dtype=torch.int64).float()
+        t = torch.arange(self.current_rope_size, device=self.inv_freq.device, dtype=torch.int64).float()
 
         freqs = torch.outer(t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
@@ -1152,7 +1173,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
-        self.current_rope_size = int(round(seq_len / 8192)) * 8192
+        self.current_rope_size = math.ceil(seq_len / 8192) * 8192
         self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
@@ -1281,7 +1302,7 @@ class FastLlamaModel:
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
-           f"==((====))==  Unsloth: Fast {model_patcher.__name__[4:-5]} patching release {__version__}\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers = {transformers_version}.\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
            f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
@@ -1390,6 +1411,7 @@ class FastLlamaModel:
             padding_side      = "right",
             token             = token,
             trust_remote_code = trust_remote_code,
+            fix_tokenizer     = fix_tokenizer,
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -1566,6 +1588,30 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model._saved_temp_tokenizer = tokenizer
+
+        # Also fix torch_dtype
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "config"):
+                if   internal_model.config.torch_dtype ==  "float32":
+                    internal_model.config.torch_dtype = torch.float32
+                elif internal_model.config.torch_dtype == "bfloat16":
+                    internal_model.config.torch_dtype = torch.bfloat16
+                elif internal_model.config.torch_dtype ==  "float16":
+                    internal_model.config.torch_dtype = torch.float16
+                pass
+            pass
+            internal_model = internal_model.model
+        pass
+        if hasattr(internal_model, "config"):
+            if   internal_model.config.torch_dtype ==  "float32":
+                internal_model.config.torch_dtype = torch.float32
+            elif internal_model.config.torch_dtype == "bfloat16":
+                internal_model.config.torch_dtype = torch.bfloat16
+            elif internal_model.config.torch_dtype ==  "float16":
+                internal_model.config.torch_dtype = torch.float16
+            pass
+        pass
         
         return model, tokenizer
     pass
@@ -2011,7 +2057,8 @@ class FastLlamaModel:
                     model.peft_config[active_adapter].base_model_name_or_path = name
                 pass
             # Add revision to enable future fast inference paths
-            model.peft_config[active_adapter].revision = f"unsloth"
+            # [TODO] Bugs out!see https://github.com/unslothai/unsloth/issues/492
+            # model.peft_config[active_adapter].revision = f"unsloth"
         pass
 
         from transformers.trainer import Trainer 
