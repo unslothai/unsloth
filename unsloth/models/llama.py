@@ -1859,8 +1859,12 @@ class FastLlamaModel:
                 else: modules_to_save.append("embed_tokens")
 
             else:
-                # assert(module in accepted_modules)
-                final_modules.append(module)
+                try:
+                    assert(module in accepted_modules)
+                    final_modules.append(module)
+                except AssertionError as e:
+                    final_modules.append(module)
+                    print("You added custom modules. However, it is not recommended since it will slow down the lora progress.")
         pass
 
         # Check if we added new tokens!
