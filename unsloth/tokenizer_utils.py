@@ -544,6 +544,7 @@ def load_correct_tokenizer(
         cache_dir = cache_dir,
         fix_tokenizer = fix_tokenizer,
     )
+    print(tokenizer)
 
     ### 1. Fixup tokenizer's chat_template
     old_chat_template = getattr(tokenizer, "chat_template", None)
