@@ -597,8 +597,34 @@ def fix_chat_template(tokenizer):
     if chat_template is None: return None
 
     ### 1. Check if add_generation_prompt works
+    # Check for ShareGPT style first
+    is_sharegpt = None
+    try:
+        messages = [
+            {"role": "user", "content": "Who are you?"},
+        ]
+        tokenizer.apply_chat_template(messages, add_generation_prompt = False, tokenize = False)
+        is_sharegpt = False
+    except:
+        try:
+            messages = [
+                {"from": "human", "value": "Who are you?"},
+            ]
+            tokenizer.apply_chat_template(messages, add_generation_prompt = False, tokenize = False)
+            is_sharegpt = True
+        except:
+            is_sharegpt = None
+        pass
+    pass
+
+    # Not ShareGPT or HF style - just return
+    if is_sharegpt is None: return chat_template
+
+    # Tokenize
     messages = [
-        {"role": "user", "content": "Who are you?"},
+        {"role": "user", "content": "Who are you?"} \
+        if not is_sharegpt else \
+        {"from": "human", "value": "Who are you?"}
     ]
     no  = tokenizer.apply_chat_template(messages, add_generation_prompt = False, tokenize = False)
     yes = tokenizer.apply_chat_template(messages, add_generation_prompt =  True, tokenize = False)

@@ -1873,8 +1873,17 @@ class FastLlamaModel:
                 else: modules_to_save.append("embed_tokens")
 
             else:
-                assert(module in accepted_modules)
-                final_modules.append(module)
+                try:
+                    assert(module in accepted_modules)
+                    final_modules.append(module)
+                except AssertionError as e:
+                    final_modules.append(module)
+                    print(
+                        "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"\
+                        "Beware - your finetuning might be noticeably slower!"
+                    )
+                pass
+            pass
         pass
 
         # Check if we added new tokens!
@@ -2253,6 +2262,8 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "left"
         pass
+
+        return model
     pass
 
 
@@ -2291,6 +2302,8 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
         pass
+
+        return model
     pass
 pass
 
