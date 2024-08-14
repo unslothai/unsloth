@@ -874,21 +874,33 @@ def get_chat_template(
         )
     pass
 
-    # For ShareGPT role -> from and content -> value
-    chat_template = chat_template\
-        .replace("'role'",      "'" + mapping["role"]      + "'")\
-        .replace("'content'",   "'" + mapping["content"]   + "'")\
-        .replace("'user'",      "'" + mapping["user"]      + "'")\
-        .replace("'assistant'", "'" + mapping["assistant"] + "'")
-
     # Careful on Gemma
     # bos_token is a must or else losses become too high
     if IS_GEMMA and not chat_template.startswith("{{ bos_token }}"):
         chat_template = "{{ bos_token }}" + chat_template
     pass
 
+    # For ShareGPT role -> from and content -> value
+    new_chat_template = chat_template\
+        .replace("'role'",      "'" + mapping["role"]      + "'")\
+        .replace("'content'",   "'" + mapping["content"]   + "'")\
+        .replace("'user'",      "'" + mapping["user"]      + "'")\
+        .replace("'assistant'", "'" + mapping["assistant"] + "'")
+
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
-    tokenizer.padding_side  = old_padding_side
+    tokenizer.padding_side = old_padding_side
+
+    # If not normal HF, we add a check to make old templates work
+    if mapping != {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"}:
+        chat_template = \
+            "{% if 'role' in messages[0] %}" + \
+            chat_template + \
+            "{% else %}" + \
+            new_chat_template + \
+            "{% endif %}"
+    else:
+        chat_template = new_chat_template
+    pass
     tokenizer.chat_template = chat_template
 
     # Also fix up other tokens
