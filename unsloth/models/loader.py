@@ -169,13 +169,23 @@ class FastLanguageModel(FastLlamaModel):
         autoconfig_error = None
         peft_error = None
         try:
-            model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+            )
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
             is_model = False
         try:
-            peft_config = PeftConfig .from_pretrained(model_name, token = token, revision = revision)
+            peft_config = PeftConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+            )
             is_peft = True
         except Exception as error:
             peft_error = str(error)
@@ -207,7 +217,12 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # Check base model again for PEFT
             model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
-            model_config = AutoConfig.from_pretrained(model_name, token = token, revision = revision)
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+            )
         pass
 
         if not was_disabled: enable_progress_bars()
@@ -340,6 +355,7 @@ class FastLanguageModel(FastLlamaModel):
                 token = token,
                 revision = revision,
                 is_trainable = True,
+                trust_remote_code = trust_remote_code,
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)

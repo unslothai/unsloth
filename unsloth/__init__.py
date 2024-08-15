@@ -11,10 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
-import warnings
-import importlib
-import sys
+
+import warnings, importlib, sys
 from packaging.version import Version
 
 # # Define a list of modules to check
@@ -60,9 +58,8 @@ except:
                       "We have some installation instructions on our Github page.")
 pass
 
-import os, re
+import os, re, subprocess, inspect
 import numpy as np
-import subprocess
 
 # Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
 keynames = "\n" + "\n".join(os.environ.keys())
@@ -83,12 +80,12 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
-# Torch 2.5 has including_emulation
+# Torch 2.4 has including_emulation
 major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = (major_version >= 8)
 
-if (major_torch == 2) and (minor_torch >= 5): 
-    old_is_bf16_supported = torch.cuda.is_bf16_supported
+old_is_bf16_supported = torch.cuda.is_bf16_supported
+if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
     def is_bf16_supported(including_emulation = False):
         return old_is_bf16_supported(including_emulation)
     torch.cuda.is_bf16_supported = is_bf16_supported
