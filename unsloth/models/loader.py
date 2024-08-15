@@ -92,6 +92,7 @@ def _get_new_mapper():
             .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")
 
         exec(new_mapper, globals())
+        print(1)
         return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit
     except:
         return {}, {}, {}
