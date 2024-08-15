@@ -46,9 +46,8 @@ def __get_model_name(
     model_name = str(model_name)
     lower_model_name = model_name.lower()
 
-    print(MAP_TO_UNSLOTH_16bit)
     if not SUPPORTS_FOURBIT and lower_model_name in INT_TO_FLOAT_MAPPER:
-        print(1)
+
         model_name = INT_TO_FLOAT_MAPPER[lower_model_name]
         logger.warning_once(
             f"Unsloth: Your transformers version of {transformers_version} does not support native "\
@@ -60,19 +59,21 @@ def __get_model_name(
         return model_name
     
     elif not load_in_4bit and lower_model_name in INT_TO_FLOAT_MAPPER:
-        print(2)
+
         new_model_name = INT_TO_FLOAT_MAPPER[lower_model_name]
         # logger.warning_once(
         #     f"Unsloth: You passed in `{model_name}` which is a 4bit model, yet you set\n"\
         #     f"`load_in_4bit = False`. We shall load `{new_model_name}` instead."
         # )
         return new_model_name
+
     elif not load_in_4bit and lower_model_name in MAP_TO_UNSLOTH_16bit:
+
         new_model_name = MAP_TO_UNSLOTH_16bit[lower_model_name]
-        print(new_model_name)
         return new_model_name
+
     elif load_in_4bit and SUPPORTS_FOURBIT and lower_model_name in FLOAT_TO_INT_MAPPER:
-        print(3)
+
         new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
         # logger.warning_once(
         #     f"Unsloth: You passed in `{model_name}` and `load_in_4bit = True`.\n"\
@@ -80,7 +81,6 @@ def __get_model_name(
         # )
         return new_model_name
     pass
-    print(4)
 
     return None
 pass

@@ -1390,9 +1390,7 @@ class FastLlamaModel:
 
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
-
-        print(model_name)
-        print(load_in_4bit)
+        
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map              = device_map,
