@@ -19,7 +19,7 @@ from .qwen2 import FastQwen2Model
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
-from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER
+from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 import os
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
@@ -39,8 +39,9 @@ pass
 def __get_model_name(
     model_name,
     load_in_4bit = True,
-    INT_TO_FLOAT_MAPPER = None,
-    FLOAT_TO_INT_MAPPER = None,
+    INT_TO_FLOAT_MAPPER  = None,
+    FLOAT_TO_INT_MAPPER  = None,
+    MAP_TO_UNSLOTH_16bit = None,
 ):
     model_name = str(model_name)
     lower_model_name = model_name.lower()
@@ -63,8 +64,8 @@ def __get_model_name(
         #     f"`load_in_4bit = False`. We shall load `{new_model_name}` instead."
         # )
         return new_model_name
-    elif not load_in_4bit and lower_model_name in FLOAT_TO_INT_MAPPER:
-        new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
+    elif not load_in_4bit and lower_model_name in MAP_TO_UNSLOTH_16bit:
+        new_model_name = MAP_TO_UNSLOTH_16bit[lower_model_name]
         return new_model_name
     elif load_in_4bit and SUPPORTS_FOURBIT and lower_model_name in FLOAT_TO_INT_MAPPER:
         new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
@@ -86,10 +87,12 @@ def _get_new_mapper():
         with requests.get(new_mapper, timeout = 3) as new_mapper: new_mapper = new_mapper.text
         new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER"):]
         new_mapper = new_mapper\
-            .replace("INT_TO_FLOAT_MAPPER", "NEW_INT_TO_FLOAT_MAPPER")\
-            .replace("FLOAT_TO_INT_MAPPER", "NEW_FLOAT_TO_INT_MAPPER")
+            .replace("INT_TO_FLOAT_MAPPER",  "NEW_INT_TO_FLOAT_MAPPER")\
+            .replace("FLOAT_TO_INT_MAPPER",  "NEW_FLOAT_TO_INT_MAPPER")\
+            .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")\
+
         exec(new_mapper, globals())
-        return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER
+        return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit
     except:
         return {}, {}
     pass
@@ -100,17 +103,19 @@ def get_model_name(model_name, load_in_4bit = True):
     new_model_name = __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
-        INT_TO_FLOAT_MAPPER = INT_TO_FLOAT_MAPPER,
-        FLOAT_TO_INT_MAPPER = FLOAT_TO_INT_MAPPER,
+        INT_TO_FLOAT_MAPPER  = INT_TO_FLOAT_MAPPER,
+        FLOAT_TO_INT_MAPPER  = FLOAT_TO_INT_MAPPER,
+        MAP_TO_UNSLOTH_16bit = MAP_TO_UNSLOTH_16bit,
     )
     if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
         # Try checking if a new Unsloth version allows it!
-        NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER = _get_new_mapper()
+        NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = _get_new_mapper()
         upgraded_model_name = __get_model_name(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
-            INT_TO_FLOAT_MAPPER = NEW_INT_TO_FLOAT_MAPPER,
-            FLOAT_TO_INT_MAPPER = NEW_FLOAT_TO_INT_MAPPER,
+            INT_TO_FLOAT_MAPPER  = NEW_INT_TO_FLOAT_MAPPER,
+            FLOAT_TO_INT_MAPPER  = NEW_FLOAT_TO_INT_MAPPER,
+            MAP_TO_UNSLOTH_16bit = NEW_MAP_TO_UNSLOTH_16bit,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(

@@ -251,8 +251,9 @@ __INT_TO_FLOAT_MAPPER = \
     ),
 }
 
-INT_TO_FLOAT_MAPPER = {}
-FLOAT_TO_INT_MAPPER = {}
+INT_TO_FLOAT_MAPPER  = {}
+FLOAT_TO_INT_MAPPER  = {}
+MAP_TO_UNSLOTH_16bit = {}
 
 for key, values in __INT_TO_FLOAT_MAPPER.items():
     INT_TO_FLOAT_MAPPER[key] = values[0]
@@ -261,6 +262,12 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
         FLOAT_TO_INT_MAPPER[value] = key
     pass
 
+    # Map to Unsloth version for 16bit versions
+    if len(values) == 2:
+        if value[0].startswith("unsloth"):
+            MAP_TO_UNSLOTH_16bit[value[1]] = value[0]
+    pass
+    
     # Get lowercased
     lowered_key = key.lower()
     INT_TO_FLOAT_MAPPER[lowered_key] = values[0].lower()
