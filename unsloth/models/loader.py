@@ -42,10 +42,11 @@ def __get_model_name(
     INT_TO_FLOAT_MAPPER = None,
     FLOAT_TO_INT_MAPPER = None,
 ):
-
     model_name = str(model_name)
-    if not SUPPORTS_FOURBIT and model_name.lower() in INT_TO_FLOAT_MAPPER:
-        model_name = INT_TO_FLOAT_MAPPER[model_name.lower()]
+    lower_model_name = model_name.lower()
+
+    if not SUPPORTS_FOURBIT and lower_model_name in INT_TO_FLOAT_MAPPER:
+        model_name = INT_TO_FLOAT_MAPPER[lower_model_name]
         logger.warning_once(
             f"Unsloth: Your transformers version of {transformers_version} does not support native "\
             f"4bit loading.\nThe minimum required version is 4.37.\n"\
@@ -55,16 +56,18 @@ def __get_model_name(
         )
         return model_name
     
-    elif not load_in_4bit and model_name.lower() in INT_TO_FLOAT_MAPPER:
-        new_model_name = INT_TO_FLOAT_MAPPER[model_name.lower()]
+    elif not load_in_4bit and lower_model_name in INT_TO_FLOAT_MAPPER:
+        new_model_name = INT_TO_FLOAT_MAPPER[lower_model_name]
         # logger.warning_once(
         #     f"Unsloth: You passed in `{model_name}` which is a 4bit model, yet you set\n"\
         #     f"`load_in_4bit = False`. We shall load `{new_model_name}` instead."
         # )
         return new_model_name
-
-    elif load_in_4bit and SUPPORTS_FOURBIT and model_name.lower() in FLOAT_TO_INT_MAPPER:
-        new_model_name = FLOAT_TO_INT_MAPPER[model_name.lower()]
+    elif not load_in_4bit and lower_model_name in FLOAT_TO_INT_MAPPER:
+        new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
+        return new_model_name
+    elif load_in_4bit and SUPPORTS_FOURBIT and lower_model_name in FLOAT_TO_INT_MAPPER:
+        new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
         # logger.warning_once(
         #     f"Unsloth: You passed in `{model_name}` and `load_in_4bit = True`.\n"\
         #     f"We shall load `{new_model_name}` for 4x faster loading."
