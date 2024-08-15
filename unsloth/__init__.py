@@ -14,6 +14,8 @@
 
 import warnings, importlib, sys
 from packaging.version import Version
+import os, re, subprocess, inspect
+import numpy as np
 
 # # Define a list of modules to check
 # MODULES_TO_CHECK = ["bitsandbytes"]
@@ -57,9 +59,6 @@ except:
     raise ImportError("Pytorch is not installed. Go to https://pytorch.org/.\n"\
                       "We have some installation instructions on our Github page.")
 pass
-
-import os, re, subprocess, inspect
-import numpy as np
 
 # Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
 keynames = "\n" + "\n".join(os.environ.keys())
