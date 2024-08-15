@@ -1387,11 +1387,15 @@ class FastLlamaModel:
         # RoPE Scaling's max_position_embeddings must be updated
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
         kwargs.pop("attn_implementation", None); # No need since we auto call it
+
+        # Cannot be None, since HF now checks for the config
+        if load_in_4bit: kwargs["quantization_config"] = bnb_config
+
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map              = device_map,
             torch_dtype             = dtype,
-            quantization_config     = bnb_config,
+            # quantization_config     = bnb_config,
             token                   = token,
             max_position_embeddings = max_position_embeddings,
             trust_remote_code       = trust_remote_code,
