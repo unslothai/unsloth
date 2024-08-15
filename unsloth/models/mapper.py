@@ -266,6 +266,8 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
     if len(values) == 2:
         if values[0].startswith("unsloth"):
             MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
+            MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
+        pass
     pass
 
     # Get lowercased
