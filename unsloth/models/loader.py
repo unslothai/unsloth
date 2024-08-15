@@ -66,6 +66,7 @@ def __get_model_name(
         return new_model_name
     elif not load_in_4bit and lower_model_name in MAP_TO_UNSLOTH_16bit:
         new_model_name = MAP_TO_UNSLOTH_16bit[lower_model_name]
+        print(new_model_name)
         return new_model_name
     elif load_in_4bit and SUPPORTS_FOURBIT and lower_model_name in FLOAT_TO_INT_MAPPER:
         new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
@@ -92,7 +93,6 @@ def _get_new_mapper():
             .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")
 
         exec(new_mapper, globals())
-        print(1)
         return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit
     except:
         return {}, {}, {}
