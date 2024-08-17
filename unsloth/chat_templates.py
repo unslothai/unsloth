@@ -876,7 +876,7 @@ def get_chat_template(
 
     # Careful on Gemma
     # bos_token is a must or else losses become too high
-    if IS_GEMMA and not chat_template.startswith("{{ bos_token }}"):
+    if IS_GEMMA and not chat_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
         chat_template = "{{ bos_token }}" + chat_template
     pass
 
@@ -1553,7 +1553,7 @@ extra_eos_tokens = None,
 
     # Check jinja tempate for bos
     if always_bos_token:
-        if not jinja_template.startswith("{{ bos_token }}"):
+        if not jinja_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
             jinja_template = "{{ bos_token }}" + jinja_template
     pass
 
