@@ -834,7 +834,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     # We instead check for repeated vectors
     lm_head_where = torch.where(indicator_untrained1)[0]
     lm_head_bad = lm_head_matrix[lm_head_where]
-    lm_head_bad = lm_head_bad.cpu().numpy().round(3)
+    lm_head_bad = lm_head_bad.cpu().to(torch.float32).numpy().round(3)
     from collections import Counter
     counter = Counter()
     for row in lm_head_bad: counter[hash(row.data.tobytes())] += 1
