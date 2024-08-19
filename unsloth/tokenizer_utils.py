@@ -1177,14 +1177,16 @@ def patch_sft_trainer_tokenizer():
     # Add NEFTune since it doesn't seem to work?? We need to manually inject it
     check_text += \
     "\n\n"\
+    "print(1)\n"\
     "if getattr(self.model.get_input_embeddings(), 'neftune_noise_alpha', None) is not None:\n"\
+    "    print(2)\n"\
     "    if hasattr(self, 'neftune_hook_handle'):\n"\
     "        self.neftune_hook_handle.remove()\n"\
     "        if hasattr(self, 'neftune_hook_handle'): del self.neftune_hook_handle\n"\
     "\n"\
     "    self.neftune_hook_handle = self.model.get_input_embeddings().register_forward_hook(neftune_post_forward_hook)\n\n"\
     "\n"
-    
+
     check_text = check_text.split("\n")
     check_text = "\n".join(" "*where + x for x in check_text)
 
