@@ -1628,7 +1628,7 @@ class FastLlamaModel:
 
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.
-        # model.set_input_embeddings(torch.nn.Embedding.from_pretrained(model.get_input_embeddings().weight))
+        model.set_input_embeddings(torch.nn.Embedding.from_pretrained(model.get_input_embeddings().weight))
         model.config.update({"unsloth_version" : __version__})
 
         # We also do this for the lm_head
