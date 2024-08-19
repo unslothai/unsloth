@@ -1628,7 +1628,7 @@ class FastLlamaModel:
 
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.
-        model.set_input_embeddings(torch.nn.Embedding.from_pretrained(model.get_input_embeddings().weight))
+        # model.set_input_embeddings(torch.nn.Embedding.from_pretrained(model.get_input_embeddings().weight))
         model.config.update({"unsloth_version" : __version__})
 
         # We also do this for the lm_head
@@ -2234,6 +2234,9 @@ class FastLlamaModel:
             internal_model.gradient_checkpointing = False
             internal_model.training = False
         pass
+        if hasattr(internal_model, "training"):
+            internal_model.training = False
+        pass
 
         # Also check if lm_head / embeddings are trained
         internal_model = model
@@ -2267,6 +2270,16 @@ class FastLlamaModel:
             internal_model._saved_temp_tokenizer.padding_side = "left"
         pass
 
+        # Also disable training for embeddings for NEFTune
+        if hasattr(model, "get_input_embeddings"):
+            embeddings = model.get_input_embeddings()
+            if hasattr(embeddings, "training"): embeddings.training = False
+        pass
+        if hasattr(model, "get_output_embeddings"):
+            embeddings = model.get_output_embeddings()
+            if hasattr(embeddings, "training"): embeddings.training = False
+        pass
+
         return model
     pass
 
@@ -2288,6 +2301,9 @@ class FastLlamaModel:
             internal_model.gradient_checkpointing = use_gradient_checkpointing
             internal_model.training = True
         pass
+        if hasattr(internal_model, "training"):
+            internal_model.training = True
+        pass
 
         # Also revert model.generate
         if hasattr(model, "_unwrapped_old_generate"):
@@ -2305,6 +2321,16 @@ class FastLlamaModel:
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
+        pass
+
+        # Also re-enable training for embeddings for NEFTune
+        if hasattr(model, "get_input_embeddings"):
+            embeddings = model.get_input_embeddings()
+            if hasattr(embeddings, "training"): embeddings.training = True
+        pass
+        if hasattr(model, "get_output_embeddings"):
+            embeddings = model.get_output_embeddings()
+            if hasattr(embeddings, "training"): embeddings.training = True
         pass
 
         return model
