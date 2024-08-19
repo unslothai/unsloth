@@ -1109,6 +1109,7 @@ from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
 from transformers.trainer import *
+from trl.trainer.sft_trainer import neftune_post_forward_hook
 
 def patch_sft_trainer_tokenizer():
     """
@@ -1172,6 +1173,19 @@ def patch_sft_trainer_tokenizer():
     "pass\n"\
     "\n"\
     "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"
+
+    # Add NEFTune since it doesn't seem to work?? We need to manually inject it
+    check_text += \
+    "\n"\
+    "if hasattr(self, 'neftune_hook_handle'):\n"\
+    "    self.neftune_hook_handle.remove()\n"\
+    "    if hasattr(self, 'neftune_hook_handle'): del self.neftune_hook_handle\n"\
+    "\n"\
+    "if getattr(self, 'neftune_noise_alpha', None) is not None:\n"\
+    "    self.model.get_input_embeddings().neftune_noise_alpha = self.neftune_noise_alpha\n"\
+    "    self.neftune_hook_handle = self.model.get_input_embeddings().register_forward_hook(neftune_post_forward_hook)\n"\
+    "pass\n"\
+    "\n"
 
     check_text = check_text.split("\n")
     check_text = "\n".join(" "*where + x for x in check_text)
