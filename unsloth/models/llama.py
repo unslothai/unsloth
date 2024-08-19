@@ -571,9 +571,9 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    print(getattr(self.embed_tokens, "neftune_noise_alpha"))
-    print(getattr(self.embed_tokens, "_forward_hooks"))
-    print(getattr(self.embed_tokens, "_forward_pre_hooks"))
+    # print(getattr(self.embed_tokens, "neftune_noise_alpha"))
+    # print(getattr(self.embed_tokens, "_forward_hooks"))
+    # print(getattr(self.embed_tokens, "_forward_pre_hooks"))
     inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
 
     # Normalized from Gemma
