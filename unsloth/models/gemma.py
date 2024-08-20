@@ -254,6 +254,10 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         )
     pass
 
+    def get_cached(self, seq_len = None):
+        return self.cos_cached, self.sin_cached
+    pass
+
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
