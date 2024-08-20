@@ -969,6 +969,7 @@ def patch_llama_rope_scaling(
     scaled_rope_module = None,
     extended_rope_module = None,
     attention_module = None,
+    longrope_module = None,
 ):
     assert(\
         rope_module is not None and \
@@ -1026,14 +1027,26 @@ def patch_llama_rope_scaling(
                 max_position_embeddings=self.max_position_embeddings,
                 base=self.rope_theta,
             )
+        elif scaling_type == "longrope":
+            self.rotary_emb = {longrope_rope_function}(
+                dim = self.head_dim,
+                max_position_embeddings = self.max_position_embeddings,
+                original_max_position_embeddings = self.config.original_max_position_embeddings,
+                base = self.rope_theta,
+                short_factor = self.config.rope_scaling['short_factor'],
+                long_factor  = self.config.rope_scaling['long_factor' ],
+            )
         else:
             raise ValueError(f"Unknown RoPE scaling type {{scaling_type}}")
     pass
     """
+
     fix_rope_function = fix_rope_function.format(
         rope_function          = rope_module.__name__,
         scaled_rope_function   = scaled_rope_module.__name__,
         extended_rope_function = extended_rope_module.__name__,
+        longrope_rope_function = \
+            (longrope_module if longrope_module is not None else rope_module).__name__
     )
     rotary_emb = re.findall(
         "self.rotary_emb = .+?\)", function,
