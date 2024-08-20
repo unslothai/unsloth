@@ -187,8 +187,9 @@ def LlamaAttention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
-    sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len)
+    cos = cos[position_ids].unsqueeze(1)
+    sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
