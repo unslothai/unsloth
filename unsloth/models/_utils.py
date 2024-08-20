@@ -1032,7 +1032,7 @@ def patch_llama_rope_scaling(
             self.rotary_emb = {longrope_rope_function}(
                 dim = self.head_dim,
                 max_position_embeddings = self.max_position_embeddings,
-                original_max_position_embeddings = self.original_max_position_embeddings,
+                original_max_position_embeddings = self.rope_scaling['original_max_position_embeddings'],
                 base = self.rope_theta,
                 short_factor = self.rope_scaling['short_factor'],
                 long_factor  = self.rope_scaling['long_factor' ],
