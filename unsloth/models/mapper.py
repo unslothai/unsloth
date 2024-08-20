@@ -249,6 +249,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-2-2b-it",
         "google/gemma-2-2b-it",
     ),
+    "unsloth/Phi-3.5-mini-instruct-bnb-4bit" : (
+        "unsloth/Phi-3.5-mini-instruct",
+        "microsoft/Phi-3.5-mini-instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
