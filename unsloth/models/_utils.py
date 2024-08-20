@@ -1037,6 +1037,7 @@ def patch_llama_rope_scaling(
                 short_factor = self.rope_scaling['short_factor'],
                 long_factor  = self.rope_scaling['long_factor' ],
             )
+            print('## Long RoPE')
         else:
             raise ValueError(f"Unknown RoPE scaling type {{scaling_type}}")
     pass
