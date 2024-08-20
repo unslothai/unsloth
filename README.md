@@ -94,85 +94,68 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 ## 💾 Installation Instructions
 
-If you have Pytorch 2.3 and CUDA 12.1, install Unsloth with `pip install unsloth[colab-new]` then `pip install --no-deps "xformers<0.0.27" "trl<0.9.0" peft accelerate bitsandbytes`
-
 ### Conda Installation
-Select either `pytorch-cuda=11.8` for CUDA 11.8 or `pytorch-cuda=12.1` for CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. See this [Github issue](https://github.com/unslothai/unsloth/issues/73) for help on debugging Conda installs.
+`⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. We support `python=3.10,3.11,3.12`.
 ```bash
 conda create --name unsloth_env \
-    python=3.10 \
-    pytorch-cuda=<11.8/12.1> \
+    python=3.11 \
+    pytorch-cuda=12.1 \
     pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers \
     -y
 conda activate unsloth_env
 
 pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-
-pip install --no-deps "trl<0.9.0" peft accelerate bitsandbytes
+pip install --no-deps trl peft accelerate bitsandbytes
 ```
+
+<details>
+  <summary>If you're looking to install Conda in a Linux environment, <a href="https://docs.anaconda.com/miniconda/">read here</a>, or run the below 🔽</summary>
+  
+  ```bash
+  mkdir -p ~/miniconda3
+  wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
+  bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+  rm -rf ~/miniconda3/miniconda.sh
+  ~/miniconda3/bin/conda init bash
+  ~/miniconda3/bin/conda init zsh
+  ```
+</details>
 
 ### Pip Installation
-Do **NOT** use this if you have Anaconda. You must use the Conda install method, or else stuff will BREAK.
+`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4` and CUDA versions.
 
-1. Find your CUDA version via
-```python
-import torch; torch.version.cuda
-```
-2. For Pytorch 2.1.0: You can update Pytorch via Pip (interchange `cu121` / `cu118`). Go to https://pytorch.org/ to learn more. Select either `cu118` for CUDA 11.8 or `cu121` for CUDA 12.1. If you have a RTX 3060 or higher (A100, H100 etc), use the `"ampere"` path. For Pytorch 2.1.1: go to step 3. For Pytorch 2.2.0: go to step 4.
-```bash
-pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.0 triton \
-  --index-url https://download.pytorch.org/whl/cu121
-```
-```bash
-pip install "unsloth[cu118] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-ampere] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-ampere] @ git+https://github.com/unslothai/unsloth.git"
-```
-3. For Pytorch 2.1.1: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
-```bash
-pip install --upgrade --force-reinstall --no-cache-dir torch==2.1.1 triton \
-  --index-url https://download.pytorch.org/whl/cu121
-```
-```bash
-pip install "unsloth[cu118-torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-ampere-torch211] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-ampere-torch211] @ git+https://github.com/unslothai/unsloth.git"
-```
-4. For Pytorch 2.2.0: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
-```bash
-pip install --upgrade --force-reinstall --no-cache-dir torch==2.2.0 triton \
-  --index-url https://download.pytorch.org/whl/cu121
-```
-```bash
-pip install "unsloth[cu118-torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-ampere-torch220] @ git+https://github.com/unslothai/unsloth.git"
-```
-5. If you get errors, try the below first, then go back to step 1:
+In general, if you have `torch 2.4` and `CUDA 12.1`, use:
 ```bash
 pip install --upgrade pip
+pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
 ```
-6. For Pytorch 2.2.1:
-```bash
-# RTX 3090, 4090 Ampere GPUs:
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes
 
-# Pre Ampere RTX 2080, T4, GTX 1080 GPUs:
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes
-```
-7. For Pytorch 2.3.0: Use the `"ampere"` path for newer RTX 30xx GPUs or higher.
+Or, run the below in a terminal to get the optional pip installation command:
 ```bash
-pip install "unsloth[cu118-torch230] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-torch230] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-ampere-torch230] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-ampere-torch230] @ git+https://github.com/unslothai/unsloth.git"
+wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/_auto_install.py | python -
 ```
-8. To troubleshoot installs try the below (all must succeed). Xformers should mostly all be available.
+
+Or, run the below manually in a Python REPL:
+```python
+try: import torch
+except: raise ImportError("Install torch via `pip install torch`")
+from packaging.version import Version as V
+v = V(torch.__version__)
+cuda = str(torch.version.cuda)
+is_ampere = torch.cuda.get_device_capability()[0] >= 8
+if cuda != "12.1" and cuda != "11.8": raise RuntimeError(f"CUDA = {cuda} not supported!")
+if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
+elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
+elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
+elif v  < V('2.3.0'): x = 'cu{}{}-torch220'
+elif v  < V('2.4.0'): x = 'cu{}{}-torch230'
+elif v  < V('2.5.0'): x = 'cu{}{}-torch240'
+else: raise RuntimeError(f"Torch = {v} too new!")
+x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
+print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
+```
+
+Afterwards, confirm if `nvcc` `xformers` and `bitsandbytes` have successfully installed - if not, install them individually first until they work, then install Unsloth.
 ```bash
 nvcc
 python -m xformers.info
