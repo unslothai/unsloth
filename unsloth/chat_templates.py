@@ -472,8 +472,8 @@ pass
 
 
 # =========================================== Phi-3
+# "{{ bos_token }}"\ # Phi-3.5 removes BOS?
 phi3_template = \
-    # "{{ bos_token }}"\ # Phi-3.5 removes BOS?
     "{% for message in messages %}"\
         "{% if message['role'] == 'user' %}"\
             "{{'<|user|>\n' + message['content'] + '<|end|>\n'}}"\
