@@ -1247,6 +1247,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         # self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
 
         # Short sequences
+        dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
         t = torch.arange(original_max_position_embeddings, device=self.short_inv_freq.device, dtype=torch.int64).float()
         freqs = torch.outer(t, self.short_inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
