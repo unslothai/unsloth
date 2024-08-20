@@ -1028,6 +1028,7 @@ def patch_llama_rope_scaling(
                 base=self.rope_theta,
             )
         elif scaling_type == "longrope":
+            print('## Long RoPE')
             self.rotary_emb = {longrope_rope_function}(
                 dim = self.head_dim,
                 max_position_embeddings = self.max_position_embeddings,
