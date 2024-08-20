@@ -1784,11 +1784,19 @@ class FastLlamaModel:
                 pass
             pass
             # Downcast RoPE embedding to correct data type
-            if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")) \
-                and (module.cos_cached.dtype != correct_dtype):
-                
-                module.cos_cached = module.cos_cached.to(correct_dtype)
-                module.sin_cached = module.sin_cached.to(correct_dtype)
+            if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")):
+
+                if hasattr(module, "cos_cached") and \
+                    (module.cos_cached.dtype != correct_dtype):
+
+                    module.cos_cached = module.cos_cached.to(correct_dtype)
+                    module.sin_cached = module.sin_cached.to(correct_dtype)
+
+                elif hasattr(module, "short_cos_cached") and \
+                    (module.short_cos_cached.dtype != correct_dtype):
+                    
+                    module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
+                    module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
                 pass
             pass
         pass
