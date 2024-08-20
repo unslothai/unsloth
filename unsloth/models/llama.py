@@ -1277,7 +1277,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         if seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
-        if seq_len < original_max_position_embeddings:
+        if seq_len < self.original_max_position_embeddings:
             return (
                 self.short_cos_cached[:seq_len].to(dtype = x.dtype),
                 self.short_sin_cached[:seq_len].to(dtype = x.dtype),
@@ -1291,7 +1291,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
     pass
 
     def get_cached(self, seq_len = None):
-        if seq_len < original_max_position_embeddings:
+        if seq_len < self.original_max_position_embeddings:
             return self.short_cos_cached, self.short_sin_cached
         return self.long_cos_cached, self.long_sin_cached
     pass
