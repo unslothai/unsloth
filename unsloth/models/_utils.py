@@ -1103,7 +1103,7 @@ if Version(xformers_version) >= Version("0.0.27"):
         send_to_device = inspect.getsource(accelerate.utils.operations.send_to_device)
         send_to_device = re.sub(
             r"([ ]{4,})return tensor\.to\(device\)",
-            r"\1try: return tensor.to(device)\n\1except: return tensor",
+            r"\1try: return tensor.to(device)\n\1except: print(tensor)",
             send_to_device,
         ).replace("def send_to_device", "def _fixed_send_to_device")
         exec(send_to_device)
