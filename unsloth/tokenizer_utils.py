@@ -1187,6 +1187,18 @@ def patch_sft_trainer_tokenizer():
     "pass\n"\
     "\n"
 
+    # Also DPO weirdly tokenizes non numeric columns? Delete them!
+    check_text += \
+    "\n"\
+    "column_names = set(self.train_dataset.column_names)\n"\
+    "check = ['chosen', 'rejected', 'prompt', 'chosen_input_ids', 'chosen_attention_mask',\n"\
+    " 'chosen_labels', 'rejected_input_ids', 'rejected_attention_mask', 'rejected_labels',\n"\
+    " 'prompt_input_ids', 'prompt_attention_mask']\n"\
+    "if all(x in column_names for x in check):\n"\
+    "    self.train_dataset = self.train_dataset.remove_columns(['chosen', 'rejected', 'prompt'])\n"\
+    "del check, column_names\n"\
+    "\n"
+
     check_text = check_text.split("\n")
     check_text = "\n".join(" "*where + x for x in check_text)
 
