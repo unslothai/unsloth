@@ -1263,7 +1263,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
         
-        t = torch.arange(self.current_rope_size, device=self.inv_freq.device, dtype=torch.int64).float()
+        t = torch.arange(self.current_rope_size, device=self.long_inv_freq.device, dtype=torch.int64).float()
         # Long sequences
         freqs = torch.outer(t, self.long_inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
