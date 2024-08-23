@@ -61,6 +61,7 @@ from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
+from huggingface_hub.utils._token import get_token
 
 
 def original_apply_qkv(self, X):
@@ -1418,11 +1419,8 @@ class FastLlamaModel:
             )
         pass
 
-        if token is None and "HF_TOKEN" in os.environ:
-            token = os.environ["HF_TOKEN"]
-
-        if token is None and "HUGGINGFACE_TOKEN" in os.environ:
-            token = os.environ["HUGGINGFACE_TOKEN"]
+        if token is None :
+            token = get_token()
 
         if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
