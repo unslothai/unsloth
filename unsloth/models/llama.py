@@ -1418,10 +1418,7 @@ class FastLlamaModel:
                 "Are you certain you want to do remote code execution?"
             )
         pass
-
-        if token is None :
-            token = get_token()
-
+        if token is None: token = get_token()
         if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)

@@ -153,9 +153,8 @@ class FastLanguageModel(FastLlamaModel):
         revision                   = None,
         *args, **kwargs,
     ):
-        if token is None :
-            token = get_token()
-
+        if token is None: token = get_token()
+        
         old_model_name = model_name
         model_name = get_model_name(model_name, load_in_4bit)
 

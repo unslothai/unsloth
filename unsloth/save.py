@@ -208,8 +208,7 @@ def unsloth_save_model(
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
-    if token is None :
-        token = get_token()
+    if token is None: token = get_token()
 
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
