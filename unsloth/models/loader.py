@@ -21,6 +21,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 import os
+from huggingface_hub.utils._token import get_token
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
@@ -152,12 +153,8 @@ class FastLanguageModel(FastLlamaModel):
         revision                   = None,
         *args, **kwargs,
     ):
-        if token is None and "HF_TOKEN" in os.environ:
-            token = os.environ["HF_TOKEN"]
-
-        if token is None and "HUGGINGFACE_TOKEN" in os.environ:
-            token = os.environ["HUGGINGFACE_TOKEN"]
-
+        if token is None: token = get_token()
+        
         old_model_name = model_name
         model_name = get_model_name(model_name, load_in_4bit)
 
