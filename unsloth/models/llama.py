@@ -61,6 +61,7 @@ from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
+from huggingface_hub.utils._token import get_token
 
 
 def original_apply_qkv(self, X):
@@ -1263,7 +1264,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
         
-        t = torch.arange(self.current_rope_size, device=self.inv_freq.device, dtype=torch.int64).float()
+        t = torch.arange(self.current_rope_size, device=self.long_inv_freq.device, dtype=torch.int64).float()
         # Long sequences
         freqs = torch.outer(t, self.long_inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
@@ -1417,13 +1418,7 @@ class FastLlamaModel:
                 "Are you certain you want to do remote code execution?"
             )
         pass
-
-        if token is None and "HF_TOKEN" in os.environ:
-            token = os.environ["HF_TOKEN"]
-
-        if token is None and "HUGGINGFACE_TOKEN" in os.environ:
-            token = os.environ["HUGGINGFACE_TOKEN"]
-
+        if token is None: token = get_token()
         if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
