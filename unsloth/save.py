@@ -29,6 +29,7 @@ import re
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
+from huggingface_hub.utils._token import get_token
 
 __all__ = [
     "print_quantization_methods",
@@ -207,12 +208,7 @@ def unsloth_save_model(
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
-    if token is None and "HF_TOKEN" in os.environ:
-        token = os.environ["HF_TOKEN"]
-    elif token is None and "hf_token" in os.environ:
-        token = os.environ["hf_token"]
-    elif token is None and "HUGGINGFACE_TOKEN" in os.environ:
-        token = os.environ["HUGGINGFACE_TOKEN"]
+    if token is None: token = get_token()
 
     if commit_message is None: commit_message = ""
     if "Unsloth" not in commit_message:
@@ -1321,12 +1317,8 @@ def create_huggingface_repo(
     token = None,
     private = False,
 ):
-    if token is None and "HF_TOKEN" in os.environ:
-        token = os.environ["HF_TOKEN"]
-    elif token is None and "hf_token" in os.environ:
-        token = os.environ["hf_token"]
-    elif token is None and "HUGGINGFACE_TOKEN" in os.environ:
-        token = os.environ["HUGGINGFACE_TOKEN"]
+    if token is None :
+        token = get_token()
     pass
     save_directory, username = _determine_username(save_directory, "", token)
 
