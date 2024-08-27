@@ -1483,14 +1483,23 @@ def create_ollama_modelfile(tokenizer, gguf_location):
 
     modelfile = modelfile\
         .replace("{{", "⚫@✅#🦥")\
-        .replace("}}", "⚡@🦥#⛵")\
-        .format(
+        .replace("}}", "⚡@🦥#⛵")
+    
+    if "__EOS_TOKEN__" in modelfile:
+        modelfile = modelfile.format(
             __FILE_LOCATION__  = gguf_location,
-        )\
+            __EOS_TOKEN__      = tokenizer.eos_token,
+        )
+    else:
+        modelfile = modelfile.format(
+            __FILE_LOCATION__  = gguf_location,
+        )
+    pass
+    
+    modelfile = modelfile\
         .replace("⚫@✅#🦥", "{{")\
         .replace("⚡@🦥#⛵", "}}")\
         .rstrip()
-    pass
 
     return modelfile
 pass
