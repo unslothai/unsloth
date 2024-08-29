@@ -832,25 +832,25 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     indicator_untrained2 = torch.amax(lm_head_matrix,   axis = 1) <= eps
 
     # We instead check for repeated vectors
-    lm_head_where = torch.where(indicator_untrained1)[0]
-    lm_head_bad = lm_head_matrix[lm_head_where]
-    lm_head_bad = lm_head_bad.cpu().float().numpy().round(3)
-    from collections import Counter
-    counter = Counter()
-    for row in lm_head_bad: counter[hash(row.data.tobytes())] += 1
-    counter = Counter({k: c for k, c in counter.items() if c >= 2})
+    # lm_head_where = torch.where(indicator_untrained1)[0]
+    # lm_head_bad = lm_head_matrix[lm_head_where]
+    # lm_head_bad = lm_head_bad.cpu().float().numpy().round(3)
+    # from collections import Counter
+    # counter = Counter()
+    # for row in lm_head_bad: counter[hash(row.data.tobytes())] += 1
+    # counter = Counter({k: c for k, c in counter.items() if c >= 2})
 
-    lm_head_where = lm_head_where.cpu().numpy()
-    final_bad_lm_head = []
-    for j, row in enumerate(lm_head_bad):
-        if hash(row.data.tobytes()) in counter:
-            final_bad_lm_head.append(lm_head_where[j])
-    indicator_untrained2 = indicator_untrained2 | torch.zeros_like(indicator_untrained2)
-    indicator_untrained2[final_bad_lm_head] = True
+    # lm_head_where = lm_head_where.cpu().numpy()
+    # final_bad_lm_head = []
+    # for j, row in enumerate(lm_head_bad):
+    #     if hash(row.data.tobytes()) in counter:
+    #         final_bad_lm_head.append(lm_head_where[j])
+    # indicator_untrained2 = indicator_untrained2 | torch.zeros_like(indicator_untrained2)
+    # indicator_untrained2[final_bad_lm_head] = True
 
     # Combine both checks
     indicator_untrained = indicator_untrained1 & indicator_untrained2
-    
+
     where_untrained = torch.where(indicator_untrained)[0]
     n_untrained = where_untrained.shape[0]
     n_trained = embedding_matrix.shape[0] - n_untrained
@@ -860,7 +860,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     if len(where_untrained) == 0: return
 
     # Remove untrained indices where it's longer
-    
+
     where_untrained_set = frozenset(where_untrained)
     actual_bad_tokens = tokenizer.convert_ids_to_tokens(where_untrained)
     # Remove None items in actual_bad_tokens
