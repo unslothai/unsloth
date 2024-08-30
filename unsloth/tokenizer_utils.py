@@ -1181,7 +1181,7 @@ def patch_sft_trainer_tokenizer():
         "    a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)\n"\
         "    a = np.array([int(x.decode('utf-8'))/1024 for x in a])\n"\
         "    if index_for_cuda != -1:\n"\
-        "        a = np.array([output[index_for_cuda],])\n"\
+        "        a = np.array([a[index_for_cuda],])\n"\
         "except:\n"\
         "    if not torch.cuda.is_available():\n"\
         "        raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')\n"\
