@@ -350,7 +350,7 @@ torch_compile_options = {
     "epilogue_fusion"   : True,
     "max_autotune"      : True,
     "shape_padding"     : True,
-    "trace.enabled"     : False, # Output Triton kernel outputs!
+    "trace.enabled"     : True, # Output Triton kernel outputs!
     "triton.cudagraphs" : False,
 }
 # =============================================
