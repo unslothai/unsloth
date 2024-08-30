@@ -116,13 +116,13 @@ def _gemma_rms_layernorm_forward(
     r += row_idx * r_row_stride
 
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
-    W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
     inv_var = libdevice.rsqrt(row_var + eps)
     tl.debug_barrier()
     tl.store(r, inv_var)
     normed = X_row * inv_var
+    W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
     output = normed * (W_row + 1.0)
 
     tl.store(Y + col_offsets, output, mask = mask)
