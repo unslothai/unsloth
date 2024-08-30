@@ -120,6 +120,7 @@ def _gemma_rms_layernorm_forward(
 
     row_var = tl.sum(X_row * X_row, axis = 0) / n_cols
     inv_var = tl.math.rsqrt(row_var + eps)
+    tl.debug_barrier()
     tl.store(r, inv_var)
     normed = X_row * inv_var
     output = normed * (W_row + 1.0)
