@@ -1091,12 +1091,20 @@ pass
 
 
 def check_nvidia():
+    index_for_cuda = -1
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        index_for_cuda = os.environ["CUDA_VISIBLE_DEVICES"]
+        if "," in index_for_cuda:
+            raise RuntimeError("Unsloth currently does not support multi GPU setups - but we are working on it!")
+        index_for_cuda = int(index_for_cuda)
     # Unsloth doesn't work yet on AMD devices - we're working on it!
     output = np.array([0,])
     try:
         output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
         output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
         output = np.array([int(x.decode('utf-8'))/1024 for x in output])
+        if index_for_cuda != -1:
+            output = np.array([output[index_for_cuda],])
     except:
         if not torch.cuda.is_available():
             raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
