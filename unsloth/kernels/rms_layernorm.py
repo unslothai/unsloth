@@ -124,7 +124,7 @@ def _gemma_rms_layernorm_forward(
     normed = X_row * inv_var
     output = normed * (W_row + 1.0)
     output = output.to(X_row.dtype)
-    
+
     tl.store(Y + col_offsets, output, mask = mask)
 pass
 
@@ -141,6 +141,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
         r = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
+        torch.cuda.synchronize()
         fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
         fx[(n_rows,)](
             Y, Y.stride(0),
@@ -151,6 +152,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             BLOCK_SIZE = BLOCK_SIZE,
             num_warps  = num_warps,
         )
+        torch.cuda.synchronize()
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
@@ -168,6 +170,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows, n_cols = dY.shape
         dW = X
 
+        torch.cuda.synchronize()
         _rms_layernorm_backward[(n_rows,)](
             dY, dY.stride(0),
             X,  X .stride(0),
@@ -179,6 +182,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             BLOCK_SIZE = ctx.BLOCK_SIZE,
             num_warps  = ctx.num_warps,
         )
+        torch.cuda.synchronize()
         dX = dY.view(*shape)
         return dX, None, None, None
     pass
