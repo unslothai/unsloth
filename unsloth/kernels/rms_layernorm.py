@@ -126,7 +126,7 @@ def _gemma_rms_layernorm_backward(
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
     dY_W = dY_row * (W_row + 1.0)
-    
+
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
     tl.store(dY + col_offsets, output, mask = mask)
@@ -211,7 +211,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             r,  r .stride(0),
             dW, dW.stride(0),
             n_cols, ctx.eps,
-            GEMMA      = ctx.GEMMA,
             BLOCK_SIZE = ctx.BLOCK_SIZE,
             num_warps  = ctx.num_warps,
         )
