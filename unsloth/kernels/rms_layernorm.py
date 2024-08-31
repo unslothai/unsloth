@@ -125,7 +125,7 @@ def _gemma_rms_layernorm_backward(
     # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
-    dY_W = dY_row * W_row
+    dY_W = dY_row * (W_row + 1.0)
 
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
@@ -199,7 +199,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     def backward(ctx, dY):
         shape = dY.shape
         dim = shape[-1]
-        dY = dY.view(-1, dim)
+        dY = dY.contiguous().view(-1, dim)
         X, W, r = ctx.saved_tensors
         n_rows, n_cols = dY.shape
         dW = X
