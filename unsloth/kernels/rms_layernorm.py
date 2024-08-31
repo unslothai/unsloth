@@ -205,6 +205,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dW = X
 
         inv_var = r.float()
+        print(inv_var.shape, X.shape)
         normed = X * inv_var
         dY_W = dY * (W.float() + 1.0)
         rowsum_dY_normed = dY_W.sum(axis = 0)
