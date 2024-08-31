@@ -125,7 +125,7 @@ def _gemma_rms_layernorm_backward(
     # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
-    dY_W = dY_row * (W_row + 1.0)
+    dY_W = dY_row * W_row
 
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
