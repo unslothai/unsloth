@@ -183,7 +183,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         inv_var = torch.rsqrt(row_var + eps)
         normed = X.to(torch.float32) * inv_var.unsqueeze(-1)
         Y = normed * (W + 1.0)
-
+        Y = Y.to(torch.bfloat16)
+        
         # fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
         # fx[(n_rows,)](
         #     Y, Y.stride(0),
