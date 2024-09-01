@@ -205,10 +205,11 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     def backward(ctx, dY):
         shape = dY.shape
         dim = shape[-1]
-        dY = dY.contiguous().view(-1, dim)
+        dY = dY.view(-1, dim)
         X, W, r = ctx.saved_tensors
         n_rows, n_cols = dY.shape
         dW = X
+        print(dY.shape, X.shape)
 
         inv_var = r.float().unsqueeze(-1)
         normed = X * inv_var
