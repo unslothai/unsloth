@@ -14,8 +14,7 @@
 
 from dataclasses import dataclass, field
 from typing import Optional
-from transformers import TrainingArguments
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 from . import is_bfloat16_supported
 
 __all__ = [
@@ -25,7 +24,7 @@ __all__ = [
 
 
 @dataclass
-class UnslothTrainingArguments(TrainingArguments):
+class UnslothTrainingArguments(SFTConfig):
     embedding_learning_rate : Optional[float] = field(
         default = None,
         metadata = {"help" : "Different learning rates for embeddings and lm_head."}
