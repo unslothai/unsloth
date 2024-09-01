@@ -209,7 +209,6 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         X, W, r = ctx.saved_tensors
         n_rows, n_cols = dY.shape
         dW = X
-        print(dY.shape, X.shape)
 
         inv_var = r.float().unsqueeze(-1)
         normed = X * inv_var
