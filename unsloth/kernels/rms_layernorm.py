@@ -180,7 +180,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         # print(X.shape)
         row_var = torch.mean(X.to(torch.float32).square(), axis = 0)
         inv_var = torch.rsqrt(row_var + eps)
-        normed = X.to(torch.float32) * inv_var.unsqueeze(-1)
+        normed = X.to(torch.float32) * inv_var
         Y = normed * (W + 1.0)
         Y = Y.to(torch.bfloat16)
         
