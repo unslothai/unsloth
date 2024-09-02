@@ -587,7 +587,12 @@ def LlamaModel_fast_forward(
         inputs_embeds = self.embed_tokens(input_ids)
 
     # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
-    inputs_embeds = inputs_embeds.to(__DTYPE_MAP[self.config.torch_dtype])
+    torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
+    if torch_dtype is not None:
+        inputs_embeds = inputs_embeds.to(torch_dtype)
+    else:
+        raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
+    pass
 
     # Normalized from Gemma
     IS_GEMMA  = self.config.model_type.startswith("gemma")
@@ -888,6 +893,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        num_logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
@@ -927,6 +933,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
         if bsz == 1 and q_len == 1:
+            print(num_logits_to_keep, hidden_states.shape)
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         else:
