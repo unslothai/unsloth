@@ -495,6 +495,16 @@ def LlamaDecoderLayer_fast_forward(
 pass
 
 
+# https://github.com/unslothai/unsloth/issues/404#issuecomment-2323473452
+__DTYPE_MAP = {
+    "float32": torch.float32,
+    torch.float32: torch.float32,
+    "float16": torch.float16,
+    torch.float16: torch.float16,
+    "bfloat16": torch.bfloat16,
+    torch.bfloat16: torch.bfloat16,
+}
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -576,7 +586,8 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
+    # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
+    inputs_embeds = inputs_embeds.to(__DTYPE_MAP[self.config.torch_dtype])
 
     # Normalized from Gemma
     IS_GEMMA  = self.config.model_type.startswith("gemma")
