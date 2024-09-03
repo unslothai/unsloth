@@ -295,7 +295,7 @@ if Version(xformers_version) >= Version("0.0.27"):
             send_to_device,
         ).replace("def send_to_device", "def _fixed_send_to_device")
         exec(send_to_device)
-        accelerate.utils.operations.send_to_device = _fixed_send_to_device
+        # accelerate.utils.operations.send_to_device = _fixed_send_to_device
     pass
 pass
 # =============================================
