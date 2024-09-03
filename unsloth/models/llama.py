@@ -2413,6 +2413,10 @@ class FastLlamaModel:
         #     return
         # pass
 
+        # Must patch accelerate for Xformers
+        import accelerate.utils.operations
+        accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+
         internal_model = model
         internal_model.gradient_checkpointing = False
         internal_model.training = False
@@ -2467,6 +2471,9 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"): embeddings.training = False
         pass
+
+        # Return accelerate back
+        accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
 
         return model
     pass
