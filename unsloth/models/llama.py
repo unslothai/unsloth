@@ -953,6 +953,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
+        elif num_logits_to_keep != 0:
+            logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
         else:
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
@@ -1368,8 +1370,14 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         pass
         internal_model._flag_for_generation = True
 
+        # Must patch accelerate for Xformers
+        import accelerate.utils.operations
+        accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+
         # For newer HF
         kwargs["cache_implementation"] = "dynamic"
+        # For num_logits_to_keep
+        kwargs["num_logits_to_keep"] = 1
 
         # Remove token_type_ids
         kwargs.pop("token_type_ids", None)
@@ -1401,6 +1409,9 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
+
+        # Return accelerate back
+        accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
 
         return output
     pass
