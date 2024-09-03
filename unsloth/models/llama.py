@@ -973,7 +973,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 logits = shift_logits,
                 labels = shift_labels,
                 logit_softcapping = logit_softcapping,
-                logit_scaling     = logit_scaling,
+                # logit_scaling     = logit_scaling,
             )
         else:
             if logit_scaling != 0:

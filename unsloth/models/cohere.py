@@ -104,7 +104,6 @@ def CohereAttention_fast_forward(
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     if self.use_qk_norm:
-        print("QK_norm")
         Q = fast_layernorm_compiled(self.q_norm, Q)
         K = fast_layernorm_compiled(self.k_norm, K)
     pass
