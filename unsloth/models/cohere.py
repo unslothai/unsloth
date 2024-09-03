@@ -15,7 +15,7 @@
 from .llama import *
 from ._utils import __version__
 try:
-    from transformers.models.gemma2.modeling_gemma2 import (
+    from transformers.models.cohere.modeling_cohere import (
         CohereAttention,
         CohereDecoderLayer,
         CohereModel,
@@ -49,19 +49,6 @@ try:
 except:
     CohereSdpaAttention   = CohereAttention
     CohereFlashAttention2 = CohereAttention
-pass
-
-
-@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
-def fast_layernorm_compiled(layernorm, X):
-    old_dtype = X.dtype
-    X = X.float()
-    mean = X.mean(-1, keepdim = True)
-    Xbar = X - mean
-    X = Xbar * torch.rsqrt(Xbar.square().mean(-1, keepdim = True) + \
-        layernorm.variance_epsilon) * \
-        layernorm.weight.float()
-    return X.to(old_dtype)
 pass
 
 
