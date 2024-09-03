@@ -68,7 +68,8 @@ class LoRA_MLP(torch.autograd.Function):
                 gateW, gateW_quant, gateA, gateB, gateS,
                   upW,   upW_quant, upA,   upB,   upS,
                 downW, downW_quant, downA, downB, downS,
-                _forward_function, _backward_function,):
+                _forward_function, _backward_function,
+                inplace = True,):
         dtype = X.dtype
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -84,6 +85,7 @@ class LoRA_MLP(torch.autograd.Function):
         )
         ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB,
                               X, e, g)
+        ctx.inplace = inplace
         return i
     pass
 
@@ -131,7 +133,7 @@ class LoRA_MLP(torch.autograd.Function):
         # dX  = matmul_lora(df, upW.t(), upW_quant, upB, upA, upS)
         # dX += matmul_lora(de, gateW.t(), gateW_quant, gateB, gateA, gateS)
         upW = fast_dequantize(upW.t(), upW_quant)
-        dX = torch.matmul(df, upW.t(), out = X)
+        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
         del upW
         dX += df @ upB.to(dtype).t() @ (upS * upA.to(dtype).t())
 
@@ -147,13 +149,13 @@ class LoRA_MLP(torch.autograd.Function):
             None, None, d_gateA.t(), d_gateB.t(), None, \
             None, None,   d_upA.t(),   d_upB.t(), None, \
             None, None, d_downA.t(), d_downB.t(), None, \
-            None, None, # _backward and _forward
+            None, None, None, # _backward and _forward and inplace
     pass
 pass
 
 
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
-def apply_lora_mlp_swiglu(self, X):
+def apply_lora_mlp_swiglu(self, X, inplace = True):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -161,13 +163,14 @@ def apply_lora_mlp_swiglu(self, X):
                          gateW, gateW_quant, gateA, gateB, gateS,
                          upW,     upW_quant, upA,   upB,   upS,
                          downW, downW_quant, downA, downB, downS,
-                         swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel,)
+                         swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel,
+                         inplace,)
     return out
 pass
 
 
 from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
-def apply_lora_mlp_geglu_exact(self, X):
+def apply_lora_mlp_geglu_exact(self, X, inplace = True):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -175,7 +178,8 @@ def apply_lora_mlp_geglu_exact(self, X):
                          gateW, gateW_quant, gateA, gateB, gateS,
                          upW,     upW_quant, upA,   upB,   upS,
                          downW, downW_quant, downA, downB, downS,
-                         geglu_exact_forward_kernel, geglu_exact_backward_kernel,)
+                         geglu_exact_forward_kernel, geglu_exact_backward_kernel,
+                         inplace,)
     return out
 pass
 

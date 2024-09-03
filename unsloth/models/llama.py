@@ -2291,10 +2291,10 @@ class FastLlamaModel:
 
         # We also do not inplace edit QKV for Cohere!
         from functools import partial
-        _apply_lora_qkv = \
-            partial(apply_lora_qkv, inplace = False) \
+        _apply_lora_mlp = \
+            partial(apply_lora_mlp, inplace = False) \
             if model_type == "cohere" else \
-            apply_lora_qkv
+            apply_lora_mlp
         pass
 
         if lora_dropout == 0 and bias == "none":
@@ -2316,7 +2316,7 @@ class FastLlamaModel:
                     (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    # layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                    layer.mlp.forward = types.MethodType(_apply_lora_mlp, layer.mlp)
                     n_mlp += 1
                 else:
                     logger.warning_once(
@@ -2339,7 +2339,7 @@ class FastLlamaModel:
                     (len(getattr(k_proj, "lora_magnitude_vector", []) or []) == 0) and \
                     (len(getattr(v_proj, "lora_magnitude_vector", []) or []) == 0):
 
-                    layer.self_attn.apply_qkv = _apply_lora_qkv
+                    layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
                 else:
                     if model_type != "qwen2":
