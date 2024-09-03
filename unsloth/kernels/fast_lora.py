@@ -324,7 +324,7 @@ def apply_lora_qkv(self, X, inplace = True):
         QW, QW_quant, QA, QB, QS,
         KW, KW_quant, KA, KB, KS,
         VW, VW_quant, VA, VB, VS,
-        inplace = inplace,
+        inplace,
     )
     return Q, K, V
 pass
