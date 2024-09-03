@@ -220,6 +220,13 @@ def _cross_entropy_backward(
         dloss = 0.0
 
     x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+
+    # Do logit scaling for Cohere
+    if DO_LOGIT_SCALING:
+        # d/dx [s * x] = s
+        x = x * LOGIT_SCALE
+    pass
+
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
