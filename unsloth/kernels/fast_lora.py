@@ -229,7 +229,8 @@ class LoRA_QKV(torch.autograd.Function):
     def forward(ctx, X : torch.Tensor,
                 QW, QW_quant, QA, QB, QS,
                 KW, KW_quant, KA, KB, KS,
-                VW, VW_quant, VA, VB, VS,):
+                VW, VW_quant, VA, VB, VS,
+                inplace = True):
         dtype = X.dtype
 
         Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
@@ -242,6 +243,7 @@ class LoRA_QKV(torch.autograd.Function):
             VW, VW_quant, VS,
         )
         ctx.save_for_backward(X, QA, QB, KA, KB, VA, VB,)
+        ctx.inplace = inplace
         return Q, K, V
     pass
 
@@ -286,7 +288,7 @@ class LoRA_QKV(torch.autograd.Function):
         # Combine derivatives to find dX
         # dQ
         QW = fast_dequantize(QW.t(), QW_quant)
-        dX = torch.matmul(dQ, QW.t(), out = X)
+        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
         del QW
         dX += (dQ @ QB.to(dtype).t() @ (QS * QA.to(dtype).t()))
 
@@ -308,12 +310,13 @@ class LoRA_QKV(torch.autograd.Function):
         return dX.view(batch, seq_len, hd), \
             None, None, d_QA.t(), d_QB.t(), None, \
             None, None, d_KA.t(), d_KB.t(), None, \
-            None, None, d_VA.t(), d_VB.t(), None
+            None, None, d_VA.t(), d_VB.t(), None, \
+            None,
     pass
 pass
 
 
-def apply_lora_qkv(self, X):
+def apply_lora_qkv(self, X, inplace = True):
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
@@ -321,6 +324,7 @@ def apply_lora_qkv(self, X):
         QW, QW_quant, QA, QB, QS,
         KW, KW_quant, KA, KB, KS,
         VW, VW_quant, VA, VB, VS,
+        inplace = inplace,
     )
     return Q, K, V
 pass
