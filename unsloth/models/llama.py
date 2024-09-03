@@ -1025,6 +1025,7 @@ def PeftModelForCausalLM_fast_forward(
     output_hidden_states=None,
     return_dict=None,
     task_ids=None,
+    num_logits_to_keep=0,
     **kwargs,
 ):
     return self.base_model(
@@ -1036,6 +1037,7 @@ def PeftModelForCausalLM_fast_forward(
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
+        num_logits_to_keep=num_logits_to_keep,
         **kwargs,
     )
 pass
