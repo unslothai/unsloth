@@ -2289,6 +2289,14 @@ class FastLlamaModel:
         lora_dropout = model.peft_config[active_adapter].lora_dropout
         bias         = model.peft_config[active_adapter].bias
 
+        # We also do not inplace edit QKV for Cohere!
+        from functools import partial
+        _apply_lora_qkv = \
+            partial(apply_lora_qkv, inplace = False) \
+            if model_type == "cohere" else \
+            apply_lora_qkv
+        pass
+
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
@@ -2331,7 +2339,7 @@ class FastLlamaModel:
                     (len(getattr(k_proj, "lora_magnitude_vector", []) or []) == 0) and \
                     (len(getattr(v_proj, "lora_magnitude_vector", []) or []) == 0):
 
-                    layer.self_attn.apply_qkv = apply_lora_qkv
+                    layer.self_attn.apply_qkv = _apply_lora_qkv
                     n_qkv += 1
                 else:
                     if model_type != "qwen2":
