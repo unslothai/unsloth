@@ -305,6 +305,20 @@ def fast_rms_layernorm_inference_gemma(self, X, out_weight = None):
 pass
 
 
+# Normal layernorm with mean removal
+@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
+def fast_layernorm_compiled(layernorm, X):
+    old_dtype = X.dtype
+    X = X.float()
+    mean = X.mean(-1, keepdim = True)
+    Xbar = X - mean
+    X = Xbar * torch.rsqrt(Xbar.square().mean(-1, keepdim = True) + \
+        layernorm.variance_epsilon) * \
+        layernorm.weight.float()
+    return X.to(old_dtype)
+pass
+
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
 def LlamaAttention_fast_forward(
     self,
@@ -495,6 +509,16 @@ def LlamaDecoderLayer_fast_forward(
 pass
 
 
+# https://github.com/unslothai/unsloth/issues/404#issuecomment-2323473452
+__DTYPE_MAP = {
+    "float32": torch.float32,
+    torch.float32: torch.float32,
+    "float16": torch.float16,
+    torch.float16: torch.float16,
+    "bfloat16": torch.bfloat16,
+    torch.bfloat16: torch.bfloat16,
+}
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -576,11 +600,18 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
+    # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
+    torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
+    if torch_dtype is not None:
+        inputs_embeds = inputs_embeds.to(torch_dtype)
+    else:
+        raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
+    pass
 
     # Normalized from Gemma
     IS_GEMMA  = self.config.model_type.startswith("gemma")
     IS_GEMMA2 = self.config.model_type.startswith("gemma2")
+    IS_COHERE = self.config.model_type.startswith("cohere")
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
     if IS_GEMMA:
@@ -786,8 +817,11 @@ def LlamaModel_fast_forward(
 
     # Final layernorm
     if use_cache:
-        hidden_states = (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
+        hidden_states = \
+            (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
             (self.norm, hidden_states)
+    elif IS_COHERE:
+        hidden_states = fast_layernorm_compiled(self.norm, hidden_states)
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
     pass
@@ -877,6 +911,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        num_logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
@@ -925,6 +960,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         loss = None
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+        logit_scaling     = getattr(self.config, "logit_scale", 0)
         if labels is not None:
             shift_logits = logits
             if not hasattr(self, "extra_ignored_labels"):
@@ -937,16 +973,26 @@ def CausalLM_fast_forward(fast_forward_inference):
                 logits = shift_logits,
                 labels = shift_labels,
                 logit_softcapping = logit_softcapping,
+                logit_scaling     = logit_scaling,
             )
-        elif logit_softcapping != 0:
-            if logits.requires_grad:
-                logits = (1.0 / logit_softcapping) * logits
-                logits = torch.tanh(logits)
-                logits = logit_softcapping * logits
-            else:
-                logits *= (1.0 / logit_softcapping)
-                torch.tanh(logits, out = logits)
-                logits *= logit_softcapping
+        else:
+            if logit_scaling != 0:
+                if logits.requires_grad:
+                    logits = logit_scaling * logits
+                else:
+                    logits *= logit_scaling
+                pass
+            pass
+            if logit_softcapping != 0:
+                if logits.requires_grad:
+                    logits = (1.0 / logit_softcapping) * logits
+                    logits = torch.tanh(logits)
+                    logits = logit_softcapping * logits
+                else:
+                    logits *= (1.0 / logit_softcapping)
+                    torch.tanh(logits, out = logits)
+                    logits *= logit_softcapping
+                pass
             pass
         pass
 
@@ -978,6 +1024,7 @@ def PeftModelForCausalLM_fast_forward(
     output_hidden_states=None,
     return_dict=None,
     task_ids=None,
+    num_logits_to_keep=0,
     **kwargs,
 ):
     return self.base_model(
@@ -989,6 +1036,7 @@ def PeftModelForCausalLM_fast_forward(
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
+        num_logits_to_keep=num_logits_to_keep,
         **kwargs,
     )
 pass
@@ -2181,6 +2229,7 @@ class FastLlamaModel:
         elif model_type == "qwen2":   apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu_approx
         elif model_type == "gemma2":  apply_lora_mlp = apply_lora_mlp_geglu_approx
+        elif model_type == "cohere":  apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
         pass
@@ -2240,6 +2289,14 @@ class FastLlamaModel:
         lora_dropout = model.peft_config[active_adapter].lora_dropout
         bias         = model.peft_config[active_adapter].bias
 
+        # We also do not inplace edit QKV for Cohere!
+        from functools import partial
+        _apply_lora_mlp = \
+            partial(apply_lora_mlp, inplace = False) \
+            if model_type == "cohere" else \
+            apply_lora_mlp
+        pass
+
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
@@ -2259,7 +2316,7 @@ class FastLlamaModel:
                     (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                    layer.mlp.forward = types.MethodType(_apply_lora_mlp, layer.mlp)
                     n_mlp += 1
                 else:
                     logger.warning_once(
