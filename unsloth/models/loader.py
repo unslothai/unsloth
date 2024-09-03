@@ -13,9 +13,10 @@
 # limitations under the License.
 
 from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING
-from .llama import FastLlamaModel, logger
+from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
-from .qwen2 import FastQwen2Model
+from .qwen2   import FastQwen2Model
+from .cohere  import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -278,6 +279,8 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
+        elif model_type == "cohere":
+            dispatch_model = FastCohereModel
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\

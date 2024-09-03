@@ -186,7 +186,9 @@ pass
 
 def fast_rms_layernorm(layernorm, X, gemma = False):
     W   = layernorm.weight
-    eps = layernorm.variance_epsilon
+    eps = layernorm.variance_epsilon if \
+        hasattr(layernorm, "variance_epsilon") \
+        else layernorm.eps
     out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
     return out
 pass
