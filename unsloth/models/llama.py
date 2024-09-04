@@ -964,19 +964,31 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
         if labels is not None:
-            shift_logits = logits
-            if not hasattr(self, "extra_ignored_labels"):
-                # Fixes https://github.com/unslothai/unsloth/issues/10
-                self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
-            pass
+            # shift_logits = logits
+            # if not hasattr(self, "extra_ignored_labels"):
+            #     # Fixes https://github.com/unslothai/unsloth/issues/10
+            #     self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
+            # pass
             
-            shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-            loss = fast_cross_entropy_loss(
-                logits = shift_logits,
-                labels = shift_labels,
-                logit_softcapping = logit_softcapping,
-                logit_scaling     = logit_scaling,
-            )
+            # shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+            # loss = fast_cross_entropy_loss(
+            #     logits = shift_logits,
+            #     labels = shift_labels,
+            #     logit_softcapping = logit_softcapping,
+            #     logit_scaling     = logit_scaling,
+            # )
+            logits = logits.float()
+            logits = logits * self.logit_scale
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Enable model parallelism
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss = loss_fct(shift_logits, shift_labels)
         else:
             if logit_scaling != 0:
                 if logits.requires_grad:
