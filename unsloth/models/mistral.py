@@ -181,6 +181,7 @@ def MistralForCausalLM_fast_forward(
     output_attentions: Optional[bool] = None,
     output_hidden_states: Optional[bool] = None,
     return_dict: Optional[bool] = None,
+    num_logits_to_keep: Optional[int] = 0,
     *args, **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
 
@@ -236,6 +237,8 @@ def MistralForCausalLM_fast_forward(
     if bsz == 1 and q_len == 1:
         logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
         logits = logits.unsqueeze(0).unsqueeze(0)
+    elif num_logits_to_keep != 0:
+        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
     else:
         logits = self.lm_head(hidden_states.to(lm_head.dtype))
     pass
