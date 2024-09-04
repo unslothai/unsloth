@@ -1371,8 +1371,10 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         internal_model._flag_for_generation = True
 
         # Must patch accelerate for Xformers
-        import accelerate.utils.operations
-        accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+        if accelerate_new_send_to_device is not None:
+            import accelerate.utils.operations
+            accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+        pass
 
         # For newer HF
         kwargs["cache_implementation"] = "dynamic"
@@ -1411,7 +1413,9 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
 
         # Return accelerate back
-        accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
+        if accelerate_new_send_to_device is not None:
+            accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
+        pass
 
         return output
     pass
