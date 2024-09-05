@@ -119,12 +119,13 @@ else:
         head_dim   = self.head_dim
         if causal_mask == 0:
             # Global attention
+            print(1)
             causal_mask = create_block_mask(causal_masker, q_len)
         else:
             # Sliding window attention
+            print(2)
             causal_mask = create_block_mask(sliding_window_masker(causal_mask), q_len)
         pass
-        print(causal_mask)
 
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
