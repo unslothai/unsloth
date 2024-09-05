@@ -103,7 +103,11 @@ else:
 
     @functools.lru_cache
     def create_block_mask(mask, n = 128):
-        return _create_block_mask(mask, 1, 1, n, n, device = "cuda")
+        return _create_block_mask(
+            mask, 1, 1, n, n,
+            BLOCK_SIZE = 128,
+            _compile = True,
+        )
     pass
 
     @functools.lru_cache
@@ -123,6 +127,7 @@ else:
             # Sliding window attention
             causal_mask = create_block_mask(sliding_window_masker(causal_mask), q_len)
         pass
+        print(causal_mask)
 
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
