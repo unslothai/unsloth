@@ -80,7 +80,8 @@ else:
 
     from torch.nn.attention.flex_attention import _score_mod_signature
     from torch._inductor.lowering import make_pointwise, register_lowering
-
+    from torch import Tensor
+    
     # Some internal torch.compile details
     from torch._inductor.virtualized import ops
     from functools import partial
