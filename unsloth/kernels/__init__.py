@@ -39,12 +39,6 @@ from .flex_attention import (
     slow_inference_attention_softcapping,
 )
 
-if HAS_FLEX_ATTENTION:
-    from .flex_attention import (
-        FLEX_ATTENTION_PADDING,
-    )
-pass
-
 try:
     print("🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.")
 except:
