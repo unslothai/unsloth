@@ -115,6 +115,8 @@ else:
     pass
     
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+        n_heads    = self.num_heads
+        head_dim   = self.head_dim
         if causal_mask == 0:
             # Global attention
             causal_mask = create_block_mask(causal_masker, q_len)
