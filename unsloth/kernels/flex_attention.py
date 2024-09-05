@@ -88,12 +88,12 @@ else:
     pass
 
     @functools.lru_cache
-    def sliding_window_masker(size = 4096):
+    def sliding_window_masker(size = 4096, q_len = 4096):
         def sliding_window(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
             window_mask = q_idx - kv_idx <= size 
             return causal_mask & window_mask
-        return sliding_window
+        return sliding_window if q_len >= size else causal_masker
     pass
 
     @functools.lru_cache
@@ -124,7 +124,8 @@ else:
         else:
             # Sliding window attention
             print(2)
-            causal_mask = create_block_mask(sliding_window_masker(causal_mask), q_len)
+            sliding_masker = sliding_window_masker(causal_mask, q_len)
+            causal_mask = create_block_mask(sliding_masker, q_len)
         pass
 
         s = self.config.query_pre_attn_scalar
