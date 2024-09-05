@@ -25,22 +25,17 @@ torch_compile_options = {
 }
 
 # Flex Attention supported from torch 2.5 onwards only
-import torch.nn
-if hasattr(torch.nn, "attention"):
-    import torch.nn.attention
-    if hasattr(torch.nn.attention, "flex_attention"):
-        from torch.nn.attention.flex_attention import (
-            flex_attention as _flex_attention,
-            create_block_mask as _create_block_mask,
-        )
-        _flex_attention = torch.compile(_flex_attention, dynamic = False)
-        HAS_FLEX_ATTENTION = True
-    else:
-        HAS_FLEX_ATTENTION = False
-    pass
+try:
+    from torch.nn.attention.flex_attention import (
+        flex_attention as _flex_attention,
+        create_block_mask as _create_block_mask,
+    )
+    _flex_attention = torch.compile(_flex_attention, dynamic = False)
+    HAS_FLEX_ATTENTION = True
 else:
     HAS_FLEX_ATTENTION = False
 pass
+
 
 if not HAS_FLEX_ATTENTION:
 
