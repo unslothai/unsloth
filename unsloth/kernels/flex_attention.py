@@ -110,7 +110,7 @@ else:
         scale = 1.0 / math.sqrt(s)
         score_mod = generate_tanh_softcap(t)
         return functools.partial(
-            _flex_attention(score_mod = score_mod, scale = scale, enable_gqa = True)
+            _flex_attention, score_mod = score_mod, scale = scale, enable_gqa = True,
         )
     pass
     
