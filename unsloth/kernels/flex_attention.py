@@ -81,7 +81,7 @@ else:
     from torch.nn.attention.flex_attention import _score_mod_signature
     from torch._inductor.lowering import make_pointwise, register_lowering
     from torch import Tensor
-    
+
     # Some internal torch.compile details
     from torch._inductor.virtualized import ops
     from functools import partial
@@ -128,12 +128,25 @@ else:
 
     _tanh_approx = _TanhApprox.apply
 
-    @functools.lru_cache
-    def generate_tanh_softcap(t):
-        def tanh_softcap(x, b, h, q_idx, kv_idx):
-            return t * _tanh_approx(x / t)
+    def generate_tanh_softcap(soft_cap: int, approx: bool = True) -> _score_mod_signature:
+        """Returns an tanh bias score_mod given the number of heads H
+
+        Args:
+            soft_cap: The soft cap value to use for normalizing logits
+            approx: Whether to use the `tanh.approx.` ptx instruction
+
+        Returns:
+            tanh_softcap: score_mod
+        """
+        tanh = _tanh_approx if approx else torch.tanh
+
+        def tanh_softcap(score, b, h, q_idx, kv_idx):
+            return soft_cap * tanh(score / soft_cap)
+
+        prefix = "tanh_softcap_approx" if approx else "tanh_softcap"
+        tanh_softcap.__name__ = f"{prefix}_{soft_cap}"
+
         return tanh_softcap
-    pass
     def causal_masker(b, h, q_idx, kv_idx):
         return q_idx >= kv_idx
     pass
