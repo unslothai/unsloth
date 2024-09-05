@@ -29,15 +29,11 @@ import torch.nn
 if hasattr(torch.nn, "attention"):
     import torch.nn.attention
     if hasattr(torch.nn.attention, "flex_attention"):
-        import torch.nn.attention.flex_attention
-        from torch.nn.attention.flex_attention import flex_attention
-        from torch.nn.attention.flex_attention import create_block_mask
-        FLEX_ATTENTION_PADDING = getattr(
-            torch.nn.attention.flex_attention,
-            "_DEFAULT_SPARSE_BLOCK_SIZE",
-            1,
+        from torch.nn.attention.flex_attention import (
+            flex_attention as _flex_attention,
+            create_block_mask as _create_block_mask,
         )
-        flex_attention = torch.compile(flex_attention, dynamic = False)
+        _flex_attention = torch.compile(_flex_attention, dynamic = False)
         HAS_FLEX_ATTENTION = True
     else:
         HAS_FLEX_ATTENTION = False
@@ -46,38 +42,95 @@ else:
     HAS_FLEX_ATTENTION = False
 pass
 
-# Logit softcapping
-@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
-    n_heads    = self.num_heads
-    head_dim   = self.head_dim
-    n_kv_heads = self.num_key_value_heads
-    n_groups   = self.num_key_value_groups
+if not HAS_FLEX_ATTENTION:
+
+    # Logit softcapping
+    @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+        n_heads    = self.num_heads
+        head_dim   = self.head_dim
+        n_kv_heads = self.num_key_value_heads
+        n_groups   = self.num_key_value_groups
+        
+        # Grouped query attention
+        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
+        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
+        K = K.reshape(bsz, n_heads, q_len, head_dim)
+        V = V.reshape(bsz, n_heads, q_len, head_dim)
+
+        # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
+        # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
+        # We default to using the config file itself
+        # s = self.config.hidden_size // self.config.num_attention_heads
+        s = self.config.query_pre_attn_scalar
+        t = self.config.attn_logit_softcapping
+
+        Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
+        A = torch.matmul(Q, K.transpose(2, 3))
+        A = t * torch.tanh(A / t) # Logit softcapping
+        A += causal_mask[:q_len, :q_len]
+        # Much slower in torch compile!
+        # A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
+        A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
+        A = torch.matmul(A, V)
+        A = A.transpose(1, 2).contiguous()
+        A = A.reshape(bsz, q_len, n_heads*head_dim)
+        return A
+    pass
+else:
+    # See https://github.com/pytorch-labs/attention-gym/blob/main/examples/flex_attn.ipynb
+    # for more examples
+    # BSD 3-Clause License Copyright (c) 2023, Driss Guessous, Horace He et al
+    import functools, math
+
+    def generate_tanh_softcap(t):
+        def tanh_softcap(x, b, h, q_idx, kv_idx):
+            return t * torch.tanh(x / t)
+        return tanh_softcap
+    pass
+    def causal_masker(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+    pass
+
+    @functools.lru_cache
+    def sliding_window_masker(size = 4096):
+        def sliding_window(b, h, q_idx, kv_idx):
+            causal_mask = q_idx >= kv_idx
+            window_mask = q_idx - kv_idx <= size 
+            return causal_mask & window_mask
+        return sliding_window
+    pass
+
+    @functools.lru_cache
+    def create_block_mask(mask, n = 128):
+        return _create_block_mask(mask, 1, 1, n, n, device = "cuda")
+    pass
+
+    @functools.lru_cache
+    def flex_attention(s, t):
+        scale = 1.0 / math.sqrt(s)
+        score_mod = generate_tanh_softcap(t)
+        return functools.partial(
+            _flex_attention(score_mod = score_mod, scale = scale, enable_gqa = True)
+        )
+    pass
     
-    # Grouped query attention
-    K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-    V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
-    K = K.reshape(bsz, n_heads, q_len, head_dim)
-    V = V.reshape(bsz, n_heads, q_len, head_dim)
+    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+        if causal_mask == 0:
+            # Global attention
+            causal_mask = create_block_mask(causal_masker, q_len)
+        else:
+            # Sliding window attention
+            causal_mask = create_block_mask(sliding_window_masker(causal_mask), q_len)
+        pass
 
-    # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
-    # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
-    # We default to using the config file itself
-    # s = self.config.hidden_size // self.config.num_attention_heads
-    s = self.config.query_pre_attn_scalar
-    t = self.config.attn_logit_softcapping
-
-    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
-    A = torch.matmul(Q, K.transpose(2, 3))
-    A = t * torch.tanh(A / t) # Logit softcapping
-    A += causal_mask[:q_len, :q_len]
-    # Much slower in torch compile!
-    # A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
-    A = torch.nn.functional.softmax(A, dim = -1, dtype = torch.float32).to(Q.dtype)
-    A = torch.matmul(A, V)
-    A = A.transpose(1, 2).contiguous()
-    A = A.reshape(bsz, q_len, n_heads*head_dim)
-    return A
+        s = self.config.query_pre_attn_scalar
+        t = self.config.attn_logit_softcapping
+        A = flex_attention(s, t)(Q, K, V, block_mask = causal_mask)
+        A = A.transpose(1, 2).contiguous()
+        A = A.reshape(bsz, q_len, n_heads*head_dim)
+        return A
+    pass
 pass
 
 

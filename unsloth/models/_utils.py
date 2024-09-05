@@ -338,9 +338,10 @@ torch_compile_arguments = [
 ]
 # Torch dynamo arguments
 torch_dynamo_arguments = [
-    "config.accumulated_cache_size_limit = 512", # Bump up a bit from 256
+    "config.accumulated_cache_size_limit = 1024", # Bump up a bit from 256
     "config.suppress_errors = True", # Supress errors for now
     "config.do_not_emit_runtime_asserts = True",
+    "config.cache_size_limit = 1024", # Flex Attention
 ]
 import torch._inductor.config as config
 for _try_compile_argument in torch_compile_arguments:

@@ -711,12 +711,6 @@ def LlamaModel_fast_forward(
             offloaded_gradient_checkpointing = True
     pass
 
-    # Check for Flex Attention
-    # if IS_GEMMA2 and HAS_FLEX_ATTENTION:
-    #     if not (seq_length % FLEX_ATTENTION_PADDING == 0):
-    #     USE_FLEX_ATTENTION = True
-
-
     # Gemma2 has alternating SWA and global attn
     if IS_GEMMA2:
         if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
@@ -738,23 +732,29 @@ def LlamaModel_fast_forward(
                 sliding_window = None,
             )
         elif not hasattr(self, "SWA_mask"):
-            n = self.max_seq_length # self.config.max_position_embeddings
-            # masked_fill is making stuff slower!
-            # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
-            # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
-            from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-            self.SWA_mask = AttentionMaskConverter(
-                is_causal = True,
-                sliding_window = self.config.sliding_window,
-            )\
-                .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-                .squeeze(0).squeeze(0)
+            if HAS_FLEX_ATTENTION:
+                # Use Flex Attention instead!
+                self.SWA_mask = self.config.sliding_window
+                self.GA_mask  = 0
+            else:
+                n = self.max_seq_length # self.config.max_position_embeddings
+                # masked_fill is making stuff slower!
+                # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
+                # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
+                from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+                self.SWA_mask = AttentionMaskConverter(
+                    is_causal = True,
+                    sliding_window = self.config.sliding_window,
+                )\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+                    .squeeze(0).squeeze(0)
 
-            self.GA_mask = AttentionMaskConverter(
-                is_causal = True,
-            )\
-                .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-                .squeeze(0).squeeze(0)
+                self.GA_mask = AttentionMaskConverter(
+                    is_causal = True,
+                )\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+                    .squeeze(0).squeeze(0)
+            pass
         pass
     pass
 
@@ -964,31 +964,19 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
         if labels is not None:
-            # shift_logits = logits
-            # if not hasattr(self, "extra_ignored_labels"):
-            #     # Fixes https://github.com/unslothai/unsloth/issues/10
-            #     self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
-            # pass
+            shift_logits = logits
+            if not hasattr(self, "extra_ignored_labels"):
+                # Fixes https://github.com/unslothai/unsloth/issues/10
+                self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
+            pass
             
-            # shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-            # loss = fast_cross_entropy_loss(
-            #     logits = shift_logits,
-            #     labels = shift_labels,
-            #     logit_softcapping = logit_softcapping,
-            #     logit_scaling     = logit_scaling,
-            # )
-            logits = logits.float()
-            logits = logits * self.logit_scale
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = torch.nn.CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+            loss = fast_cross_entropy_loss(
+                logits = shift_logits,
+                labels = shift_labels,
+                logit_softcapping = logit_softcapping,
+                logit_scaling     = logit_scaling,
+            )
         else:
             if logit_scaling != 0:
                 if logits.requires_grad:

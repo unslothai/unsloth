@@ -216,7 +216,7 @@ def CohereDecoderLayer_fast_forward(
         hidden_states = residual
     else:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = fast_layernorm_compiled(self.input_layernorm, hidden_states)
         hidden_states_attention, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             causal_mask=causal_mask,
