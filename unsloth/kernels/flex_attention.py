@@ -32,7 +32,7 @@ try:
     )
     _flex_attention = torch.compile(_flex_attention, dynamic = False)
     HAS_FLEX_ATTENTION = True
-else:
+except:
     HAS_FLEX_ATTENTION = False
 pass
 
