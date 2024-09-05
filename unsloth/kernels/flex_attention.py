@@ -78,75 +78,11 @@ else:
     # BSD 3-Clause License Copyright (c) 2023, Driss Guessous, Horace He et al
     import functools, math
 
-    from torch.nn.attention.flex_attention import _score_mod_signature
-    from torch._inductor.lowering import make_pointwise, register_lowering
-    from torch import Tensor
-
-    # Some internal torch.compile details
-    from torch._inductor.virtualized import ops
-    from functools import partial
-
-
-    @torch.library.custom_op("approx::tanh", mutates_args=())
-    def _tanh_approx(inp: Tensor) -> Tensor:
-        return torch.tanh(inp)
-
-
-    @_tanh_approx.register_fake
-    def _(inp: torch.Tensor) -> torch.Tensor:
-        return torch.tanh(inp)
-
-
-    def _tanh_approx_lowering(inp):
-        fn = partial(ops.inline_asm_elementwise, asm="tanh.approx.f32 $0, $1;")
-        return make_pointwise(fn)(inp)
-
-
-    register_lowering(torch.ops.approx.tanh)(_tanh_approx_lowering)
-
-
-    class _TanhApprox(torch.autograd.Function):
-        @staticmethod
-        def forward(x):
-            return torch.ops.approx.tanh(x)
-
-        @staticmethod
-        def setup_context(ctx, inputs, output):
-            (x,) = inputs
-            result = output
-            ctx.save_for_backward(result)
-
-        @staticmethod
-        def backward(ctx, grad_output):
-            (result,) = ctx.saved_tensors
-            return grad_output * (1 - result * result)
-
-        @staticmethod
-        def vmap(info, in_dims, x):
-            return torch.tanh(x), 0
-
-
-    _tanh_approx = _TanhApprox.apply
-
-    def generate_tanh_softcap(soft_cap: int, approx: bool = True) -> _score_mod_signature:
-        """Returns an tanh bias score_mod given the number of heads H
-
-        Args:
-            soft_cap: The soft cap value to use for normalizing logits
-            approx: Whether to use the `tanh.approx.` ptx instruction
-
-        Returns:
-            tanh_softcap: score_mod
-        """
-        tanh = _tanh_approx if approx else torch.tanh
-
-        def tanh_softcap(score, b, h, q_idx, kv_idx):
-            return soft_cap * tanh(score / soft_cap)
-
-        prefix = "tanh_softcap_approx" if approx else "tanh_softcap"
-        tanh_softcap.__name__ = f"{prefix}_{soft_cap}"
-
+    def generate_tanh_softcap(t):
+        def tanh_softcap(x, b, h, q_idx, kv_idx):
+            return t * torch.tanh(x / t)
         return tanh_softcap
+    pass
     def causal_masker(b, h, q_idx, kv_idx):
         return q_idx >= kv_idx
     pass
