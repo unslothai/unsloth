@@ -1068,8 +1068,8 @@ def to_sharegpt(
         assistants = examples[output_column_name]
         texts = [
             [
-                {"role" : "user",      "content" : str(user)     },
-                {"role" : "assistant", "content" : str(assistant)},
+                {"from" : "human", "value" : str(user)     },
+                {"from" : "gpt",   "value" : str(assistant)},
             ] \
             for user, assistant in zip(users, assistants)
         ]
