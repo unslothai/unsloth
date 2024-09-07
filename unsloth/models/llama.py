@@ -734,7 +734,7 @@ def LlamaModel_fast_forward(
         elif not hasattr(self, "SWA_mask"):
             if HAS_FLEX_ATTENTION:
                 # Use Flex Attention instead!
-                self.SWA_mask = create_flex_attention_sliding_window_mask(self.config.sliding_window)
+                self.SWA_mask = create_flex_attention_sliding_window_mask(self.max_seq_length, self.config.sliding_window)
                 self.GA_mask  = create_flex_attention_causal_mask(self.max_seq_length)
             else:
                 n = self.max_seq_length # self.config.max_position_embeddings
