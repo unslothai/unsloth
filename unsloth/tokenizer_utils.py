@@ -1144,7 +1144,7 @@ def patch_sft_trainer_tokenizer():
 
     # Patch train with fix_untrained_tokens
     for path_to_trainer in \
-        ("sft_trainer.SFTTrainer", "dpo_trainer.DPOTrainer",):
+        ("sft_trainer.SFTTrainer", "dpo_trainer.DPOTrainer", "kto_trainer.KTOTrainer"):
 
         function_name, replacer = "train", "if resume_from_checkpoint is False:"
         function = getsource(eval(f"trl.trainer.{path_to_trainer}.{function_name}"))
