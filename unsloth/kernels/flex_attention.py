@@ -72,6 +72,9 @@ if not HAS_FLEX_ATTENTION:
         A = A.reshape(bsz, q_len, n_heads*head_dim)
         return A
     pass
+
+    create_flex_attention_causal_mask = None
+    create_flex_attention_sliding_window_mask = None
 else:
     # See https://github.com/pytorch-labs/attention-gym/blob/main/examples/flex_attn.ipynb
     # for more examples
@@ -88,12 +91,12 @@ else:
     pass
 
     @functools.lru_cache
-    def sliding_window_masker(size = 4096, q_len = 4096):
+    def sliding_window_masker(size = 4096):
         def sliding_window(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
             window_mask = q_idx - kv_idx <= size 
             return causal_mask & window_mask
-        return sliding_window if q_len >= size else causal_masker
+        return sliding_window
     pass
 
     @functools.lru_cache
@@ -103,6 +106,17 @@ else:
             BLOCK_SIZE = 128,
             _compile = True,
         )
+    pass
+
+    def create_flex_attention_causal_mask(max_seq_length = 8192):
+        causal_mask = create_block_mask(causal_masker, max_seq_length)
+        return causal_mask
+    pass
+
+    def create_flex_attention_sliding_window_mask(max_seq_length = 8192, sliding_window = 4096):
+        sliding_masker = sliding_window_masker(sliding_window)
+        causal_mask = create_block_mask(sliding_masker, max_seq_length)
+        return causal_mask
     pass
 
     @functools.lru_cache
@@ -117,15 +131,6 @@ else:
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads    = self.num_heads
         head_dim   = self.head_dim
-        if causal_mask == 0:
-            # Global attention
-            causal_mask = create_block_mask(causal_masker, q_len)
-        else:
-            # Sliding window attention
-            sliding_masker = sliding_window_masker(causal_mask, q_len)
-            causal_mask = create_block_mask(sliding_masker, q_len)
-        pass
-
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
         fx = flex_attention(s, t)
