@@ -124,13 +124,22 @@ else:
         scale = 1.0 / math.sqrt(s)
         score_mod = generate_tanh_softcap(t)
         return functools.partial(
-            _flex_attention, score_mod = score_mod, scale = scale, enable_gqa = True,
+            _flex_attention, score_mod = score_mod, scale = scale, enable_gqa = False,
         )
     pass
     
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads    = self.num_heads
         head_dim   = self.head_dim
+        n_kv_heads = self.num_key_value_heads
+        n_groups   = self.num_key_value_groups
+        
+        # Grouped query attention
+        K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
+        V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, q_len, head_dim)
+        K = K.reshape(bsz, n_heads, q_len, head_dim)
+        V = V.reshape(bsz, n_heads, q_len, head_dim)
+
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
         fx = flex_attention(s, t)
