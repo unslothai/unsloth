@@ -30,7 +30,7 @@ try:
         flex_attention as _flex_attention,
         create_block_mask as _create_block_mask,
     )
-    _flex_attention = torch.compile(_flex_attention, dynamic = True)
+    _flex_attention = torch.compile(_flex_attention, dynamic = True, options = torch_compile_options)
     HAS_FLEX_ATTENTION = True
 except:
     HAS_FLEX_ATTENTION = False
