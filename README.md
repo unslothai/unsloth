@@ -173,7 +173,7 @@ x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
 
-For **advanced installation instructions** or if you see weird errors:
+For **advanced installation instructions** or if you see weird errors during installations:
 
 1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
 2. Confirm if CUDA is installated correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
