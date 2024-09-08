@@ -1033,7 +1033,7 @@ def to_sharegpt(
     merged_prompt = "",
     merged_column_name = "instruction",
     output_column_name = "output",
-    remove_unsued_columns = True,
+    remove_unused_columns = True,
     conversation_extension = 1,
     random_state = 3407,
 ):
@@ -1047,7 +1047,7 @@ def to_sharegpt(
     merged_prompt = "",                 Prompt to merge columns into 1 input
     merged_column_name = "instruction", Final column name for the input  field
     output_column_name = "output",      Final column name for the output field
-    remove_unsued_columns = True,
+    remove_unused_columns = True,
     conversation_extension = 1,         Automatically combines `conversation_extension` convos into 1
     random_state = 3407,
     """
@@ -1068,8 +1068,8 @@ def to_sharegpt(
         assistants = examples[output_column_name]
         texts = [
             [
-                {"from" : "user",      "content" : str(user)     },
-                {"from" : "assistant", "content" : str(assistant)},
+                {"from" : "human", "value" : str(user)     },
+                {"from" : "gpt",   "value" : str(assistant)},
             ] \
             for user, assistant in zip(users, assistants)
         ]
@@ -1080,8 +1080,8 @@ def to_sharegpt(
         __convert_to_sharegpt__,
         batched = True,
         desc = "Converting to ShareGPT",
-        # Remove unsued columns!
-        remove_columns = dataset.column_names if remove_unsued_columns else None,
+        # Remove unused columns!
+        remove_columns = dataset.column_names if remove_unused_columns else None,
     )
 
     # Randomnly concat conversations to create a long stream!
@@ -1115,8 +1115,8 @@ def to_sharegpt(
         __combine_conversations__,
         batched = True,
         desc = "Extending conversations",
-        # Remove unsued columns!
-        remove_columns = dataset.column_names if remove_unsued_columns else None,
+        # Remove unused columns!
+        remove_columns = dataset.column_names if remove_unused_columns else None,
     )
     return dataset
 pass

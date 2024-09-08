@@ -711,12 +711,6 @@ def LlamaModel_fast_forward(
             offloaded_gradient_checkpointing = True
     pass
 
-    # Check for Flex Attention
-    # if IS_GEMMA2 and HAS_FLEX_ATTENTION:
-    #     if not (seq_length % FLEX_ATTENTION_PADDING == 0):
-    #     USE_FLEX_ATTENTION = True
-
-
     # Gemma2 has alternating SWA and global attn
     if IS_GEMMA2:
         if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
@@ -738,23 +732,29 @@ def LlamaModel_fast_forward(
                 sliding_window = None,
             )
         elif not hasattr(self, "SWA_mask"):
-            n = self.max_seq_length # self.config.max_position_embeddings
-            # masked_fill is making stuff slower!
-            # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
-            # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
-            from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-            self.SWA_mask = AttentionMaskConverter(
-                is_causal = True,
-                sliding_window = self.config.sliding_window,
-            )\
-                .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-                .squeeze(0).squeeze(0)
+            if HAS_FLEX_ATTENTION:
+                # Use Flex Attention instead!
+                self.SWA_mask = create_flex_attention_sliding_window_mask(self.max_seq_length, self.config.sliding_window)
+                self.GA_mask  = create_flex_attention_causal_mask(self.max_seq_length)
+            else:
+                n = self.max_seq_length # self.config.max_position_embeddings
+                # masked_fill is making stuff slower!
+                # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
+                # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
+                from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+                self.SWA_mask = AttentionMaskConverter(
+                    is_causal = True,
+                    sliding_window = self.config.sliding_window,
+                )\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+                    .squeeze(0).squeeze(0)
 
-            self.GA_mask = AttentionMaskConverter(
-                is_causal = True,
-            )\
-                .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-                .squeeze(0).squeeze(0)
+                self.GA_mask = AttentionMaskConverter(
+                    is_causal = True,
+                )\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+                    .squeeze(0).squeeze(0)
+            pass
         pass
     pass
 
@@ -821,7 +821,7 @@ def LlamaModel_fast_forward(
             (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
             (self.norm, hidden_states)
     elif IS_COHERE:
-        hidden_states = fast_layernorm_compiled(self.norm, hidden_states)
+        hidden_states = self.norm(hidden_states)
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
     pass
