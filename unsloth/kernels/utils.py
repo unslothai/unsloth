@@ -56,7 +56,8 @@ pass
 import bitsandbytes as bnb
 # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
 HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-CUDA_STREAM = torch.cuda.current_stream("cuda:0")
+global CUDA_STREAM
+CUDA_STREAM = None
 get_ptr = bnb.functional.get_ptr
 import ctypes
 cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
@@ -129,6 +130,8 @@ if HAS_CUDA_STREAM:
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
+        global CUDA_STREAM
+        if CUDA_STREAM is None: CUDA_STREAM = torch.cuda.current_stream("cuda:0")
 
         # Create weight matrix
         if out is None:
@@ -236,6 +239,9 @@ if HAS_CUDA_STREAM:
             offset, state2 = compressed_stats
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
+        global CUDA_STREAM
+        if CUDA_STREAM is None: CUDA_STREAM = torch.cuda.current_stream("cuda:0")
+        
         # assert(dtype == X.dtype)
         bout = shape[0]
 
