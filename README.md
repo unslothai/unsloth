@@ -61,7 +61,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 | ------------------------------- | --------------------------------------- |
 | 📚 **Documentation & Wiki**              | [Read Our Docs](https://docs.unsloth.ai) |
 | <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  [Follow us on X](https://twitter.com/unslothai)|
-| 💾 **Installation**               | [unsloth/README.md](https://github.com/unslothai/unsloth/tree/main#installation-instructions)|
+| 💾 **Installation**               | [unsloth/README.md](https://github.com/unslothai/unsloth/tree/main#-installation-instructions)|
 | 🥇 **Benchmarking**                   | [Performance Tables](https://github.com/unslothai/unsloth/tree/main#-performance-benchmarking)
 | 🌐 **Released Models**            | [Unsloth Releases](https://huggingface.co/unsloth)|
 | ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
@@ -100,7 +100,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 ## 💾 Installation Instructions
 
 ### Conda Installation
-`⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. If you have `mamba`, use `mamba` instead of `conda` for faster solving. We support `python=3.10,3.11,3.12`.
+`⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. We support `python=3.10,3.11,3.12`.
 ```bash
 conda create --name unsloth_env \
     python=3.11 \
@@ -127,15 +127,28 @@ pip install --no-deps trl peft accelerate bitsandbytes
 </details>
 
 ### Pip Installation
-`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4` and CUDA versions.
+`⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5` and CUDA versions.
 
-In general, if you have `torch 2.4` and `CUDA 12.1`, use:
+For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240` and for CUDA versions, we support `cu118` and `cu121`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere`.
+
+For example, if you have `torch 2.4` and `CUDA 12.1`, use:
 ```bash
 pip install --upgrade pip
 pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
-Or, run the below in a terminal to get the optional pip installation command:
+And other examples:
+```bash
+pip install "unsloth[cu121-ampere-torch240] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-ampere-torch240] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu118-torch240] @ git+https://github.com/unslothai/unsloth.git"
+
+pip install "unsloth[cu121-torch230] @ git+https://github.com/unslothai/unsloth.git"
+pip install "unsloth[cu121-ampere-torch230] @ git+https://github.com/unslothai/unsloth.git"
+```
+
+Or, run the below in a terminal to get the **optimal** pip installation command:
 ```bash
 wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/_auto_install.py | python -
 ```
@@ -160,12 +173,12 @@ x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
 
-Afterwards, confirm if `nvcc` `xformers` and `bitsandbytes` have successfully installed - if not, install them individually first until they work, then install Unsloth.
-```bash
-nvcc
-python -m xformers.info
-python -m bitsandbytes
-```
+For **advanced installation instructions** or if you see weird errors during installations:
+
+1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
+2. Confirm if CUDA is installated correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
+3. Install `xformers` manually. You can try installing `vllm` and seeing if `vllm` succeeds. Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs.
+4.  Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
 
 ## 📜 [Documentation](https://docs.unsloth.ai)
 - Go to our official [Documentation](https://docs.unsloth.ai) for saving to GGUF, checkpointing, evaluation and more!
