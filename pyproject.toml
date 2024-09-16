@@ -37,7 +37,6 @@ dependencies = [
     "xformers>=0.0.27post2",
     "bitsandbytes",
     "triton>=3.0.0",
-    "accelerate",
     "packaging",
     "tyro",
     "transformers>=4.43.2",
