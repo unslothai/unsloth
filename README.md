@@ -99,6 +99,8 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 ## 💾 Installation Instructions
 
+For stable releases, use `pip install unsloth`. We recommend `pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"` for most installations though.
+
 ### Conda Installation
 `⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. We support `python=3.10,3.11,3.12`.
 ```bash
