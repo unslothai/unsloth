@@ -276,6 +276,30 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit" : (
         "NousResearch/Hermes-3-Llama-3.1-405B",
     ),
+    "unsloth/SmolLM-135M-bnb-4bit" : (
+        "unsloth/SmolLM-135M",
+        "HuggingFaceTB/SmolLM-135M",
+    ),
+    "unsloth/SmolLM-360M-bnb-4bit" : (
+        "unsloth/SmolLM-360M",
+        "HuggingFaceTB/SmolLM-360M",
+    ),
+    "unsloth/SmolLM-1.7B-bnb-4bit" : (
+        "unsloth/SmolLM-1.7B",
+        "HuggingFaceTB/SmolLM-1.7B",
+    ),
+    "unsloth/SmolLM-135M-Instruct-bnb-4bit" : (
+        "unsloth/SmolLM-135M-Instruct",
+        "HuggingFaceTB/SmolLM-135M-Instruct",
+    ),
+    "unsloth/SmolLM-360M-Instruct-bnb-4bit" : (
+        "unsloth/SmolLM-360M-Instruct",
+        "HuggingFaceTB/SmolLM-360M-Instruct",
+    ),
+    "unsloth/SmolLM-1.7B-Instruct-bnb-4bit" : (
+        "unsloth/SmolLM-1.7B-Instruct",
+        "HuggingFaceTB/SmolLM-1.7B-Instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
