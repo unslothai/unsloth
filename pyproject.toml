@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "torch>=2.4.0",
-    "xformers>=0.0.27.post2",
+    "xformers==0.0.27.post2",
     "bitsandbytes",
     "triton>=3.0.0",
     "packaging",
