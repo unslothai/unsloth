@@ -300,6 +300,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/SmolLM-1.7B-Instruct",
         "HuggingFaceTB/SmolLM-1.7B-Instruct",
     ),
+    "unsloth/Mistral-Small-Instruct-2409-bnb-4bit" : (
+        "unsloth/Mistral-Small-Instruct-2409",
+        "mistralai/Mistral-Small-Instruct-2409",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
