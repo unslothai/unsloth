@@ -958,7 +958,13 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
-        logits = logits.to(self.config.torch_dtype)
+
+        torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
+        if torch_dtype is not None:
+            logits = logits.to(torch_dtype)
+        else:
+            raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
+        pass
 
         loss = None
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
