@@ -1845,7 +1845,7 @@ def train_on_responses_only(
     if hasattr(trainer, "train_dataset"):
         trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batched = True)
     if hasattr(trainer, "eval_dataset"):
-        trainer.eval_dataset  = trainer.eval_dataset .map(_train_on_responses_only, batched = True)
+        trainer.eval_dataset = trainer.eval_dataset.map(_train_on_responses_only, batched = True)
     return trainer
 pass
 
