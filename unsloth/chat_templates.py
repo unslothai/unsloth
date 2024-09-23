@@ -71,6 +71,8 @@ TEMPLATE """{{ if .System }}{{ .System }}
 {{ end }}>>> Assistant: {{ .Response }}{__EOS_TOKEN__}
 """
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 SYSTEM """You are a helpful assistant to the user"""
 '''
 
@@ -106,6 +108,8 @@ TEMPLATE """{{ if .System }}<|system|>
 {{ .Response }}{__EOS_TOKEN__}
 """
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 zephyr_eos_token = "eos_token"
@@ -141,6 +145,8 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 """
 PARAMETER stop "<|im_start|>"
 PARAMETER stop "<|im_end|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 chatml_eos_token = "<|im_end|>"
@@ -179,6 +185,8 @@ mistral_ollama = \
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST]"""
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 mistral_eos_token = "eos_token"
@@ -218,6 +226,8 @@ TEMPLATE """[INST] <<SYS>>{{ .System }}<</SYS>>
 
 {{ .Prompt }} [/INST]"""
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 llama_eos_token = "eos_token"
@@ -255,6 +265,8 @@ vicuna_ollama = \
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }} {{ end }}{{ if .Prompt }}USER: {{ .Prompt }} {{ end }}ASSISTANT: {{ .Response }} {__EOS_TOKEN__}"""
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 vicuna_eos_token = "eos_token"
@@ -294,6 +306,8 @@ TEMPLATE """{{ if .System }}{{ .System }}
 {{ end }}### Assistant: {{ .Response }}{__EOS_TOKEN__}
 """
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 SYSTEM """A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions."""
 '''
 
@@ -339,6 +353,8 @@ TEMPLATE """{{ if .System }}{{ .System }}
 
 """
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 SYSTEM """Below are some instructions that describe some tasks. Write responses that appropriately complete each request."""
 '''
 
@@ -383,6 +399,8 @@ PARAMETER repeat_penalty 1
 PARAMETER stop "<start_of_turn>"
 PARAMETER stop "<end_of_turn>"
 PARAMETER penalize_newline false
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 gemma_eos_token = "<end_of_turn>"
@@ -408,6 +426,8 @@ PARAMETER repeat_penalty 1
 PARAMETER stop "<|im_start|>"
 PARAMETER stop "<|im_end|>"
 PARAMETER penalize_newline false
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 gemma_chatml_eos_token = (
@@ -464,6 +484,8 @@ TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
 PARAMETER stop "<|start_header_id|>"
 PARAMETER stop "<|end_header_id|>"
 PARAMETER stop "<|eot_id|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 llama3_template_eos_token = "eos_token"
@@ -502,6 +524,8 @@ TEMPLATE """{{ if .System }}<|system|>
 PARAMETER stop "<|end|>"
 PARAMETER stop "<|user|>"
 PARAMETER stop "<|assistant|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 phi3_template_eos_token = "<|end|>"
@@ -697,6 +721,8 @@ PARAMETER stop "<|start_header_id|>"
 PARAMETER stop "<|end_header_id|>"
 PARAMETER stop "<|eot_id|>"
 PARAMETER stop "<|eom_id|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 llama31_template_eos_token = "eos_token"
@@ -819,6 +845,8 @@ For each function call, return a json object with function name and arguments wi
 {{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
 PARAMETER stop "<|im_end|>"
 PARAMETER stop "<|endoftext|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 qwen25_template_eos_token = "eos_token"
