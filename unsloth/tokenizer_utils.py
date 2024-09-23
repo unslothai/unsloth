@@ -915,8 +915,34 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     if not lm_head_matrix  .requires_grad: bad_not_trainable = True
 
     if bad_not_trainable:
+
+        final_bad_items = []
+
+        # Re-check the first 250, last 250 input_ids
+        size_dataset = len(train_dataset)
+        size = min(size_dataset, 250)
+        for j in range(size):
+            input_ids = train_dataset[j]
+            if "input_ids" in input_ids:
+                input_ids = input_ids["input_ids"]
+                for item in input_ids:
+                    if item in where_untrained_set: final_bad_items.append(item)
+            pass
+        pass
+
+        # Re-check last 250
+        left = max(size_dataset-250, 0)
+        for j in range(left, size_dataset):
+            input_ids = train_dataset[j]
+            if "input_ids" in input_ids:
+                input_ids = input_ids["input_ids"]
+                for item in input_ids:
+                    if item in where_untrained_set: final_bad_items.append(item)
+            pass
+        pass
+
         raise ValueError(
-            'Unsloth: Untrained tokens found, but embed_tokens & lm_head not trainable, causing NaNs. '\
+            f'Unsloth: Untrained tokens of [{list(set(final_bad_items))}] found, but embed_tokens & lm_head not trainable, causing NaNs. '\
             'Restart then add `embed_tokens` & `lm_head` to '\
             '`FastLanguageModel.get_peft_model(target_modules = [..., "embed_tokens", "lm_head",]). `'\
             'Are you using the `base` model? Instead, use the `instruct` version to silence this warning.',
