@@ -71,6 +71,8 @@ TEMPLATE """{{ if .System }}{{ .System }}
 {{ end }}>>> Assistant: {{ .Response }}{__EOS_TOKEN__}
 """
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 SYSTEM """You are a helpful assistant to the user"""
 '''
 
@@ -106,6 +108,8 @@ TEMPLATE """{{ if .System }}<|system|>
 {{ .Response }}{__EOS_TOKEN__}
 """
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 zephyr_eos_token = "eos_token"
@@ -141,6 +145,8 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 """
 PARAMETER stop "<|im_start|>"
 PARAMETER stop "<|im_end|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 chatml_eos_token = "<|im_end|>"
@@ -179,6 +185,8 @@ mistral_ollama = \
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST]"""
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 mistral_eos_token = "eos_token"
@@ -218,6 +226,8 @@ TEMPLATE """[INST] <<SYS>>{{ .System }}<</SYS>>
 
 {{ .Prompt }} [/INST]"""
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 llama_eos_token = "eos_token"
@@ -255,6 +265,8 @@ vicuna_ollama = \
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }} {{ end }}{{ if .Prompt }}USER: {{ .Prompt }} {{ end }}ASSISTANT: {{ .Response }} {__EOS_TOKEN__}"""
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 vicuna_eos_token = "eos_token"
@@ -294,6 +306,8 @@ TEMPLATE """{{ if .System }}{{ .System }}
 {{ end }}### Assistant: {{ .Response }}{__EOS_TOKEN__}
 """
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 SYSTEM """A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions."""
 '''
 
@@ -339,6 +353,8 @@ TEMPLATE """{{ if .System }}{{ .System }}
 
 """
 PARAMETER stop "{__EOS_TOKEN__}"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 SYSTEM """Below are some instructions that describe some tasks. Write responses that appropriately complete each request."""
 '''
 
@@ -383,6 +399,8 @@ PARAMETER repeat_penalty 1
 PARAMETER stop "<start_of_turn>"
 PARAMETER stop "<end_of_turn>"
 PARAMETER penalize_newline false
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 gemma_eos_token = "<end_of_turn>"
@@ -408,6 +426,8 @@ PARAMETER repeat_penalty 1
 PARAMETER stop "<|im_start|>"
 PARAMETER stop "<|im_end|>"
 PARAMETER penalize_newline false
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 gemma_chatml_eos_token = (
@@ -464,6 +484,8 @@ TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
 PARAMETER stop "<|start_header_id|>"
 PARAMETER stop "<|end_header_id|>"
 PARAMETER stop "<|eot_id|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 llama3_template_eos_token = "eos_token"
@@ -502,6 +524,8 @@ TEMPLATE """{{ if .System }}<|system|>
 PARAMETER stop "<|end|>"
 PARAMETER stop "<|user|>"
 PARAMETER stop "<|assistant|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 phi3_template_eos_token = "<|end|>"
@@ -697,11 +721,134 @@ PARAMETER stop "<|start_header_id|>"
 PARAMETER stop "<|end_header_id|>"
 PARAMETER stop "<|eot_id|>"
 PARAMETER stop "<|eom_id|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
 '''
 
 llama31_template_eos_token = "eos_token"
 CHAT_TEMPLATES["llama-3.1"] = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
 CHAT_TEMPLATES["llama-31"]  = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
+pass
+
+
+# =========================================== Qwen 2.5
+qwen25_template = \
+"""{%- if tools %}
+    {{- \'<|im_start|>system\\n\' }}
+    {%- if messages[0][\'role\'] == \'system\' %}
+        {{- messages[0][\'content\'] }}
+    {%- else %}
+        {{- \'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.\' }}
+    {%- endif %}
+    {{- "\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>" }}
+    {%- for tool in tools %}
+        {{- "\\n" }}
+        {{- tool | tojson }}
+    {%- endfor %}
+    {{- "\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\"name\\": <function-name>, \\"arguments\\": <args-json-object>}\\n</tool_call><|im_end|>\\n" }}\n{%- else %}
+    {%- if messages[0][\'role\'] == \'system\' %}
+        {{- \'<|im_start|>system\\n\' + messages[0][\'content\'] + \'<|im_end|>\\n\' }}
+    {%- else %}
+        {{- \'<|im_start|>system\\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\\n\' }}
+    {%- endif %}\n{%- endif %}\n{%- for message in messages %}
+    {%- if (message.role == "user") or (message.role == "system" and not loop.first) or (message.role == "assistant" and not message.tool_calls) %}
+        {{- \'<|im_start|>\' + message.role + \'\\n\' + message.content + \'<|im_end|>\' + \'\\n\' }}
+    {%- elif message.role == "assistant" %}
+        {{- \'<|im_start|>\' + message.role }}
+        {%- if message.content %}
+            {{- \'\\n\' + message.content }}
+        {%- endif %}
+        {%- for tool_call in message.tool_calls %}
+            {%- if tool_call.function is defined %}
+                {%- set tool_call = tool_call.function %}
+            {%- endif %}
+            {{- \'\\n<tool_call>\\n{"name": "\' }}
+            {{- tool_call.name }}
+            {{- \'", "arguments": \' }}
+            {{- tool_call.arguments | tojson }}
+            {{- \'}\\n</tool_call>\' }}
+        {%- endfor %}
+        {{- \'<|im_end|>\\n\' }}
+    {%- elif message.role == "tool" %}
+        {%- if (loop.index0 == 0) or (messages[loop.index0 - 1].role != "tool") %}            {{- \'<|im_start|>user\' }}
+        {%- endif %}
+        {{- \'\\n<tool_response>\\n\' }}
+        {{- message.content }}
+        {{- \'\\n</tool_response>\' }}
+        {%- if loop.last or (messages[loop.index0 + 1].role != "tool") %}
+            {{- \'<|im_end|>\\n\' }}
+        {%- endif %}
+    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}
+    {{- \'<|im_start|>assistant\\n\' }}
+{%- endif %}
+"""
+
+
+# Ollama from https://ollama.com/library/qwen2.5/blobs/eb4402837c78
+qwen25_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- if .Messages }}
+{{- if or .System .Tools }}<|im_start|>system
+{{- if .System }}
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+{{- end }}<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}<tool_call>
+{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{ end }}</tool_call>
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+{{ end }}
+{{- end }}
+{{- else }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
+'''
+
+qwen25_template_eos_token = "eos_token"
+CHAT_TEMPLATES["qwen-2.5"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+CHAT_TEMPLATES["qwen-25"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+CHAT_TEMPLATES["qwen25"]   = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
 pass
 
 
