@@ -786,7 +786,8 @@ qwen25_template = \
 {%- endfor %}
 {%- if add_generation_prompt %}
     {{- '<|im_start|>assistant\n' }}
-{%- endif %}"""
+{%- endif %}
+"""
 
 
 # Ollama from https://ollama.com/library/qwen2.5/blobs/eb4402837c78
