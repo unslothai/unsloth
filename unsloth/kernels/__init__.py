@@ -14,6 +14,7 @@
 
 from .cross_entropy_loss import fast_cross_entropy_loss
 from .rms_layernorm import fast_rms_layernorm
+from .layernorm import fast_layernorm
 from .rope_embedding import fast_rope_embedding, inplace_rope_embedding
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 from .geglu import (
