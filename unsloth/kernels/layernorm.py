@@ -158,3 +158,48 @@ def fast_layernorm(layernorm, X):
     out = Fast_Layernorm.apply(X, W, bias, eps)
     return out
 pass
+
+
+def test_layernorm(
+    dim = 1024, eps = 1e-5, dtype = torch.float16,
+    bsz = 21, random_state = 3407, seqlen = 3341,
+):
+    from torch.nn import LayerNorm
+    layernorm = LayerNorm((dim,), eps = eps, device = "cuda", dtype = dtype)
+    torch.cuda.manual_seed(random_state)
+    torch.manual_seed(random_state)
+    torch.nn.init.uniform_(layernorm.weight)
+    torch.nn.init.uniform_(layernorm.bias)
+    X = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda")
+    XX = X.clone()
+    X .requires_grad_(True)
+    XX.requires_grad_(True)
+    Y = layernorm(X)
+    YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda", requires_grad = True)
+    Y.backward(YY)
+    correct_grad = X.grad.clone()
+    from unsloth.kernels import fast_layernorm
+    Y = fast_layernorm(layernorm, XX)
+    Y.backward(YY)
+    assert(torch.dist(correct_grad, XX.grad).item() <= 0.1)
+pass
+
+
+def testing_suite_layernorm():
+    for dim in [512, 1024, 2048]:
+        for dtype in [torch.float16, torch.bfloat16]:
+            for seqlen in [3341, 2048, 349]:
+                for random_state in [3407, 42]:
+                    test_layernorm(
+                        dim = dim,
+                        eps = 1e-5,
+                        dtype = dtype,
+                        bsz = 21,
+                        random_state = random_state,
+                        seqlen = seqlen,
+                    )
+                pass
+            pass
+        pass
+    pass
+pass
