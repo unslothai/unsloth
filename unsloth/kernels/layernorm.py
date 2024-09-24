@@ -41,8 +41,8 @@ def layernorm_forward(
     # According to https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm, all modules
     # are in float32!
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
-    W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
-    b_row = tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
+    W_row = tl.load(W + col_offsets, mask = mask, other = 0)#.to(tl.float32)
+    b_row = tl.load(b + col_offsets, mask = mask, other = 0)#.to(tl.float32)
 
     mean_X  = tl.sum(X_row,   axis = 0) / n_cols
     XX      = X_row - mean_X
@@ -50,7 +50,7 @@ def layernorm_forward(
     inv_var = tl.math.rsqrt(row_var + eps)
     tl.store (r, inv_var)
     tl.store (mu, mean_X)
-    output = (XX * inv_var) * W_row + b_row
+    output = (XX * inv_var).to(W_row.dtype) * W_row + b_row
     tl.store(Y + col_offsets, output, mask = mask)
 pass
 
