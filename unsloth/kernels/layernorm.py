@@ -120,7 +120,7 @@ class Fast_Layernorm(torch.autograd.Function):
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
-        ctx.save_for_backward(X, W, r, mu)
+        ctx.save_for_backward(X, W, b, r, mu)
         return Y.view(*shape)
     pass
 
@@ -129,7 +129,7 @@ class Fast_Layernorm(torch.autograd.Function):
         shape = dY.shape
         dim = shape[-1]
         dY = dY.view(-1, dim)
-        X, W, r, mu = ctx.saved_tensors
+        X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
 
         layernorm_backward[(n_rows,)](
