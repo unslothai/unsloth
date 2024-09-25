@@ -162,7 +162,7 @@ pass
 
 
 from torch.nn import LayerNorm
-class Fast_LayerNorm_Module(LayerNorm):
+class Unsloth_LayerNorm(LayerNorm):
     def forward(self, X):
         return fast_layernorm(self, X)
     pass
@@ -171,7 +171,7 @@ pass
 
 def patch_layernorm():
     import torch.nn
-    torch.nn.LayerNorm = Fast_LayerNorm_Module
+    torch.nn.LayerNorm = Unsloth_LayerNorm
     return
 pass
 
