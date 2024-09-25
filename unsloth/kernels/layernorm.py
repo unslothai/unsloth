@@ -178,7 +178,7 @@ def test_layernorm(
     YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda", requires_grad = True)
     Y.backward(YY)
     correct_grad = X.grad.clone()
-    from unsloth.kernels import fast_layernorm
+    # from unsloth.kernels import fast_layernorm
     Y = fast_layernorm(layernorm, XX)
     Y.backward(YY)
     assert(torch.dist(correct_grad, XX.grad).item() <= 0.1)
