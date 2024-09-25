@@ -387,7 +387,7 @@ from transformers.models.llama.modeling_llama import (
     Tuple,
 )
 import inspect, re
-function = inspect.getsource(transformers.models.llama.modeling_llama.LlamaForCausalLM.forward)
+function = inspect.getsource(LlamaForCausalLM.forward)
 function = function.split("\n")
 i = re.match(r"[ ]{1,}", function[0]).span(0)[1]
 function = [x[i:] for x in function]
