@@ -192,3 +192,25 @@ def fast_rms_layernorm(layernorm, X, gemma = False):
     out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
     return out
 pass
+
+
+from transformers.models.llama.modeling_llama import LlamaRMSNorm
+class Unsloth_LlamaRMSNorm(LlamaRMSNorm):
+    def forward(self, X):
+        return fast_rms_layernorm(self, X, gemma = False)
+    pass
+pass
+
+
+def patch_rms_layernorm():
+    import transformers.models.llama.modeling_llama
+    transformers.models.llama.modeling_llama.LlamaRMSNorm = Unsloth_LlamaRMSNorm
+    return
+pass
+
+
+def unpatch_rms_layernorm():
+    import transformers.models.llama.modeling_llama
+    transformers.models.llama.modeling_llama.LlamaRMSNorm = LlamaRMSNorm
+    return
+pass
