@@ -434,7 +434,7 @@ replacement = """    loss = None
 function = \
     function[:function.find("    loss = None")] + \
     replacement + \
-    function[ function.find("if not return_dict"):]
+    function[ function.find("    if not return_dict"):]
 function = function.replace("logits = logits.float()", "\n")
 # Missed spaces
 function = function.split("\n")
