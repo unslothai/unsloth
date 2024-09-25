@@ -437,7 +437,7 @@ def patch_llama_for_causal_lm():
     function = \
         function[:function.find("    loss = None")] + \
         replacement + \
-        function[ function.find("    if not return_dict"):]
+        function[ function.find("if not return_dict"):]
     function = function.replace("logits = logits.float()", "\n")
 
     # Missed spaces
