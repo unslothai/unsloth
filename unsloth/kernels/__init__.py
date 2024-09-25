@@ -13,7 +13,11 @@
 # limitations under the License.
 
 from .cross_entropy_loss import fast_cross_entropy_loss
-from .rms_layernorm import fast_rms_layernorm
+from .rms_layernorm import (
+    fast_rms_layernorm,
+    patch_rms_layernorm,
+    unpatch_rms_layernorm,
+)
 from .layernorm import (
     fast_layernorm,
     patch_layernorm,
