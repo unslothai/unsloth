@@ -188,16 +188,18 @@ pass
 def testing_suite_layernorm():
     for dim in [512, 1024, 2048]:
         for dtype in [torch.float16, torch.bfloat16]:
-            for seqlen in [3341, 2048, 349]:
-                for random_state in [3407, 42]:
-                    test_layernorm(
-                        dim = dim,
-                        eps = 1e-5,
-                        dtype = dtype,
-                        bsz = 21,
-                        random_state = random_state,
-                        seqlen = seqlen,
-                    )
+            with torch.autocast(device_type = "cuda", dtype = dtype):
+                for seqlen in [3341, 2048, 349]:
+                    for random_state in [3407, 42]:
+                        test_layernorm(
+                            dim = dim,
+                            eps = 1e-5,
+                            dtype = dtype,
+                            bsz = 21,
+                            random_state = random_state,
+                            seqlen = seqlen,
+                        )
+                    pass
                 pass
             pass
         pass
