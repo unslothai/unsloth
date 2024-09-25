@@ -377,17 +377,17 @@ def fast_cross_entropy_loss(
 pass
 
 
-from transformers.models.llama.modeling_llama import (
-    LlamaForCausalLM,
-    CausalLMOutputWithPast,
-    Optional,
-    Union,
-    Cache,
-    List,
-    Tuple,
-)
+from transformers.models.llama.modeling_llama import LlamaForCausalLM
 def patch_llama_for_causal_lm():
     import transformers.models.llama.modeling_llama
+    from transformers.models.llama.modeling_llama import (
+        CausalLMOutputWithPast,
+        Optional,
+        Union,
+        Cache,
+        List,
+        Tuple,
+    )
     import inspect, re
     function = inspect.getsource(transformers.models.llama.modeling_llama.LlamaForCausalLM.forward)
     function = function.split("\n")
@@ -448,9 +448,8 @@ def patch_llama_for_causal_lm():
 
     patched_function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
     f"    {function}\n"
-
-    print(patched_function)
-    exec(patched_function)
+    
+    exec(patched_function, globals())
     transformers.models.llama.modeling_llama.LlamaForCausalLM = Unsloth_LlamaForCausalLM
     return
 pass
