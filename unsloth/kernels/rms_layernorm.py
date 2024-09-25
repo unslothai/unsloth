@@ -201,10 +201,25 @@ class Unsloth_LlamaRMSNorm(LlamaRMSNorm):
     pass
 pass
 
+try:
+    from transformers.models.mllama.modeling_mllama import MllamaTextRMSNorm
+    class Unsloth_MllamaTextRMSNorm(MllamaTextRMSNorm):
+        def forward(self, X):
+            return fast_rms_layernorm(self, X, gemma = False)
+        pass
+    pass
+except:
+    pass
+pass
 
 def patch_rms_layernorm():
     import transformers.models.llama.modeling_llama
     transformers.models.llama.modeling_llama.LlamaRMSNorm = Unsloth_LlamaRMSNorm
+    try:
+        import transformers.models.mllama.modeling_mllama
+        transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = Unsloth_MllamaTextRMSNorm
+    except:
+        pass
     return
 pass
 
@@ -212,6 +227,12 @@ pass
 def unpatch_rms_layernorm():
     import transformers.models.llama.modeling_llama
     transformers.models.llama.modeling_llama.LlamaRMSNorm = LlamaRMSNorm
+    try:
+        import transformers.models.mllama.modeling_mllama
+        transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = MllamaTextRMSNorm
+    except:
+        pass
+    return
     return
 pass
 
