@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .cross_entropy_loss import fast_cross_entropy_loss
+from .cross_entropy_loss import (
+    fast_cross_entropy_loss,
+    patch_llama_for_causal_lm,
+    unpatch_llama_for_causal_lm,
+)
 from .rms_layernorm import (
     fast_rms_layernorm,
     patch_rms_layernorm,
