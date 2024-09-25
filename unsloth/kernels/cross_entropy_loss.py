@@ -443,6 +443,7 @@ function = [function[0]] + [" "*4 + x for x in function[1:]]
 function = "\n".join(function)
 function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
 f"    {function}\n"
+print(function)
 exec(function, globals())
 del function, replacement
 
