@@ -443,6 +443,7 @@ def patch_llama_for_causal_lm():
     patched_function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
     f"    {function}\n"
 
+    print(patched_function)
     exec(patched_function)
     transformers.models.llama.modeling_llama.LlamaForCausalLM = Unsloth_LlamaForCausalLM
     return
