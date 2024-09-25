@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.9.post2"
+__version__ = "2024.9.post3"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -41,6 +41,8 @@ __all__ = [
     "torch_amp_custom_bwd",
     "accelerate_old_send_to_device",
     "accelerate_new_send_to_device",
+    "patch_gradient_checkpointing",
+    "unpatch_gradient_checkpointing",
 ]
 
 import torch
@@ -791,7 +793,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     def backward(ctx, dY):
         (hidden_states,) = ctx.saved_tensors
         hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
-        hidden_states.requires_grad = True
+        hidden_states.requires_grad_(True)
         with torch.enable_grad():
             (output,) = ctx.forward_function(hidden_states, *ctx.args)
         torch.autograd.backward(output, dY)
@@ -803,6 +805,17 @@ pass
 @torch._disable_dynamo
 def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
     return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
+pass
+
+
+import torch.utils
+old_checkpoint = torch.utils.checkpoint
+def patch_gradient_checkpointing():
+    torch.utils.checkpoint = unsloth_offloaded_gradient_checkpoint
+pass
+
+def unpatch_gradient_checkpointing():
+    torch.utils.checkpoint = old_checkpoint
 pass
 
 
