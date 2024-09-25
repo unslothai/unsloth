@@ -12,8 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .cross_entropy_loss import fast_cross_entropy_loss
-from .rms_layernorm import fast_rms_layernorm
+from .cross_entropy_loss import (
+    fast_cross_entropy_loss,
+    patch_llama_for_causal_lm,
+    unpatch_llama_for_causal_lm,
+)
+from .rms_layernorm import (
+    fast_rms_layernorm,
+    patch_rms_layernorm,
+    unpatch_rms_layernorm,
+)
+from .layernorm import (
+    fast_layernorm,
+    patch_layernorm,
+    unpatch_layernorm,
+)
 from .rope_embedding import fast_rope_embedding, inplace_rope_embedding
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 from .geglu import (
