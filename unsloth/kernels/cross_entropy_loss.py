@@ -443,9 +443,8 @@ function = [function[0]] + [" "*4 + x for x in function[1:]]
 function = "\n".join(function)
 function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
 f"    {function}\n"
-print(function)
 exec(function, globals())
-del function, replacement
+del function, replacement, inspect, re
 
 
 def patch_llama_for_causal_lm():
