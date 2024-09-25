@@ -1387,7 +1387,8 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
 
         # For newer HF
         if SUPPORTS_LLAMA32:
-            kwargs["cache_implementation"] = "hybrid"
+            # kwargs["cache_implementation"] = "hybrid"
+            pass
         else:
             kwargs["cache_implementation"] = "dynamic"
         # For num_logits_to_keep
