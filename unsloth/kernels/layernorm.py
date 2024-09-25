@@ -1,4 +1,5 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2024-present Andrej Karpathy & the llm.c team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
