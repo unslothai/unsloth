@@ -377,25 +377,23 @@ def fast_cross_entropy_loss(
 pass
 
 
-from transformers.models.llama.modeling_llama import LlamaForCausalLM
-def patch_llama_for_causal_lm():
-    import transformers.models.llama.modeling_llama
-    from transformers.models.llama.modeling_llama import (
-        CausalLMOutputWithPast,
-        Optional,
-        Union,
-        Cache,
-        List,
-        Tuple,
-    )
-    import inspect, re
-    function = inspect.getsource(transformers.models.llama.modeling_llama.LlamaForCausalLM.forward)
-    function = function.split("\n")
-    i = re.match(r"[ ]{1,}", function[0]).span(0)[1]
-    function = [x[i:] for x in function]
-    function = "\n".join(function)
-    function = function[function.find("def forward"):]
-    replacement = """    loss = None
+from transformers.models.llama.modeling_llama import (
+    LlamaForCausalLM,
+    CausalLMOutputWithPast,
+    Optional,
+    Union,
+    Cache,
+    List,
+    Tuple,
+)
+import inspect, re
+function = inspect.getsource(transformers.models.llama.modeling_llama.LlamaForCausalLM.forward)
+function = function.split("\n")
+i = re.match(r"[ ]{1,}", function[0]).span(0)[1]
+function = [x[i:] for x in function]
+function = "\n".join(function)
+function = function[function.find("def forward"):]
+replacement = """    loss = None
     logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
     logit_scaling     = getattr(self.config, "logit_scale", 0)
     if labels is not None:
@@ -432,24 +430,25 @@ def patch_llama_for_causal_lm():
             pass
         pass
     pass
-    """
+"""
+function = \
+    function[:function.find("    loss = None")] + \
+    replacement + \
+    function[ function.find("if not return_dict"):]
+function = function.replace("logits = logits.float()", "\n")
+# Missed spaces
+function = function.split("\n")
+# Not the first one though!
+function = [function[0]] + [" "*4 + x for x in function[1:]]
+function = "\n".join(function)
+function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
+f"    {function}\n"
+exec(function, globals())
+del function, replacement
 
-    function = \
-        function[:function.find("    loss = None")] + \
-        replacement + \
-        function[ function.find("if not return_dict"):]
-    function = function.replace("logits = logits.float()", "\n")
 
-    # Missed spaces
-    function = function.split("\n")
-    # Not the first one though!
-    function = [function[0]] + [" "*4 + x for x in function[1:]]
-    function = "\n".join(function)
-
-    patched_function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
-    f"    {function}\n"
-    
-    exec(patched_function, globals())
+def patch_llama_for_causal_lm():
+    import transformers.models.llama.modeling_llama
     transformers.models.llama.modeling_llama.LlamaForCausalLM = Unsloth_LlamaForCausalLM
     return
 pass
