@@ -150,6 +150,7 @@ pass
 
 
 def fast_layernorm(layernorm, X):
+    assert(layernorm.elementwise_affine is True)
     W    = layernorm.weight
     bias = layernorm.bias
     eps = layernorm.variance_epsilon if \
@@ -157,6 +158,28 @@ def fast_layernorm(layernorm, X):
         else layernorm.eps
     out = Fast_Layernorm.apply(X, W, bias, eps)
     return out
+pass
+
+
+from torch.nn import LayerNorm
+class Fast_LayerNorm_Module(LayerNorm):
+    def forward(self, X):
+        return fast_layernorm(self, X)
+    pass
+pass
+
+
+def patch_layernorm():
+    import torch.nn
+    torch.nn.LayerNorm = Fast_LayerNorm_Module
+    return
+pass
+
+
+def unpatch_layernorm():
+    import torch.nn
+    torch.nn.LayerNorm = LayerNorm
+    return
 pass
 
 
