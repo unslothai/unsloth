@@ -440,10 +440,12 @@ def patch_llama_for_causal_lm():
         function[ function.find("    if not return_dict"):]
     function = function.replace("logits = logits.float()", "\n")
 
+    # Missed spaces
     function = function.split("\n")
-    function = [" "*4 + x for x in function]
+    # Not the first one though!
+    function = [function[0]] + [" "*4 + x for x in function[1:]]
     function = "\n".join(function)
-    
+
     patched_function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
     f"    {function}\n"
 
