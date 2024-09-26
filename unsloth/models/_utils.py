@@ -306,6 +306,14 @@ if Version(xformers_version) >= Version("0.0.27"):
         accelerate_new_send_to_device = _fixed_send_to_device
     pass
 pass
+
+# Transformers 4.46 breaks dynamic caching. This is a hack
+import transformers.generation.configuration_utils
+if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):
+    if type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS) is list:
+        transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
+    pass
+pass
 # =============================================
 
 # =============================================
