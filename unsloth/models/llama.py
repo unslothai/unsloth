@@ -62,10 +62,7 @@ from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 from huggingface_hub.utils._token import get_token
-from transformers import __version__ as transformers_version
-from packaging.version import Version
-transformers_version = Version(transformers_version)
-SUPPORTS_LLAMA32 = transformers_version > Version("4.45.0")
+
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -1386,10 +1383,7 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         pass
 
         # For newer HF
-        if SUPPORTS_LLAMA32:
-            kwargs["cache_implementation"] = "hybrid"
-        else:
-            kwargs["cache_implementation"] = "dynamic"
+        kwargs["cache_implementation"] = "dynamic"
         # For num_logits_to_keep
         kwargs["num_logits_to_keep"] = 1
 
