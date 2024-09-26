@@ -855,8 +855,6 @@ def LlamaModel_fast_forward_inference(
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
     bsz, q_len, hd = hidden_states.shape
-    import os
-    os.environ["past_key_values_all"] = past_key_values
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
@@ -1372,8 +1370,6 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
     # Wraps inference with bfloat16 / float16
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
-        print(args)
-        print(kwargs)
 
         # Set a flag for generation!
         internal_model = model
@@ -1384,25 +1380,28 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         internal_model._flag_for_generation = True
 
         # Must patch accelerate for Xformers
-        # if accelerate_new_send_to_device is not None:
-        #     import accelerate.utils.operations
-        #     accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
-        # pass
+        if accelerate_new_send_to_device is not None:
+            import accelerate.utils.operations
+            accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+        pass
 
         # For newer HF
-        # kwargs["cache_implementation"] = "dynamic"
+        if SUPPORTS_LLAMA32:
+            kwargs["cache_implementation"] = "hybrid"
+        else:
+            kwargs["cache_implementation"] = "dynamic"
         # For num_logits_to_keep
-        # kwargs["num_logits_to_keep"] = 1
+        kwargs["num_logits_to_keep"] = 1
 
-        # # Remove token_type_ids
-        # kwargs.pop("token_type_ids", None)
+        # Remove token_type_ids
+        kwargs.pop("token_type_ids", None)
 
-        # # Check pad_token
-        # model_eos_token_id = getattr(model.config, "eos_token_id", None)
-        # if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
-        #     model_eos_token_id = model_eos_token_id[0]
+        # Check pad_token
+        model_eos_token_id = getattr(model.config, "eos_token_id", None)
+        if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
+            model_eos_token_id = model_eos_token_id[0]
 
-        # kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
         # Set pad token
         # old_pad_token_id = getattr(model.config, "pad_token_id", None)
