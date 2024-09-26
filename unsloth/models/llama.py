@@ -1384,10 +1384,10 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         internal_model._flag_for_generation = True
 
         # Must patch accelerate for Xformers
-        if accelerate_new_send_to_device is not None:
-            import accelerate.utils.operations
-            accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
-        pass
+        # if accelerate_new_send_to_device is not None:
+        #     import accelerate.utils.operations
+        #     accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+        # pass
 
         # For newer HF
         # kwargs["cache_implementation"] = "dynamic"
@@ -1411,8 +1411,6 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
 
         # Autocasted
         with torch.autocast(device_type = device_type, dtype = dtype):
-            print(args)
-            print(kwargs)
             output = generate(*args, **kwargs)
         pass
 
