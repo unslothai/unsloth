@@ -843,6 +843,9 @@ def LlamaModel_fast_forward(
 pass
 
 
+global past_key_values_all
+past_key_values_all = None
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward_inference(
     self,
@@ -855,6 +858,8 @@ def LlamaModel_fast_forward_inference(
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
     bsz, q_len, hd = hidden_states.shape
+    global past_key_values_all
+    past_key_values_all = past_key_values
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
