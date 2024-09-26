@@ -1372,6 +1372,8 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
     # Wraps inference with bfloat16 / float16
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
+        print(args)
+        print(kwargs)
 
         # Set a flag for generation!
         internal_model = model
