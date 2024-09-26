@@ -1388,7 +1388,7 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         pass
 
         # For newer HF
-        kwargs["cache_implementation"] = "dynamic"
+        # kwargs["cache_implementation"] = "dynamic"
         # For num_logits_to_keep
         kwargs["num_logits_to_keep"] = 1
 
