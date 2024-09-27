@@ -35,7 +35,7 @@ exclude = ["images*"]
 huggingface = [
     "packaging",
     "tyro",
-    "transformers>=4.45.0",
+    "transformers>=4.45.1",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -212,7 +212,7 @@ colab-ampere-torch220 = [
 colab-new = [
     "packaging",
     "tyro",
-    "transformers>=4.45.0",
+    "transformers>=4.45.1",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
