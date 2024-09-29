@@ -192,7 +192,7 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         # Cannot be both!
-        if is_model and is_peft:
+        if (is_model and is_peft) and not SUPPORTS_LLAMA32:
             raise RuntimeError(
                 "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
                 "You have 2 files `config.json` and `adapter_config.json`.\n"\
