@@ -196,15 +196,14 @@ class FastLanguageModel(FastLlamaModel):
 
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
-
-        print(both_exist)
+        
         if SUPPORTS_LLAMA32:
             # New transformers need to check manually.
             files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
-            if sum(x.endswith(("adapter_config.json", "config.json")) for x in files) >= 2:
+            files = (os.path.split(x)[-1] for x in files)
+            if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                 both_exist = True
             pass
-            print(both_exist)
         pass
 
         # Error out if both LoRA and normal model config exists.
