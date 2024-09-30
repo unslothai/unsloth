@@ -18,8 +18,14 @@ from ..kernels import patch_rms_layernorm, unpatch_rms_layernorm
 from ..kernels import patch_llama_for_causal_lm, unpatch_llama_for_causal_lm
 from ._utils import patch_gradient_checkpointing
 
-from transformers import AutoProcessor, AutoModelForVision2Seq
-
+from transformers import AutoProcessor
+try:
+    from transformers import MllamaForConditionalGeneration
+except:
+    raise ImportError(
+        "Unsloth: Please update your transformers version to 4.46.0 for Llama 3.2 support!"
+    )
+pass
 
 class FastVisionModel:
 
@@ -56,7 +62,6 @@ class FastVisionModel:
             )
         pass
         if token is None: token = get_token()
-        if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
@@ -87,48 +92,6 @@ class FastVisionModel:
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # RoPE Scaling
-        model_config = AutoConfig.from_pretrained(model_name, token = token)
-        model_max_seq_length = model_config.max_position_embeddings
-
-        # Check if RoPE Scaling is even allowed
-        model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
-        has_rope_scaling = False
-        try:
-            with open(inspect.getfile(model_function), "r") as file:
-                has_rope_scaling = "self.config.rope_scaling" in file.read()
-        except: pass
-        has_rope_scaling = True
-
-        # If max_seq_length is not specified, use maximum fron config
-        if max_seq_length is None:
-            max_seq_length = model_max_seq_length
-        pass
-
-        if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
-
-            rope_scaling = max_seq_length / model_max_seq_length
-
-            logger.warning_once(
-                f"Unsloth: {model_name} can only handle sequence lengths of at most "\
-                f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "\
-                f"{round(rope_scaling, 3)}, it can be magically be extended to "\
-                f"{max_seq_length}!"
-            )
-
-            # Warn RoPE scaling isn't allowed
-            if not has_rope_scaling:
-                raise RuntimeError(
-                    "However, {model_name} doesn't support RoPE Scaling!\n"\
-                    "Please file a feature request at https://github.com/unslothai/unsloth."
-                )
-            pass
-
-            rope_scaling = {"type": "linear", "factor": rope_scaling,}
-
-            # Add to kwargs
-            kwargs["rope_scaling"] = rope_scaling
-        pass
         # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
         pre_check = check_nvidia()
 
@@ -142,16 +105,11 @@ class FastVisionModel:
             )
         pass
 
-        # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
-        # RoPE Scaling's max_position_embeddings must be updated
-        max_position_embeddings = max(max_seq_length, model_max_seq_length)
-        kwargs.pop("attn_implementation", None); # No need since we auto call it
-
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
         
         self.pre_patch()
-        model = AutoModelForVision2Seq.from_pretrained(
+        model = MllamaForConditionalGeneration.from_pretrained(
             model_name,
             device_map              = device_map,
             torch_dtype             = dtype,
@@ -159,7 +117,7 @@ class FastVisionModel:
             token                   = token,
             max_position_embeddings = max_position_embeddings,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = "eager",
+            attn_implementation     = "sdpa",
             **kwargs,
         )
         self.post_unpatch()
