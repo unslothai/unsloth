@@ -138,17 +138,6 @@ def get_model_name(model_name, load_in_4bit = True):
 pass
 
 
-LLAMA32_MODEL_NAMES = set((
-    "unsloth/Llama-3.2-1B-bnb-4bit",
-    "unsloth/Llama-3.2-3B-bnb-4bit",
-    "unsloth/Llama-3.2-1B",
-    "unsloth/Llama-3.2-3B",
-    "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
-    "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
-    "unsloth/Llama-3.2-1B-Instruct",
-    "unsloth/Llama-3.2-3B-Instruct",
-))
-
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
@@ -203,7 +192,7 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         # Cannot be both!
-        if is_model and is_peft:
+        if (is_model and is_peft) and not SUPPORTS_LLAMA32:
             raise RuntimeError(
                 "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
                 "You have 2 files `config.json` and `adapter_config.json`.\n"\
@@ -252,14 +241,6 @@ class FastLanguageModel(FastLlamaModel):
                     f"Unsloth: Your transformers version of {transformers_version} does not support Llama 3.1.\n"\
                     f"The minimum required version is 4.43.2\n"\
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
-                    f"to obtain the latest transformers build, then restart this session."\
-                )
-
-            elif model_name.lower() in LLAMA32_MODEL_NAMES and not SUPPORTS_LLAMA32:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support Llama 3.2.\n"\
-                    f"The minimum required version is 4.46\n"\
-                    f'Try `pip install --upgrade "transformers>=4.46"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 )
 

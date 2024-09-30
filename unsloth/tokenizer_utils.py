@@ -1180,11 +1180,6 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "if self._inner_training_loop.__name__ != '_fast_inner_training_loop':\n"\
-        "    raise RuntimeError(\n"\
-        "       'Please do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'\n"\
-        "    )\n"\
-        "pass\n"\
         "import subprocess, re, gc, numpy as np\n"\
         "a = np.array([0,])\n"\
         "try:\n"\
