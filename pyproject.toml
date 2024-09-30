@@ -35,15 +35,15 @@ exclude = ["images*"]
 huggingface = [
     "packaging",
     "tyro",
-    "transformers>=4.45.1",
+    "transformers<4.45.0",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
     "wheel>=0.42.0",
     "numpy",
-    "accelerate>=0.26.1",
-    "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3",
+    "accelerate>=0.34.1",
+    "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,<=0.11.1",
     "peft>=0.7.1,!=0.11.0",
     "protobuf<4.0.0",
     "huggingface_hub",
@@ -212,7 +212,7 @@ colab-ampere-torch220 = [
 colab-new = [
     "packaging",
     "tyro",
-    "transformers>=4.45.1",
+    "transformers<4.45.0",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -224,8 +224,8 @@ colab-new = [
     "hf_transfer",
 ]
 colab-no-deps = [
-    "accelerate>=0.26.1",
-    "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3",
+    "accelerate>=0.34.1",
+    "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,<=0.11.1",
     "peft>=0.7.1",
     "xformers<0.0.27",
     "bitsandbytes>=0.43.3",
