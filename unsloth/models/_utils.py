@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.9.post3"
+__version__ = "2024.9.post4"
 
 __all__ = [
     "prepare_model_for_kbit_training",
