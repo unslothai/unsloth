@@ -33,7 +33,7 @@ import numpy as np
 # Thank you for your understanding and we appreciate it immensely!
 def dumb_change_unsloth_process_cuda_variable(cuda_device):
     os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"] = cuda_device
-
+dumb_change_unsloth_process_cuda_variable('cuda:0') # by default set to cuda:0, but should change as soon as you can in your process
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 print("UNSLOTH CHANGE visible device", os.environ["CUDA_VISIBLE_DEVICES"])
 """
