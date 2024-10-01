@@ -1140,7 +1140,7 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
         if seen_bad / (seen_bad + seen_good) >= 0.9:
             logger.warning(
                 "Unsloth: Most labels in your dataset are -100. Training losses will be 0.\n"\
-                "Are you usre you used `train_on_responses_only` correctly?\n"\
+                "For example, are you sure you used `train_on_responses_only` correctly?\n"\
                 "Or did you mask our tokens incorrectly? Maybe this is intended?"
             )
         pass
