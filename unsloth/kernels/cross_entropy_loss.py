@@ -17,7 +17,7 @@ import triton.language as tl
 import torch
 from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh
 from transformers.models.llama.modeling_llama import logger
-
+import os
 
 @triton.heuristics({
     "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
@@ -266,7 +266,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
         n_chunks = div + (mod != 0)
-        losses = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+        losses = torch.empty(n_rows, dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
         DO_SOFTCAPPING   = (logit_softcapping != 0)
         DO_LOGIT_SCALING = (logit_scaling != 0)
@@ -274,7 +274,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
-            logsumexp = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+            logsumexp = torch.empty(n_rows, dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
             _cross_entropy_forward[(n_rows,)](
                 logits, logits.stride(0),
@@ -291,7 +291,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             )
         else:
             # For large vocabs > 65336 like Gemma 256K
-            logsumexp = torch.empty((n_rows, n_chunks,), dtype = torch.float32, device = "cuda:0")
+            logsumexp = torch.empty((n_rows, n_chunks,), dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
             _chunked_cross_entropy_forward[(n_rows, n_chunks,)](
                 logits, logits.stride(0),
@@ -400,7 +400,7 @@ replacement = """    loss = None
         shift_logits = logits
         if not hasattr(self, "extra_ignored_labels"):
             # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
+            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         pass
         
         shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
