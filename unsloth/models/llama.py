@@ -1479,6 +1479,7 @@ class FastLlamaModel:
         model_patcher     = None,
         tokenizer_name    = None,
         trust_remote_code = False,
+        device            = "cuda:0",
         **kwargs,
     ):
         if trust_remote_code:
@@ -1585,7 +1586,7 @@ class FastLlamaModel:
         
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map              = device_map,
+            device_map              = device_map if device == 'cuda:0' else device,
             torch_dtype             = dtype,
             # quantization_config     = bnb_config,
             token                   = token,
@@ -1946,7 +1947,7 @@ class FastLlamaModel:
                     print("Unsloth: Casting embed_tokens to float32")
 
                     model.model.model.embed_tokens.modules_to_save.default\
-                        .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                        .to(device=model.device, dtype = torch.float32, non_blocking = True)
                     model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old embed_tokens to CPU - should be disk!
@@ -1959,7 +1960,7 @@ class FastLlamaModel:
                     print("Unsloth: Casting lm_head to float32")
 
                     model.model.lm_head.modules_to_save.default\
-                        .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                        .to(device = model.device, dtype = torch.float32, non_blocking = True)
                     model.model.lm_head.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
@@ -2197,7 +2198,7 @@ class FastLlamaModel:
             print("Unsloth: Casting embed_tokens to float32")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
             model.model.model.embed_tokens.modules_to_save.default\
-                .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                .to(device = model.device, dtype = torch.float32, non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
@@ -2205,7 +2206,7 @@ class FastLlamaModel:
             print("Unsloth: Casting lm_head to float32")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
             model.model.lm_head.modules_to_save.default\
-                .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                .to(device = model.device, dtype = torch.float32, non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
@@ -2397,7 +2398,7 @@ class FastLlamaModel:
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10
         max_seq_length = model.max_seq_length
-        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda:0")
+        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = model.device)
         model.model.extra_ignored_labels = extra_ignored_labels
         internal_model = model
         while hasattr(internal_model, "model"):
