@@ -31,6 +31,9 @@ import numpy as np
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
 # Thank you for your understanding and we appreciate it immensely!
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+print("UNSLOTH CHANGE visible device", os.environ["CUDA_VISIBLE_DEVICES"])
+"""
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     devices = os.environ["CUDA_VISIBLE_DEVICES"]
@@ -48,6 +51,7 @@ else:
     # warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+"""
 pass
 
 # Reduce VRAM usage by reducing fragmentation
