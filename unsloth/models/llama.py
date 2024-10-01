@@ -153,23 +153,23 @@ def LlamaAttention_fast_forward_inference(
     # Prefill phase
     # if not hasattr(self, "paged_attention"):
     if do_prefill:
-        self.paged_attention = torch.empty((KV_CACHE_INCREMENT+seq_len+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = self.model.device)
+        self.paged_attention = torch.empty((KV_CACHE_INCREMENT+seq_len+1, 2, bsz, n_kv_heads, head_dim), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         self.paged_attention_K = self.paged_attention[:,0]
         self.paged_attention_V = self.paged_attention[:,1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = self.model.device)
-        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = self.model.device)
-        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = self.model.device)
+        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
+        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         
         # Mistral Nemo 12b has weird dimensions
         if attention_size != self.hidden_size:
-            self.temp_O = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = self.model.device)
+            self.temp_O = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         else:
             self.temp_O = self.temp_QA[1][:,:,:self.hidden_size]
         pass
         
-        self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = self.model.device)
+        self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
     elif kv_seq_len >= self.paged_attention.shape[0]:
@@ -582,7 +582,7 @@ def LlamaModel_fast_forward(
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
-            device = self.model.device,
+            device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"],
         )
         position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
     elif position_ids is not None:
@@ -746,13 +746,13 @@ def LlamaModel_fast_forward(
                     is_causal = True,
                     sliding_window = self.config.sliding_window,
                 )\
-                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = self.model.device,)\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"],)\
                     .squeeze(0).squeeze(0)
 
                 self.GA_mask = AttentionMaskConverter(
                     is_causal = True,
                 )\
-                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = self.model.device,)\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"],)\
                     .squeeze(0).squeeze(0)
             pass
         pass
