@@ -243,16 +243,16 @@ def test_rms_layernorm(
     bsz = 21, random_state = 3407, seqlen = 3341,
 ):
     from transformers.models.llama.modeling_llama import LlamaRMSNorm
-    layernorm = LlamaRMSNorm((dim,), eps = eps).to("cuda")
+    layernorm = LlamaRMSNorm((dim,), eps = eps).to(os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
     torch.cuda.manual_seed(random_state)
     torch.manual_seed(random_state)
     torch.nn.init.uniform_(layernorm.weight)
-    X = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda")
+    X = torch.randn((bsz, seqlen, dim), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
     XX = X.clone()
     X .requires_grad_(True)
     XX.requires_grad_(True)
     Y = layernorm(X)
-    YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = "cuda", requires_grad = True)
+    YY = torch.randn((bsz, seqlen, dim), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"], requires_grad = True)
     Y.backward(YY)
     correct_grad = X.grad.clone()
     # from unsloth.kernels import fast_rms_layernorm
@@ -265,7 +265,7 @@ pass
 def testing_suite_layernorm():
     for dim in [512, 1024, 2048]:
         for dtype in [torch.float16, torch.bfloat16]:
-            with torch.autocast(device_type = "cuda", dtype = dtype):
+            with torch.autocast(device_type = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"], dtype = dtype):
                 for seqlen in [3341, 2048, 349]:
                     for random_state in [3407, 42]:
                         test_rms_layernorm(

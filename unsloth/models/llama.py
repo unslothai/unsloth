@@ -1068,7 +1068,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
-            device = "cuda"
+            device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"]
             max_position_embeddings = config.max_position_embeddings
         pass
 
@@ -1166,7 +1166,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
-            device = "cuda"
+            device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"]
             max_position_embeddings = config.max_position_embeddings
         pass
 
@@ -1273,7 +1273,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
-            device = "cuda"
+            device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"]
             max_position_embeddings = config.max_position_embeddings
         pass
 
