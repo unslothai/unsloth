@@ -22,6 +22,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 | Unsloth supports | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
+| **Llama 3.2 (3B)**      | [▶️ Start for free](https://colab.research.google.com/drive/1T5-zKWM_5OD21QHwXHiV9ixTRR7k3iB9?usp=sharing)               | 2x faster | 60% less |
 | **Llama 3.1 (8B)**      | [▶️ Start for free](https://colab.research.google.com/drive/1Ys44kVvmeZtnICzWz0xgpRnrIOjZAuxp?usp=sharing)               | 2x faster | 60% less |
 | **Phi-3.5 (mini)** | [▶️ Start for free](https://colab.research.google.com/drive/1lN6hPQveB_mHSnTOYifygFcrO8C1bxq4?usp=sharing)               | 2x faster | 50% less |
 | **Gemma 2 (9B)**      | [▶️ Start for free](https://colab.research.google.com/drive/1vIrqH5uYDQwsJ4-OO3DErvuv4pBgVwk4?usp=sharing)               | 2x faster | 63% less |
