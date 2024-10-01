@@ -31,6 +31,9 @@ import numpy as np
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
 # Thank you for your understanding and we appreciate it immensely!
+def dumb_change_unsloth_process_cuda_variable(cuda_device):
+    os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"] = cuda_device
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 print("UNSLOTH CHANGE visible device", os.environ["CUDA_VISIBLE_DEVICES"])
 """
