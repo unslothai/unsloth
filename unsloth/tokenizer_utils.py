@@ -42,15 +42,13 @@ IGNORED_TOKENIZER_CHECKING = frozenset((
 
 
 IGNORED_TOKENIZER_NAMES = [
-    # "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-    # "unsloth/Mistral-Nemo-Instruct-2407",
-    # "mistralai/Mistral-Nemo-Instruct-2407",
-    # "unsloth/Mistral-Nemo-Base-2407-bnb-4bit",
-    # "unsloth/Mistral-Nemo-Base-2407",
-    # "mistralai/Mistral-Nemo-Base-2407",
+    # Qwen Coder did not train on tool calling. Math did!
+    "unsloth/Qwen2.5-Coder-1.5B-Instruct",
+    "unsloth/Qwen2.5-Coder-7B-Instruct",
 ]
 IGNORED_TOKENIZER_NAMES = frozenset(
-    [x.lower() for x in IGNORED_TOKENIZER_NAMES]
+    [x.lower() for x in IGNORED_TOKENIZER_NAMES] + \
+    [x.lower()+"-bnb-4bit" for x in IGNORED_TOKENIZER_NAMES]
 )
 
 # Check environments
@@ -1116,6 +1114,40 @@ def add_new_tokens(
 pass
 
 
+@torch.inference_mode
+def fix_zero_training_loss(model, tokenizer, train_dataset):
+    """
+    Sometimes the labels get masked by all -100s, causing the loss
+    to be 0. We check for this!
+    """
+    if len(train_dataset) == 0: return
+
+    row = train_dataset[0]
+    if type(row) is dict and "labels" in row:
+
+        # Check the first 100 rows
+        seen_bad  = 0
+        seen_good = 0
+        for i, row in enumerate(train_dataset):
+            try:    check_tokens = list(set(row["labels"]))
+            except: continue
+            if len(check_tokens) == 1 and check_tokens[0] == -100: seen_bad += 1
+            else: seen_good += 1
+            if i >= 100: break
+        pass
+
+        # Check ratio
+        if seen_bad / (seen_bad + seen_good) >= 0.9:
+            logger.warning(
+                "Unsloth: Most labels in your dataset are -100. Training losses will be 0.\n"\
+                "For example, are you sure you used `train_on_responses_only` correctly?\n"\
+                "Or did you mask our tokens incorrectly? Maybe this is intended?"
+            )
+        pass
+    pass
+pass
+
+
 def check_nvidia():
     # Unsloth doesn't work yet on AMD devices - we're working on it!
     output = np.array([0,])
@@ -1228,7 +1260,8 @@ def patch_sft_trainer_tokenizer():
         "    torch.cuda.empty_cache()\n"\
         "pass\n"\
         "\n"\
-        "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"
+        "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"\
+        "fix_zero_training_loss(self.model, self.tokenizer, self.train_dataset)\n\n"
 
         # Add NEFTune since it doesn't seem to work?? We need to manually inject it
         check_text += \
