@@ -154,6 +154,7 @@ class FastLanguageModel(FastLlamaModel):
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab         = None,
         revision                   = None,
+        device                     = "cuda:0",
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -330,6 +331,7 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name    = tokenizer_name,
             trust_remote_code = trust_remote_code,
             revision          = revision if not is_peft else None,
+            device            = device,
             *args, **kwargs,
         )
         
@@ -375,6 +377,7 @@ class FastLanguageModel(FastLlamaModel):
                 revision = revision,
                 is_trainable = True,
                 trust_remote_code = trust_remote_code,
+                device=device,
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
