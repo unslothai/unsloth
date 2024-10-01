@@ -16,6 +16,7 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings
+import os
 
 
 @triton.jit
@@ -137,8 +138,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
-        r = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = os.environ("UNSLOTH_PROCESS_CUDA_DEVICE"))
+        r = torch.empty(n_rows, dtype = torch.float32, device = os.environ("UNSLOTH_PROCESS_CUDA_DEVICE"))
 
         fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
         fx[(n_rows,)](
