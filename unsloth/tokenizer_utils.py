@@ -42,15 +42,13 @@ IGNORED_TOKENIZER_CHECKING = frozenset((
 
 
 IGNORED_TOKENIZER_NAMES = [
-    # "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-    # "unsloth/Mistral-Nemo-Instruct-2407",
-    # "mistralai/Mistral-Nemo-Instruct-2407",
-    # "unsloth/Mistral-Nemo-Base-2407-bnb-4bit",
-    # "unsloth/Mistral-Nemo-Base-2407",
-    # "mistralai/Mistral-Nemo-Base-2407",
+    # Qwen Coder did not train on tool calling. Math did!
+    "unsloth/Qwen2.5-Coder-1.5B-Instruct",
+    "unsloth/Qwen2.5-Coder-7B-Instruct",
 ]
 IGNORED_TOKENIZER_NAMES = frozenset(
-    [x.lower() for x in IGNORED_TOKENIZER_NAMES]
+    [x.lower() for x in IGNORED_TOKENIZER_NAMES] + \
+    [x.lower()+"-bnb-4bit" for x in IGNORED_TOKENIZER_NAMES]
 )
 
 # Check environments
