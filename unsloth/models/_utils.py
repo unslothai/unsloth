@@ -52,6 +52,7 @@ platform_system = platform_system()
 import numpy as np
 import warnings, subprocess, re, inspect, psutil, os, math
 from packaging.version import Version
+import os
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -800,7 +801,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @torch_amp_custom_bwd
     def backward(ctx, dY):
         (hidden_states,) = ctx.saved_tensors
-        hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
+        hidden_states = hidden_states.to(os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"], non_blocking = True).detach()
         hidden_states.requires_grad_(True)
         with torch.enable_grad():
             (output,) = ctx.forward_function(hidden_states, *ctx.args)
