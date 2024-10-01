@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import triton
+import os
 MAX_FUSED_SIZE = 65536
 next_power_of_2 = triton.next_power_of_2
 
@@ -23,8 +24,8 @@ if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
 else:
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 pass
 
 
@@ -131,18 +132,18 @@ if HAS_CUDA_STREAM:
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
         global CUDA_STREAM
-        if CUDA_STREAM is None: CUDA_STREAM = torch.cuda.current_stream("cuda:0")
+        if CUDA_STREAM is None: CUDA_STREAM = torch.cuda.current_stream(os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
         # Create weight matrix
         if out is None:
-            out = torch.empty(shape, dtype = dtype, device = "cuda:0")
+            out = torch.empty(shape, dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         else:
             assert(out.shape == shape)
             assert(out.dtype == dtype)
 
         # NF4 dequantization of statistics
         n_elements_absmax = absmax.numel()
-        out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda:0")
+        out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
@@ -185,14 +186,14 @@ else:
 
         # Create weight matrix
         if out is None:
-            out = torch.empty(shape, dtype = dtype, device = "cuda:0")
+            out = torch.empty(shape, dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         else:
             assert(out.shape == shape)
             assert(out.dtype == dtype)
 
         # NF4 dequantization of statistics
         n_elements_absmax = absmax.numel()
-        out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda:0")
+        out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
@@ -240,13 +241,13 @@ if HAS_CUDA_STREAM:
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
         global CUDA_STREAM
-        if CUDA_STREAM is None: CUDA_STREAM = torch.cuda.current_stream("cuda:0")
+        if CUDA_STREAM is None: CUDA_STREAM = torch.cuda.current_stream(os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         
         # assert(dtype == X.dtype)
         bout = shape[0]
 
         if out is None:
-            out = torch.empty((1, 1, bout,), dtype = dtype, device = "cuda:0")
+            out = torch.empty((1, 1, bout,), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         # else:
         #     assert(out.shape == (1, 1, bout,))
         # pass
@@ -264,7 +265,7 @@ if HAS_CUDA_STREAM:
         ldb = ctypes.c_int32(ldb)
         ldc = ctypes.c_int32(ldc)
 
-        df = torch.empty(absmax.shape, dtype = torch.float32, device = "cuda:0")
+        df = torch.empty(absmax.shape, dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         cdequantize_blockwise_fp32(
             get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
             ctypes.c_int(blocksize2), ctypes.c_int(df.numel()), CUDA_STREAM,
@@ -310,7 +311,7 @@ else:
         bout = shape[0]
 
         if out is None:
-            out = torch.empty((1, 1, bout,), dtype = dtype, device = "cuda:0")
+            out = torch.empty((1, 1, bout,), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         # else:
         #     assert(out.shape == (1, 1, bout,))
         # pass
@@ -328,7 +329,7 @@ else:
         ldb = ctypes.c_int32(ldb)
         ldc = ctypes.c_int32(ldc)
 
-        df = torch.empty(absmax.shape, dtype = torch.float32, device = "cuda:0")
+        df = torch.empty(absmax.shape, dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         cdequantize_blockwise_fp32(
             get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
             ctypes.c_int(blocksize2), ctypes.c_int(df.numel()),
