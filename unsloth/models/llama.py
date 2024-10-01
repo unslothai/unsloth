@@ -2443,6 +2443,9 @@ class FastLlamaModel:
         internal_model.gradient_checkpointing = False
         internal_model.training = False
 
+        if hasattr(internal_model, "module"):
+            internal_model = internal_model.module
+
         while hasattr(internal_model, "model"):
             internal_model = internal_model.model
             internal_model.gradient_checkpointing = False
