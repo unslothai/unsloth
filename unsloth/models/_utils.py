@@ -660,10 +660,12 @@ def _get_statistics(statistics = None, force_download = True):
 pass
 
 def get_device_properties(device=None):
+    # device should have format cuda:x
     if device is None:
         device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"]
     assert len(device.split(":")) == 2
     assert device.split(":")[1].isnumeric()
+    device_name = device.split(":")[1]
     device_id = int(device_name)
     gpu_stats = torch.cuda.get_device_properties(device_id)
     
