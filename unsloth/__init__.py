@@ -49,7 +49,6 @@ def change_unsloth_process_cuda_variable(cuda_device):
 change_unsloth_process_cuda_variable('cuda:0') # by default set to cuda:0, but should change as soon as you can in your process
 warnings.warn(f"Unsloth: is currently setting UNSLOTH_PROCESS_CUDA_DEVICE to cuda:0 by default (use change_unsloth_process_cuda_variable to change GPU).")
 
-"""
 pass
 
 # Reduce VRAM usage by reducing fragmentation
