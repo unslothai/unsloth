@@ -27,7 +27,6 @@ import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
-from models._utils import get_device_properties
 from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
 from huggingface_hub.utils._token import get_token
@@ -39,6 +38,16 @@ __all__ = [
     "patch_saving_functions",
     "create_huggingface_repo",
 ]
+
+
+def get_device_properties(device=None):
+    # note this is a copied method in models._utils as well, should be consolidated soon
+    if device is None:
+        device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"]
+    assert len(device.split(":")) == 2
+    assert device.split(":")[1].isnumeric()
+    device_id = int(device_name)
+    gpu_stats = torch.cuda.get_device_properties(device_id)
 
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
