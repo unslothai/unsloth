@@ -227,6 +227,7 @@ __INT_TO_FLOAT_MAPPER = \
         "meta-llama/Meta-Llama-3.1-8B-Instruct",
     ),
     "unsloth/Meta-Llama-3.1-70B-bnb-4bit" : (
+        "unsloth/Meta-Llama-3.1-70B",
         "meta-llama/Meta-Llama-3.1-70B",
     ),
     "unsloth/Meta-Llama-3.1-405B-bnb-4bit" : (
@@ -236,6 +237,7 @@ __INT_TO_FLOAT_MAPPER = \
         "meta-llama/Meta-Llama-3.1-405B-Instruct",
     ),
     "unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit" : (
+        "unsloth/Meta-Llama-3.1-70B-Instruct",
         "meta-llama/Meta-Llama-3.1-70B-Instruct",
     ),
     "unsloth/Mistral-Large-Instruct-2407-bnb-4bit" : (
@@ -252,6 +254,167 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/Phi-3.5-mini-instruct-bnb-4bit" : (
         "unsloth/Phi-3.5-mini-instruct",
         "microsoft/Phi-3.5-mini-instruct",
+    ),
+    "unsloth/c4ai-command-r-08-2024-bnb-4bit" : (
+        "CohereForAI/c4ai-command-r-08-2024",
+    ),
+    "unsloth/c4ai-command-r-plus-08-2024-bnb-4bit" : (
+        "CohereForAI/c4ai-command-r-plus-08-2024",
+    ),
+    "unsloth/Llama-3.1-Storm-8B-bnb-4bit" : (
+        "unsloth/Llama-3.1-Storm-8B",
+        "akjindal53244/Llama-3.1-Storm-8B",
+    ),
+    "unsloth/Hermes-3-Llama-3.1-8B-bnb-4bit" : (
+        "unsloth/Hermes-3-Llama-3.1-8B",
+        "NousResearch/Hermes-3-Llama-3.1-8B",
+    ),
+    "unsloth/Hermes-3-Llama-3.1-70B-bnb-4bit" : (
+        "unsloth/Hermes-3-Llama-3.1-70B",
+        "NousResearch/Hermes-3-Llama-3.1-70B",
+    ),
+    "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit" : (
+        "NousResearch/Hermes-3-Llama-3.1-405B",
+    ),
+    "unsloth/SmolLM-135M-bnb-4bit" : (
+        "unsloth/SmolLM-135M",
+        "HuggingFaceTB/SmolLM-135M",
+    ),
+    "unsloth/SmolLM-360M-bnb-4bit" : (
+        "unsloth/SmolLM-360M",
+        "HuggingFaceTB/SmolLM-360M",
+    ),
+    "unsloth/SmolLM-1.7B-bnb-4bit" : (
+        "unsloth/SmolLM-1.7B",
+        "HuggingFaceTB/SmolLM-1.7B",
+    ),
+    "unsloth/SmolLM-135M-Instruct-bnb-4bit" : (
+        "unsloth/SmolLM-135M-Instruct",
+        "HuggingFaceTB/SmolLM-135M-Instruct",
+    ),
+    "unsloth/SmolLM-360M-Instruct-bnb-4bit" : (
+        "unsloth/SmolLM-360M-Instruct",
+        "HuggingFaceTB/SmolLM-360M-Instruct",
+    ),
+    "unsloth/SmolLM-1.7B-Instruct-bnb-4bit" : (
+        "unsloth/SmolLM-1.7B-Instruct",
+        "HuggingFaceTB/SmolLM-1.7B-Instruct",
+    ),
+    "unsloth/Mistral-Small-Instruct-2409-bnb-4bit" : (
+        "unsloth/Mistral-Small-Instruct-2409",
+        "mistralai/Mistral-Small-Instruct-2409",
+    ),
+    "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-0.5B-Instruct",
+        "Qwen/Qwen2.5-0.5B-Instruct",
+    ),
+    "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-1.5B-Instruct",
+        "Qwen/Qwen2.5-1.5B-Instruct",
+    ),
+    "unsloth/Qwen2.5-3B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-3B-Instruct",
+        "Qwen/Qwen2.5-3B-Instruct",
+    ),
+    "unsloth/Qwen2.5-7B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-7B-Instruct",
+        "Qwen/Qwen2.5-7B-Instruct",
+    ),
+    "unsloth/Qwen2.5-14B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-14B-Instruct",
+        "Qwen/Qwen2.5-14B-Instruct",
+    ),
+    "unsloth/Qwen2.5-32B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-32B-Instruct",
+        "Qwen/Qwen2.5-32B-Instruct",
+    ),
+    "unsloth/Qwen2.5-72B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-72B-Instruct",
+        "Qwen/Qwen2.5-72B-Instruct",
+    ),
+    "unsloth/Qwen2.5-0.5B-bnb-4bit" : (
+        "unsloth/Qwen2.5-0.5B",
+        "Qwen/Qwen2.5-0.5B",
+    ),
+    "unsloth/Qwen2.5-1.5B-bnb-4bit" : (
+        "unsloth/Qwen2.5-1.5B",
+        "Qwen/Qwen2.5-1.5B",
+    ),
+    "unsloth/Qwen2.5-3B-bnb-4bit" : (
+        "unsloth/Qwen2.5-3B",
+        "Qwen/Qwen2.5-3B",
+    ),
+    "unsloth/Qwen2.5-7B-bnb-4bit" : (
+        "unsloth/Qwen2.5-7B",
+        "Qwen/Qwen2.5-7B",
+    ),
+    "unsloth/Qwen2.5-14B-bnb-4bit" : (
+        "unsloth/Qwen2.5-14B",
+        "Qwen/Qwen2.5-14B",
+    ),
+    "unsloth/Qwen2.5-32B-bnb-4bit" : (
+        "unsloth/Qwen2.5-32B",
+        "Qwen/Qwen2.5-32B",
+    ),
+    "unsloth/Qwen2.5-72B-bnb-4bit" : (
+        "unsloth/Qwen2.5-72B",
+        "Qwen/Qwen2.5-72B",
+    ),
+    "unsloth/Qwen2.5-Math-1.5B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Math-1.5B",
+        "Qwen/Qwen2.5-Math-1.5B",
+    ),
+    "unsloth/Qwen2.5-Math-7B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Math-7B",
+        "Qwen/Qwen2.5-Math-7B",
+    ),
+    "unsloth/Qwen2.5-Math-72B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Math-72B",
+        "Qwen/Qwen2.5-Math-72B",
+    ),
+    "unsloth/Qwen2.5-Math-1.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Math-1.5B-Instruct",
+        "Qwen/Qwen2.5-Math-1.5B-Instruct",
+    ),
+    "unsloth/Qwen2.5-Math-7B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Math-7B-Instruct",
+        "Qwen/Qwen2.5-Math-7B-Instruct",
+    ),
+    "unsloth/Qwen2.5-Math-72B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Math-72B-Instruct",
+        "Qwen/Qwen2.5-Math-72B-Instruct",
+    ),
+    "unsloth/Qwen2.5-Coder-1.5B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-1.5B",
+        "Qwen/Qwen2.5-Coder-1.5B",
+    ),
+    "unsloth/Qwen2.5-Coder-7B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-7B",
+        "Qwen/Qwen2.5-Coder-7B",
+    ),
+    "unsloth/Qwen2.5-Coder-1.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-Instruct-1.5B",
+        "Qwen/Qwen2.5-Coder-Instruct-1.5B",
+    ),
+    "unsloth/Qwen2.5-Coder-7B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-7B-Instruct",
+        "Qwen/Qwen2.5-Coder-7B-Instruct",
+    ),
+    "unsloth/Llama-3.2-1B-bnb-4bit" : (
+        "unsloth/Llama-3.2-1B",
+        "meta-llama/Llama-3.2-1B",
+    ),
+    "unsloth/Llama-3.2-3B-bnb-4bit" : (
+        "unsloth/Llama-3.2-3B",
+        "meta-llama/Llama-3.2-3B",
+    ),
+    "unsloth/Llama-3.2-1B-Instruct-bnb-4bit" : (
+        "unsloth/Llama-3.2-1B-Instruct",
+        "meta-llama/Llama-3.2-1B-Instruct",
+    ),
+    "unsloth/Llama-3.2-3B-Instruct-bnb-4bit" : (
+        "unsloth/Llama-3.2-3B-Instruct",
+        "meta-llama/Llama-3.2-3B-Instruct",
     ),
 }
 

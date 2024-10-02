@@ -13,15 +13,17 @@
 # limitations under the License.
 
 from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING
-from .llama import FastLlamaModel, logger
+from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
-from .qwen2 import FastQwen2Model
+from .qwen2   import FastQwen2Model
+from .cohere  import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 import os
 from huggingface_hub.utils._token import get_token
+from huggingface_hub import HfFileSystem
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
@@ -30,6 +32,7 @@ SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 SUPPORTS_GEMMA   = transformers_version >= Version("4.38")
 SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
 SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
+SUPPORTS_LLAMA32 = transformers_version  > Version("4.45.0")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -189,14 +192,29 @@ class FastLanguageModel(FastLlamaModel):
             is_peft = False
         pass
 
-        # Cannot be both!
-        if is_model and is_peft:
+        # Both config.json and adapter_config.json should not exist!
+
+        # Old transformers versions check
+        both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
+        
+        if SUPPORTS_LLAMA32:
+            # New transformers need to check manually.
+            files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+            files = (os.path.split(x)[-1] for x in files)
+            if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
+                both_exist = True
+            pass
+        pass
+
+        # Error out if both LoRA and normal model config exists.
+        if both_exist:
             raise RuntimeError(
                 "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
                 "You have 2 files `config.json` and `adapter_config.json`.\n"\
                 "We must only allow one config file.\n"\
                 "Please separate the LoRA and base models to 2 repos."
             )
+
         elif not is_model and not is_peft:
             error = autoconfig_error or peft_error
             # Old transformers version
@@ -241,7 +259,9 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 )
+
             dispatch_model = FastLlamaModel
+
         elif model_type == "mistral": dispatch_model = FastMistralModel
         elif model_type == "gemma":
             if not SUPPORTS_GEMMA:
@@ -278,6 +298,8 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
+        elif model_type == "cohere":
+            dispatch_model = FastCohereModel
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\

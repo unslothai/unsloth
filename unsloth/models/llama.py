@@ -305,6 +305,20 @@ def fast_rms_layernorm_inference_gemma(self, X, out_weight = None):
 pass
 
 
+# Normal layernorm with mean removal
+@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
+def fast_layernorm_compiled(layernorm, X):
+    old_dtype = X.dtype
+    X = X.float()
+    mean = X.mean(-1, keepdim = True)
+    Xbar = X - mean
+    X = Xbar * torch.rsqrt(Xbar.square().mean(-1, keepdim = True) + \
+        layernorm.variance_epsilon) * \
+        layernorm.weight.float()
+    return X.to(old_dtype)
+pass
+
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
 def LlamaAttention_fast_forward(
     self,
@@ -495,6 +509,16 @@ def LlamaDecoderLayer_fast_forward(
 pass
 
 
+# https://github.com/unslothai/unsloth/issues/404#issuecomment-2323473452
+__DTYPE_MAP = {
+    "float32": torch.float32,
+    torch.float32: torch.float32,
+    "float16": torch.float16,
+    torch.float16: torch.float16,
+    "bfloat16": torch.bfloat16,
+    torch.bfloat16: torch.bfloat16,
+}
+
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -576,11 +600,18 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
+    # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
+    torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
+    if torch_dtype is not None:
+        inputs_embeds = inputs_embeds.to(torch_dtype)
+    else:
+        raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
+    pass
 
     # Normalized from Gemma
     IS_GEMMA  = self.config.model_type.startswith("gemma")
     IS_GEMMA2 = self.config.model_type.startswith("gemma2")
+    IS_COHERE = self.config.model_type.startswith("cohere")
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
     if IS_GEMMA:
@@ -680,12 +711,6 @@ def LlamaModel_fast_forward(
             offloaded_gradient_checkpointing = True
     pass
 
-    # Check for Flex Attention
-    # if IS_GEMMA2 and HAS_FLEX_ATTENTION:
-    #     if not (seq_length % FLEX_ATTENTION_PADDING == 0):
-    #     USE_FLEX_ATTENTION = True
-
-
     # Gemma2 has alternating SWA and global attn
     if IS_GEMMA2:
         if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
@@ -707,23 +732,29 @@ def LlamaModel_fast_forward(
                 sliding_window = None,
             )
         elif not hasattr(self, "SWA_mask"):
-            n = self.max_seq_length # self.config.max_position_embeddings
-            # masked_fill is making stuff slower!
-            # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
-            # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
-            from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-            self.SWA_mask = AttentionMaskConverter(
-                is_causal = True,
-                sliding_window = self.config.sliding_window,
-            )\
-                .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-                .squeeze(0).squeeze(0)
+            if HAS_FLEX_ATTENTION:
+                # Use Flex Attention instead!
+                self.SWA_mask = create_flex_attention_sliding_window_mask(self.max_seq_length, self.config.sliding_window)
+                self.GA_mask  = create_flex_attention_causal_mask(self.max_seq_length)
+            else:
+                n = self.max_seq_length # self.config.max_position_embeddings
+                # masked_fill is making stuff slower!
+                # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
+                # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
+                from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+                self.SWA_mask = AttentionMaskConverter(
+                    is_causal = True,
+                    sliding_window = self.config.sliding_window,
+                )\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+                    .squeeze(0).squeeze(0)
 
-            self.GA_mask = AttentionMaskConverter(
-                is_causal = True,
-            )\
-                .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
-                .squeeze(0).squeeze(0)
+                self.GA_mask = AttentionMaskConverter(
+                    is_causal = True,
+                )\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = "cuda:0",)\
+                    .squeeze(0).squeeze(0)
+            pass
         pass
     pass
 
@@ -786,8 +817,11 @@ def LlamaModel_fast_forward(
 
     # Final layernorm
     if use_cache:
-        hidden_states = (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
+        hidden_states = \
+            (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
             (self.norm, hidden_states)
+    elif IS_COHERE:
+        hidden_states = self.norm(hidden_states)
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
     pass
@@ -877,6 +911,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        num_logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
@@ -918,13 +953,22 @@ def CausalLM_fast_forward(fast_forward_inference):
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
+        elif num_logits_to_keep != 0:
+            logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
         else:
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
-        logits = logits.to(self.config.torch_dtype)
+
+        torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
+        if torch_dtype is not None:
+            logits = logits.to(torch_dtype)
+        else:
+            raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
+        pass
 
         loss = None
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+        logit_scaling     = getattr(self.config, "logit_scale", 0)
         if labels is not None:
             shift_logits = logits
             if not hasattr(self, "extra_ignored_labels"):
@@ -937,16 +981,26 @@ def CausalLM_fast_forward(fast_forward_inference):
                 logits = shift_logits,
                 labels = shift_labels,
                 logit_softcapping = logit_softcapping,
+                logit_scaling     = logit_scaling,
             )
-        elif logit_softcapping != 0:
-            if logits.requires_grad:
-                logits = (1.0 / logit_softcapping) * logits
-                logits = torch.tanh(logits)
-                logits = logit_softcapping * logits
-            else:
-                logits *= (1.0 / logit_softcapping)
-                torch.tanh(logits, out = logits)
-                logits *= logit_softcapping
+        else:
+            if logit_scaling != 0:
+                if logits.requires_grad:
+                    logits = logit_scaling * logits
+                else:
+                    logits *= logit_scaling
+                pass
+            pass
+            if logit_softcapping != 0:
+                if logits.requires_grad:
+                    logits = (1.0 / logit_softcapping) * logits
+                    logits = torch.tanh(logits)
+                    logits = logit_softcapping * logits
+                else:
+                    logits *= (1.0 / logit_softcapping)
+                    torch.tanh(logits, out = logits)
+                    logits *= logit_softcapping
+                pass
             pass
         pass
 
@@ -978,6 +1032,7 @@ def PeftModelForCausalLM_fast_forward(
     output_hidden_states=None,
     return_dict=None,
     task_ids=None,
+    num_logits_to_keep=0,
     **kwargs,
 ):
     return self.base_model(
@@ -989,6 +1044,7 @@ def PeftModelForCausalLM_fast_forward(
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
+        num_logits_to_keep=num_logits_to_keep,
         **kwargs,
     )
 pass
@@ -1320,8 +1376,16 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         pass
         internal_model._flag_for_generation = True
 
+        # Must patch accelerate for Xformers
+        if accelerate_new_send_to_device is not None:
+            import accelerate.utils.operations
+            accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+        pass
+
         # For newer HF
         kwargs["cache_implementation"] = "dynamic"
+        # For num_logits_to_keep
+        kwargs["num_logits_to_keep"] = 1
 
         # Remove token_type_ids
         kwargs.pop("token_type_ids", None)
@@ -1353,6 +1417,11 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
+
+        # Return accelerate back
+        if accelerate_new_send_to_device is not None:
+            accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
+        pass
 
         return output
     pass
@@ -2181,6 +2250,7 @@ class FastLlamaModel:
         elif model_type == "qwen2":   apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu_approx
         elif model_type == "gemma2":  apply_lora_mlp = apply_lora_mlp_geglu_approx
+        elif model_type == "cohere":  apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
         pass
@@ -2240,6 +2310,14 @@ class FastLlamaModel:
         lora_dropout = model.peft_config[active_adapter].lora_dropout
         bias         = model.peft_config[active_adapter].bias
 
+        # We also do not inplace edit QKV for Cohere!
+        from functools import partial
+        _apply_lora_mlp = \
+            partial(apply_lora_mlp, inplace = False) \
+            if model_type == "cohere" else \
+            apply_lora_mlp
+        pass
+
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
@@ -2259,7 +2337,7 @@ class FastLlamaModel:
                     (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    layer.mlp.forward = types.MethodType(apply_lora_mlp, layer.mlp)
+                    layer.mlp.forward = types.MethodType(_apply_lora_mlp, layer.mlp)
                     n_mlp += 1
                 else:
                     logger.warning_once(

@@ -42,15 +42,13 @@ IGNORED_TOKENIZER_CHECKING = frozenset((
 
 
 IGNORED_TOKENIZER_NAMES = [
-    # "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-    # "unsloth/Mistral-Nemo-Instruct-2407",
-    # "mistralai/Mistral-Nemo-Instruct-2407",
-    # "unsloth/Mistral-Nemo-Base-2407-bnb-4bit",
-    # "unsloth/Mistral-Nemo-Base-2407",
-    # "mistralai/Mistral-Nemo-Base-2407",
+    # Qwen Coder did not train on tool calling. Math did!
+    "unsloth/Qwen2.5-Coder-1.5B-Instruct",
+    "unsloth/Qwen2.5-Coder-7B-Instruct",
 ]
 IGNORED_TOKENIZER_NAMES = frozenset(
-    [x.lower() for x in IGNORED_TOKENIZER_NAMES]
+    [x.lower() for x in IGNORED_TOKENIZER_NAMES] + \
+    [x.lower()+"-bnb-4bit" for x in IGNORED_TOKENIZER_NAMES]
 )
 
 # Check environments
@@ -915,8 +913,34 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, eps = 1e-16):
     if not lm_head_matrix  .requires_grad: bad_not_trainable = True
 
     if bad_not_trainable:
+
+        final_bad_items = []
+
+        # Re-check the first 250, last 250 input_ids
+        size_dataset = len(train_dataset)
+        size = min(size_dataset, 250)
+        for j in range(size):
+            input_ids = train_dataset[j]
+            if "input_ids" in input_ids:
+                input_ids = input_ids["input_ids"]
+                for item in input_ids:
+                    if item in where_untrained_set: final_bad_items.append(item)
+            pass
+        pass
+
+        # Re-check last 250
+        left = max(size_dataset-250, 0)
+        for j in range(left, size_dataset):
+            input_ids = train_dataset[j]
+            if "input_ids" in input_ids:
+                input_ids = input_ids["input_ids"]
+                for item in input_ids:
+                    if item in where_untrained_set: final_bad_items.append(item)
+            pass
+        pass
+
         raise ValueError(
-            'Unsloth: Untrained tokens found, but embed_tokens & lm_head not trainable, causing NaNs. '\
+            f'Unsloth: Untrained tokens of [{list(set(final_bad_items))}] found, but embed_tokens & lm_head not trainable, causing NaNs. '\
             'Restart then add `embed_tokens` & `lm_head` to '\
             '`FastLanguageModel.get_peft_model(target_modules = [..., "embed_tokens", "lm_head",]). `'\
             'Are you using the `base` model? Instead, use the `instruct` version to silence this warning.',
@@ -1090,6 +1114,40 @@ def add_new_tokens(
 pass
 
 
+@torch.inference_mode
+def fix_zero_training_loss(model, tokenizer, train_dataset):
+    """
+    Sometimes the labels get masked by all -100s, causing the loss
+    to be 0. We check for this!
+    """
+    if len(train_dataset) == 0: return
+
+    row = train_dataset[0]
+    if type(row) is dict and "labels" in row:
+
+        # Check the first 100 rows
+        seen_bad  = 0
+        seen_good = 0
+        for i, row in enumerate(train_dataset):
+            try:    check_tokens = list(set(row["labels"]))
+            except: continue
+            if len(check_tokens) == 1 and check_tokens[0] == -100: seen_bad += 1
+            else: seen_good += 1
+            if i >= 100: break
+        pass
+
+        # Check ratio
+        if seen_bad / (seen_bad + seen_good) >= 0.9:
+            logger.warning(
+                "Unsloth: Most labels in your dataset are -100. Training losses will be 0.\n"\
+                "For example, are you sure you used `train_on_responses_only` correctly?\n"\
+                "Or did you mask our tokens incorrectly? Maybe this is intended?"
+            )
+        pass
+    pass
+pass
+
+
 def check_nvidia():
     # Unsloth doesn't work yet on AMD devices - we're working on it!
     output = np.array([0,])
@@ -1109,7 +1167,39 @@ from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
 from transformers.trainer import *
-from trl.trainer.sft_trainer import neftune_post_forward_hook
+try:
+    from trl.trainer.sft_trainer import neftune_post_forward_hook
+except:
+    def neftune_post_forward_hook(module, input, output):
+        """
+        Implements the NEFTune forward pass for the model using forward hooks. Note this works only for
+        torch.nn.Embedding layers. This method is slightly adapted from the original source code
+        that can be found here: https://github.com/neelsjain/NEFTune
+
+        Simply add it to your model as follows:
+        ```python
+        model = ...
+        model.embed_tokens.neftune_noise_alpha = 0.1
+        model.embed_tokens.register_forward_hook(neftune_post_forward_hook)
+        ```
+
+        Args:
+            module (`torch.nn.Module`):
+                The embedding module where the hook is attached. Note that you need to set
+                `module.neftune_noise_alpha` to the desired noise alpha value.
+            input (`torch.Tensor`):
+                The input tensor to the model.
+            output (`torch.Tensor`):
+                The output tensor of the model (i.e. the embeddings).
+        """
+        if module.training:
+            dims = torch.tensor(output.size(1) * output.size(2))
+            mag_norm = module.neftune_noise_alpha / torch.sqrt(dims)
+            output = output + torch.zeros_like(output).uniform_(-mag_norm, mag_norm)
+        return output
+    pass
+pass
+
 
 def patch_sft_trainer_tokenizer():
     """
@@ -1144,7 +1234,7 @@ def patch_sft_trainer_tokenizer():
 
     # Patch train with fix_untrained_tokens
     for path_to_trainer in \
-        ("sft_trainer.SFTTrainer", "dpo_trainer.DPOTrainer",):
+        ("sft_trainer.SFTTrainer", "dpo_trainer.DPOTrainer", "kto_trainer.KTOTrainer"):
 
         function_name, replacer = "train", "if resume_from_checkpoint is False:"
         function = getsource(eval(f"trl.trainer.{path_to_trainer}.{function_name}"))
@@ -1154,11 +1244,6 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "if self._inner_training_loop.__name__ != '_fast_inner_training_loop':\n"\
-        "    raise RuntimeError(\n"\
-        "       'Please do not edit specific areas of the Unsloth codebase or you will get CUDA segfaults.'\n"\
-        "    )\n"\
-        "pass\n"\
         "import subprocess, re, gc, numpy as np\n"\
         "a = np.array([0,])\n"\
         "try:\n"\
@@ -1175,7 +1260,8 @@ def patch_sft_trainer_tokenizer():
         "    torch.cuda.empty_cache()\n"\
         "pass\n"\
         "\n"\
-        "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"
+        "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, eps = 1e-16)\n\n"\
+        "fix_zero_training_loss(self.model, self.tokenizer, self.train_dataset)\n\n"
 
         # Add NEFTune since it doesn't seem to work?? We need to manually inject it
         check_text += \

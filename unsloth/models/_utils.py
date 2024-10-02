@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.8"
+__version__ = "2024.9.post4"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -39,6 +39,10 @@ __all__ = [
     "create_boolean_mask",
     "torch_amp_custom_fwd",
     "torch_amp_custom_bwd",
+    "accelerate_old_send_to_device",
+    "accelerate_new_send_to_device",
+    "patch_gradient_checkpointing",
+    "unpatch_gradient_checkpointing",
 ]
 
 import torch
@@ -283,10 +287,13 @@ pass
 
 # =============================================
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
+accelerate_old_send_to_device = None
+accelerate_new_send_to_device = None
 if Version(xformers_version) >= Version("0.0.27"):
     import accelerate.utils.operations
     if hasattr(accelerate.utils.operations, "send_to_device") and \
         accelerate.utils.operations.send_to_device.__name__ != "_fixed_send_to_device":
+        accelerate_old_send_to_device = accelerate.utils.operations.send_to_device
         from accelerate.utils.operations import *
         send_to_device = inspect.getsource(accelerate.utils.operations.send_to_device)
         send_to_device = re.sub(
@@ -295,7 +302,16 @@ if Version(xformers_version) >= Version("0.0.27"):
             send_to_device,
         ).replace("def send_to_device", "def _fixed_send_to_device")
         exec(send_to_device)
-        accelerate.utils.operations.send_to_device = _fixed_send_to_device
+        # accelerate.utils.operations.send_to_device = _fixed_send_to_device
+        accelerate_new_send_to_device = _fixed_send_to_device
+    pass
+pass
+
+# Transformers 4.46 breaks dynamic caching. This is a hack
+import transformers.generation.configuration_utils
+if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):
+    if type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS) is list:
+        transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
     pass
 pass
 # =============================================
@@ -324,7 +340,7 @@ torch_compile_arguments = [
     "config.coordinate_descent_tuning = True",
     "config.max_autotune_gemm = False", # GEMM is unnecessary
     "config.autotune_multi_device = False",
-    "config.max_autotune_gemm_backends = 'ATEN'", # Not much faster
+    "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
     "config.aggressive_fusion = False", # Careful changes results!
     "config.cuda.enable_cuda_lto = True",
     "config.cuda.use_fast_math = True",
@@ -332,9 +348,10 @@ torch_compile_arguments = [
 ]
 # Torch dynamo arguments
 torch_dynamo_arguments = [
-    "config.accumulated_cache_size_limit = 512", # Bump up a bit from 256
+    "config.accumulated_cache_size_limit = 1024", # Bump up a bit from 256
     "config.suppress_errors = True", # Supress errors for now
     "config.do_not_emit_runtime_asserts = True",
+    "config.cache_size_limit = 1024", # Flex Attention
 ]
 import torch._inductor.config as config
 for _try_compile_argument in torch_compile_arguments:
@@ -784,7 +801,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     def backward(ctx, dY):
         (hidden_states,) = ctx.saved_tensors
         hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
-        hidden_states.requires_grad = True
+        hidden_states.requires_grad_(True)
         with torch.enable_grad():
             (output,) = ctx.forward_function(hidden_states, *ctx.args)
         torch.autograd.backward(output, dY)
@@ -796,6 +813,17 @@ pass
 @torch._disable_dynamo
 def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
     return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
+pass
+
+
+import torch.utils
+old_checkpoint = torch.utils.checkpoint
+def patch_gradient_checkpointing():
+    torch.utils.checkpoint = unsloth_offloaded_gradient_checkpoint
+pass
+
+def unpatch_gradient_checkpointing():
+    torch.utils.checkpoint = old_checkpoint
 pass
 
 

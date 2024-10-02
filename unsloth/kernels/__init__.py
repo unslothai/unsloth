@@ -12,8 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .cross_entropy_loss import fast_cross_entropy_loss
-from .rms_layernorm import fast_rms_layernorm
+from .cross_entropy_loss import (
+    fast_cross_entropy_loss,
+    patch_llama_for_causal_lm,
+    unpatch_llama_for_causal_lm,
+)
+from .rms_layernorm import (
+    fast_rms_layernorm,
+    patch_rms_layernorm,
+    unpatch_rms_layernorm,
+)
+from .layernorm import (
+    fast_layernorm,
+    patch_layernorm,
+    unpatch_layernorm,
+)
 from .rope_embedding import fast_rope_embedding, inplace_rope_embedding
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 from .geglu import (
@@ -33,13 +46,13 @@ from .fast_lora import (
 )
 from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora
 
-from .flex_attention import HAS_FLEX_ATTENTION, slow_attention_softcapping
-
-if HAS_FLEX_ATTENTION:
-    from .flex_attention import (
-        FLEX_ATTENTION_PADDING,
-    )
-pass
+from .flex_attention import (
+    HAS_FLEX_ATTENTION,
+    slow_attention_softcapping,
+    slow_inference_attention_softcapping,
+    create_flex_attention_causal_mask,
+    create_flex_attention_sliding_window_mask,
+)
 
 try:
     print("🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.")
