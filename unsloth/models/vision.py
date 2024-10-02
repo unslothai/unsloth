@@ -18,6 +18,8 @@ from ..kernels import patch_rms_layernorm, unpatch_rms_layernorm
 from ..kernels import patch_llama_for_causal_lm, unpatch_llama_for_causal_lm
 from ._utils import patch_gradient_checkpointing
 
+import os
+
 from transformers import AutoProcessor
 try:
     from transformers import MllamaForConditionalGeneration
@@ -51,6 +53,7 @@ class FastVisionModel:
         load_in_4bit      = True,
         token             = None,
         device_map        = "sequential",
+        device            = "cuda:0",
         rope_scaling      = None,
         trust_remote_code = False,
         **kwargs,
@@ -63,7 +66,9 @@ class FastVisionModel:
         pass
         if token is None: token = get_token()
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
-        gpu_stats = torch.cuda.get_device_properties(0)
+        
+        gpu_stats = get_device_properties(device) # get properties of passed device (from os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"] if device=None)
+        
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
@@ -111,7 +116,7 @@ class FastVisionModel:
         self.pre_patch()
         model = MllamaForConditionalGeneration.from_pretrained(
             model_name,
-            device_map              = device_map,
+            device_map              = device_map if device == 'cuda:0' else device, # default back to whatever device_map is if we haven't set device
             torch_dtype             = dtype,
             # quantization_config     = bnb_config,
             token                   = token,
@@ -436,7 +441,7 @@ class FastVisionModel:
         # Patch cross entropy loss labels
         # Fixes https://github.com/unslothai/unsloth/issues/10
         max_seq_length = model.max_seq_length
-        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda:0")
+        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         model.model.extra_ignored_labels = extra_ignored_labels
         internal_model = model
         while hasattr(internal_model, "model"):

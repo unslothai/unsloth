@@ -27,6 +27,7 @@ import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
+from models._utils import get_device_properties
 from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
 from huggingface_hub.utils._token import get_token
@@ -526,7 +527,8 @@ def unsloth_save_model(
     # Check modules to save float32 dtype
     state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data.to(torch_dtype)
 
-    max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
+    # get properties of device (from os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
+    max_vram = int(get_device_properties().total_memory * maximum_memory_usage)
 
     from tqdm import tqdm as ProgressBar
     for j, layer in enumerate(ProgressBar(internal_model.model.layers)):

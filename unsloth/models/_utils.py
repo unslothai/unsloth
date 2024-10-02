@@ -651,6 +651,7 @@ def _get_statistics(statistics = None, force_download = True):
             stats_model = AutoModelForCausalLM.from_pretrained(
                 f"unslothai/{statistics}",
                 force_download = force_download,
+                device_map=os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"],
             )
             del stats_model
         pass
@@ -658,6 +659,15 @@ def _get_statistics(statistics = None, force_download = True):
         pass
 pass
 
+def get_device_properties(device=None):
+    if device is None:
+        device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"]
+    assert len(device.split(":")) == 2
+    assert device.split(":")[1].isnumeric()
+    device_id = int(device_name)
+    gpu_stats = torch.cuda.get_device_properties(device_id)
+    
+    return gpu_stats
 
 def get_statistics():
     # We log some basic stats about which environment is being used.
@@ -673,7 +683,7 @@ def get_statistics():
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
     try:
-        vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
+        vram = get_device_properties().total_memory / 1024 / 1024 / 1024 # get device properties from default gpu
         if   vram <= 8 : vram = 8
         elif vram <= 16: vram = 16
         elif vram <= 20: vram = 20

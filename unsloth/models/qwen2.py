@@ -82,6 +82,7 @@ class FastQwen2Model(FastLlamaModel):
         model_patcher     = None,
         tokenizer_name    = None,
         trust_remote_code = False,
+        device            = "cuda:0",
         **kwargs,
     ):
         return FastLlamaModel.from_pretrained(
@@ -91,6 +92,7 @@ class FastQwen2Model(FastLlamaModel):
             load_in_4bit      = load_in_4bit,
             token             = token,
             device_map        = device_map,
+            device            = device,
             rope_scaling      = rope_scaling,
             fix_tokenizer     = fix_tokenizer,
             model_patcher     = FastQwen2Model,

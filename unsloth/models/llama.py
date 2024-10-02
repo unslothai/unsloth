@@ -200,7 +200,7 @@ def LlamaAttention_fast_forward_inference(
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
+    RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
     RH_K[:,:,:,:h] = Kn[:,:,:,h:]
     RH_K[:,:,:,h:] = Kn[:,:,:,:h]
     torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
@@ -262,7 +262,7 @@ def fast_swiglu_inference(self, X):
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     # mlp_size = self.config.intermediate_size
-    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
+    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
     gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
     up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
@@ -1494,7 +1494,9 @@ class FastLlamaModel:
         if token is None: token = get_token()
         if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
-        gpu_stats = torch.cuda.get_device_properties(0)
+
+        gpu_stats = get_device_properties(device) # get properties of passed device (from os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"] if device=None)
+
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
@@ -1589,7 +1591,7 @@ class FastLlamaModel:
         
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            device_map              = device_map if device == 'cuda:0' else device,
+            device_map              = device_map if device == 'cuda:0' else device, # default back to whatever device_map is if we haven't set device
             torch_dtype             = dtype,
             # quantization_config     = bnb_config,
             token                   = token,

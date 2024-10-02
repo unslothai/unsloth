@@ -15,6 +15,7 @@
 from .llama import *
 from ._utils import __version__
 import math
+import os
 
 try:
     from transformers.models.gemma.modeling_gemma import (
@@ -60,7 +61,7 @@ def fast_geglu_inference(self, X):
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     # mlp_size = self.config.intermediate_size
-    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
+    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
     gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
     up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
@@ -87,7 +88,7 @@ def GemmaDecoderLayer_fast_forward(
     *args, **kwargs,
 ):
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
-        out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda:0")
+        out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
 
         # Self Attention
         residual = hidden_states
@@ -149,7 +150,7 @@ def GemmaModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
+    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -237,8 +238,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
+        cos = emb.cos().to(device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"], non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"], non_blocking = True)#, dtype = dtype)
         self.register_buffer("cos_cached", cos, persistent = False)
         self.register_buffer("sin_cached", sin, persistent = False)
     pass
@@ -262,7 +263,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = math.ceil(seq_len / 8192) * 8192
-        self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
+        self._set_cos_sin_cache(self.current_rope_size, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"], dtype = x.dtype)
     pass
 pass
 
@@ -296,8 +297,8 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
+        cos = emb.cos().to(device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"], non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"], non_blocking = True)#, dtype = dtype)
         self.register_buffer("cos_cached", cos, persistent = False)
         self.register_buffer("sin_cached", sin, persistent = False)
     pass

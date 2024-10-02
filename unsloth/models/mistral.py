@@ -25,6 +25,9 @@ from transformers.models.mistral.modeling_mistral import (
     MistralModel,
     MistralForCausalLM,
 )
+
+import os
+
 # For Pytorch 2.1.1
 try:
     from transformers.models.mistral.modeling_mistral import (
@@ -249,7 +252,7 @@ def MistralForCausalLM_fast_forward(
         shift_logits = logits
         if not hasattr(self, "extra_ignored_labels"):
             # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
+            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"])
         pass
         
         shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
@@ -341,6 +344,7 @@ class FastMistralModel(FastLlamaModel):
         model_patcher     = None,
         tokenizer_name    = None,
         trust_remote_code = False,
+        device            = "cuda:0",
         **kwargs,
     ):
         return FastLlamaModel.from_pretrained(
@@ -350,6 +354,7 @@ class FastMistralModel(FastLlamaModel):
             load_in_4bit      = load_in_4bit,
             token             = token,
             device_map        = device_map,
+            device            = device,
             rope_scaling      = rope_scaling,
             fix_tokenizer     = fix_tokenizer,
             model_patcher     = FastMistralModel,

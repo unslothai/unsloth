@@ -16,7 +16,11 @@ import warnings, importlib, sys
 from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
-
+try:
+    import torch
+except:
+    raise ImportError("Pytorch is not installed. Go to https://pytorch.org/.\n"\
+                      "We have some installation instructions on our Github page.")
 # # Define a list of modules to check
 # MODULES_TO_CHECK = ["bitsandbytes"]
 
@@ -31,29 +35,20 @@ import numpy as np
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
 # Thank you for your understanding and we appreciate it immensely!
-def dumb_change_unsloth_process_cuda_variable(cuda_device):
-    os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"] = cuda_device
-dumb_change_unsloth_process_cuda_variable('cuda:0') # by default set to cuda:0, but should change as soon as you can in your process
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-print("UNSLOTH CHANGE visible device", os.environ["CUDA_VISIBLE_DEVICES"])
-"""
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    devices = os.environ["CUDA_VISIBLE_DEVICES"]
-    # Check if there are multiple cuda devices set in env
-    if not devices.isdigit():
-        first_id = devices.split(",")[0]
-        warnings.warn(
-            f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {devices} \n"\
-            "Unsloth currently does not support multi GPU setups - but we are working on it!\n"\
-            "Multiple CUDA devices detected but we require a single device.\n"\
-            f"We will override CUDA_VISIBLE_DEVICES to first device: {first_id}."
-        )
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(first_id)
 else:
-    # warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    num_devices = torch.cuda.device_count()
+    devices_str = ",".join(list(range(num_devices)))
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+    warnings.warn(f"Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We set it ourselves to {devices_str}.")
+
+def change_unsloth_process_cuda_variable(cuda_device):
+    os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"] = cuda_device
+change_unsloth_process_cuda_variable('cuda:0') # by default set to cuda:0, but should change as soon as you can in your process
+warnings.warn(f"Unsloth: is currently setting UNSLOTH_PROCESS_CUDA_DEVICE to cuda:0 by default (use change_unsloth_process_cuda_variable to change GPU).")
+
 """
 pass
 
