@@ -16,7 +16,7 @@ from .llama import *
 from ..kernels import patch_layernorm, unpatch_layernorm
 from ..kernels import patch_rms_layernorm, unpatch_rms_layernorm
 from ..kernels import patch_llama_for_causal_lm, unpatch_llama_for_causal_lm
-from ._utils import patch_gradient_checkpointing
+from ._utils import patch_gradient_checkpointing, get_device_properties
 
 import os
 
@@ -68,7 +68,7 @@ class FastVisionModel:
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         
         gpu_stats = get_device_properties(device) # get properties of passed device (from os.environ["UNSLOTH_PROCESS_CUDA_DEVICE"] if device=None)
-        
+
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \

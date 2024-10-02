@@ -18,6 +18,7 @@ import math
 from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import __version__
+from ._utils import get_device_properties
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from transformers.models.llama.modeling_llama import (
