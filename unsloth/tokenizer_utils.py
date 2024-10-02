@@ -1120,6 +1120,9 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
     Sometimes the labels get masked by all -100s, causing the loss
     to be 0. We check for this!
     """
+    # No-op since we manually set the masking ourselves
+    return
+
     if len(train_dataset) == 0: return
 
     row = train_dataset[0]
