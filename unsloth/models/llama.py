@@ -148,6 +148,7 @@ def LlamaAttention_fast_forward_inference(
     head_dim   = self.head_dim
     attention_size = n_heads*head_dim
     # assert(n_kv_heads * n_groups == n_heads)
+    print("K1", K1)
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
