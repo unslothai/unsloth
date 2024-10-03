@@ -1408,6 +1408,10 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
 
         # Autocasted
         with torch.autocast(device_type = device_type, dtype = dtype):
+            print("generate is being passed")
+            print("args", args)
+            print('kwargs', kwargs)
+            print('generate method is', generate)
             output = generate(*args, **kwargs)
         pass
 
