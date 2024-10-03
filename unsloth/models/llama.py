@@ -860,6 +860,10 @@ def LlamaModel_fast_forward_inference(
             seq_len = torch.tensor(past_key_values).shape[-2]
     else:
         # should be tensor
+        print('past key values')
+        print(past_key_values)
+        print(past_key_values.shape)
+        print(past_key_values[0][0])
         seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
