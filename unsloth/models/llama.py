@@ -148,7 +148,6 @@ def LlamaAttention_fast_forward_inference(
     head_dim   = self.head_dim
     attention_size = n_heads*head_dim
     # assert(n_kv_heads * n_groups == n_heads)
-    print("K1", K1)
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
@@ -855,6 +854,10 @@ def LlamaModel_fast_forward_inference(
     hidden_states = hidden_states.to(self.config.torch_dtype)
     bsz, q_len, hd = hidden_states.shape
     try:
+        print('trying seq len')
+        print(past_key_values)
+        print(past_key_values[0])
+        print(past_key_values[0][0])
         seq_len = past_key_values[0][0].shape[-2]
     except:
         # usually fails because cache is empty
