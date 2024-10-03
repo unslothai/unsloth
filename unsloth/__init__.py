@@ -35,10 +35,7 @@ except:
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
 # Thank you for your understanding and we appreciate it immensely!
-if "CUDA_VISIBLE_DEVICES" in os.environ:
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-else:
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+if "CUDA_VISIBLE_DEVICES" not in os.environ:
     num_devices = torch.cuda.device_count()
     devices_str = ",".join([str(i) for i in range(num_devices)])
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
