@@ -1,4 +1,3 @@
-import pdb
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -1418,12 +1417,6 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
 
         # Autocasted
         with torch.autocast(device_type = device_type, dtype = dtype):
-            print("generate is being passed")
-            print("args", args)
-            print('kwargs', kwargs)
-            print('generate method is', generate)
-            print('reorder cache pre generate', model._reorder_cache)
-            pdb.set_trace()
             output = generate(*args, **kwargs)
         pass
 
@@ -2491,8 +2484,6 @@ class FastLlamaModel:
         if model.generate.__name__ != "_fast_generate":
             model._unwrapped_old_generate = model.generate
             model._reorder_cache = _reorder_cache
-            print('wrapping...')
-            print('reorder', model._reorder_cache)
             model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
         pass
         
