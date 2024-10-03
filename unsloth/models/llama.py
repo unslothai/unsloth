@@ -1412,6 +1412,7 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
             print("args", args)
             print('kwargs', kwargs)
             print('generate method is', generate)
+            print('reorder cache pre generate', model._reorder_cache)
             output = generate(*args, **kwargs)
         pass
 
@@ -2479,6 +2480,8 @@ class FastLlamaModel:
         # Wrap model.generate
         if model.generate.__name__ != "_fast_generate":
             model._unwrapped_old_generate = model.generate
+            print('wrapping...')
+            print('reorder', model._reorder_cache)
             model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
         pass
         
