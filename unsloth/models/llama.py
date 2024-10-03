@@ -1,3 +1,4 @@
+import pdb
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -1413,6 +1414,7 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
             print('kwargs', kwargs)
             print('generate method is', generate)
             print('reorder cache pre generate', model._reorder_cache)
+            pdb.set_trace()
             output = generate(*args, **kwargs)
         pass
 
