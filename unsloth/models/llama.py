@@ -102,7 +102,7 @@ def fix_prepare_inputs_for_generation(module):
 pass
 
 @staticmethod
-def _reorder_cache(self, self.past_key_values, beam_idx):
+def _reorder_cache(self, past_key_values, beam_idx):
     reordered_past = ()
     for layer_past in past_key_values:
         reordered_past += (
