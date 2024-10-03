@@ -101,6 +101,15 @@ def fix_prepare_inputs_for_generation(module):
     pass
 pass
 
+@staticmethod
+def _reorder_cache(past_key_values, beam_idx):
+    reordered_past = ()
+    for layer_past in past_key_values:
+        reordered_past += (
+            tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
+        )
+    return reordered_past
+
 torch_matmul = torch.matmul
 def LlamaAttention_fast_forward_inference(
     self,
@@ -2440,15 +2449,6 @@ class FastLlamaModel:
         pass
         return model
     pass
-
-    @staticmethod
-    def _reorder_cache(past_key_values, beam_idx):
-        reordered_past = ()
-        for layer_past in past_key_values:
-            reordered_past += (
-                tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
-            )
-        return reordered_past
 
     @staticmethod
     def for_inference(model):
