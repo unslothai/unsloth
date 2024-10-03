@@ -853,18 +853,11 @@ def LlamaModel_fast_forward_inference(
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
     bsz, q_len, hd = hidden_states.shape
-    if type(past_key_values) is list:
-        if len(past_key_values.shape) == 4:
-            seq_len = torch.tensor(past_key_values[0][0]).shape[-2]
-        else:
-            seq_len = torch.tensor(past_key_values).shape[-2]
-    else:
-        # should be tensor
-        print('past key values')
-        print(past_key_values)
-        print(past_key_values.shape)
-        print(past_key_values[0][0])
+    try:
         seq_len = past_key_values[0][0].shape[-2]
+    except:
+        # usually fails because cache is empty
+        seq_len = 0
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
