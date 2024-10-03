@@ -40,7 +40,7 @@ if "CUDA_VISIBLE_DEVICES" in os.environ:
 else:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     num_devices = torch.cuda.device_count()
-    devices_str = ",".join(list(range(num_devices)))
+    devices_str = ",".join([str(i) for i in range(num_devices)])
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
     warnings.warn(f"Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We set it ourselves to {devices_str}.")
 
