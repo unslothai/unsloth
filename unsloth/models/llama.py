@@ -2441,6 +2441,14 @@ class FastLlamaModel:
         return model
     pass
 
+    @staticmethod
+    def _reorder_cache(past_key_values, beam_idx):
+        reordered_past = ()
+        for layer_past in past_key_values:
+            reordered_past += (
+                tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
+            )
+        return reordered_past
 
     @staticmethod
     def for_inference(model):
@@ -2482,6 +2490,7 @@ class FastLlamaModel:
         # Wrap model.generate
         if model.generate.__name__ != "_fast_generate":
             model._unwrapped_old_generate = model.generate
+            model._reorder_cache = _reorder_cache
             print('wrapping...')
             print('reorder', model._reorder_cache)
             model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
