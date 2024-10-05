@@ -1826,7 +1826,7 @@ class FastLlamaModel:
             pass
         pass
 
-        # model._reorder_cache = _reorder_cache
+        model._reorder_cache = _reorder_cache
         
         return model, tokenizer
     pass
