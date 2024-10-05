@@ -1826,7 +1826,7 @@ class FastLlamaModel:
             pass
         pass
 
-        model._reorder_cache = _reorder_cache
+        # model._reorder_cache = _reorder_cache
         
         return model, tokenizer
     pass
@@ -2485,7 +2485,6 @@ class FastLlamaModel:
         # Wrap model.generate
         if model.generate.__name__ != "_fast_generate":
             model._unwrapped_old_generate = model.generate
-            # model._reorder_cache = _reorder_cache
             model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
         pass
         
