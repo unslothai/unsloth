@@ -459,3 +459,155 @@ def unpatch_llama_for_causal_lm():
     transformers.models.llama.modeling_llama.LlamaForCausalLM = LlamaForCausalLM
     return
 pass
+
+import torch.nn.functional as F
+
+
+def fast_lm_head(
+    hidden_states,
+    weights,
+    labels,
+    logit_softcapping = 0,
+    logit_scaling = 0,
+):
+    """
+    Arguments:
+        logits: (batch, seq_len, vocab_size)
+        labels: (batch, seq_len,)
+    Returns:
+        losses: float
+    """
+
+    loss = Fast_LMhead.apply(
+        hidden_states,
+        weights,
+        labels,
+        logit_softcapping,
+        logit_scaling,
+    )
+    return loss.sum()
+
+class Fast_LMhead(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, hidden_states, labels, weights, logit_softcapping, logit_scaling):
+        logits = F.linear(hidden_states, weights).float()
+
+        n_rows, vocab_size = logits.shape
+
+        div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
+        n_chunks = div + (mod != 0)
+        losses = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+
+        DO_SOFTCAPPING   = (logit_softcapping != 0)
+        DO_LOGIT_SCALING = (logit_scaling != 0)
+
+        if n_chunks == 1:
+            # For small vocabs <= 65336 like Llama, Mistral
+            BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
+            logsumexp = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+
+            _cross_entropy_forward[(n_rows,)](
+                logits, logits.stride(0),
+                losses,
+                logsumexp,
+                labels,
+                VOCAB_SIZE       = vocab_size,
+                BLOCK_SIZE       = BLOCK_SIZE,
+                DO_SOFTCAPPING   = DO_SOFTCAPPING,
+                SOFTCAP          = logit_softcapping,
+                DO_LOGIT_SCALING = DO_LOGIT_SCALING,
+                LOGIT_SCALE      = logit_scaling,
+                num_warps        = num_warps,
+            )
+        else:
+            # For large vocabs > 65336 like Gemma 256K
+            logsumexp = torch.empty((n_rows, n_chunks,), dtype = torch.float32, device = "cuda:0")
+
+            _chunked_cross_entropy_forward[(n_rows, n_chunks,)](
+                logits, logits.stride(0),
+                losses,
+                logsumexp,
+                labels,
+                VOCAB_SIZE       = vocab_size,
+                N_CHUNKS         = n_chunks,
+                BLOCK_SIZE       = MAX_FUSED_SIZE,
+                DO_SOFTCAPPING   = DO_SOFTCAPPING,
+                SOFTCAP          = logit_softcapping,
+                DO_LOGIT_SCALING = DO_LOGIT_SCALING,
+                LOGIT_SCALE      = logit_scaling,
+                num_warps        = 32,
+            )
+            # logsumexp(chunked_logsumexp) - x
+            # Do the -x separately
+            logsumexp = torch.logsumexp(logsumexp, dim = 1) # Row sum
+            losses += logsumexp
+            losses.masked_fill_(labels == -100, 0) # Don't forget to mask padding out!
+            
+        weights.count += 1
+
+
+        ctx.save_for_backward(hidden_states, labels, weights, logsumexp)
+        ctx.DO_SOFTCAPPING    = DO_SOFTCAPPING
+        ctx.logit_softcapping = logit_softcapping
+        ctx.DO_LOGIT_SCALING  = DO_LOGIT_SCALING
+        ctx.logit_scaling     = logit_scaling
+
+        return losses
+    
+    @staticmethod
+    def backward(ctx, dlosses):
+        """We know d(-log(p[i])/dlogit[k] = -id_mat[i,k] + p[k]
+        so we initialize the gradient as neg_logprobs, so we can just exponentiate
+        to get p[k], which is most of what we need...  neg_logprobs will be
+        modified in place to become the gradient we want
+        """
+        # load saved tensors
+        hidden_states, labels, weights, logsumexp = ctx.saved_tensors
+        weights.count -= 1
+
+        ignore_index = -100
+        mask = labels != ignore_index
+
+        if not mask.any():
+            # If all indices are -100, return zero gradients
+            return torch.zeros_like(hidden_states), None, None, None, None
+
+        logits = F.linear(hidden_states, weights).to(weights.dtype)
+
+        n_rows, vocab_size = logits.shape
+
+        BLOCK_SIZE = 4096
+        div, mod = divmod(vocab_size, BLOCK_SIZE)
+        n_blocks = div + (mod != 0)
+
+        _cross_entropy_backward[(n_rows, n_blocks,)](
+            logits,   logits.stride(0),
+            dlosses, dlosses.stride(0),
+            logsumexp,
+            labels,
+            VOCAB_SIZE       = vocab_size,
+            BLOCK_SIZE       = BLOCK_SIZE,
+            DO_SOFTCAPPING   = ctx.DO_SOFTCAPPING,
+            SOFTCAP          = ctx.logit_softcapping,
+            DO_LOGIT_SCALING = ctx.DO_LOGIT_SCALING,
+            LOGIT_SCALE      = ctx.logit_scaling,
+            num_warps      = 8,
+        )
+        
+        if hasattr(weights, 'grad') and weights.grad != None:
+            torch.addmm(
+                    weights.grad,
+                    logits.T,
+                    hidden_states,
+                    out=weights.grad,
+                )
+        else:
+            weights.grad = logits.T @ hidden_states
+            
+        logits = logits @ weights
+
+        if weights.count == 0:
+            return logits, None, weights.grad, None, None
+        else:
+            return logits, None, None, None, None
+
