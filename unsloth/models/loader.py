@@ -197,12 +197,19 @@ class FastLanguageModel(FastLlamaModel):
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
         
+        # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
-            # New transformers need to check manually.
-            files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
-            files = (os.path.split(x)[-1] for x in files)
-            if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
-                both_exist = True
+            # Check if folder exists locally
+            if os.path.isdir(model_name):
+                exist_adapter_config = os.path.exists(os.path.join(model_name, "adapter_config.json"))
+                exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
+                both_exist = exist_adapter_config and exist_config
+            else:
+                files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+                files = (os.path.split(x)[-1] for x in files)
+                if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
+                    both_exist = True
+                pass
             pass
         pass
 
