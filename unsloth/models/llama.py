@@ -925,7 +925,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
-        if past_key_values is not None and False:
+        if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
                 input_ids,
