@@ -1396,7 +1396,10 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         pass
 
         # For newer HF
-        kwargs["cache_implementation"] = "dynamic"
+        if 'past_key_values' not in kwargs or kwargs['past_key_values'] is None:
+            # if we manually set the past_key_values (the cache), don't do anything
+            # but if we didn't set the cache set the implementation to DynamicCache
+            kwargs["cache_implementation"] = "dynamic"
         # For num_logits_to_keep
         kwargs["num_logits_to_keep"] = 1
 
