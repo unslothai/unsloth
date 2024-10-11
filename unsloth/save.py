@@ -30,6 +30,7 @@ from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
 from huggingface_hub.utils._token import get_token
+from pathlib import Path
 
 __all__ = [
     "print_quantization_methods",
@@ -1058,9 +1059,9 @@ def save_to_gguf(
     if n_cpus is None: n_cpus = 1
     n_cpus *= 2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
-    
-    final_location = f"./{model_directory}/unsloth.{first_conversion.upper()}.gguf"
 
+    final_location = (Path(model_directory) / f"unsloth.{first_conversion.upper()}.gguf").absolute()
+    
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
           "This will take 3 minutes...")
@@ -1128,7 +1129,7 @@ def save_to_gguf(
     for quant_method in quantization_method:
         if quant_method != first_conversion:
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This will take 20 minutes...")
-            final_location = f"./{model_directory}/unsloth.{quant_method.upper()}.gguf"
+            final_location = (Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute()
 
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
