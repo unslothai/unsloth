@@ -1485,9 +1485,23 @@ def create_ollama_modelfile(tokenizer, gguf_location):
     modelfile = getattr(tokenizer, "_ollama_modelfile", None)
     if modelfile is None: return None
 
+    FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"
+    EOS_TOKEN_REPLACER     = "⚫@✅#🦥__EOS_TOKEN__⚡@🦥#⛵"
+    LEFT_BRACKET_REPLACER  = "⚫@✅#🦥"
+    RIGHT_BRACKET_REPLACER = "⚡@🦥#⛵"
+
+    # Fixes https://github.com/unslothai/unsloth/issues/1087
+    # We must convert all {'s and }'s but keep {__FILE_LOCATION__} intact
     modelfile = modelfile\
-        .replace("{{", "⚫@✅#🦥")\
-        .replace("}}", "⚡@🦥#⛵")
+        .replace("{__FILE_LOCATION__}", FILE_LOCATION_REPLACER)\
+        .replace("{__EOS_TOKEN__}",     EOS_TOKEN_REPLACER)\
+        .replace("{", LEFT_BRACKET_REPLACER)\
+        .replace("}", RIGHT_BRACKET_REPLACER)
+
+    # Revert {__FILE_LOCATION__} back
+    modelfile = modelfile\
+        .replace(FILE_LOCATION_REPLACER, "{__FILE_LOCATION__}")\
+        .replace(EOS_TOKEN_REPLACER,     "{__EOS_TOKEN__}")
     
     if "__EOS_TOKEN__" in modelfile:
         modelfile = modelfile.format(
@@ -1501,8 +1515,8 @@ def create_ollama_modelfile(tokenizer, gguf_location):
     pass
     
     modelfile = modelfile\
-        .replace("⚫@✅#🦥", "{{")\
-        .replace("⚡@🦥#⛵", "}}")\
+        .replace("⚫@✅#🦥", "{")\
+        .replace("⚡@🦥#⛵", "}")\
         .rstrip()
 
     return modelfile
