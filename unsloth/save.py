@@ -101,14 +101,17 @@ def check_if_sentencepiece_model(model, temporary_location = "_unsloth_sentencep
     temp_tokenizer = model._saved_temp_tokenizer
     sentencepiece_model = False
     file_location = os.path.join(temporary_location, temp_tokenizer.name_or_path)
+    created_folder = False
     if not os.path.exists(file_location):
+        created_folder = True
         os.makedirs(file_location)
     pass
     temp_tokenizer.save_pretrained(file_location)
     if os.path.isfile(f"{file_location}/tokenizer.model"):
         sentencepiece_model = True
     pass
-    shutil.rmtree(file_location, ignore_errors = True)
+    if created_folder:
+        shutil.rmtree(file_location, ignore_errors = True)
     return sentencepiece_model
 pass
 
