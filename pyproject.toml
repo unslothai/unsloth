@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slowbie"
+dynamic = ["version"]
+description = "Utils for Unsloth"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+keywords = ["ai", "llm",]
+authors = [
+    {email = "info@unsloth.ai"},
+    {name = "Unsloth AI team"},
+]
+maintainers = [
+    {name = "Daniel Han", email = "danielhanchen@gmail.com"},
+    {name = "Michael Han", email = "info@unsloth.ai"},
+]
+classifiers = [
+    "Programming Language :: Python",
+]
+dependencies = [
+    "torch>=2.4.0",
+    "triton>=3.0.0",
+    "packaging",
+    "tyro",
+    "transformers<4.45.0",
+    "datasets>=2.16.0",
+    "sentencepiece>=0.2.0",
+    "tqdm",
+    "psutil",
+    "wheel>=0.42.0",
+    "numpy",
+    "accelerate>=0.34.1",
+    "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,<=0.11.1",
+    "peft>=0.7.1,!=0.11.0",
+    "protobuf<4.0.0",
+    "huggingface_hub",
+    "hf_transfer",
+]
+
+[tool.setuptools.dynamic]
+version = {attr = "slowbie.__init__.__version__"}
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+exclude = ["images*"]
+
+[project.urls]
+homepage = "http://www.unsloth.ai"
+documentation = "https://github.com/unslothai/unsloth"
+repository = "https://github.com/unslothai/unsloth"
