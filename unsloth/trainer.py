@@ -22,7 +22,7 @@ except:
     from transformers import TrainingArguments
 pass
 from . import is_bfloat16_supported
-from unsloth_zoo.trainer_utils import unsloth_train
+from unsloth_zoo.training_utils import unsloth_train
 
 __all__ = [
     "UnslothTrainingArguments",
