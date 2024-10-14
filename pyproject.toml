@@ -33,6 +33,7 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface = [
+    "unsloth_zoo",
     "packaging",
     "tyro",
     "transformers>=4.44.2",
@@ -210,6 +211,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
+    "unsloth_zoo",
     "packaging",
     "tyro",
     "transformers>=4.44.2",
