@@ -14,6 +14,9 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+__all__ = [
+    "train_on_responses_only",
+]
 
 
 # From https://www.geeksforgeeks.org/longest-common-substring-array-strings/
@@ -198,7 +201,7 @@ def train_on_responses_only(
 
     if hasattr(trainer, "train_dataset") and trainer.train_dataset is not None:
         trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batched = True)
-    if hasattr(trainer, "eval_dataset") and trainer.eval_dataset is not None:
-        trainer.eval_dataset = trainer.eval_dataset.map(_train_on_responses_only, batched = True)
+    if hasattr(trainer, "eval_dataset")  and trainer.eval_dataset  is not None:
+        trainer.eval_dataset  = trainer.eval_dataset .map(_train_on_responses_only, batched = True)
     return trainer
 pass
