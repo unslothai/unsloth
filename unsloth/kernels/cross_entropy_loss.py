@@ -373,7 +373,6 @@ def fast_cross_entropy_loss(
         logit_softcapping,
         logit_scaling,
     )
-    print(n_items)
     if n_items is None:
         n_items = torch.count_nonzero(labels != -100)
     return loss.sum() / n_items
