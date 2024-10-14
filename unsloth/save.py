@@ -30,6 +30,7 @@ from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
 from huggingface_hub.utils._token import get_token
+from pathlib import Path
 
 __all__ = [
     "print_quantization_methods",
@@ -100,14 +101,17 @@ def check_if_sentencepiece_model(model, temporary_location = "_unsloth_sentencep
     temp_tokenizer = model._saved_temp_tokenizer
     sentencepiece_model = False
     file_location = os.path.join(temporary_location, temp_tokenizer.name_or_path)
+    created_folder = False
     if not os.path.exists(file_location):
+        created_folder = True
         os.makedirs(file_location)
     pass
     temp_tokenizer.save_pretrained(file_location)
     if os.path.isfile(f"{file_location}/tokenizer.model"):
         sentencepiece_model = True
     pass
-    shutil.rmtree(file_location, ignore_errors = True)
+    if created_folder:
+        shutil.rmtree(file_location, ignore_errors = True)
     return sentencepiece_model
 pass
 
@@ -1058,9 +1062,9 @@ def save_to_gguf(
     if n_cpus is None: n_cpus = 1
     n_cpus *= 2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
-    
-    final_location = f"./{model_directory}/unsloth.{first_conversion.upper()}.gguf"
 
+    final_location = str((Path(model_directory) / f"unsloth.{first_conversion.upper()}.gguf").absolute())
+    
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
           "This will take 3 minutes...")
@@ -1128,7 +1132,7 @@ def save_to_gguf(
     for quant_method in quantization_method:
         if quant_method != first_conversion:
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This will take 20 minutes...")
-            final_location = f"./{model_directory}/unsloth.{quant_method.upper()}.gguf"
+            final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
 
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
@@ -1481,9 +1485,23 @@ def create_ollama_modelfile(tokenizer, gguf_location):
     modelfile = getattr(tokenizer, "_ollama_modelfile", None)
     if modelfile is None: return None
 
+    FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"
+    EOS_TOKEN_REPLACER     = "⚫@✅#🦥__EOS_TOKEN__⚡@🦥#⛵"
+    LEFT_BRACKET_REPLACER  = "⚫@✅#🦥"
+    RIGHT_BRACKET_REPLACER = "⚡@🦥#⛵"
+
+    # Fixes https://github.com/unslothai/unsloth/issues/1087
+    # We must convert all {'s and }'s but keep {__FILE_LOCATION__} intact
     modelfile = modelfile\
-        .replace("{{", "⚫@✅#🦥")\
-        .replace("}}", "⚡@🦥#⛵")
+        .replace("{__FILE_LOCATION__}", FILE_LOCATION_REPLACER)\
+        .replace("{__EOS_TOKEN__}",     EOS_TOKEN_REPLACER)\
+        .replace("{", LEFT_BRACKET_REPLACER)\
+        .replace("}", RIGHT_BRACKET_REPLACER)
+
+    # Revert {__FILE_LOCATION__} back
+    modelfile = modelfile\
+        .replace(FILE_LOCATION_REPLACER, "{__FILE_LOCATION__}")\
+        .replace(EOS_TOKEN_REPLACER,     "{__EOS_TOKEN__}")
     
     if "__EOS_TOKEN__" in modelfile:
         modelfile = modelfile.format(
@@ -1497,8 +1515,8 @@ def create_ollama_modelfile(tokenizer, gguf_location):
     pass
     
     modelfile = modelfile\
-        .replace("⚫@✅#🦥", "{{")\
-        .replace("⚡@🦥#⛵", "}}")\
+        .replace("⚫@✅#🦥", "{")\
+        .replace("⚡@🦥#⛵", "}")\
         .rstrip()
 
     return modelfile
