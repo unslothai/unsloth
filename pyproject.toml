@@ -3,7 +3,7 @@ requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "branch"
+name = "unsloth_zoo"
 dynamic = ["version"]
 description = "Utils for Unsloth"
 readme = "README.md"
@@ -42,7 +42,7 @@ dependencies = [
 ]
 
 [tool.setuptools.dynamic]
-version = {attr = "branch.__init__.__version__"}
+version = {attr = "unsloth_zoo.__init__.__version__"}
 
 [tool.setuptools]
 include-package-data = false
