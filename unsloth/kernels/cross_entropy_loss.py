@@ -411,7 +411,7 @@ replacement = """    loss = None
             labels = shift_labels,
             logit_softcapping = logit_softcapping,
             logit_scaling     = logit_scaling,
-            n_items           = getattr(kwargs, "n_items", None),
+            n_items           = kwargs.get("n_items", None),
         )
     else:
         if logit_scaling != 0:
