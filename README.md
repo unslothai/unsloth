@@ -39,8 +39,6 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - This [continued pretraining notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) is for learning another language
 - Click [here](https://github.com/unslothai/unsloth/wiki) for detailed documentation for Unsloth.
 
-## 🦥 Unsloth.ai News
-
 
 ## 🔗 Links and Resources
 | Type                            | Links                               |
