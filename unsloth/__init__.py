@@ -27,6 +27,13 @@ import numpy as np
 #     pass
 # pass
 
+# Check for unsloth_zoo
+try:
+    import unsloth_zoo
+except:
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth-zoo`")
+pass
+
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
@@ -124,7 +131,7 @@ if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ
 
             # Try linking cuda folder, or everything in local
             if len(possible_cudas) == 0:
-                os.system(f"ldconfig /usr/local/")
+                os.system("ldconfig /usr/local/")
             else:
                 find_number = re.compile(r"([\d\.]{2,})")
                 latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
