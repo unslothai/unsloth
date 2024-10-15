@@ -975,13 +975,14 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Fixes https://github.com/unslothai/unsloth/issues/10
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
             pass
-            
+
             shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
                 labels = shift_labels,
                 logit_softcapping = logit_softcapping,
                 logit_scaling     = logit_scaling,
+                n_items           = kwargs.get("n_items", None),
             )
         else:
             if logit_scaling != 0:
@@ -2019,8 +2020,8 @@ class FastLlamaModel:
             if loftq_config == {}:
                 from peft import LoftQConfig
                 logger.warning_once(
-                    f"Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
-                    f"We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
+                    "Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
+                    "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
                 )
                 loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
             pass
