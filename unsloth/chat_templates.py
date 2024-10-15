@@ -912,7 +912,7 @@ def get_chat_template(
         # Check fast tokenizer
         if not is_fast_tokenizer:
             print(
-                f"Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
+                "Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
                 "Please log a Github issue if you want this as a new feature!\n"\
                 "Your chat template will still work, but it won't add or edit tokens."
             )
@@ -1238,7 +1238,7 @@ def to_sharegpt(
     n_extensions = max(conversation_extension-1, 0)
     if n_extensions == 0: return dataset
 
-    dataset = dataset.rename_columns({"conversations" : f"conversations0"})
+    dataset = dataset.rename_columns({"conversations" : "conversations0"})
     all_shuffled = [dataset]
     for j in range(1, n_extensions+1):
         shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
@@ -1256,7 +1256,7 @@ def to_sharegpt(
                 f"in zip({', '.join(f'conversations{j}__' for j in range(n_extensions))}):\n"
     function += f"{' '*8}convos.append("\
                 f"{'+'.join(f'conversations{j}' for j in range(n_extensions))})\n"
-    function += f"{' '*4}return " + "{ " + f"'conversations' : convos" + " }"
+    function += f"{' '*4}return " + "{ " + "'conversations' : convos" + " }"
 
     # Map function
     exec(function, globals())
