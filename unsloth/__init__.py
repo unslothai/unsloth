@@ -27,6 +27,13 @@ import numpy as np
 #     pass
 # pass
 
+# Check for unsloth_zoo
+try:
+    import unsloth_zoo
+except:
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth-zoo`")
+pass
+
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
