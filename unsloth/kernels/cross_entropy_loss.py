@@ -355,6 +355,7 @@ def fast_cross_entropy_loss(
     labels,
     logit_softcapping = 0,
     logit_scaling = 0,
+    n_items = None,
 ):
     """
     Arguments:
@@ -372,7 +373,8 @@ def fast_cross_entropy_loss(
         logit_softcapping,
         logit_scaling,
     )
-    n_items = torch.count_nonzero(labels != -100)
+    if n_items is None:
+        n_items = torch.count_nonzero(labels != -100)
     return loss.sum() / n_items
 pass
 
@@ -409,6 +411,7 @@ replacement = """    loss = None
             labels = shift_labels,
             logit_softcapping = logit_softcapping,
             logit_scaling     = logit_scaling,
+            n_items           = kwargs.get("n_items", None),
         )
     else:
         if logit_scaling != 0:
