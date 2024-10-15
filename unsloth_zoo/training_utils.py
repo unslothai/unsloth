@@ -23,6 +23,7 @@ from transformers.trainer_utils import seed_worker as trainer_utils_seed_worker
 from tqdm import tqdm as ProgressBar
 from packaging.version import Version
 from transformers.models.llama.modeling_llama import logger
+import time
 
 __all__ = [
     "fix_zero_training_loss",
@@ -64,7 +65,7 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
 pass
 
 
-def get_max_steps(training_args, train_dataloader, train_dataset):
+def get_max_steps(training_args, n_training_samples, train_dataset):
     # Approximately from https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py#L2092
     # Determines batch size, max steps, ga etc
     if training_args.world_size > 1:
@@ -75,8 +76,7 @@ def get_max_steps(training_args, train_dataloader, train_dataset):
         training_args.per_device_train_batch_size * \
         training_args.gradient_accumulation_steps
 
-    len_dataloader = len(train_dataloader)
-    num_update_steps_per_epoch = len_dataloader // training_args.gradient_accumulation_steps
+    num_update_steps_per_epoch = n_training_samples // training_args.gradient_accumulation_steps
     num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
     num_examples = len(train_dataset)
 
@@ -114,6 +114,12 @@ def unset_training(model):
 pass
 
 
+from dataclasses import dataclass
+@dataclass
+class Trainer_Stats:
+    metrics: dict
+pass
+
 def unsloth_train(trainer):
     """
     Unsloth Trainer
@@ -129,6 +135,7 @@ def unsloth_train(trainer):
     model = trainer.model
     training_args = trainer.args
     data_collator = trainer.data_collator
+    n_training_samples = len(trainer.train_dataset)
     set_training(model)
     transformers_set_seed(training_args.seed)
 
@@ -140,18 +147,6 @@ def unsloth_train(trainer):
             pad_to_multiple_of = 4,
         )
     pass
-
-    # Data loader
-    train_dataloader = torch.utils.data.DataLoader(
-        trainer.train_dataset,
-        batch_size     = training_args.per_device_train_batch_size,
-        sampler        = torch.utils.data.RandomSampler(trainer.train_dataset),
-        num_workers    = training_args.dataloader_num_workers,
-        collate_fn     = data_collator,
-        pin_memory     = training_args.dataloader_pin_memory,
-        drop_last      = training_args.dataloader_drop_last,
-        worker_init_fn = trainer_utils_seed_worker,
-    )
 
     # Separate weight decay for parameters
     optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(training_args)
@@ -174,7 +169,7 @@ def unsloth_train(trainer):
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
 
     total_train_batch_size, max_steps, num_train_epochs, num_train_samples = \
-        get_max_steps(training_args, train_dataloader, trainer.train_dataset)
+        get_max_steps(training_args, n_training_samples, trainer.train_dataset)
 
     # Get LR scheduler
     lr_scheduler = transformers_get_scheduler(
@@ -205,7 +200,7 @@ def unsloth_train(trainer):
         float16_scaler = None
     pass
     
-    optimizer.zero_grad(set_to_none = True)
+    optimizer.zero_grad()
 
     # torch.cuda.amp.autocast is deprecated >= 2.4
     torch_version = torch.__version__
@@ -224,12 +219,13 @@ def unsloth_train(trainer):
 
     step = 0
     accumulated_loss = torch.zeros(1, device = "cuda:0", dtype = torch.float32)[0]
-    size_dataloader = len(train_dataloader)
-    max_iterations  = int(math.ceil(size_dataloader / gradient_accumulation_steps))
+    max_iterations   = int(math.ceil(n_training_samples / gradient_accumulation_steps))
+    leftover_batches = n_training_samples % gradient_accumulation_steps
+    if leftover_batches == 0: leftover_batches = gradient_accumulation_steps
 
     debug_info = \
         f'==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {training_args.world_size}\n'\
-        f'    \\   /|    Num examples = {len(train_dataloader):,} | Num Epochs = {num_train_epochs:,}\n'\
+        f'    \\   /|    Num examples = {n_training_samples:,} | Num Epochs = {num_train_epochs:,}\n'\
         f'O^O/ \\_/ \\    Batch size per device = {training_args.per_device_train_batch_size:,} | Gradient Accumulation steps = {training_args.gradient_accumulation_steps}\n'\
         f'\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\n'\
         f' "-____-"     Number of trainable parameters = {n_parameters_to_train:,}'
@@ -237,15 +233,24 @@ def unsloth_train(trainer):
 
     progress_bar = ProgressBar(total = max_steps*num_train_epochs, dynamic_ncols = True)
     # Go through each epoch
+    start_time = time.time()
     for epoch in range(num_train_epochs):
-        train_dataloader_iterator = iter(train_dataloader)
-        for j in range(max_iterations):
-            # Get leftover batches
-            n_batches = \
-                min(gradient_accumulation_steps * (j + 1), size_dataloader) - \
-                gradient_accumulation_steps * j
-            if n_batches == 0: break
 
+        # We also need to shuffle the data loader every epoch!
+        transformers_set_seed(training_args.seed + epoch)
+        train_dataloader_iterator = iter(torch.utils.data.DataLoader(
+            trainer.train_dataset,
+            batch_size     = training_args.per_device_train_batch_size,
+            sampler        = torch.utils.data.RandomSampler(trainer.train_dataset),
+            num_workers    = training_args.dataloader_num_workers,
+            collate_fn     = data_collator,
+            pin_memory     = training_args.dataloader_pin_memory,
+            drop_last      = training_args.dataloader_drop_last,
+            worker_init_fn = trainer_utils_seed_worker,
+        ))
+
+        for j in range(max_iterations):
+            n_batches = leftover_batches if j == (max_iterations-1) else gradient_accumulation_steps
             batches = [next(train_dataloader_iterator) for j in range(n_batches)]
                 
             # Count non zeros before loss calc
@@ -288,6 +293,11 @@ def unsloth_train(trainer):
         pass
     pass
     progress_bar.close()
-    logger.warning("Unsloth: Finished training!")
     unset_training(model)
+    logger.warning("Unsloth: Finished training!")
+    end_time = time.time()
+
+    # Return stats
+    trainer_stats = Trainer_Stats(metrics = {"train_runtime" : end_time - start_time})
+    return trainer_stats
 pass
