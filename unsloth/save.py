@@ -555,7 +555,7 @@ def unsloth_save_model(
             #     max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
-                logger.warning_once(f"We will save to Disk and not RAM now.")
+                logger.warning_once("We will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
                 # weights_only = True weirdly fails?
@@ -1460,7 +1460,7 @@ def fix_tokenizer_bos_token(tokenizer):
 
             fix_bos_token = True
             logger.warning(
-                f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+                "Unsloth: ##### The current model auto adds a BOS token.\n"\
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
 
@@ -1671,7 +1671,7 @@ def unsloth_save_pretrained_gguf(
 
     if fix_bos_token:
         logger.warning(
-            f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+            "Unsloth: ##### The current model auto adds a BOS token.\n"\
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
@@ -1867,7 +1867,7 @@ def unsloth_push_to_hub_gguf(
 
     if fix_bos_token:
         logger.warning(
-            f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+            "Unsloth: ##### The current model auto adds a BOS token.\n"\
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass

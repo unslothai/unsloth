@@ -2020,8 +2020,8 @@ class FastLlamaModel:
             if loftq_config == {}:
                 from peft import LoftQConfig
                 logger.warning_once(
-                    f"Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
-                    f"We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
+                    "Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
+                    "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
                 )
                 loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
             pass

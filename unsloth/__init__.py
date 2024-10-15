@@ -131,7 +131,7 @@ if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ
 
             # Try linking cuda folder, or everything in local
             if len(possible_cudas) == 0:
-                os.system(f"ldconfig /usr/local/")
+                os.system("ldconfig /usr/local/")
             else:
                 find_number = re.compile(r"([\d\.]{2,})")
                 latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
