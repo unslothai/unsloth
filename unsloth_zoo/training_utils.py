@@ -232,6 +232,7 @@ def unsloth_train(trainer):
     logger.warning(debug_info)
 
     progress_bar = ProgressBar(total = max_steps*num_train_epochs, dynamic_ncols = True)
+    logging_steps = training_args.logging_steps
     # Go through each epoch
     start_time = time.time()
     for epoch in range(num_train_epochs):
@@ -284,7 +285,9 @@ def unsloth_train(trainer):
             lr_scheduler.step()
             optimizer.zero_grad()
 
-            progress_bar.write(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
+            if step % logging_steps == 0:
+                progress_bar.write(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
+            pass
             accumulated_loss.zero_()
             progress_bar.update(1)
 
