@@ -242,7 +242,7 @@ def unsloth_train(trainer):
         train_dataloader_iterator = iter(torch.utils.data.DataLoader(
             trainer.train_dataset,
             batch_size     = training_args.per_device_train_batch_size,
-            sampler        = torch.utils.data.RandomSampler(trainer.train_dataset),
+            sampler        = torch.utils.data.SequentialSampler(trainer.train_dataset),
             num_workers    = training_args.dataloader_num_workers,
             collate_fn     = data_collator,
             pin_memory     = training_args.dataloader_pin_memory,
