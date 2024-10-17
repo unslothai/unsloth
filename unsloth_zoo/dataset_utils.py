@@ -1,6 +1,4 @@
 # Unsloth Zoo
-# Copyright (C) 2024-present the Unsloth AI team. All rights reserved.
-
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published
 # by the Free Software Foundation, either version 3 of the License, or
@@ -18,26 +16,67 @@ __all__ = [
     "train_on_responses_only",
 ]
 
+def _longest_common_sublist(lists):
+    """
+    Finds the longest common sublist among multiple lists.
 
-# From https://www.geeksforgeeks.org/longest-common-substring-array-strings/
-# Longest Common Substring in an Array of Strings
-def _longest_common_substring(arr):
-    n = len(arr)
-    s = arr[0]
-    l = len(s)
-    res = ""
-    for i in range(l):
-        for j in range(i + 1, l + 1):
-            stem = s[i:j]
-            k = 1
-            for k in range(1, n):
-                if stem not in arr[k]:
-                    break
-            if (k + 1 == n and len(res) < len(stem)):
-                res = stem
-    return res
-pass
+    Parameters:
+    lists (List[List[int]]): A list of lists.
 
+    Returns:
+    List[int]: The longest common sublist. If multiple sublists have the same maximum length,
+               one of them is returned. If there's no common sublist, an empty list is returned.
+    """
+
+    if not lists:
+        return []
+
+    # Find the minimum length among all lists
+    min_len = min(len(lst) for lst in lists)
+    if min_len == 0:
+        return []
+
+    def has_common_sublist(length):
+        """
+        Checks if there's a common sublist of the given length across all lists.
+
+        Returns:
+        (bool, List): Tuple of whether such a sublist exists and the sublist itself.
+        """
+        common = set()
+        first = lists[0]
+        # Generate all possible sublists of the given length from the first list
+        for i in range(len(first) - length + 1):
+            sub = tuple(first[i:i + length])
+            common.add(sub)
+
+        # Iterate over the remaining lists and retain only the common sublists
+        for lst in lists[1:]:
+            current = set()
+            for i in range(len(lst) - length + 1):
+                sub = tuple(lst[i:i + length])
+                if sub in common:
+                    current.add(sub)
+            common = current
+            if not common:
+                return False, []
+        
+        # If common is not empty, return one of the common sublists
+        return True, list(common.pop())
+
+    left, right = 1, min_len
+    result = []
+
+    while left <= right:
+        mid = left + (right - left) // 2
+        exists, sublist = has_common_sublist(mid)
+        if exists:
+            result = sublist  # Update result with the latest found sublist
+            left = mid + 1    # Try to find a longer sublist
+        else:
+            right = mid - 1   # Try with a shorter length
+
+    return result
 
 def _find_common_token_ids(component, tokenizer):
     """
@@ -68,9 +107,7 @@ def _find_common_token_ids(component, tokenizer):
             all_input_ids.append(x)
         pass
     pass
-    substring = _longest_common_substring([str(x + [0]) for x in all_input_ids])
-    substring = substring.split(", ")[:-1]
-    substring = [int(x) for x in substring]
+    substring = _longest_common_sublist([x + [0] for x in all_input_ids])
 
     # Also get rest of tokenized string
     original = tokenizer(component, add_special_tokens = False).input_ids
@@ -205,3 +242,13 @@ def train_on_responses_only(
         trainer.eval_dataset  = trainer.eval_dataset .map(_train_on_responses_only, batched = True)
     return trainer
 pass
+
+if __name__ == '__main__':
+    # test least common sublist implementation
+    lists_of_ints = [
+        [1, 2, 3, 4, 5, 6],
+        [0, 1, 2, 3, 4, 7],
+        [11, 12, 1, 2, 3, 4, 8, 9]
+    ]
+    assert _longest_common_sublist(lists_of_ints) == [1, 2, 3, 4]
+    print("test passed")
