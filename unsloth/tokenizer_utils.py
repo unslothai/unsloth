@@ -928,8 +928,9 @@ def patch_sft_trainer_tokenizer():
         "    torch.cuda.empty_cache()\n"\
         "pass\n"\
         "\n"\
-        "fix_untrained_tokens(self.model, self.tokenizer, self.train_dataset, IGNORED_TOKENIZER_NAMES, eps = 1e-16)\n\n"\
-        "fix_zero_training_loss(self.model, self.tokenizer, self.train_dataset)\n\n"
+        "tokenizer = self.processing_class if hasattr(self, 'processing_class') else self.tokenizer\n"\
+        "fix_untrained_tokens(self.model, tokenizer, self.train_dataset, IGNORED_TOKENIZER_NAMES, eps = 1e-16)\n\n"\
+        "fix_zero_training_loss(self.model, tokenizer, self.train_dataset)\n\n"
 
         # Add NEFTune since it doesn't seem to work?? We need to manually inject it
         check_text += \
