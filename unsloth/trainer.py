@@ -26,7 +26,7 @@ from unsloth_zoo.training_utils import unsloth_train as _unsloth_train
 from packaging.version import Version
 
 # Unsloth gradient accumulation fix:
-if Version(transformers.__version__) > Version("4.45.0")
+if Version(transformers.__version__) > Version("4.45.0"):
     def unsloth_train(trainer):
         return trainer.train()
     pass
