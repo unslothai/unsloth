@@ -1166,7 +1166,6 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             inputs["num_items_in_batch"] = kwargs["num_items_in_batch"]
         pass
     pass
-    print(inputs)
     return self._old_compute_loss(model, inputs, args, kwargs)
 pass
 
