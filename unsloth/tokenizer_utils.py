@@ -937,6 +937,7 @@ def patch_sft_trainer_tokenizer():
         "\n"\
         "if hasattr('self', 'args') and hasattr('self.args', 'gradient_accumulation_steps'):\n"\
         "    gradient_accumulation_steps = self.args.gradient_accumulation_steps\n"\
+        "    print(2)\n"\
         "    if type(gradient_accumulation_steps) is int and gradient_accumulation_steps > 1:\n"\
         "        from transformers import __version__ as transformers_version\n"\
         "        print(1)\n"\
