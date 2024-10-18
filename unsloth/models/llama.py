@@ -982,7 +982,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 labels = shift_labels,
                 logit_softcapping = logit_softcapping,
                 logit_scaling     = logit_scaling,
-                n_items           = kwargs.get("n_items", None),
+                n_items           = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None),
             )
         else:
             if logit_scaling != 0:
@@ -1776,6 +1776,9 @@ class FastLlamaModel:
         # Add save modules
         patch_saving_functions(model)
         Trainer._inner_training_loop = _fast_inner_training_loop
+
+        # Fix gradient accumulation
+        patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference

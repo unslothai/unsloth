@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.10.0"
+__version__ = "2024.10.1"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -43,6 +43,7 @@ __all__ = [
     "accelerate_new_send_to_device",
     "patch_gradient_checkpointing",
     "unpatch_gradient_checkpointing",
+    "patch_gradient_accumulation_fix",
 ]
 
 import torch
@@ -1136,5 +1137,65 @@ def test_mask_creation():
         correct_mask = (correct_mask == correct_mask.min())
         our_mask = create_boolean_mask(n = n, sliding_window = 0)
         assert(torch.all(correct_mask == our_mask))
+    pass
+pass
+
+
+def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
+    batch_samples = []
+    num_items_in_batch = None
+    for _ in range(num_batches):
+        try:
+            batch_samples += [next(epoch_iterator)]
+        except StopIteration:
+            break
+    if len(batch_samples) > 0 and "labels" in batch_samples[0]:
+        try:
+            num_items_in_batch = sum(
+                [torch.count_nonzero(x["labels"][..., 1:] != -100) for x in batch_samples]
+            )
+        except TypeError:
+            pass
+    return batch_samples, num_items_in_batch
+pass
+
+
+def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
+    if "num_items_in_batch" in kwargs:
+        if "num_items_in_batch" not in inputs:
+            inputs["num_items_in_batch"] = kwargs["num_items_in_batch"]
+        pass
+    pass
+    return self._old_compute_loss(model, inputs, args, kwargs)
+pass
+
+
+def patch_gradient_accumulation_fix(Trainer):
+    # Fixes gradient accumulation 
+    if hasattr(Trainer, "get_batch_samples"):
+        from inspect import getsource
+        if \
+            not getsource(Trainer.get_batch_samples).strip()\
+            .endswith("return batch_samples, num_items_in_batch"):
+
+            raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
+        else:
+            if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
+                Trainer.get_batch_samples = _unsloth_get_batch_samples
+            pass
+
+            # Also fix passing in num_items_in_batch
+            if not hasattr(Trainer, "_old_compute_loss"):
+                Trainer._old_compute_loss = Trainer.compute_loss
+                Trainer.compute_loss = _unsloth_pre_compute_loss
+            pass
+        pass
+    else:
+        logger.warning_once(
+            "Unsloth: We fixed a gradient accumulation bug, "\
+            "but it seems like you don't have the latest transformers version!\n"\
+            "Please update transformers via:\n"\
+            '`pip uninstall transformers -y && pip install --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers.git"`'
+        )
     pass
 pass
