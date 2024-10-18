@@ -40,6 +40,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - Click [here](https://github.com/unslothai/unsloth/wiki) for detailed documentation for Unsloth.
 
 ## 🦥 Unsloth.ai News
+- 📣 NEW! We found and helped fix a [gradient accumulation bug](https://unsloth.ai/blog/gradient)! Please update Unsloth and transformers.
 - 📣 NEW! [Llama 3.2 Conversational notebook](https://colab.research.google.com/drive/1T5-zKWM_5OD21QHwXHiV9ixTRR7k3iB9?usp=sharing) includes training only on completions / outputs (increase accuracy), ShareGPT standardization and more!
 - 📣 NEW! [Llama 3.2 Kaggle notebook](https://www.kaggle.com/danielhanchen/kaggle-llama-3-2-1b-3b-unsloth-notebook) and [Llama 3.2 Kaggle conversational notebook](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-2-1b-3b-conversational-unsloth/notebook)
 - 📣 NEW! [Qwen 2.5 7b notebook](https://colab.research.google.com/drive/1Kose-ucXO1IBaZq5BvbwWieuubP7hxvQ?usp=sharing) finetuning is supported! Qwen 2.5 comes in multiple sizes - check our [4bit uploads](https://huggingface.co/unsloth) for 4x faster downloads!. 14b fits in a Colab GPU! [Qwen 2.5 conversational notebook](https://colab.research.google.com/drive/1qN1CEalC70EO1wGKhNxs1go1W9So61R5?usp=sharing)
