@@ -22,7 +22,25 @@ except:
     from transformers import TrainingArguments
 pass
 from . import is_bfloat16_supported
-from unsloth_zoo.training_utils import unsloth_train
+from unsloth_zoo.training_utils import unsloth_train as _unsloth_train
+from packaging.version import Version
+
+# Unsloth gradient accumulation fix:
+from transformers import __version__ as transformers_version
+if Version(transformers_version) > Version("4.45.2"):
+    def unsloth_train(trainer):
+        return trainer.train()
+    pass
+else:
+    def unsloth_train(trainer):
+        print(
+            "Unsloth: Using our custom gradient accumulation fixed trainer, which is not feature complete.\n"\
+            "If you want to use our fix inside of HF, please update `transformers` to the latest version via:\n"\
+            '`pip uninstall transformers -y && pip install --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers.git"`'
+        )
+        return _unsloth_train(trainer)
+    pass
+pass
 
 __all__ = [
     "UnslothTrainingArguments",
