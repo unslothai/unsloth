@@ -935,8 +935,10 @@ def patch_sft_trainer_tokenizer():
         # Warn on gradient accumulation steps if it's used
         check_text += \
         "\n"\
+        "print(self.args)\n"\
+        "print(self.args.gradient_accumulation_steps)\n"\
         "try:\n"\
-        "    gradient_accumulation_steps = self.gradient_accumulation_steps\n"\
+        "    gradient_accumulation_steps = self.args.gradient_accumulation_steps\n"\
         "    if type(gradient_accumulation_steps) is int and gradient_accumulation_steps > 1:\n"\
         "        from transformers import __version__ as transformers_version\n"\
         "        if Version(transformers_version) <= Version('4.45.2'):\n"\
