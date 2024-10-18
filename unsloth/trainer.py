@@ -27,7 +27,7 @@ from packaging.version import Version
 
 # Unsloth gradient accumulation fix:
 from transformers import __version__ as transformers_version
-if Version(transformers_version) > Version("4.45.0"):
+if Version(transformers_version) > Version("4.45.2"):
     def unsloth_train(trainer):
         return trainer.train()
     pass

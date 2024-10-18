@@ -932,6 +932,17 @@ def patch_sft_trainer_tokenizer():
         "fix_untrained_tokens(self.model, tokenizer, self.train_dataset, IGNORED_TOKENIZER_NAMES, eps = 1e-16)\n\n"\
         "fix_zero_training_loss(self.model, tokenizer, self.train_dataset)\n\n"
 
+        # Warn on gradient accumulation steps if it's used
+        check_text += \
+        "\n"\
+        "if hasattr('self', 'args') and hasattr('self.args', 'gradient_accumulation_steps'):\n"\
+        "    gradient_accumulation_steps = self.args.gradient_accumulation_steps\n"\
+        "    if type(gradient_accumulation_steps) is int and gradient_accumulation_steps > 1:\n"\
+        "        from transformers import __version__ as transformers_version\n"\
+        "        if Version(transformers_version) <= Version('4.45.2'):\n"\
+        "            print('Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers and Unsloth!')\n"\
+        "\n\n"
+
         # Add NEFTune since it doesn't seem to work?? We need to manually inject it
         check_text += \
         "\n"\
