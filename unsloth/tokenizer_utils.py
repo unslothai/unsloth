@@ -935,6 +935,7 @@ def patch_sft_trainer_tokenizer():
         # Warn on gradient accumulation steps if it's used
         check_text += \
         "\n"\
+        "print(self.args.gradient_accumulation_steps)\n"\
         "if hasattr('self', 'args') and hasattr('self.args', 'gradient_accumulation_steps'):\n"\
         "    gradient_accumulation_steps = self.args.gradient_accumulation_steps\n"\
         "    if type(gradient_accumulation_steps) is int and gradient_accumulation_steps > 1:\n"\
