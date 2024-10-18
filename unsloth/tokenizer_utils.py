@@ -935,15 +935,14 @@ def patch_sft_trainer_tokenizer():
         # Warn on gradient accumulation steps if it's used
         check_text += \
         "\n"\
-        "print(self.args.gradient_accumulation_steps, hasattr('self', 'args'), hasattr('self.args', 'gradient_accumulation_steps'))\n"\
-        "if hasattr('self', 'args') and hasattr('self.args', 'gradient_accumulation_steps'):\n"\
+        "try:\n"\
         "    gradient_accumulation_steps = self.args.gradient_accumulation_steps\n"\
-        "    print(2)\n"\
         "    if type(gradient_accumulation_steps) is int and gradient_accumulation_steps > 1:\n"\
         "        from transformers import __version__ as transformers_version\n"\
-        "        print(1)\n"\
         "        if Version(transformers_version) <= Version('4.45.2'):\n"\
         "            print('Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers and Unsloth!')\n"\
+        "except:\n"\
+        "    pass\n"\
         "\n\n"
 
         # Add NEFTune since it doesn't seem to work?? We need to manually inject it
