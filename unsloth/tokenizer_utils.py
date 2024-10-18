@@ -937,9 +937,9 @@ def patch_sft_trainer_tokenizer():
         "\n"\
         "try:\n"\
         "    gradient_accumulation_steps = self.args.gradient_accumulation_steps\n"\
-        "    print(self.args)\n"\
         "    if type(gradient_accumulation_steps) is int and gradient_accumulation_steps > 1:\n"\
         "        from transformers import __version__ as transformers_version\n"\
+        "        print(transformers_version)\n"\
         "        if Version(transformers_version) <= Version('4.45.2'):\n"\
         "            print('Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers and Unsloth!')\n"\
         "except:\n"\
