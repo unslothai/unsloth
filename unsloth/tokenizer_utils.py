@@ -941,7 +941,8 @@ def patch_sft_trainer_tokenizer():
         "        from transformers import __version__ as transformers_version\n"\
         "        from packaging.version import Version\n"\
         "        if Version(transformers_version) <= Version('4.45.2'):\n"\
-        "            print('Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers and Unsloth!')\n"\
+        "            print('Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers and Unsloth!\\n'\\\n"\
+        "                  '`pip uninstall transformers -y && pip install --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers.git"`')\n"\
         "except:\n"\
         "    pass\n"\
         "\n\n"
