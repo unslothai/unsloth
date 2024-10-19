@@ -22,7 +22,12 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 import os
-from huggingface_hub.utils._token import get_token
+try:
+    from huggingface_hub.utils import get_token
+except:
+    # Old HF Hub versions <= 0.0.25
+    from huggingface_hub.utils._token import get_token
+pass
 from huggingface_hub import HfFileSystem
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
