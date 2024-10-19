@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "torch",
-    "triton,
+    "triton",
     "packaging",
     "tyro",
     "transformers>=4.44.2",
