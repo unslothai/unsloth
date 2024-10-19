@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.10.2"
+__version__ = "2024.10.3"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -1166,7 +1166,7 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             inputs["num_items_in_batch"] = kwargs["num_items_in_batch"]
         pass
     pass
-    return self._old_compute_loss(model, inputs, args, kwargs)
+    return self._old_compute_loss(model, inputs, *args, **kwargs)
 pass
 
 
