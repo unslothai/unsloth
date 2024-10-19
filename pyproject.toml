@@ -22,8 +22,8 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "torch>=2.4.0",
-    "triton>=3.0.0",
+    "torch",
+    "triton,
     "packaging",
     "tyro",
     "transformers>=4.44.2",
