@@ -18,6 +18,26 @@ __all__ = [
     "train_on_responses_only",
 ]
 
+# From https://www.geeksforgeeks.org/longest-common-substring-array-strings/
+# Longest Common Substring in an Array of Strings
+def _old_longest_common_substring(arr):
+    n = len(arr)
+    s = arr[0]
+    l = len(s)
+    res = ""
+    for i in range(l):
+        for j in range(i + 1, l + 1):
+            stem = s[i:j]
+            k = 1
+            for k in range(1, n):
+                if stem not in arr[k]:
+                    break
+            if (k + 1 == n and len(res) < len(stem)):
+                res = stem
+    return res
+pass
+
+
 def _longest_common_sublist(lists):
     """
     Finds the longest common sublist among multiple lists.
@@ -112,8 +132,13 @@ def _find_common_token_ids(component, tokenizer):
             all_input_ids.append(x)
         pass
     pass
-    substring = _longest_common_sublist([x + [0] for x in all_input_ids])
 
+    # Old longest common substring is replaced with actual longest common list of numbers
+    # substring = _old_longest_common_substring([str(x + [0]) for x in all_input_ids])
+    # substring = substring.split(", ")[:-1]
+    # substring = [int(x) for x in substring if x.isdigit()]
+    substring = _longest_common_sublist([x + [0] for x in all_input_ids])
+    
     # Also get rest of tokenized string
     original = tokenizer(component, add_special_tokens = False).input_ids
     # Get optional left and right
