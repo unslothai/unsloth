@@ -416,6 +416,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ),
+    "unsloth/Llama-3.1-Nemotron-70B-Instruct-bnb-4bit" : (
+        "unsloth/Llama-3.1-Nemotron-70B-Instruct",
+        "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
