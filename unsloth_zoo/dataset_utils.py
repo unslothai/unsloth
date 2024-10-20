@@ -29,14 +29,11 @@ def _longest_common_sublist(lists):
     List[int]: The longest common sublist. If multiple sublists have the same maximum length,
                one of them is returned. If there's no common sublist, an empty list is returned.
     """
-
-    if not lists:
-        return []
+    if not lists: return []
 
     # Find the minimum length among all lists
     min_len = min(len(lst) for lst in lists)
-    if min_len == 0:
-        return []
+    if min_len == 0: return []
 
     def has_common_sublist(length):
         """
@@ -51,6 +48,7 @@ def _longest_common_sublist(lists):
         for i in range(len(first) - length + 1):
             sub = tuple(first[i:i + length])
             common.add(sub)
+        pass
 
         # Iterate over the remaining lists and retain only the common sublists
         for lst in lists[1:]:
@@ -62,9 +60,11 @@ def _longest_common_sublist(lists):
             common = current
             if not common:
                 return False, []
+        pass
         
         # If common is not empty, return one of the common sublists
         return True, list(common.pop())
+    pass
 
     left, right = 1, min_len
     result = []
@@ -77,8 +77,11 @@ def _longest_common_sublist(lists):
             left = mid + 1    # Try to find a longer sublist
         else:
             right = mid - 1   # Try with a shorter length
+    pass
 
     return result
+pass
+
 
 def _find_common_token_ids(component, tokenizer):
     """
@@ -95,7 +98,7 @@ def _find_common_token_ids(component, tokenizer):
     if   component.startswith (" "): left_text = " "
     elif component.startswith("\n"): left_text = "\n"
     stripped = component.strip()
-
+    
     # Add current pieces and also newlines
     all_input_ids = []
     for left in range(3):
@@ -244,13 +247,3 @@ def train_on_responses_only(
         trainer.eval_dataset  = trainer.eval_dataset .map(_train_on_responses_only, batched = True)
     return trainer
 pass
-
-if __name__ == '__main__':
-    # test least common sublist implementation
-    lists_of_ints = [
-        [1, 2, 3, 4, 5, 6],
-        [0, 1, 2, 3, 4, 7],
-        [11, 12, 1, 2, 3, 4, 8, 9]
-    ]
-    assert _longest_common_sublist(lists_of_ints) == [1, 2, 3, 4]
-    print("test passed")
