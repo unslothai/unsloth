@@ -1192,7 +1192,10 @@ def save_to_gguf(
         pass
     pass
 
-    return all_saved_locations
+    # Finally check if first_conversion (f16, bf16 etc) was in the list of actual quant methods
+    full_precision_seen = first_conversion in frozenset(quantization_method)
+
+    return all_saved_locations, full_precision_seen
 pass
 
 
@@ -1670,7 +1673,8 @@ def unsloth_save_pretrained_gguf(
     is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
-    all_file_locations = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
+    all_file_locations, want_full_precision = save_to_gguf(
+        model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
@@ -1694,6 +1698,9 @@ def unsloth_save_pretrained_gguf(
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
+
+        # If not needing full precision, skip the first
+        if not want_full_precision: all_file_locations = all_file_locations[1:]
 
         for file_location in all_file_locations:
             username = upload_to_huggingface(
@@ -1844,7 +1851,8 @@ def unsloth_push_to_hub_gguf(
     is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
-    all_file_locations = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
+    all_file_locations, want_full_precision = save_to_gguf(
+        model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
@@ -1859,6 +1867,9 @@ def unsloth_push_to_hub_gguf(
         print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
     pass
 
+    # If not needing full precision, skip the first
+    if not want_full_precision: all_file_locations = all_file_locations[1:]
+    
     for file_location in all_file_locations:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
