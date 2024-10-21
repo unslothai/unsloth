@@ -884,7 +884,7 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])[0]\n"\
+        "test_text = dataset[0][dataset_text_field] if (formatting_func is not None and dataset_text_field is None) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
@@ -941,7 +941,8 @@ def patch_sft_trainer_tokenizer():
         "        from transformers import __version__ as transformers_version\n"\
         "        from packaging.version import Version\n"\
         "        if Version(transformers_version) <= Version('4.45.2'):\n"\
-        "            print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers and Unsloth!')\n"\
+        "            print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers, TRL and Unsloth!\\n'\\\n"\
+        "                  '`pip install --upgrade --no-cache-dir unsloth git+https://github.com/huggingface/transformers.git git+https://github.com/huggingface/trl.git`')\n"\
         "except:\n"\
         "    pass\n"\
         "\n\n"
