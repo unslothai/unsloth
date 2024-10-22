@@ -886,7 +886,7 @@ def patch_trl_tokenizer_processing_class(trainer_name):
     new_args = ",\n".join(f"{' '*12}{key} = {key}" for key in new_args) + \
         f",\n{' '*12}processing_class = tokenizer if tokenizer else processing_class"
     args = ",\n".join(f"{' '*8}{key} = {value}" for key, value in args.items())
-    args = f"{' '*4}def __init__(\n" + f"{' '*8}self,\n" + args + "):"
+    args = f"def __init__(\n" + f"{' '*8}self,\n" + args + "):"
     args += f"\n{' '*8}\n{' '*8}super().__init__(\n{new_args}\n{' '*8})"
     new_class = f"""class Unsloth{trainer_name}({trainer_name}):\n{' '*4}{args}\n"""
     return new_class
