@@ -874,7 +874,7 @@ def patch_trl_tokenizer_processing_class(trainer_name):
     # New TRL removes tokenizer!
     # We return it back!
     exec(f"from trl import {trainer_name}")
-    if str(eval(f"{trainer_name}")__name__).startswith("Unsloth"): return None
+    if str(eval(f"{trainer_name}").__name__).startswith("Unsloth"): return None
     exec(f"parameters = inspect.signature({trainer_name}).parameters")
     if "tokenizer" in parameters: return None
 
