@@ -878,7 +878,13 @@ def patch_trl_tokenizer_processing_class(trainer_name):
     parameters = eval(f"inspect.signature({trainer_name}).parameters")
     if "tokenizer" in parameters: return None
 
-    args = {key : value.default for key, value in parameters.items()}
+    args = {
+        key : \
+            value.default \
+            if type(value.default) is not str else \
+            f"'{value.default}'" \
+        for key, value in parameters.items()
+    }
     args["tokenizer"] = None
     new_args = args.copy()
     del new_args["tokenizer"]
