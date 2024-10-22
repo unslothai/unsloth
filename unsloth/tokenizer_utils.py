@@ -831,6 +831,7 @@ pass
 PRE_CHECK = check_nvidia()
 
 
+import inspect
 from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
@@ -866,6 +867,29 @@ except:
             output = output + torch.zeros_like(output).uniform_(-mag_norm, mag_norm)
         return output
     pass
+pass
+
+
+def patch_trl_tokenizer_processing_class(trainer_name):
+    # New TRL removes tokenizer!
+    # We return it back!
+    exec(f"from trl import {trainer_name}")
+    if str(eval(f"{trainer_name}")__name__).startswith("Unsloth"): return None
+    exec(f"parameters = inspect.signature({trainer_name}).parameters")
+    if "tokenizer" in parameters: return None
+
+    args = {key : value.default for key, value in parameters.items()}
+    args["tokenizer"] = None
+    new_args = args.copy()
+    del new_args["tokenizer"]
+    del new_args["processing_class"]
+    new_args = ",\n".join(f"{' '*12}{key} = {key}" for key in new_args) + \
+        f",\n{' '*12}processing_class = tokenizer if tokenizer else processing_class"
+    args = ",\n".join(f"{' '*8}{key} = {value}" for key, value in args.items())
+    args = f"{' '*4}def __init__(\n" + f"{' '*8}self,\n" + args + "):"
+    args += f"\n{' '*8}\n{' '*8}super().__init__(\n{new_args}\n{' '*8})"
+    new_class = f"""class Unsloth{trainer_name}({trainer_name}):\n{' '*4}{args}\n"""
+    return new_class
 pass
 
 
@@ -982,4 +1006,13 @@ def patch_sft_trainer_tokenizer():
     pass
 pass
 
+# Fix TRL trainers with removed tokenizer args (got replaced with processing_class)
+for trainer_name in ("SFTTrainer", "DPOTrainer", "KTOTrainer"):
+    trainer_text = patch_trl_tokenizer_processing_class(trainer_name)
+    if trainer_text is None: continue
+    exec(trainer_text, globals())
+    exec(f"trl.trainer.{trainer_name} = Unsloth{trainer_name}", globals())
+pass
+
+# FInally patch TRL tokenizer things
 patch_sft_trainer_tokenizer()
