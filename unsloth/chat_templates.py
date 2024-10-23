@@ -678,7 +678,7 @@ TEMPLATE """{{ if .Messages }}
 {{- end }}
 {{- if .Tools }}
 
-You are a helpful assistant with tool calling capabilities. When you receive a tool call response, use the output to format an answer to the orginal use question.
+You are a helpful assistant with tool calling capabilities. When you receive a tool call response, use the output to format an answer to the original use question.
 {{- end }}
 {{- end }}<|eot_id|>
 {{- range $i, $_ := .Messages }}
