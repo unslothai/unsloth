@@ -108,12 +108,6 @@ cu118onlytorch240 = [
 cu121onlytorch240 = [
     "xformers==0.0.27.post2",
 ]
-cu121onlytorch250 = [
-    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9'",
-    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10'",
-    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11'",
-    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12'"
-]
 cu118 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
@@ -182,7 +176,7 @@ kaggle-new = [
     "bitsandbytes>=0.43.3",
 ]
 kaggle-cu121 = [
-    "unsloth[cu121onlytorch250]"
+    "torch @ https://download.pytorch.org/whl/cu121/torch-2.5.0%2Bcu121-cp310-cp310-linux_x86_64.whl"
 ]
 conda = [
     "unsloth[huggingface]",
