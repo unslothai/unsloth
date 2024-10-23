@@ -108,6 +108,9 @@ cu118onlytorch240 = [
 cu121onlytorch240 = [
     "xformers==0.0.27.post2",
 ]
+cu121onlytorch250 = [
+    "xformers==0.0.28.post2",
+]
 cu118 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
@@ -176,7 +179,7 @@ kaggle-new = [
     "bitsandbytes>=0.43.3",
 ]
 kaggle-cu121 = [
-    "torch>=2.4.0+cu121"
+    "unsloth[cu121onlytorch250]"
 ]
 conda = [
     "unsloth[huggingface]",
