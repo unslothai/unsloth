@@ -181,6 +181,18 @@ x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
 
+### Windows Installation
+
+To run Unsloth directly on Windows:
+- Install Triton from this Windows fork and follow the instructions: https://github.com/woct0rdho/triton-windows
+- In the SFTTrainer, set `dataset_num_proc=1` to avoid a crashing issue:
+```python
+trainer = SFTTrainer(
+    dataset_num_proc=1,
+    ...
+)
+```
+
 For **advanced installation instructions** or if you see weird errors during installations:
 
 1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
