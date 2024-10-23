@@ -175,6 +175,9 @@ kaggle-new = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
 ]
+kaggle-cu121 = [
+    "torch>=2.4.0+cu121"
+]
 conda = [
     "unsloth[huggingface]",
 ]
