@@ -1017,7 +1017,6 @@ pass
 for trainer_name in ("SFTTrainer", "DPOTrainer", "KTOTrainer"):
     trainer_text = patch_trl_tokenizer_processing_class(trainer_name)
     if trainer_text is None: continue
-    print(trainer_text)
     exec(trainer_text, globals())
     exec(f"trl.trainer.{trainer_name} = Unsloth{trainer_name}", globals())
 pass
