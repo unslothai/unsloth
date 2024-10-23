@@ -831,6 +831,7 @@ pass
 PRE_CHECK = check_nvidia()
 
 
+import inspect
 from inspect import getsource
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
@@ -869,6 +870,35 @@ except:
 pass
 
 
+def patch_trl_tokenizer_processing_class(trainer_name):
+    # New TRL removes tokenizer!
+    # We return it back!
+    exec(f"from trl import {trainer_name}", globals())
+    if str(eval(f"{trainer_name}").__name__).startswith("Unsloth"): return None
+    parameters = eval(f"inspect.signature({trainer_name}).parameters")
+    if "tokenizer" in parameters: return None
+
+    args = {
+        key : \
+            value.default \
+            if type(value.default) is not str else \
+            f"'{value.default}'" \
+        for key, value in parameters.items()
+    }
+    args["tokenizer"] = None
+    new_args = args.copy()
+    del new_args["tokenizer"]
+    del new_args["processing_class"]
+    new_args = ",\n".join(f"{' '*12}{key} = {key}" for key in new_args) + \
+        f",\n{' '*12}processing_class = tokenizer if tokenizer else processing_class"
+    args = ",\n".join(f"{' '*8}{key} = {value}" for key, value in args.items())
+    args = f"def __init__(\n" + f"{' '*8}self,\n" + args + "):"
+    args += f"\n{' '*8}\n{' '*8}super().__init__(\n{new_args}\n{' '*8})"
+    new_class = f"""class Unsloth{trainer_name}({trainer_name}):\n{' '*4}{args}\n"""
+    return new_class
+pass
+
+
 def patch_sft_trainer_tokenizer():
     """
         Patches the trainer with changes
@@ -884,7 +914,8 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is None or not use_formatting_func) else formatting_func(dataset[0])[0]\n"\
+        "if 'tokenizer' not in locals(): tokenizer = processing_class\n"\
+        "test_text = dataset[0][dataset_text_field] if (formatting_func is not None and dataset_text_field is None) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
@@ -941,7 +972,8 @@ def patch_sft_trainer_tokenizer():
         "        from transformers import __version__ as transformers_version\n"\
         "        from packaging.version import Version\n"\
         "        if Version(transformers_version) <= Version('4.45.2'):\n"\
-        "            print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers and Unsloth!')\n"\
+        "            print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers, TRL and Unsloth!\\n'\\\n"\
+        "                  '`pip install --upgrade --no-cache-dir unsloth git+https://github.com/huggingface/transformers.git git+https://github.com/huggingface/trl.git`')\n"\
         "except:\n"\
         "    pass\n"\
         "\n\n"
@@ -981,4 +1013,13 @@ def patch_sft_trainer_tokenizer():
     pass
 pass
 
+# Fix TRL trainers with removed tokenizer args (got replaced with processing_class)
+for trainer_name in ("SFTTrainer", "DPOTrainer", "KTOTrainer"):
+    trainer_text = patch_trl_tokenizer_processing_class(trainer_name)
+    if trainer_text is None: continue
+    exec(trainer_text, globals())
+    exec(f"trl.trainer.{trainer_name} = Unsloth{trainer_name}", globals())
+pass
+
+# FInally patch TRL tokenizer things
 patch_sft_trainer_tokenizer()
