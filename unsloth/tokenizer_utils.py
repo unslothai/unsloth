@@ -909,13 +909,13 @@ def patch_sft_trainer_tokenizer():
     ):
         function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
         where = function.find("def")
-        function_lines = function.split("\n")
-        function = "\n".join(x[where:] for x in function_lines)
+        function = function.split("\n")
+        function = "\n".join(x[where:] for x in function)
 
         check_text = \
         "\n"\
         "if 'tokenizer' not in locals(): tokenizer = processing_class\n"\
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"\
+        "test_text = dataset[0][dataset_text_field] if (formatting_func is not None and dataset_text_field is None) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
@@ -928,8 +928,7 @@ def patch_sft_trainer_tokenizer():
         function = function.replace(replacer, check_text + replacer)
         exec(function, globals())
 
-        modified_function = eval(function_name)
-        setattr(trl.trainer.sft_trainer.SFTTrainer, function_name, modified_function)
+        exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
     pass
 
     # Patch train with fix_untrained_tokens
