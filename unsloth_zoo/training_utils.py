@@ -171,6 +171,7 @@ def unsloth_train(trainer):
     total_train_batch_size, max_steps, num_train_epochs, num_train_samples = \
         get_max_steps(training_args, n_training_samples, trainer.train_dataset)
 
+    print(total_train_batch_size, max_steps, num_train_epochs, num_train_samples)
     # Get LR scheduler
     lr_scheduler = transformers_get_scheduler(
         name = training_args.lr_scheduler_type,
@@ -190,10 +191,15 @@ def unsloth_train(trainer):
         .to(device = "cuda:0", non_blocking = True)[0]
 
     # Mixed precision scaling
+    torch_version = torch.__version__
     if model.config.torch_dtype == torch.float16:
         mixed_precision = "fp16"
         mixed_dtype = torch.float16
-        float16_scaler = torch.cuda.amp.GradScaler()
+        # torch.cuda.amp.autocast is deprecated >= 2.4
+        if Version(torch_version) < Version("2.4.0"):
+            float16_scaler = torch.cuda.amp.GradScaler()
+        else:
+            float16_scaler = torch.amp.GradScaler("cuda")
     else:
         mixed_precision = "bf16"
         mixed_dtype = torch.bfloat16
