@@ -375,7 +375,6 @@ def fast_cross_entropy_loss(
     )
     if n_items is None:
         n_items = torch.count_nonzero(labels != -100)
-        print(n_items)
     return loss.sum() / n_items
 pass
 
