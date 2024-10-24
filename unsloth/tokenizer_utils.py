@@ -914,8 +914,10 @@ def patch_sft_trainer_tokenizer():
 
         check_text = \
         "\n"\
-        "if 'tokenizer' not in locals(): tokenizer = processing_class\n"\
-        "test_text = dataset[0][dataset_text_field] if (formatting_func is not None and dataset_text_field is None) else formatting_func(dataset[0])[0]\n"\
+        "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
+        "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
+        "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"\
+        "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
@@ -1017,7 +1019,10 @@ pass
 for trainer_name in ("SFTTrainer", "DPOTrainer", "KTOTrainer"):
     trainer_text = patch_trl_tokenizer_processing_class(trainer_name)
     if trainer_text is None: continue
-    exec(trainer_text, globals())
+    try:
+        exec(trainer_text, globals())
+    except:
+        raise RuntimeError(f"Unsloth: Please file a bug report! Error patching {trainer_name}")
     exec(f"trl.trainer.{trainer_name} = Unsloth{trainer_name}", globals())
 pass
 
