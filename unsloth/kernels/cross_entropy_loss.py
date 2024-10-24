@@ -388,6 +388,13 @@ from transformers.models.llama.modeling_llama import (
     List,
     Tuple,
 )
+
+try:
+    from transformers.models.llama.modeling_llama import Unpack, KwargsForCausalLM
+except ImportError:
+    logger.warning("Unsloth: Could not find Unpack, KwargsForCausalLM in LlamaForCausalLM. "
+    "This is expected if you are using an older version of Transformers (<4.46.0). ")
+
 import inspect, re
 function = inspect.getsource(LlamaForCausalLM.forward)
 function = function.split("\n")
