@@ -163,6 +163,20 @@ pass
 # =============================================
 
 # =============================================
+# Weird Databricks errors
+from transformers.utils import is_openai_available
+if is_openai_available():
+    try:
+        from openai import OpenAI
+    except:
+        print("Unsloth: OpenAI failed to import - ignoring for now.")
+        import transformers.utils
+        def _is_openai_available(): return False
+        transformers.utils.is_openai_available = _is_openai_available
+    pass
+pass 
+
+# =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 import bitsandbytes as bnb
 from transformers import AutoTokenizer
