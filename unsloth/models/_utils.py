@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.10.6"
+__version__ = "2024.10.7"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -161,6 +161,20 @@ if hasattr(transformers.cache_utils, "DynamicCache") and \
     transformers.cache_utils.DynamicCache.__getitem__ = __cache_utils_getitem__
 pass
 # =============================================
+
+# =============================================
+# Weird Databricks errors
+from transformers.utils import is_openai_available
+if is_openai_available():
+    try:
+        from openai import OpenAI
+    except:
+        print("Unsloth: OpenAI failed to import - ignoring for now.")
+        import transformers.utils
+        def _is_openai_available(): return False
+        transformers.utils.is_openai_available = _is_openai_available
+    pass
+pass 
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
