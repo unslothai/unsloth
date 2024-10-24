@@ -145,7 +145,7 @@ pass
 
 def _merge_lora(layer, name):
 
-    bias = None
+    bias = getattr(layer, "bias", None)
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         # Is LoRA so we need to merge!
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
