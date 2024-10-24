@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.10.5"
+__version__ = "2024.10.6"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -1172,10 +1172,10 @@ pass
 
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation 
+    import inspect
     if hasattr(Trainer, "get_batch_samples"):
-        from inspect import getsource
         if \
-            not getsource(Trainer.get_batch_samples).strip()\
+            not inspect.getsource(Trainer.get_batch_samples).strip()\
             .endswith("return batch_samples, num_items_in_batch"):
 
             raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
@@ -1198,4 +1198,33 @@ def patch_gradient_accumulation_fix(Trainer):
             '`pip install --upgrade --no-cache-dir unsloth git+https://github.com/huggingface/transformers.git git+https://github.com/huggingface/trl.git`'
         )
     pass
+
+    # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
+    if "num_items_in_batch" not in inspect.signature(Trainer.training_step).parameters: return
+
+    function = inspect.getsource(Trainer.training_step)
+    where = function.find("def")
+    function = function.split("\n")
+    function = "\n".join(x[where:] for x in function)
+
+    # Import all variables that need importing
+    import transformers.trainer
+    items_in_trainer = dir(transformers.trainer)
+    good_items = []
+    for item in items_in_trainer:
+        # TODO: Support Deepspeed
+        if item.startswith(("deepspeed", "xm", "met", "smp")): continue
+        if item in function: good_items.append(item)
+    pass
+    exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
+
+    # Accelerate does / self.args.gradient_accumulation_steps internally, so if we already
+    # summed it up and did the division before hand, we have to negate it.
+    function = function.replace(
+        "loss *= self.args.gradient_accumulation_steps",
+        "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
+    )
+    function = function.replace("def training_step", "def _unsloth_training_step", 1)
+    exec(function, globals())
+    Trainer.training_step = _unsloth_training_step
 pass
