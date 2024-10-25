@@ -1955,7 +1955,7 @@ class FastLlamaModel:
                     print("Unsloth: Casting embed_tokens to float32")
 
                     model.model.model.embed_tokens.modules_to_save.default\
-                        .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                        .to(device = "cuda:0", non_blocking = True)
                     model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old embed_tokens to CPU - should be disk!
@@ -1968,7 +1968,7 @@ class FastLlamaModel:
                     print("Unsloth: Casting lm_head to float32")
 
                     model.model.lm_head.modules_to_save.default\
-                        .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                        .to(device = "cuda:0", non_blocking = True)
                     model.model.lm_head.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
@@ -2206,7 +2206,7 @@ class FastLlamaModel:
             print("Unsloth: Casting embed_tokens to float32")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
             model.model.model.embed_tokens.modules_to_save.default\
-                .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                .to(device = "cuda:0", non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
@@ -2214,7 +2214,7 @@ class FastLlamaModel:
             print("Unsloth: Casting lm_head to float32")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
             model.model.lm_head.modules_to_save.default\
-                .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                .to(device = "cuda:0", non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
