@@ -62,9 +62,13 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 try:
     import torch
-except:
-    raise ImportError("Pytorch is not installed. Go to https://pytorch.org/.\n"\
-                      "We have some installation instructions on our Github page.")
+except ModuleNotFoundError:
+    raise ImportError(
+        "Unsloth: Pytorch is not installed. Go to https://pytorch.org/.\n"\
+        "We have some installation instructions on our Github page."
+    )
+except Exception as exception:
+    raise exception
 pass
 
 # Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
