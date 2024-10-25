@@ -193,6 +193,8 @@ def LlamaAttention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+
+    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 1)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
@@ -1361,7 +1363,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
     pass
 
     def extend_rope_embedding(self, x, seq_len):
-        if seq_len <= self.current_rope_size: return
+        if seq_len < self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = math.ceil(seq_len / 8192) * 8192
         self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
