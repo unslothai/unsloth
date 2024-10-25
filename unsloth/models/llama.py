@@ -1952,7 +1952,7 @@ class FastLlamaModel:
                 # Offload!
                 # [TODO] First offload lm_head and embed_tokens to CPU (should be disk!!)
                 if "embed_tokens" in new_target_modules:
-                    print("Unsloth: Casting embed_tokens to float32")
+                    print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
                     model.model.model.embed_tokens.modules_to_save.default\
                         .to(device = "cuda:0", non_blocking = True)
@@ -1965,7 +1965,7 @@ class FastLlamaModel:
                 pass
 
                 if "lm_head" in new_target_modules:
-                    print("Unsloth: Casting lm_head to float32")
+                    print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
                     model.model.lm_head.modules_to_save.default\
                         .to(device = "cuda:0", non_blocking = True)
@@ -2203,7 +2203,7 @@ class FastLlamaModel:
 
         # Now patch lm_head and embed_tokens
         if train_embed_tokens:
-            print("Unsloth: Casting embed_tokens to float32")
+            print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
             model.model.model.embed_tokens.modules_to_save.default\
                 .to(device = "cuda:0", non_blocking = True)
@@ -2211,7 +2211,7 @@ class FastLlamaModel:
         pass
 
         if train_lm_head:
-            print("Unsloth: Casting lm_head to float32")
+            print("Unsloth: Training lm_head in mixed precision to save VRAM")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
             model.model.lm_head.modules_to_save.default\
                 .to(device = "cuda:0", non_blocking = True)
