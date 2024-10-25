@@ -194,6 +194,8 @@ def LlamaAttention_fast_forward_inference(
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
 
+    # Need to do it prior 2 steps before hitting full on short KV cache
+    # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len)
     cos = cos[position_ids].unsqueeze(1)
