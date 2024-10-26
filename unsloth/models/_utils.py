@@ -1209,7 +1209,7 @@ def patch_gradient_accumulation_fix(Trainer):
             "Unsloth: We fixed a gradient accumulation bug, "\
             "but it seems like you don't have the latest transformers version!\n"\
             "Please update transformers, TRL and unsloth via:\n"\
-            '`pip install --upgrade --no-cache-dir unsloth git+https://github.com/huggingface/transformers.git git+https://github.com/huggingface/trl.git`'
+            '`pip install --upgrade --no-cache-dir --no-deps unsloth transformers git+https://github.com/huggingface/trl.git`'
         )
     pass
 
