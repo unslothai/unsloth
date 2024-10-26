@@ -76,6 +76,7 @@ def get_max_steps(training_args, n_training_samples, train_dataset):
         training_args.per_device_train_batch_size * \
         training_args.gradient_accumulation_steps
 
+    # [TODO] Investigate why HF trainer uses n_training_samples // training_args.gradient_accumulation_steps
     num_update_steps_per_epoch = n_training_samples // training_args.gradient_accumulation_steps
     num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
     num_examples = len(train_dataset)
@@ -171,7 +172,6 @@ def unsloth_train(trainer):
     total_train_batch_size, max_steps, num_train_epochs, num_train_samples = \
         get_max_steps(training_args, n_training_samples, trainer.train_dataset)
 
-    print(total_train_batch_size, max_steps, num_train_epochs, num_train_samples)
     # Get LR scheduler
     lr_scheduler = transformers_get_scheduler(
         name = training_args.lr_scheduler_type,
@@ -256,10 +256,11 @@ def unsloth_train(trainer):
             worker_init_fn = trainer_utils_seed_worker,
         ))
 
+        print("MAX", max_iterations)
         for j in range(max_iterations):
             n_batches = leftover_batches if j == (max_iterations-1) else gradient_accumulation_steps
             batches = [next(train_dataloader_iterator) for j in range(n_batches)]
-                
+
             # Count non zeros before loss calc
             n_items = torch.stack([
                 torch.count_nonzero(x["labels"][..., 1:] != -100) for x in batches

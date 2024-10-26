@@ -268,7 +268,16 @@ def train_on_responses_only(
 
     if hasattr(trainer, "train_dataset") and trainer.train_dataset is not None:
         trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batched = True)
+    pass
+    
     if hasattr(trainer, "eval_dataset")  and trainer.eval_dataset  is not None:
-        trainer.eval_dataset  = trainer.eval_dataset .map(_train_on_responses_only, batched = True)
+        # Eval datasets could be a dict!
+        if type(trainer.eval_dataset) is dict:
+            for key, value in trainer.eval_dataset.items():
+                trainer.eval_dataset[key] = value.map(_train_on_responses_only, batched = True)
+        else:
+            trainer.eval_dataset = trainer.eval_dataset.map(_train_on_responses_only, batched = True)
+        pass
+    pass
     return trainer
 pass
