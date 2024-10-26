@@ -72,26 +72,21 @@ def get_max_steps(training_args, n_training_samples, train_dataset):
         raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
     pass
 
-    total_train_batch_size = \
-        training_args.per_device_train_batch_size * \
-        training_args.gradient_accumulation_steps
+    bsz = training_args.per_device_train_batch_size
+    ga  = training_args.gradient_accumulation_steps
 
-    # [TODO] Investigate why HF trainer uses n_training_samples // training_args.gradient_accumulation_steps
-    num_update_steps_per_epoch = n_training_samples // training_args.gradient_accumulation_steps
-    num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
-    num_examples = len(train_dataset)
+    total_train_batch_size = bsz * ga
+    max_steps = training_args.max_steps
 
-    if training_args.max_steps > 0:
-        max_steps = training_args.max_steps
-        num_train_epochs = max_steps // num_update_steps_per_epoch + int(
-            max_steps % num_update_steps_per_epoch > 0
-        )
-        num_train_samples = max_steps * total_train_batch_size
+    if max_steps > 0:
+        total_samples_seen = total_train_batch_size * max_steps
+        num_train_epochs = math.ceil(total_samples_seen / n_training_samples)
     else:
-        max_steps = math.ceil(training_args.num_train_epochs * num_update_steps_per_epoch)
-        num_train_epochs = math.ceil(training_args.num_train_epochs)
-        num_train_samples = num_examples * training_args.num_train_epochs
-    return total_train_batch_size, max_steps, num_train_epochs, num_train_samples
+        num_train_epochs = training_args.num_train_epochs
+        steps_per_epoch  = math.ceil(n_training_samples / total_train_batch_size)
+        max_steps = math.ceil(steps_per_epoch * num_train_epochs)
+        num_train_epochs = math.ceil(num_train_epochs)
+    return total_train_batch_size, max_steps, num_train_epochs
 pass
 
 
@@ -140,6 +135,12 @@ def unsloth_train(trainer):
     set_training(model)
     transformers_set_seed(training_args.seed)
 
+    if training_args.dataloader_drop_last:
+        raise NotImplementedError(
+            "Unsloth: Currently `dataloader_drop_last` is not yet implemented!"
+        )
+    pass
+
     if data_collator is None:
         from transformers import DataCollatorForLanguageModeling
         data_collator = DataCollatorForLanguageModeling(
@@ -169,7 +170,7 @@ def unsloth_train(trainer):
         optimizer_grouped_parameters[1]["params"]
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
 
-    total_train_batch_size, max_steps, num_train_epochs, num_train_samples = \
+    total_train_batch_size, max_steps, num_train_epochs = \
         get_max_steps(training_args, n_training_samples, trainer.train_dataset)
 
     # Get LR scheduler
@@ -184,11 +185,12 @@ def unsloth_train(trainer):
     # Gradient accumulation and grad norm clipping
     max_grad_norm   = training_args.max_grad_norm
     clip_grad_norm_ = torch.nn.utils.clip_grad_norm_
-    gradient_accumulation_steps = training_args.gradient_accumulation_steps
-    inverse_gradient_accumulation_steps = 1.0 / gradient_accumulation_steps
-    inverse_gradient_accumulation_steps = \
-        torch.FloatTensor([inverse_gradient_accumulation_steps])\
-        .to(device = "cuda:0", non_blocking = True)[0]
+    bsz = training_args.per_device_train_batch_size
+    ga  = training_args.gradient_accumulation_steps
+    # inverse_gradient_accumulation_steps = 1.0 / ga
+    # inverse_gradient_accumulation_steps = \
+    #     torch.FloatTensor([inverse_gradient_accumulation_steps])\
+    #     .to(device = "cuda:0", non_blocking = True)[0]
 
     # Mixed precision scaling
     torch_version = torch.__version__
@@ -225,10 +227,6 @@ def unsloth_train(trainer):
 
     step = 0
     accumulated_loss = torch.zeros(1, device = "cuda:0", dtype = torch.float32)[0]
-    max_iterations   = int(math.ceil(n_training_samples / gradient_accumulation_steps))
-    leftover_batches = n_training_samples % gradient_accumulation_steps
-    if leftover_batches == 0: leftover_batches = gradient_accumulation_steps
-
     debug_info = \
         f'==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {training_args.world_size}\n'\
         f'    \\   /|    Num examples = {n_training_samples:,} | Num Epochs = {num_train_epochs:,}\n'\
@@ -237,7 +235,14 @@ def unsloth_train(trainer):
         f' "-____-"     Number of trainable parameters = {n_parameters_to_train:,}'
     logger.warning(debug_info)
 
-    progress_bar = ProgressBar(total = max_steps*num_train_epochs, dynamic_ncols = True)
+    # Get per epoch counter
+    max_iters_per_epoch = math.ceil(n_training_samples / total_train_batch_size)
+    leftover_samples = n_training_samples % total_train_batch_size
+    # But also consider leftover steps
+    leftover_ga = math.ceil(leftover_samples / bsz)
+    if leftover_samples == 0: leftover_ga = ga
+
+    progress_bar = ProgressBar(total = max_steps, dynamic_ncols = True)
     logging_steps = training_args.logging_steps
     # Go through each epoch
     start_time = time.time()
@@ -247,7 +252,7 @@ def unsloth_train(trainer):
         transformers_set_seed(training_args.seed + epoch)
         train_dataloader_iterator = iter(torch.utils.data.DataLoader(
             trainer.train_dataset,
-            batch_size     = training_args.per_device_train_batch_size,
+            batch_size     = bsz,
             sampler        = torch.utils.data.SequentialSampler(trainer.train_dataset),
             num_workers    = training_args.dataloader_num_workers,
             collate_fn     = data_collator,
@@ -256,9 +261,8 @@ def unsloth_train(trainer):
             worker_init_fn = trainer_utils_seed_worker,
         ))
 
-        print("MAX", max_iterations)
-        for j in range(max_iterations):
-            n_batches = leftover_batches if j == (max_iterations-1) else gradient_accumulation_steps
+        for j in range(max_iters_per_epoch):
+            n_batches = leftover_ga if j == (max_iters_per_epoch-1) else ga
             batches = [next(train_dataloader_iterator) for j in range(n_batches)]
 
             # Count non zeros before loss calc
