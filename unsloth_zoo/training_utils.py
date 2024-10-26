@@ -237,7 +237,7 @@ def unsloth_train(trainer):
         f' "-____-"     Number of trainable parameters = {n_parameters_to_train:,}'
     logger.warning(debug_info)
 
-    # progress_bar = ProgressBar(total = max_steps*num_train_epochs, dynamic_ncols = True)
+    progress_bar = ProgressBar(total = max_steps*num_train_epochs, dynamic_ncols = True)
     logging_steps = training_args.logging_steps
     # Go through each epoch
     start_time = time.time()
@@ -293,17 +293,17 @@ def unsloth_train(trainer):
             optimizer.zero_grad()
 
             if step % logging_steps == 0:
-                print(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
-                # progress_bar.write(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
+                # print(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
+                progress_bar.write(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
             pass
             accumulated_loss.zero_()
-            # progress_bar.update(1)
+            progress_bar.update(1)
 
             step += 1
             if step == max_steps: break
         pass
     pass
-    # progress_bar.close()
+    progress_bar.close()
     unset_training(model)
     logger.warning("Unsloth: Finished training!")
     end_time = time.time()
