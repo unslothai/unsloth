@@ -193,6 +193,10 @@ def LlamaAttention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
+
+    # Need to do it prior 2 steps before hitting full on short KV cache
+    # or else error
+    self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
@@ -1122,7 +1126,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
-        self.current_rope_size = math.ceil(seq_len / 8192) * 8192
+        self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
         self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
@@ -1248,7 +1252,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
-        self.current_rope_size = math.ceil(seq_len / 8192) * 8192
+        self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
         self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
@@ -1363,7 +1367,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
-        self.current_rope_size = math.ceil(seq_len / 8192) * 8192
+        self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
         self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
     pass
 pass
@@ -1952,10 +1956,10 @@ class FastLlamaModel:
                 # Offload!
                 # [TODO] First offload lm_head and embed_tokens to CPU (should be disk!!)
                 if "embed_tokens" in new_target_modules:
-                    print("Unsloth: Casting embed_tokens to float32")
+                    print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
                     model.model.model.embed_tokens.modules_to_save.default\
-                        .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                        .to(device = "cuda:0", non_blocking = True)
                     model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old embed_tokens to CPU - should be disk!
@@ -1965,10 +1969,10 @@ class FastLlamaModel:
                 pass
 
                 if "lm_head" in new_target_modules:
-                    print("Unsloth: Casting lm_head to float32")
+                    print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
                     model.model.lm_head.modules_to_save.default\
-                        .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                        .to(device = "cuda:0", non_blocking = True)
                     model.model.lm_head.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
@@ -2203,18 +2207,18 @@ class FastLlamaModel:
 
         # Now patch lm_head and embed_tokens
         if train_embed_tokens:
-            print("Unsloth: Casting embed_tokens to float32")
+            print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
             model.model.model.embed_tokens.modules_to_save.default\
-                .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                .to(device = "cuda:0", non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
         if train_lm_head:
-            print("Unsloth: Casting lm_head to float32")
+            print("Unsloth: Training lm_head in mixed precision to save VRAM")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
             model.model.lm_head.modules_to_save.default\
-                .to(device = "cuda:0", dtype = torch.float32, non_blocking = True)
+                .to(device = "cuda:0", non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
