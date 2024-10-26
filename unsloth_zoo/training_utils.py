@@ -242,71 +242,71 @@ def unsloth_train(trainer):
     leftover_ga = math.ceil(leftover_samples / bsz)
     if leftover_samples == 0: leftover_ga = ga
 
-    progress_bar = ProgressBar(total = max_steps, dynamic_ncols = True)
     logging_steps = training_args.logging_steps
     # Go through each epoch
     start_time = time.time()
-    for epoch in range(num_train_epochs):
+    with ProgressBar(total = max_steps, dynamic_ncols = True) as progress_bar:
+        for epoch in range(num_train_epochs):
 
-        # We also need to shuffle the data loader every epoch!
-        transformers_set_seed(training_args.seed + epoch)
-        train_dataloader_iterator = iter(torch.utils.data.DataLoader(
-            trainer.train_dataset,
-            batch_size     = bsz,
-            sampler        = torch.utils.data.SequentialSampler(trainer.train_dataset),
-            num_workers    = training_args.dataloader_num_workers,
-            collate_fn     = data_collator,
-            pin_memory     = training_args.dataloader_pin_memory,
-            drop_last      = training_args.dataloader_drop_last,
-            worker_init_fn = trainer_utils_seed_worker,
-        ))
+            # We also need to shuffle the data loader every epoch!
+            transformers_set_seed(training_args.seed + epoch)
+            train_dataloader_iterator = iter(torch.utils.data.DataLoader(
+                trainer.train_dataset,
+                batch_size     = bsz,
+                sampler        = torch.utils.data.SequentialSampler(trainer.train_dataset),
+                num_workers    = training_args.dataloader_num_workers,
+                collate_fn     = data_collator,
+                pin_memory     = training_args.dataloader_pin_memory,
+                drop_last      = training_args.dataloader_drop_last,
+                worker_init_fn = trainer_utils_seed_worker,
+            ))
 
-        for j in range(max_iters_per_epoch):
-            n_batches = leftover_ga if j == (max_iters_per_epoch-1) else ga
-            batches = [next(train_dataloader_iterator) for j in range(n_batches)]
+            for j in range(max_iters_per_epoch):
+                n_batches = leftover_ga if j == (max_iters_per_epoch-1) else ga
+                batches = [next(train_dataloader_iterator) for j in range(n_batches)]
 
-            # Count non zeros before loss calc
-            n_items = torch.stack([
-                torch.count_nonzero(x["labels"][..., 1:] != -100) for x in batches
-            ]).sum()
+                # Count non zeros before loss calc
+                n_items = torch.stack([
+                    torch.count_nonzero(x["labels"][..., 1:] != -100) for x in batches
+                ]).sum()
 
-            # Gradient accumulation
-            for batch in batches:
-                input_ids = batch["input_ids"].pin_memory().to(device = "cuda:0", non_blocking = True)
-                labels    = batch["labels"]   .pin_memory().to(device = "cuda:0", non_blocking = True)
+                # Gradient accumulation
+                for batch in batches:
+                    input_ids = batch["input_ids"].pin_memory().to(device = "cuda:0", non_blocking = True)
+                    labels    = batch["labels"]   .pin_memory().to(device = "cuda:0", non_blocking = True)
 
-                with autocast_context_manager:
-                    loss = model(input_ids = input_ids, labels = labels, n_items = n_items).loss
-                    # loss = loss * inverse_gradient_accumulation_steps
-                    accumulated_loss += loss.detach()
+                    with autocast_context_manager:
+                        loss = model(input_ids = input_ids, labels = labels, n_items = n_items).loss
+                        # loss = loss * inverse_gradient_accumulation_steps
+                        accumulated_loss += loss.detach()
+                    pass
+
+                    if float16_scaler is None:  loss.backward()
+                    else: float16_scaler.scale(loss).backward()
                 pass
 
-                if float16_scaler is None:  loss.backward()
-                else: float16_scaler.scale(loss).backward()
+                if float16_scaler is None:
+                    clip_grad_norm_(trainable_parameters, max_grad_norm)
+                    optimizer.step()
+                else:
+                    float16_scaler.unscale_(optimizer)
+                    clip_grad_norm_(trainable_parameters, max_grad_norm)
+                    float16_scaler.step(optimizer)
+                    float16_scaler.update()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+
+                if step % logging_steps == 0:
+                    progress_bar.write(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
+                pass
+                accumulated_loss.zero_()
+                progress_bar.update(1)
+
+                step += 1
+                if step == max_steps: break
             pass
-
-            if float16_scaler is None:
-                clip_grad_norm_(trainable_parameters, max_grad_norm)
-                optimizer.step()
-            else:
-                float16_scaler.unscale_(optimizer)
-                clip_grad_norm_(trainable_parameters, max_grad_norm)
-                float16_scaler.step(optimizer)
-                float16_scaler.update()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-
-            if step % logging_steps == 0:
-                progress_bar.write(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
-            pass
-            accumulated_loss.zero_()
-            progress_bar.update(1)
-
-            step += 1
-            if step == max_steps: break
         pass
     pass
-    progress_bar.close()
     unset_training(model)
     logger.warning("Unsloth: Finished training!")
     end_time = time.time()
