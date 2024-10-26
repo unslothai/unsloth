@@ -297,7 +297,6 @@ def unsloth_train(trainer):
             optimizer.zero_grad()
 
             if step % logging_steps == 0:
-                # print(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
                 progress_bar.write(f"{step}, {round(accumulated_loss.cpu().item(), 4)}")
             pass
             accumulated_loss.zero_()
