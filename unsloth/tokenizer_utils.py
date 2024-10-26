@@ -975,7 +975,7 @@ def patch_sft_trainer_tokenizer():
         "        from packaging.version import Version\n"\
         "        if Version(transformers_version) <= Version('4.45.2'):\n"\
         "            print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers, TRL and Unsloth!\\n'\\\n"\
-        "                  '`pip install --upgrade --no-cache-dir unsloth git+https://github.com/huggingface/transformers.git git+https://github.com/huggingface/trl.git`')\n"\
+        "                  '`pip install --upgrade --no-cache-dir --no-deps unsloth transformers git+https://github.com/huggingface/trl.git`')\n"\
         "except:\n"\
         "    pass\n"\
         "\n\n"
