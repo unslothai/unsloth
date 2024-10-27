@@ -1108,14 +1108,17 @@ def save_to_gguf(
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
         if IS_KAGGLE_ENVIRONMENT:
-            raise RuntimeError(
-                f"Unsloth: Quantization failed for {final_location}\n"\
-                "You are in a Kaggle environment, which might be the reason this is failing.\n"\
-                "Kaggle only provides 20GB of disk space. Merging to 16bit for 7b models use 16GB of space.\n"\
-                "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
-                "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
-                "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
-            )
+            if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+                raise RuntimeError(
+                    f"Unsloth: Quantization failed for {final_location}\n"\
+                    "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                    "Kaggle only provides 20GB of disk space in the working directory.\n"\
+                    "Merging to 16bit for 7b models use 16GB of space.\n"\
+                    "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                    "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                    "You can try saving it to the `/tmp` directory for larger disk space.\n"\
+                    "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+                )
         else:
             raise RuntimeError(
                 f"Unsloth: Quantization failed for {final_location}\n"\
@@ -1156,14 +1159,17 @@ def save_to_gguf(
             # Check if quantization succeeded!
             if not os.path.isfile(final_location):
                 if IS_KAGGLE_ENVIRONMENT:
-                    raise RuntimeError(
-                        f"Unsloth: Quantization failed for {final_location}\n"\
-                        "You are in a Kaggle environment, which might be the reason this is failing.\n"\
-                        "Kaggle only provides 20GB of disk space. Merging to 16bit for 7b models use 16GB of space.\n"\
-                        "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
-                        "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
-                        "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
-                    )
+                    if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+                        raise RuntimeError(
+                            f"Unsloth: Quantization failed for {final_location}\n"\
+                            "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                            "Kaggle only provides 20GB of disk space in the working directory.\n"\
+                            "Merging to 16bit for 7b models use 16GB of space.\n"\
+                            "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                            "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                            "You can try saving it to the `/tmp` directory for larger disk space.\n"\
+                            "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+                        )
                 else:
                     raise RuntimeError(
                         "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
