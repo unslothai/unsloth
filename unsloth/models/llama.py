@@ -2222,7 +2222,7 @@ class FastLlamaModel:
             print("Unsloth: Training lm_head in mixed precision to save VRAM")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
 
-            dtype = model.model.lm_head.modules_to_save.weight.default
+            dtype = model.model.lm_head.modules_to_save.default.weight.dtype
             model.model.lm_head.modules_to_save.default\
                 .to(device = "cuda:0", dtype=(dtype if (dtype != torch.float16) else torch.float32), non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
