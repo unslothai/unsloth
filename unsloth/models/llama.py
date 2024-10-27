@@ -1958,7 +1958,7 @@ class FastLlamaModel:
                 if "embed_tokens" in new_target_modules:
                     print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
-                    dtype = model.model.model.embed_tokens.dtype
+                    dtype = model.model.model.embed_tokens.modules_to_save.default.dtype
                     model.model.model.embed_tokens.modules_to_save.default\
                         .to(device = "cuda:0", dtype=(dtype if (not isinstance(dtype, torch.float16)) else torch.float32), non_blocking = True)
                     model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
@@ -1972,7 +1972,7 @@ class FastLlamaModel:
                 if "lm_head" in new_target_modules:
                     print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
-                    dtype = model.model.model.embed_tokens.dtype
+                    dtype = model.model.model.lm_head.modules_to_save.default.dtype
                     model.model.lm_head.modules_to_save.default\
                         .to(device = "cuda:0", dtype=(dtype if (not isinstance(dtype, torch.float16)) else torch.float32), non_blocking = True)
                     model.model.lm_head.modules_to_save.default.requires_grad_(True)
@@ -2212,7 +2212,7 @@ class FastLlamaModel:
             print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
 
-            dtype = model.model.model.embed_tokens.dtype
+            dtype = model.model.model.embed_tokens.modules_to_save.default.dtype
             model.model.model.embed_tokens.modules_to_save.default\
                 .to(device = "cuda:0", dtype=(dtype if (not isinstance(dtype, torch.float16)) else torch.float32), non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
@@ -2222,7 +2222,7 @@ class FastLlamaModel:
             print("Unsloth: Training lm_head in mixed precision to save VRAM")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
 
-            dtype = model.model.model.embed_tokens.dtype
+            dtype = model.model.lm_head.modules_to_save.default
             model.model.lm_head.modules_to_save.default\
                 .to(device = "cuda:0", dtype=(dtype if (not isinstance(dtype, torch.float16)) else torch.float32), non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
