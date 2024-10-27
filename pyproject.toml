@@ -109,10 +109,28 @@ cu118onlytorch240 = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.27.post2%2Bcu118-cp312-cp312-manylinux2014_x86_64.whl ; python_version=='3.12'",
 ]
 cu121onlytorch240 = [
-    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.27.post2-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9'",
-    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.27.post2-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10'",
-    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.27.post2-cp311-cp311-manylinux2014_x86_64.whl ; python_version=='3.11'",
-    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.27.post2-cp312-cp312-manylinux2014_x86_64.whl ; python_version=='3.12'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post1-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post1-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post1-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post1-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12'",
+]
+cu124onlytorch240 = [
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post1-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post1-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post1-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post1-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12'",
+]
+cu121onlytorch250 = [
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11'",
+    "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12'",
+]
+cu124onlytorch250 = [
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post2-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post2-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post2-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post2-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12'",
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -174,6 +192,21 @@ cu121-torch240 = [
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch240]",
 ]
+cu121-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch250]",
+]
+cu124-torch240 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu124onlytorch240]",
+]
+cu124-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu124onlytorch250]",
+]
 kaggle = [
     "unsloth[huggingface]",
 ]
@@ -224,6 +257,7 @@ colab-new = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
+    "bitsandbytes>=0.43.3",
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
@@ -318,6 +352,30 @@ cu121-ampere-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch240]",
+    "packaging",
+    "ninja",
+    "flash-attn>=2.6.3",
+]
+cu121-ampere-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch250]",
+    "packaging",
+    "ninja",
+    "flash-attn>=2.6.3",
+]
+cu124-ampere-torch240 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu124onlytorch240]",
+    "packaging",
+    "ninja",
+    "flash-attn>=2.6.3",
+]
+cu124-ampere-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu124onlytorch250]",
     "packaging",
     "ninja",
     "flash-attn>=2.6.3",

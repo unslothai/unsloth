@@ -367,6 +367,7 @@ torch_dynamo_arguments = [
     "config.suppress_errors = True", # Supress errors for now
     "config.do_not_emit_runtime_asserts = True",
     "config.cache_size_limit = 1024", # Flex Attention
+    "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
 ]
 import torch._inductor.config as config
 for _try_compile_argument in torch_compile_arguments:
