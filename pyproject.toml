@@ -257,6 +257,7 @@ colab-new = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
+    "bitsandbytes>=0.43.3",
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
