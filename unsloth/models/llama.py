@@ -1958,8 +1958,9 @@ class FastLlamaModel:
                 if "embed_tokens" in new_target_modules:
                     print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
+                    dtype = model.model.model.embed_tokens.dtype
                     model.model.model.embed_tokens.modules_to_save.default\
-                        .to(device = "cuda:0", non_blocking = True)
+                        .to(device = "cuda:0", dtype=(dtype if (not isinstance(dtype, torch.float16)) else torch.float32), non_blocking = True)
                     model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old embed_tokens to CPU - should be disk!
@@ -1972,7 +1973,7 @@ class FastLlamaModel:
                     print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
                     model.model.lm_head.modules_to_save.default\
-                        .to(device = "cuda:0", non_blocking = True)
+                        .to(device = "cuda:0", dtype=(dtype if (not isinstance(dtype, torch.float16)) else torch.float32), non_blocking = True)
                     model.model.lm_head.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
@@ -2210,7 +2211,7 @@ class FastLlamaModel:
             print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
             assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
             model.model.model.embed_tokens.modules_to_save.default\
-                .to(device = "cuda:0", non_blocking = True)
+                .to(device = "cuda:0", dtype=(dtype if (not isinstance(dtype, torch.float16)) else torch.float32), non_blocking = True)
             model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
         pass
 
@@ -2218,7 +2219,7 @@ class FastLlamaModel:
             print("Unsloth: Training lm_head in mixed precision to save VRAM")
             assert(hasattr(model.model.lm_head, "modules_to_save"))
             model.model.lm_head.modules_to_save.default\
-                .to(device = "cuda:0", non_blocking = True)
+                .to(device = "cuda:0", dtype=(dtype if (not isinstance(dtype, torch.float16)) else torch.float32), non_blocking = True)
             model.model.lm_head.modules_to_save.default.requires_grad_(True)
         pass
 
