@@ -44,6 +44,8 @@ __all__ = [
     "patch_gradient_checkpointing",
     "unpatch_gradient_checkpointing",
     "patch_gradient_accumulation_fix",
+    "patch_compiling_bitsandbytes",
+    "patch_regional_compilation",
 ]
 
 import torch
@@ -683,7 +685,18 @@ if Version(peft_version) < Version("0.12.0"):
         )
     pass
 pass
+
+# Also disable compiling on bitsandbytes
+def patch_compiling_bitsandbytes():
+    import peft.tuners.lora.bnb
+    peft.tuners.lora.bnb.Linear4bit.forward = \
+        torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
+    peft.tuners.lora.bnb.Linear8bit.forward = \
+        torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bit.forward)
+    return
+pass
 # =============================================
+
 
 import psutil
 def _get_statistics(statistics = None, force_download = True):
@@ -896,15 +909,39 @@ def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None,
     return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
 pass
 
-
 import torch.utils
-old_checkpoint = torch.utils.checkpoint
 def patch_gradient_checkpointing():
-    torch.utils.checkpoint = unsloth_offloaded_gradient_checkpoint
+    if torch.utils.checkpoint.checkpoint.__name__ == "unsloth_offloaded_gradient_checkpoint": return
+    torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint
+    torch.utils.checkpoint.checkpoint = unsloth_offloaded_gradient_checkpoint
 pass
 
 def unpatch_gradient_checkpointing():
-    torch.utils.checkpoint = old_checkpoint
+    if hasattr(torch.utils.checkpoint, "_old_checkpoint"):
+        torch.utils.checkpoint.checkpoint = torch.utils.checkpoint._old_checkpoint
+        del torch.utils.checkpoint._old_checkpoint
+    pass
+pass
+
+
+# =============================================
+# Regional torch 2.5 Recompilation - weirdly very slow??
+def patch_regional_compilation():
+    if torch.nn.ModuleList.__name__ == "UnslothModuleList": return
+    # Only works for torch 2.5
+    if Version(torch.__version__) < Version("2.5.0"): return
+
+    old_module_list = torch.nn.ModuleList
+
+    def UnslothModuleList(*args, **kwargs):
+        if len(args) == 1 and len(kwargs) == 0 and type(args[0]) is list:
+            args = [old_module_list([torch.compile(x, dynamic = True, options = torch_compile_options, fullgraph = False) for x in args[0]])]
+        return old_module_list(*args, **kwargs)
+    pass
+    UnslothModuleList.__doc__ = old_module_list.__doc__
+
+    torch.nn.ModuleList = UnslothModuleList
+    return
 pass
 
 
