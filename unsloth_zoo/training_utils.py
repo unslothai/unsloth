@@ -16,6 +16,7 @@
 
 import torch
 import math
+import datasets
 from transformers import set_seed as transformers_set_seed
 from transformers import get_scheduler as transformers_get_scheduler
 from transformers import Trainer
@@ -37,6 +38,11 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
     Sometimes the labels get masked by all -100s, causing the loss
     to be 0. We check for this!
     """
+    if isinstance(train_dataset, datasets.IterableDataset):
+        # Skip the check since the code below assumes
+        # an indexable dataset
+        return
+    
     if len(train_dataset) == 0: return
 
     row = train_dataset[0]

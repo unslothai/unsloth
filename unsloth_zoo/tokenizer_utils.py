@@ -19,6 +19,7 @@ from transformers.models.llama.modeling_llama import logger
 import gc
 import numpy as np
 import itertools
+import datasets
 
 __all__ = [
 	"mean_of_trained_tokens",
@@ -233,6 +234,11 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     if chat_template is not None:
         if_bad_first = any(x in chat_template for x in actual_bad_tokens)
     pass
+
+    if isinstance(train_dataset, datasets.IterableDataset):
+        # Skip the check, since the code below assumes
+        # an indexable dataset
+        return
 
     # Check the first 250, last 250 input_ids
     size_dataset = len(train_dataset)
