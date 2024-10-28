@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.10.3"
+__version__ = "2024.10.7"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -162,6 +162,20 @@ if hasattr(transformers.cache_utils, "DynamicCache") and \
     transformers.cache_utils.DynamicCache.__getitem__ = __cache_utils_getitem__
 pass
 # =============================================
+
+# =============================================
+# Weird Databricks errors
+from transformers.utils import is_openai_available
+if is_openai_available():
+    try:
+        from openai import OpenAI
+    except:
+        print("Unsloth: OpenAI failed to import - ignoring for now.")
+        import transformers.utils
+        def _is_openai_available(): return False
+        transformers.utils.is_openai_available = _is_openai_available
+    pass
+pass 
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
@@ -354,6 +368,7 @@ torch_dynamo_arguments = [
     "config.suppress_errors = True", # Supress errors for now
     "config.do_not_emit_runtime_asserts = True",
     "config.cache_size_limit = 1024", # Flex Attention
+    "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
 ]
 import torch._inductor.config as config
 for _try_compile_argument in torch_compile_arguments:
@@ -1185,10 +1200,10 @@ pass
 
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation 
+    import inspect
     if hasattr(Trainer, "get_batch_samples"):
-        from inspect import getsource
         if \
-            not getsource(Trainer.get_batch_samples).strip()\
+            not inspect.getsource(Trainer.get_batch_samples).strip()\
             .endswith("return batch_samples, num_items_in_batch"):
 
             raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
@@ -1207,8 +1222,37 @@ def patch_gradient_accumulation_fix(Trainer):
         logger.warning_once(
             "Unsloth: We fixed a gradient accumulation bug, "\
             "but it seems like you don't have the latest transformers version!\n"\
-            "Please update transformers via:\n"\
-            '`pip uninstall transformers -y && pip install --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers.git"`'
+            "Please update transformers, TRL and unsloth via:\n"\
+            '`pip install --upgrade --no-cache-dir --no-deps unsloth transformers git+https://github.com/huggingface/trl.git`'
         )
     pass
+
+    # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
+    if "num_items_in_batch" not in inspect.signature(Trainer.training_step).parameters: return
+
+    function = inspect.getsource(Trainer.training_step)
+    where = function.find("def")
+    function = function.split("\n")
+    function = "\n".join(x[where:] for x in function)
+
+    # Import all variables that need importing
+    import transformers.trainer
+    items_in_trainer = dir(transformers.trainer)
+    good_items = []
+    for item in items_in_trainer:
+        # TODO: Support Deepspeed
+        if item.startswith(("deepspeed", "xm", "met", "smp")): continue
+        if item in function: good_items.append(item)
+    pass
+    exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
+
+    # Accelerate does / self.args.gradient_accumulation_steps internally, so if we already
+    # summed it up and did the division before hand, we have to negate it.
+    function = function.replace(
+        "loss *= self.args.gradient_accumulation_steps",
+        "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
+    )
+    function = function.replace("def training_step", "def _unsloth_training_step", 1)
+    exec(function, globals())
+    Trainer.training_step = _unsloth_training_step
 pass
