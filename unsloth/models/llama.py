@@ -1869,14 +1869,19 @@ class FastLlamaModel:
 
         # We also do this for the lm_head
         if old_output_embedding.numel() != 0:
+
             requires_grad = old_output_embedding.requires_grad
             lm_head = torch.nn.Linear(1, 1, bias = None)
             del lm_head.weight
+
             lm_head.weight = old_output_embedding if not is_tied else old_input_embedding
             lm_head.in_features  = lm_head.weight.shape[1]
             lm_head.out_features = lm_head.weight.shape[0]
+            
             lm_head.weight.requires_grad_(requires_grad)
-            model.lm_head = lm_head
+            model.set_output_embeddings(lm_head)
+            if hasattr(model, "lm_head"): model.lm_head = lm_head
+            
             correct_dtype = lm_head.weight.dtype
         else:
             correct_dtype = old_input_embedding.dtype
