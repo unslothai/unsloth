@@ -487,6 +487,50 @@ def patch_tokenizer(model, tokenizer):
         bad_pad_token = False
     pass
 
+    # Check if unknown token is broken
+    fixed_unk_token = False
+
+    if hasattr(tokenizer, "unk_token") and tokenizer.unk_token is not None:
+
+        eos_token = getattr(tokenizer, "eos_token", None)
+        bos_token = getattr(tokenizer, "bos_token", None)
+
+        old_unk_token = tokenizer.unk_token
+        if old_unk_token == eos_token or old_unk_token == bos_token:
+            has_broken_unk = True
+            # Use the unicode replacement characters
+            possible_replacements = [
+                "\uFFFD", # Original replacement char
+                "\uFFFC", # Another option
+                "\u2753", # Red Question mark emoji
+                "\u2754", # White Question mark emoji
+                "\u00BF", # Inverted question mark
+            ]
+            for replacement_char in possible_replacements:
+                char = tokenizer(replacement_char, add_special_tokens = False)
+                if len(char) == 1:
+                    # Get actual token representation
+                    try: char = tokenizer.convert_ids_to_tokens(char[0])
+                    except: continue
+                    tokenizer.unk_token = char
+                    fixed_unk_token = True
+                    break
+                pass
+            pass
+
+            if not fixed_unk_token: # Still broken!
+                raise RuntimeError(
+                    f"Unsloth: Tried fixing the unk_token = {old_unk_token}, but couldn't!"
+                )
+            pass
+            
+            logger.warning_once(
+                f"Unsloth: unk_token = {old_unk_token} is the same as the EOS or BOS tokens.\n"\
+                f"We fixed it by changing it to {tokenizer.unk_token}."
+            )
+        pass
+    pass
+
     if bad_pad_token:
         # Find a better pad token
         added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
@@ -534,8 +578,8 @@ def patch_tokenizer(model, tokenizer):
         pass
         possible_pad_token = final_pad_token
 
-        # Try unk_token
-        if possible_pad_token is None and hasattr(tokenizer, "unk_token"):
+        # Try unk_token if it wasn't fixed
+        if possible_pad_token is None and not fixed_unk_token and hasattr(tokenizer, "unk_token"):
             possible_pad_token = tokenizer.unk_token
         pass
 
