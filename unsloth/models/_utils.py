@@ -688,11 +688,15 @@ pass
 
 # Also disable compiling on bitsandbytes
 def patch_compiling_bitsandbytes():
-    import peft.tuners.lora.bnb
-    peft.tuners.lora.bnb.Linear4bit.forward = \
-        torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
-    peft.tuners.lora.bnb.Linear8bitLt.forward = \
-        torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
+    # import peft.tuners.lora.bnb
+    # peft.tuners.lora.bnb.Linear4bit.forward = \
+    #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
+    # peft.tuners.lora.bnb.Linear8bitLt.forward = \
+    #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
+    # return
+    import bitsandbytes.nn.modules
+    bitsandbytes.nn.modules.Linear4bit.forward = \
+        torch._disable_dynamo(bitsandbytes.nn.modules.Linear4bit.forward)
     return
 pass
 # =============================================
