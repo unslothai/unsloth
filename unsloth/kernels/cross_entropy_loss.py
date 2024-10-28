@@ -25,7 +25,8 @@ from transformers.models.llama.modeling_llama import logger
 })
 @triton.jit
 def _cross_entropy_forward(
-    logits_ptr, logits_row_stride,
+    logits_ptr,
+    logits_row_stride : tl.constexpr(tl.int64),
     loss_ptr,
     logsumexp_ptr,
     labels_ptr,
@@ -57,7 +58,7 @@ def _cross_entropy_forward(
         This ensures exp(x - max(x))'s maximum is 1 as exp(0) = 1.
     """
     row_idx = tl.program_id(0)
-    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr    += row_idx * logits_row_stride
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx
     labels_ptr    += row_idx
@@ -97,7 +98,8 @@ pass
 })
 @triton.jit
 def _chunked_cross_entropy_forward(
-    logits_ptr, logits_row_stride,
+    logits_ptr,
+    logits_row_stride : tl.constexpr(tl.int64),
     loss_ptr,
     logsumexp_ptr,
     labels_ptr,
@@ -135,7 +137,7 @@ def _chunked_cross_entropy_forward(
     """
     row_idx   = tl.program_id(0)
     chunk_idx = tl.program_id(1)
-    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr    += row_idx * logits_row_stride
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx * N_CHUNKS + chunk_idx
     labels_ptr    += row_idx
@@ -179,7 +181,8 @@ pass
 })
 @triton.jit
 def _cross_entropy_backward(
-    logits_ptr, logits_row_stride,
+    logits_ptr,
+    logits_row_stride : tl.constexpr(tl.int64),
     dloss_ptr,   dloss_row_stride,
     logsumexp_ptr,
     labels_ptr,
@@ -208,7 +211,7 @@ def _cross_entropy_backward(
     row_idx   = tl.program_id(0)
     block_idx = tl.program_id(1)
 
-    logits_ptr += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr += row_idx * logits_row_stride
     dloss_ptr  += row_idx *  dloss_row_stride
     col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
@@ -497,7 +500,7 @@ def patch_transformers_losses():
         logger.warning_once("Unsloth: Cannot patch loss functions - update transformers for faster modules!")
         return
     pass
-    
+
     import transformers.modeling_utils
     LOSS_MAPPING = transformers.loss.loss_utils.LOSS_MAPPING
     LOSS_MAPPING["ForCausalLM"] = UnslothForCausalLMLoss
