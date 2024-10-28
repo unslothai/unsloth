@@ -349,7 +349,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 pass
 
 
-@torch._disable_dynamo
+# @torch._disable_dynamo
 def fast_cross_entropy_loss(
     logits,
     labels,
@@ -472,7 +472,7 @@ def unpatch_llama_for_causal_lm():
 pass
 
 
-@torch._disable_dynamo
+# @torch._disable_dynamo
 def UnslothForCausalLMLoss(
     logits, labels, vocab_size: int, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs
 ):
@@ -495,7 +495,9 @@ def patch_transformers_losses():
         import transformers.loss.loss_utils
     except:
         logger.warning_once("Unsloth: Cannot patch loss functions - update transformers for faster modules!")
-
+        return
+    pass
+    
     import transformers.modeling_utils
     LOSS_MAPPING = transformers.loss.loss_utils.LOSS_MAPPING
     LOSS_MAPPING["ForCausalLM"] = UnslothForCausalLMLoss
