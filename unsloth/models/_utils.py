@@ -613,10 +613,10 @@ def patch_tokenizer(model, tokenizer):
 
             # Edit all config with new pad token
             current_model = model
-            while hasattr(model, "model") and hasattr(model, "config"):
+            while hasattr(current_model, "model") and hasattr(current_model, "config"):
                 current_model.config.update({"pad_token_id" : tokenizer.pad_token_id})
                 current_model = current_model.model
-            if hasattr(model, "model") and hasattr(model, "config"):
+            if hasattr(current_model, "model") and hasattr(current_model, "config"):
                 current_model.config.update({"pad_token_id" : tokenizer.pad_token_id})
             pass
 
@@ -630,10 +630,10 @@ def patch_tokenizer(model, tokenizer):
 
                 # Edit all config with new pad token
                 current_model = model
-                while hasattr(model, "model") and hasattr(model, "config"):
+                while hasattr(current_model, "model") and hasattr(current_model, "config"):
                     current_model.config.update({"pad_token_id" : tokenizer.pad_token_id})
                     current_model = model
-                if hasattr(model, "model") and hasattr(model, "config"):
+                if hasattr(current_model, "model") and hasattr(current_model, "config"):
                     current_model.config.update({"pad_token_id" : tokenizer.pad_token_id})
                 pass
 
