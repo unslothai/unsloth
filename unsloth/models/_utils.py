@@ -507,7 +507,7 @@ def patch_tokenizer(model, tokenizer):
                 "\u00BF", # Inverted question mark
             ]
             for replacement_char in possible_replacements:
-                char = tokenizer(replacement_char, add_special_tokens = False)
+                char = tokenizer(replacement_char, add_special_tokens = False).input_ids
                 if len(char) == 1:
                     # Get actual token representation
                     try: char = tokenizer.convert_ids_to_tokens(char[0])
