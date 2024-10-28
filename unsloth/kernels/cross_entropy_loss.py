@@ -470,3 +470,52 @@ def unpatch_llama_for_causal_lm():
     transformers.models.llama.modeling_llama.LlamaForCausalLM = LlamaForCausalLM
     return
 pass
+
+
+@torch._disable_dynamo
+def UnslothForCausalLMLoss(
+    logits, labels, vocab_size: int, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs
+):
+    shift_logits = logits
+    shift_labels = torch.empty_like(labels)
+    shift_labels[..., :-1] = labels[..., 1:]
+    shift_labels[..., -1] = -100
+    loss = fast_cross_entropy_loss(
+        logits  = shift_logits,
+        labels  = shift_labels,
+        n_items = num_items_in_batch,
+    )
+    return loss
+pass
+
+
+def patch_transformers_losses():
+    import re
+    try:
+        import transformers.loss.loss_utils
+    except:
+        logger.warning_once("Unsloth: Cannot patch loss functions - update transformers for faster modules!")
+
+    import transformers.modeling_utils
+    LOSS_MAPPING = transformers.loss.loss_utils.LOSS_MAPPING
+    LOSS_MAPPING["ForCausalLM"] = UnslothForCausalLMLoss
+
+    # Remove @property and @lru_cache
+    if hasattr(transformers.modeling_utils.PreTrainedModel.loss_function, "fget"):
+        transformers.modeling_utils.PreTrainedModel.loss_function = \
+            transformers.modeling_utils.PreTrainedModel.loss_function.fget.__wrapped__
+    pass
+pass
+
+
+def patch_loss_function(model):
+    try:
+        # model.loss_function starts as a dict to a loss fx
+        # We invoke it to save it
+        model.loss_function = model.loss_function()
+    except:
+        # Failed means we already invoked it, and we need args to the loss fx
+        pass
+    pass
+    return model
+pass
