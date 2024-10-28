@@ -490,18 +490,7 @@ class FastGemma2Model(FastLlamaModel):
 
 
     @staticmethod
-    def post_patch(model, tokenizer, max_seq_length):
-        # Add max_seq_length to all modules
-        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda:0")
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model.extra_ignored_labels = extra_ignored_labels
-            internal_model = internal_model.model
-        pass
-        internal_model.max_seq_length = max_seq_length
-        internal_model.extra_ignored_labels = extra_ignored_labels
-        
+    def post_patch(model, tokenizer):
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(model.model.embed_tokens.weight)
