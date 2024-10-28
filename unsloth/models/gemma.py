@@ -339,10 +339,7 @@ class FastGemmaModel(FastLlamaModel):
 
 
     @staticmethod
-    def post_patch(model):
-        # Patch model for Gemma
-        layers = model.model.layers
-
+    def post_patch(model, tokenizer):
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(model.model.embed_tokens.weight)
@@ -425,6 +422,6 @@ class FastGemmaModel(FastLlamaModel):
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
-        return model
+        return model, tokenizer
     pass
 pass
