@@ -269,7 +269,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
         n_chunks = div + (mod != 0)
-        losses = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+        losses = torch.empty(n_rows, dtype = torch.float32, device = logits.device)
 
         DO_SOFTCAPPING   = (logit_softcapping != 0)
         DO_LOGIT_SCALING = (logit_scaling != 0)
@@ -277,7 +277,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
-            logsumexp = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+            logsumexp = torch.empty(n_rows, dtype = torch.float32, device = logits.device)
 
             _cross_entropy_forward[(n_rows,)](
                 logits, logits.stride(0),
@@ -294,7 +294,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             )
         else:
             # For large vocabs > 65336 like Gemma 256K
-            logsumexp = torch.empty((n_rows, n_chunks,), dtype = torch.float32, device = "cuda:0")
+            logsumexp = torch.empty((n_rows, n_chunks,), dtype = torch.float32, device = logits.device)
 
             _chunked_cross_entropy_forward[(n_rows, n_chunks,)](
                 logits, logits.stride(0),
