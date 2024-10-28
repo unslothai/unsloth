@@ -1910,6 +1910,11 @@ class FastLlamaModel:
     ):
         transformers_set_seed(random_state)
 
+        if type(r) is not int:
+            raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
+        if r <= 0:
+            raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
+
         if isinstance(model, PeftModelForCausalLM):
             # Check if exactly the same and then pass through!
             assert(hasattr(model, "peft_config"))
