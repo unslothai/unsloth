@@ -1849,12 +1849,12 @@ class FastLlamaModel:
 
             # Fix up all vocab sizes
             current_model = model
-            while hasattr(model, "model") and hasattr(model, "config"):
-                if hasattr(model.config, "vocab_size"):
+            while hasattr(current_model, "model") and hasattr(current_model, "config"):
+                if hasattr(current_model.config, "vocab_size"):
                     current_model.config.update({"vocab_size" : len(tokenizer)})
                 current_model = current_model.model
-            if hasattr(model, "model") and hasattr(model, "config"):
-                if hasattr(model.config, "vocab_size"):
+            if hasattr(current_model, "model") and hasattr(current_model, "config"):
+                if hasattr(current_model.config, "vocab_size"):
                     current_model.config.update({"vocab_size" : len(tokenizer)})
             pass
         pass
