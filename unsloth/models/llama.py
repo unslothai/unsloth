@@ -1621,7 +1621,7 @@ class FastLlamaModel:
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
-        model, tokenizer = model_patcher.post_patch(model, tokenizer, max_position_embeddings)
+        model, tokenizer = model_patcher.post_patch(model, tokenizer)
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
@@ -1827,18 +1827,7 @@ class FastLlamaModel:
 
 
     @staticmethod
-    def post_patch(model, tokenizer, max_seq_length):
-        # Add max_seq_length to all modules
-        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda:0")
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model.extra_ignored_labels = extra_ignored_labels
-            internal_model = internal_model.model
-        pass
-        internal_model.max_seq_length = max_seq_length
-        internal_model.extra_ignored_labels = extra_ignored_labels
-
+    def post_patch(model, tokenizer):
         # Torch.compile fails on embedding matrix??
         try: old_input_embedding  = model.get_input_embeddings ().weight
         except: return model, tokenizer
@@ -2469,6 +2458,18 @@ class FastLlamaModel:
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.",
         )
         patch_saving_functions(model)
+
+        # Patch cross entropy loss labels
+        # Fixes https://github.com/unslothai/unsloth/issues/10
+        max_seq_length = model.max_seq_length
+        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda:0")
+        model.model.extra_ignored_labels = extra_ignored_labels
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            internal_model.max_seq_length = max_seq_length
+            internal_model = internal_model.model
+        pass
+        internal_model.max_seq_length = max_seq_length        
 
         # Patch tokenizer to pad to the right
         internal_model = model
