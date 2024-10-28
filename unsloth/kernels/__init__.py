@@ -16,6 +16,8 @@ from .cross_entropy_loss import (
     fast_cross_entropy_loss,
     patch_llama_for_causal_lm,
     unpatch_llama_for_causal_lm,
+    patch_transformers_losses,
+    patch_loss_function,
 )
 from .rms_layernorm import (
     fast_rms_layernorm,
