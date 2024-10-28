@@ -691,8 +691,8 @@ def patch_compiling_bitsandbytes():
     import peft.tuners.lora.bnb
     peft.tuners.lora.bnb.Linear4bit.forward = \
         torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
-    peft.tuners.lora.bnb.Linear8bit.forward = \
-        torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bit.forward)
+    peft.tuners.lora.bnb.Linear8bitLt.forward = \
+        torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
     return
 pass
 # =============================================
