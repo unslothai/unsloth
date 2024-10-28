@@ -507,6 +507,10 @@ def unsloth_save_model(
           f"{round(max_ram/1024/1024/1024, 2)} out of "\
           f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving.")
 
+    # Move temporary_location to /tmp in Kaggle
+    if IS_KAGGLE_ENVIRONMENT:
+        temporary_location = os.path.join('/tmp', temporary_location)
+
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
