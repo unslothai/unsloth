@@ -525,7 +525,7 @@ def patch_tokenizer(model, tokenizer):
             pass
             
             logger.warning_once(
-                f"Unsloth: unk_token = {old_unk_token} is the same as the EOS or BOS tokens.\n"\
+                f"Unsloth: unk_token = {old_unk_token} is the same as the EOS or BOS tokens. "\
                 f"We fixed it by changing it to {tokenizer.unk_token}."
             )
         pass
@@ -610,13 +610,34 @@ def patch_tokenizer(model, tokenizer):
         tokenizer.add_special_tokens({"pad_token" : possible_pad_token})
         tokenizer.pad_token = possible_pad_token
         if model is not None:
-            model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+
+            # Edit all config with new pad token
+            current_model = model
+            while hasattr(model, "model") and hasattr(model, "config"):
+                current_model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+                current_model = current_model.model
+            if hasattr(model, "model") and hasattr(model, "config"):
+                current_model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+            pass
+
+            # Generation edit pad token
             if getattr(model, "generation_config") is not None:
                 model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
     else:
         if model is not None:
+
             if model.config.pad_token_id is None:
-                model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+
+                # Edit all config with new pad token
+                current_model = model
+                while hasattr(model, "model") and hasattr(model, "config"):
+                    current_model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+                    current_model = model
+                if hasattr(model, "model") and hasattr(model, "config"):
+                    current_model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+                pass
+
+                # Generation edit pad token
                 if getattr(model, "generation_config") is not None:
                     model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
         pass
