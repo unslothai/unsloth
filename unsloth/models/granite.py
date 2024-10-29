@@ -263,7 +263,11 @@ def GraniteAttention_fast_forward_inference(
     do_prefill = False,
     attention_mask = None,
     use_sliding_window = False,
+    position_embeddings : Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
 ):
+    
+    assert position_embeddings is not None, f"Granite model requires position embeddings to be specified"
+
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -311,8 +315,8 @@ def GraniteAttention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
-    sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
+    cos, sin = position_embeddings
+    cos, sin = cos[position_ids], sin[position_ids]
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
@@ -338,7 +342,7 @@ def GraniteAttention_fast_forward_inference(
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
     # Handle sliding windows
-    sliding_window = self.config.sliding_window
+    sliding_window = self.config.sliding_window if hasattr(self.config, "sliding_window") else self.config.max_position_embeddings
     if use_sliding_window and kv_seq_len > sliding_window:
         # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
         slicing_tokens = 1 - sliding_window
@@ -388,7 +392,7 @@ def GraniteModel_fast_forward_inference(
 ):
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
-    hidden_states *= self.embedding_multiplier
+    hidden_states *= self.model.embedding_multiplier
     hidden_states = hidden_states.to(self.config.torch_dtype)
 
     bsz, q_len, hd = hidden_states.shape
@@ -404,7 +408,7 @@ def GraniteModel_fast_forward_inference(
         attention_mask = None
     pass
 
-    position_embeddings = self.rotary_emb(hidden_states, position_ids)
+    position_embeddings = self.model.rotary_emb(hidden_states, position_ids, self.max_seq_length)
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
@@ -420,12 +424,12 @@ def GraniteModel_fast_forward_inference(
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             position_embeddings = position_embeddings,
         )
-        hidden_states = residual + hidden_states * self.residual_multiplier
+        hidden_states = residual + hidden_states * self.config.residual_multiplier
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(decoder_layer. pre_feedforward_layernorm, hidden_states)
+        hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
-        hidden_states  = residual + hidden_states * self.residual_multiplier
+        hidden_states  = residual + hidden_states * self.config.residual_multiplier
 
         next_decoder_cache.append(present_key_value)
     pass
