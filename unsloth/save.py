@@ -49,6 +49,7 @@ __all__ = [
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT  = "\nCOLAB_"  in keynames
 IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
+KAGGLE_TMP = "/tmp"
 del keynames
 
 # Weights
@@ -447,13 +448,20 @@ def unsloth_save_model(
     if push_to_hub and "/" in save_directory:
 
         # +1 solves absolute path issues
-        username = save_directory[:save_directory.find("/")]
-        new_save_directory = save_directory[save_directory.find("/")+1:]
-
-        logger.warning_once(
-            f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
-            f"We shall truncate {save_directory} to {new_save_directory}"
-        )
+        new_save_directory = save_directory
+        username = new_save_directory[:new_save_directory.find("/")]
+        new_save_directory = new_save_directory[new_save_directory.find("/")+1:]
+        if IS_KAGGLE_ENVIRONMENT:
+            new_save_directory = os.path.join(KAGGLE_TMP, new_save_directory[new_save_directory.find("/")+1:])
+            logger.warning_once(
+                "Unsloth: You are pushing to hub in Kaggle environment.\n"\
+                f"To save memory, we shall move {save_directory} to {new_save_directory}"
+            )
+        else:
+            logger.warning_once(
+                f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
+                f"We shall truncate {save_directory} to {new_save_directory}"
+            )
 
         save_pretrained_settings["save_directory"] = new_save_directory
         tokenizer_save_settings ["save_directory"] = new_save_directory
@@ -509,7 +517,7 @@ def unsloth_save_model(
 
     # Move temporary_location to /tmp in Kaggle
     if IS_KAGGLE_ENVIRONMENT:
-        temporary_location = os.path.join('/tmp', temporary_location)
+        temporary_location = os.path.join(KAGGLE_TMP, temporary_location)
 
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
@@ -712,7 +720,7 @@ def unsloth_save_model(
     print("Done.")
 
     if push_to_hub and hasattr(model, "config"):
-        print(f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
+        print(f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/').split('/')[-1]}")
     pass
 
     save_pretrained_settings["state_dict"] = None
