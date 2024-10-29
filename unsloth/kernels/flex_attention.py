@@ -41,7 +41,7 @@ if not HAS_FLEX_ATTENTION:
 
     # Logit softcapping
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len, scale=1, is_gemma2=False):
+    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads    = self.num_heads
         head_dim   = self.head_dim
         n_kv_heads = self.num_key_value_heads
@@ -53,22 +53,14 @@ if not HAS_FLEX_ATTENTION:
         K = K.reshape(bsz, n_heads, q_len, head_dim)
         V = V.reshape(bsz, n_heads, q_len, head_dim)
 
-        if is_gemma2:
-            # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
-            # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
-            # We default to using the config file itself
-            # s = self.config.hidden_size // self.config.num_attention_heads
-            s = self.config.query_pre_attn_scalar
-            t = self.config.attn_logit_softcapping
+        # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
+        # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
+        # We default to using the config file itself
+        # s = self.config.hidden_size // self.config.num_attention_heads
+        s = self.config.query_pre_attn_scalar
+        t = self.config.attn_logit_softcapping
 
-            Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
-            A = torch_matmul(Q, K.transpose(2, 3))
-
-            # Logit softcapping
-            A /= t; torch_tanh(A, out = A); A *= t;
-        else:
-            A = torch_matmul(Q, K.transpose(2, 3)) * scale
-
+        Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
         A = torch.matmul(Q, K.transpose(2, 3))
         A = t * torch.tanh(A / t) # Logit softcapping
         A += causal_mask[:q_len, :q_len]
@@ -93,9 +85,6 @@ else:
         def tanh_softcap(x, b, h, q_idx, kv_idx):
             return t * torch.tanh(x / t)
         return tanh_softcap
-    pass
-    def noop(score, b, h, q_idx, kv_idx):
-        return score
     pass
     def causal_masker(b, h, q_idx, kv_idx):
         return q_idx >= kv_idx
@@ -131,31 +120,20 @@ else:
     pass
 
     @functools.lru_cache
-    def flex_attention(s=1,t=1, is_gemma2=False):
-        if is_gemma2:
-            scale = 1.0 / math.sqrt(s)
-            enable_gqa = True
-            score_mod = generate_tanh_softcap(s, t)
-        else:
-            # mostly for granite
-            scale = s
-            enable_gqa = False
-            score_mod = noop()
+    def flex_attention(s, t):
+        scale = 1.0 / math.sqrt(s)
+        score_mod = generate_tanh_softcap(t)
         return functools.partial(
-            _flex_attention, score_mod = score_mod, scale = scale, enable_gqa = enable_gqa,
+            _flex_attention, score_mod = score_mod, scale = scale, enable_gqa = True,
         )
     pass
     
-    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len, scale=1, is_gemma2=False):
+    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads    = self.num_heads
         head_dim   = self.head_dim
-        if is_gemma2:
-            s = 1.0/ math.sqrt(self.config.query_pre_attn_scalar)
-            t = self.config.attn_logit_softcapping
-        else:
-            s = scale
-            t = 1.0
-        fx = flex_attention(s,t, is_gemma2)
+        s = self.config.query_pre_attn_scalar
+        t = self.config.attn_logit_softcapping
+        fx = flex_attention(s, t)
         A = fx(query = Q, key = K, value = V, block_mask = causal_mask)
         A = A.transpose(1, 2).contiguous()
         A = A.reshape(bsz, q_len, n_heads*head_dim)
@@ -167,7 +145,7 @@ pass
 torch_matmul = torch.matmul
 torch_tanh   = torch.tanh
 torch_nn_functional_softmax = torch.nn.functional.softmax
-def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len, scale, is_gemma2=True):
+def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
     n_heads    = self.num_heads
     head_dim   = self.head_dim
     n_kv_heads = self.num_key_value_heads
@@ -179,22 +157,18 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len,
     K = K.reshape(bsz, n_heads, q_len, head_dim)
     V = V.reshape(bsz, n_heads, q_len, head_dim)
 
-    if is_gemma2:
-        # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
-        # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
-        # We default to using the config file itself
-        # s = self.config.hidden_size // self.config.num_attention_heads
-        s = self.config.query_pre_attn_scalar
-        t = self.config.attn_logit_softcapping
+    # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
+    # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
+    # We default to using the config file itself
+    # s = self.config.hidden_size // self.config.num_attention_heads
+    s = self.config.query_pre_attn_scalar
+    t = self.config.attn_logit_softcapping
 
-        Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
-        A = torch_matmul(Q, K.transpose(2, 3))
+    Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype) # Follow Keras exactly
+    A = torch_matmul(Q, K.transpose(2, 3))
 
-        # Logit softcapping
-        A /= t; torch_tanh(A, out = A); A *= t;
-    else:
-        A = torch_matmul(Q, K.transpose(2, 3)) * scale
-    
+    # Logit softcapping
+    A /= t; torch_tanh(A, out = A); A *= t;
     A += causal_mask[:q_len, :q_len]
     # Much slower in torch compile!
     # A.masked_fill_(causal_mask[:q_len, :q_len], -float("inf"))
