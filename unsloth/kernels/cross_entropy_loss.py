@@ -223,7 +223,7 @@ def _cross_entropy_backward(
     else:
         dloss = 0.0
 
-    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Do logit scaling for Cohere
     if DO_LOGIT_SCALING:
@@ -239,7 +239,7 @@ def _cross_entropy_backward(
     pass
 
     logsumexp = tl.load(logsumexp_ptr + row_idx)
-    y = tl.exp(x.to(tl.float32) - logsumexp)
+    y = tl.exp(x - logsumexp)
     y = tl.where(
         col_offsets == label_idx,
         y - 1.0, # exp(x - logsumexp) - 1
