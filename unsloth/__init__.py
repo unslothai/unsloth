@@ -57,7 +57,6 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 keynames = "\n" + "\n".join(os.environ.keys())
 if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-    print("Hello")
 pass
 
 try:
