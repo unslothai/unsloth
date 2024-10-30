@@ -25,17 +25,17 @@ from packaging.version import Version
 # })
 @triton.jit
 def _cross_entropy_forward(
-    logits_ptr        : tl.pointer_type,
-    logits_row_stride : tl.constexpr(tl.int64),
-    loss_ptr          : tl.pointer_type(tl.float32),
-    logsumexp_ptr     : tl.pointer_type(tl.float32),
-    labels_ptr        : tl.const_pointer_type(tl.int32),
-    VOCAB_SIZE        : tl.constexpr,
-    BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
-    SOFTCAP           : tl.constexpr(tl.float32),
-    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
-    LOGIT_SCALE       : tl.constexpr(tl.float32),
+    logits_ptr        ,
+    logits_row_stride ,
+    loss_ptr          ,
+    logsumexp_ptr     ,
+    labels_ptr        ,
+    VOCAB_SIZE        ,
+    BLOCK_SIZE        ,
+    DO_SOFTCAPPING    ,
+    SOFTCAP           ,
+    DO_LOGIT_SCALING  ,
+    LOGIT_SCALE       ,
 ):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
@@ -98,18 +98,18 @@ pass
 # })
 @triton.jit
 def _chunked_cross_entropy_forward(
-    logits_ptr        : tl.const_pointer_type,
-    logits_row_stride : tl.constexpr(tl.int64),
-    loss_ptr          : tl.pointer_type(tl.float32),
-    logsumexp_ptr     : tl.pointer_type(tl.float32),
-    labels_ptr        : tl.const_pointer_type(tl.int32),
-    VOCAB_SIZE        : tl.constexpr,
-    N_CHUNKS          : tl.constexpr,
-    BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
-    SOFTCAP           : tl.constexpr,
-    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
-    LOGIT_SCALE       : tl.constexpr,
+    logits_ptr        ,
+    logits_row_stride ,
+    loss_ptr          ,
+    logsumexp_ptr     ,
+    labels_ptr        ,
+    VOCAB_SIZE        ,
+    N_CHUNKS          ,
+    BLOCK_SIZE        ,
+    DO_SOFTCAPPING    ,
+    SOFTCAP           ,
+    DO_LOGIT_SCALING  ,
+    LOGIT_SCALE       ,
 ):
     """
         256K vocab divided in 4 chunks
@@ -181,18 +181,18 @@ pass
 # })
 @triton.jit
 def _cross_entropy_backward(
-    logits_ptr        : tl.pointer_type,
-    logits_row_stride : tl.constexpr(tl.int64),
-    dloss_ptr         : tl.const_pointer_type(tl.float32),
-    dloss_row_stride  : tl.constexpr,
-    logsumexp_ptr     : tl.const_pointer_type(tl.float32),
-    labels_ptr        : tl.const_pointer_type(tl.int32),
-    VOCAB_SIZE        : tl.constexpr,
-    BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
-    SOFTCAP           : tl.constexpr,
-    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
-    LOGIT_SCALE       : tl.constexpr,
+    logits_ptr        ,
+    logits_row_stride ,
+    dloss_ptr         ,
+    dloss_row_stride  ,
+    logsumexp_ptr     ,
+    labels_ptr        ,
+    VOCAB_SIZE        ,
+    BLOCK_SIZE        ,
+    DO_SOFTCAPPING    ,
+    SOFTCAP           ,
+    DO_LOGIT_SCALING  ,
+    LOGIT_SCALE       ,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
