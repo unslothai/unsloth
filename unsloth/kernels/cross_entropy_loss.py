@@ -232,7 +232,7 @@ def _cross_entropy_backward(
     pass
 
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-    partial = 0.0
+    partial = x
     if DO_SOFTCAPPING:
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
         partial = triton_tanh(x / SOFTCAP)
