@@ -760,7 +760,9 @@ def get_statistics():
     # We log some basic stats about which environment is being used.
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
-    # You can disable this by commenting the below out
+    # You can disable this by setting UNSLOTH_DISABLE_STATISTICS
+    import os
+    if "UNSLOTH_DISABLE_STATISTICS" in os.environ: return
     from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
     disabled = False
     if not are_progress_bars_disabled():
@@ -1295,6 +1297,7 @@ def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation 
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
+        if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
         if \
             not inspect.getsource(Trainer.get_batch_samples).strip()\
             .endswith("return batch_samples, num_items_in_batch"):
@@ -1321,6 +1324,7 @@ def patch_gradient_accumulation_fix(Trainer):
     pass
 
     # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
+    if Trainer.training_step.__name__ == "_unsloth_training_step": return
     if "num_items_in_batch" not in inspect.signature(Trainer.training_step).parameters: return
 
     function = inspect.getsource(Trainer.training_step)

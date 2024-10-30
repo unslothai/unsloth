@@ -17,7 +17,7 @@ import triton.language as tl
 import torch
 from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh
 from transformers.models.llama.modeling_llama import logger
-
+from packaging.version import Version
 
 @triton.heuristics({
     "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
@@ -352,7 +352,6 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 pass
 
 
-# @torch._disable_dynamo
 def fast_cross_entropy_loss(
     logits,
     labels,
@@ -379,6 +378,9 @@ def fast_cross_entropy_loss(
     if n_items is None:
         n_items = torch.count_nonzero(labels != -100)
     return loss.sum() / n_items
+pass
+if Version(torch.__version__) < Version("2.5.0"):
+    fast_cross_entropy_loss = torch._disable_dynamo(fast_cross_entropy_loss)
 pass
 
 
@@ -475,7 +477,6 @@ def unpatch_llama_for_causal_lm():
 pass
 
 
-# @torch._disable_dynamo
 def UnslothForCausalLMLoss(
     logits, labels, vocab_size: int, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs
 ):
@@ -489,6 +490,9 @@ def UnslothForCausalLMLoss(
         n_items = num_items_in_batch,
     )
     return loss
+pass
+if Version(torch.__version__) < Version("2.5.0"):
+    UnslothForCausalLMLoss = torch._disable_dynamo(UnslothForCausalLMLoss)
 pass
 
 
