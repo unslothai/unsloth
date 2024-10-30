@@ -67,14 +67,14 @@ def _cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING: logits = LOGIT_SCALE * logits
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
 
-    logits = logits.to(tl.float32)
+    # logits = logits
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
@@ -146,14 +146,14 @@ def _chunked_cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING: logits = LOGIT_SCALE * logits
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
 
-    logits = logits.to(tl.float32)
+    # logits = logits.to(tl.float32)
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
