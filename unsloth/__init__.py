@@ -53,6 +53,13 @@ pass
 # Reduce VRAM usage by reducing fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
+keynames = "\n" + "\n".join(os.environ.keys())
+if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    print("Hello")
+pass
+
 try:
     import torch
 except ModuleNotFoundError:
@@ -62,12 +69,6 @@ except ModuleNotFoundError:
     )
 except Exception as exception:
     raise exception
-pass
-
-# Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
-keynames = "\n" + "\n".join(os.environ.keys())
-if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 pass
 
 # We support Pytorch 2
