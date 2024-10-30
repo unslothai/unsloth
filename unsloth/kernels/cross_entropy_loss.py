@@ -19,23 +19,23 @@ from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh
 from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
 
-@triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
-    "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
-})
+# @triton.heuristics({
+#     "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
+#     "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
+# })
 @triton.jit
 def _cross_entropy_forward(
-    logits_ptr,
+    logits_ptr        : tl.pointer_type,
     logits_row_stride : tl.constexpr(tl.int64),
-    loss_ptr,
-    logsumexp_ptr,
-    labels_ptr,
-    VOCAB_SIZE      : tl.constexpr,
-    BLOCK_SIZE      : tl.constexpr,
-    DO_SOFTCAPPING  : tl.constexpr,
-    SOFTCAP         : tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE     : tl.constexpr,
+    loss_ptr          : tl.pointer_type(tl.float32),
+    logsumexp_ptr     : tl.pointer_type(tl.float32),
+    labels_ptr        : tl.const_pointer_type(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
+    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
+    SOFTCAP           : tl.constexpr(tl.float32),
+    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
+    LOGIT_SCALE       : tl.constexpr(tl.float32),
 ):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
@@ -92,24 +92,24 @@ def _cross_entropy_forward(
 pass
 
 
-@triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
-    "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
-})
+# @triton.heuristics({
+#     "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
+#     "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
+# })
 @triton.jit
 def _chunked_cross_entropy_forward(
-    logits_ptr,
+    logits_ptr        : tl.const_pointer_type,
     logits_row_stride : tl.constexpr(tl.int64),
-    loss_ptr,
-    logsumexp_ptr,
-    labels_ptr,
-    VOCAB_SIZE      : tl.constexpr,
-    N_CHUNKS        : tl.constexpr,
-    BLOCK_SIZE      : tl.constexpr,
-    DO_SOFTCAPPING  : tl.constexpr,
-    SOFTCAP         : tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE     : tl.constexpr,
+    loss_ptr          : tl.pointer_type(tl.float32),
+    logsumexp_ptr     : tl.pointer_type(tl.float32),
+    labels_ptr        : tl.const_pointer_type(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    N_CHUNKS          : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
+    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
+    SOFTCAP           : tl.constexpr,
+    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         256K vocab divided in 4 chunks
@@ -175,23 +175,24 @@ def _chunked_cross_entropy_forward(
 pass
 
 
-@triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
-    "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
-})
+# @triton.heuristics({
+#     "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
+#     "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
+# })
 @triton.jit
 def _cross_entropy_backward(
-    logits_ptr,
+    logits_ptr        : tl.pointer_type,
     logits_row_stride : tl.constexpr(tl.int64),
-    dloss_ptr,   dloss_row_stride,
-    logsumexp_ptr,
-    labels_ptr,
-    VOCAB_SIZE      : tl.constexpr,
-    BLOCK_SIZE      : tl.constexpr,
-    DO_SOFTCAPPING  : tl.constexpr,
-    SOFTCAP         : tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE     : tl.constexpr,
+    dloss_ptr         : tl.const_pointer_type(tl.float32),
+    dloss_row_stride  : tl.constexpr,
+    logsumexp_ptr     : tl.const_pointer_type(tl.float32),
+    labels_ptr        : tl.const_pointer_type(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
+    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
+    SOFTCAP           : tl.constexpr,
+    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
