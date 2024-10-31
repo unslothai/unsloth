@@ -353,7 +353,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
     pass
 pass
 
-@torch._disable_dynamo
+# @torch._disable_dynamo
 def fast_cross_entropy_loss(
     logits,
     labels,
