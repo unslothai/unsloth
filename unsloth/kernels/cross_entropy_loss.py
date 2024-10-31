@@ -92,10 +92,10 @@ def _cross_entropy_forward(
 pass
 
 
-# @triton.heuristics({
-#     "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
-#     "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
-# })
+@triton.heuristics({
+    "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
+    "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
+})
 @triton.jit
 def _chunked_cross_entropy_forward(
     logits_ptr        ,
@@ -106,9 +106,9 @@ def _chunked_cross_entropy_forward(
     VOCAB_SIZE        ,
     N_CHUNKS          ,
     BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
+    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
     SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
+    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
     LOGIT_SCALE       ,
 ):
     """
@@ -189,9 +189,9 @@ def _cross_entropy_backward(
     labels_ptr        ,
     VOCAB_SIZE        ,
     BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
+    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
     SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
+    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
     LOGIT_SCALE       ,
 ):
     """
@@ -347,7 +347,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             SOFTCAP          = ctx.logit_softcapping,
             DO_LOGIT_SCALING = ctx.DO_LOGIT_SCALING,
             LOGIT_SCALE      = ctx.logit_scaling,
-            num_warps      = 8,
+            num_warps        = 8,
         )
         return logits, None, None, None,
     pass
