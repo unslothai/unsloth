@@ -479,6 +479,32 @@ def patch_tokenizer(model, tokenizer):
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
 
+    # First remove pad and unk tokens if they are known to be BOS / EOS
+    possible_bad_tokens = (
+        "<|endoftext|>",
+        "<|im_start|>",
+        "<|im_end|>",
+        "<|begin_of_text|>",
+        "<|end_of_text|>",
+        "<s>",
+        "</s>",
+    )
+    input_ids = tokenizer(list(possible_bad_tokens), add_special_tokens = False).input_ids
+    possible_bad_tokens = frozenset(token for token, input_id in zip(possible_bad_tokens, input_ids) if len(input_id) == 1)
+
+    if hasattr(tokenizer, "pad_token") and tokenizer.pad_token in possible_bad_tokens:
+        print(f"Unsloth: Pad token was {tokenizer.pad_token} which is not a good idea. We shall fix this.")
+        tokenizer.pad_token = None
+    pass
+
+    has_bad_unk_token = False
+    if hasattr(tokenizer, "unk_token") and tokenizer.unk_token in possible_bad_tokens:
+        print(f"Unsloth: Unk token was {tokenizer.unk_token} which is not a good idea. We shall fix this.")
+        tokenizer.unk_token = None
+        has_bad_unk_token = True
+    pass
+
+    # Now check pad token again
     bad_pad_token = False
     if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
         # Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
@@ -492,13 +518,13 @@ def patch_tokenizer(model, tokenizer):
     # Check if unknown token is broken
     fixed_unk_token = False
 
-    if hasattr(tokenizer, "unk_token") and tokenizer.unk_token is not None:
+    if (hasattr(tokenizer, "unk_token") and tokenizer.unk_token is not None) or has_bad_unk_token:
 
         eos_token = getattr(tokenizer, "eos_token", None)
         bos_token = getattr(tokenizer, "bos_token", None)
 
         old_unk_token = tokenizer.unk_token
-        if old_unk_token == eos_token or old_unk_token == bos_token:
+        if (old_unk_token == eos_token) or (old_unk_token == bos_token) or has_bad_unk_token:
             has_broken_unk = True
             # Use the unicode replacement characters
             possible_replacements = [
