@@ -1838,7 +1838,8 @@ class FastLlamaModel:
         except: old_output_embedding = torch.zeros(0)
 
         # Check for tied weights as well
-        is_tied = old_input_embedding.data_ptr() == old_output_embedding.data_ptr()
+        # is_tied = old_input_embedding.data_ptr() == old_output_embedding.data_ptr()
+        is_tied = model.config.tie_word_embeddings
 
         # Check pad token's id -> we need to expand the embedding
         if len(tokenizer) > old_input_embedding.shape[0]:
@@ -1887,6 +1888,9 @@ class FastLlamaModel:
         else:
             correct_dtype = old_input_embedding.dtype
         pass
+
+        # Finally tie them if needed!
+        if is_tied: model.tie_weights()
         
         # Also patch all dtypes - BnB seems to not allocate the correct type?
         # BnB default dtype seems to be float16!
