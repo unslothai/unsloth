@@ -273,8 +273,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         n_chunks = div + (mod != 0)
         losses = torch.empty(n_rows, dtype = torch.float32, device = logits.device)
 
-        DO_SOFTCAPPING   = logit_softcapping != 0
-        DO_LOGIT_SCALING = logit_scaling != 0
+        DO_SOFTCAPPING   : bool = bool(logit_softcapping != 0)
+        DO_LOGIT_SCALING : bool = bool(logit_scaling != 0)
 
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
