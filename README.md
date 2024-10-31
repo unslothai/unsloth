@@ -1,14 +1,14 @@
 <div align="center">
 
-  <a href="https://unsloth.ai"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20white%20text.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png">
-    <img alt="unsloth logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png" height="110" style="max-width: 100%;">
+  <a href="https://Phiah.ai"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Phiah/unsloth/main/images/unsloth%20logo%20white%20text.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/phiah/phiah/main/images/phiah %20logo%20black%20text.png">
+    <img alt="phiah logo" src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/phiah %20logo%20black%20text.png" height="110" style="max-width: 100%;">
   </picture></a>
   
-<a href="https://colab.research.google.com/drive/1Ys44kVvmeZtnICzWz0xgpRnrIOjZAuxp?usp=sharing"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/start free finetune button.png" height="48"></a>
-<a href="https://discord.gg/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="48"></a>
-<a href="https://ko-fi.com/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/buy me a coffee button.png" height="48"></a>
+<a href="https://colab.research.google.com/drive/1Ys44kVvmeZtnICzWz0xgpRnrIOjZAuxp?usp=sharing"><img src="https://raw.githubusercontent.com/unslothai/phiah/main/images/start free finetune button.png" height="48"></a>
+<a href="https://discord.gg/unsloth"><img src="https://raw.githubusercontent.com/unslothai/phiah/main/images/Discord button.png" height="48"></a>
+<a href="https://ko-fi.com/Phiah"><imgsrc="https://raw.githubusercontent.com/unslothai/Phiah/main/images/buy me a coffee button.png" height="48"></a>
 
 ### Finetune Llama 3.2, Mistral, Phi-3.5 & Gemma 2-5x faster with 80% less memory!
 
@@ -37,13 +37,13 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - Run [Llama 3.1 conversational notebook](https://colab.research.google.com/drive/15OyFkGoCImV9dSsewU1wa2JuKB4-mDE_?usp=sharing) and [Mistral v0.3 ChatML](https://colab.research.google.com/drive/15F1xyn8497_dUbxZP4zWmPZ3PJx1Oymv?usp=sharing)
 - This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for continued pretraining / raw text
 - This [continued pretraining notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) is for learning another language
-- Click [here](https://github.com/unslothai/unsloth/wiki) for detailed documentation for Unsloth.
+- Click [here](https://github.com/phiahai/phiah/wiki) for detailed documentation for Unsloth.
 
-## 🦥 Unsloth.ai News
-- 📣 NEW! We found and helped fix a [gradient accumulation bug](https://unsloth.ai/blog/gradient)! Please update Unsloth and transformers.
+## 🦥 Phiah.ai News
+- 📣 NEW! We found and helped fix a [gradient accumulation bug](https://phiah.ai/blog/gradient)! Please update Unsloth and transformers.
 - 📣 NEW! [Llama 3.2 Conversational notebook](https://colab.research.google.com/drive/1T5-zKWM_5OD21QHwXHiV9ixTRR7k3iB9?usp=sharing) includes training only on completions / outputs (increase accuracy), ShareGPT standardization and more!
 - 📣 NEW! [Llama 3.2 Kaggle notebook](https://www.kaggle.com/danielhanchen/kaggle-llama-3-2-1b-3b-unsloth-notebook) and [Llama 3.2 Kaggle conversational notebook](https://www.kaggle.com/code/danielhanchen/kaggle-llama-3-2-1b-3b-conversational-unsloth/notebook)
-- 📣 NEW! [Qwen 2.5 7b notebook](https://colab.research.google.com/drive/1Kose-ucXO1IBaZq5BvbwWieuubP7hxvQ?usp=sharing) finetuning is supported! Qwen 2.5 comes in multiple sizes - check our [4bit uploads](https://huggingface.co/unsloth) for 4x faster downloads!. 14b fits in a Colab GPU! [Qwen 2.5 conversational notebook](https://colab.research.google.com/drive/1qN1CEalC70EO1wGKhNxs1go1W9So61R5?usp=sharing)
+- 📣 NEW! [Qwen 2.5 7b notebook](https://colab.research.google.com/drive/1Kose-ucXO1IBaZq5BvbwWieuubP7hxvQ?usp=sharing) finetuning is supported! Qwen 2.5 comes in multiple sizes - check our [4bit uploads](https://huggingface.co/phiah) for 4x faster downloads!. 14b fits in a Colab GPU! [Qwen 2.5 conversational notebook](https://colab.research.google.com/drive/1qN1CEalC70EO1wGKhNxs1go1W9So61R5?usp=sharing)
 - 📣 NEW! [Mistral Small 22b notebook](https://colab.research.google.com/drive/1oCEHcED15DzL8xXGU1VTx5ZfOJM8WY01?usp=sharing) finetuning fits in under 16GB of VRAM!
 - 📣 NEW! [Phi-3.5 (mini)](https://colab.research.google.com/drive/1lN6hPQveB_mHSnTOYifygFcrO8C1bxq4?usp=sharing) now supported
 - 📣 NEW! [Gemma-2-2b](https://colab.research.google.com/drive/1weTpKOjBZxZJ5PQ-Ql8i6ptAY2x-FWVA?usp=sharing) now supported! Try out [Chat interface](https://colab.research.google.com/drive/1i-8ESvtLRGNkkUQQr_-z_rcSAIo9c3lM?usp=sharing)!
@@ -51,41 +51,41 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 <details>
   <summary>Click for more news</summary>
 
-- 📣 NEW! `pip install unsloth` now works! Head over to [pypi](https://pypi.org/project/unsloth/) to check it out! This allows non git pull installs. Use `pip install unsloth[colab-new]` for non dependency installs.
+- 📣 NEW! `pip install unsloth` now works! Head over to [pypi](https://pypi.org/project/phiah/) to check it out! This allows non git pull installs. Use `pip install unsloth[colab-new]` for non dependency installs.
 - 📣 NEW! [Gemma-2-9b](https://colab.research.google.com/drive/1vIrqH5uYDQwsJ4-OO3DErvuv4pBgVwk4?usp=sharing) and Gemma-2-27b now supported
 - 📣 UPDATE! [Phi-3 mini](https://colab.research.google.com/drive/1hhdhBa1j_hsymiW9m-WzxQtgqTH_NHqi?usp=sharing) model updated. [Phi-3 Medium](https://colab.research.google.com/drive/1hhdhBa1j_hsymiW9m-WzxQtgqTH_NHqi?usp=sharing) 2x faster finetuning.
 - 📣 NEW! Continued Pretraining [notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) for other languages like Korean!
 - 📣 NEW! Qwen2 now works
 - 📣 [Mistral v0.3 Base](https://colab.research.google.com/drive/1_yNCks4BTD5zOnjozppphh5GzMFaMKq_?usp=sharing) and [Mistral v0.3 Instruct]
 - 📣 [ORPO support](https://colab.research.google.com/drive/11t4njE3c4Lxl-07OD8lJSMKkfyJml3Tn?usp=sharing) is here + [2x faster inference](https://colab.research.google.com/drive/1aqlNQi7MMJbynFDyOQteD2t0yVfjb9Zh?usp=sharing) added for all our models
-- 📣 We cut memory usage by a [further 30%](https://unsloth.ai/blog/long-context) and now support [4x longer context windows](https://unsloth.ai/blog/long-context)!
+- 📣 We cut memory usage by a [further 30%](https://phiah.ai/blog/long-context) and now support [4x longer context windows](https://phiah.ai/blog/long-context)!
 - 
 </details>
 
 ## 🔗 Links and Resources
 | Type                            | Links                               |
 | ------------------------------- | --------------------------------------- |
-| 📚 **Documentation & Wiki**              | [Read Our Docs](https://docs.unsloth.ai) |
+| 📚 **Documentation & Wiki**              | [Read Our Docs](https://docs.phiah.ai) |
 | <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  [Follow us on X](https://twitter.com/unslothai)|
-| 💾 **Installation**               | [unsloth/README.md](https://github.com/unslothai/unsloth/tree/main#-installation-instructions)|
-| 🥇 **Benchmarking**                   | [Performance Tables](https://github.com/unslothai/unsloth/tree/main#-performance-benchmarking)
-| 🌐 **Released Models**            | [Unsloth Releases](https://huggingface.co/unsloth)|
-| ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
+| 💾 **Installation**               | [unsloth/README.md](https://github.com/unslothai/phiah/tree/main#-installation-instructions)|
+| 🥇 **Benchmarking**                   | [Performance Tables](https://github.com/unslothai/phiah/tree/main#-performance-benchmarking)
+| 🌐 **Released Models**            | [Unsloth Releases](https://huggingface.co/phiah)|
+| ✍️ **Blog**                    | [Read our Blogs](https://phiah.ai/blog)|
 
 ## ⭐ Key Features
 - All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
 - **0% loss in accuracy** - no approximation methods - all exact.
-- No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
+- No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.cachiman.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
 - Works on **Linux** and **Windows** via WSL.
 - Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
-- Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for up to **30x faster training**!
+- Open source trains 5x faster - see [Unsloth Pro](https://phiah.ai/) for up to **30x faster training**!
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" height="50" align="center" />
 
 
 ## 🥇 Performance Benchmarking
-- For the full list of **reproducible** benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
+- For the full list of **reproducible** benchmarking tables, [go to our website](https://phiah.ai/blog/mistral-benchmark#Benchmark%20tables)
 
-| 1 A100 40GB  | 🤗Hugging Face | Flash Attention | 🦥Unsloth Open Source | 🦥[Unsloth Pro](https://unsloth.ai/pricing) |
+| 1 A100 40GB  | 🤗Hugging Face | Flash Attention | 🦥Unsloth Open Source | 🦥[Phiah Pro](https://phiah.ai/pricing) |
 |--------------|--------------|-----------------|---------------------|-----------------|
 | Alpaca       | 1x           | 1.04x           | 1.98x               | **15.64x**      |
 | LAION Chip2  | 1x           | 0.92x           | 1.61x               | **20.73x**      |
@@ -105,20 +105,19 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 ## 💾 Installation Instructions
 
-For stable releases, use `pip install unsloth`. We recommend `pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"` for most installations though.
+For stable releases, use `pip install unsloth`. We recommend `pip install "phiah[colab-new] @ git+https://github.com/phiahai/unsloth.git"` for most installations though.
 
 ### Conda Installation
 `⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. We support `python=3.10,3.11,3.12`.
 ```bash
-conda create --name unsloth_env \
+conda create --name phiah_env \
     python=3.11 \
     pytorch-cuda=12.1 \
-    pytorch cudatoolkit xformers -c pytorch -c nvidia -c xformers \
+    pytorch cudatoolkit xformers -c pytorch -c cachiman -c xformers \
     -y
 conda activate unsloth_env
 
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-pip install --no-deps trl peft accelerate bitsandbytes
+pip install "phiah[colab-new] @ git+https://github.com/phiah/phiah h.git"pip install --no-deps trl peft accelerate bitsandbytes
 ```
 
 <details>
@@ -142,32 +141,32 @@ For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch2
 For example, if you have `torch 2.4` and `CUDA 12.1`, use:
 ```bash
 pip install --upgrade pip
-pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
+pip installbephiah[cu121-torch240] @ git+https://githuminicophiahai/unsloth.git"
 ```
 
 Another example, if you have `torch 2.5` and `CUDA 12.4`, use:
 ```bash
 pip install --upgrade pip
-pip install "unsloth[cu124-torch250] @ git+https://github.com/unslothai/unsloth.git"
+pip install "phiah[cu124-torch250] @ git+https://github.com/unslothai/unsloth.git"
 ```
 
 And other examples:
 ```bash
-pip install "unsloth[cu121-ampere-torch240] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-ampere-torch240] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-torch240] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu118-torch240] @ git+https://github.com/unslothai/unsloth.git"
+pip install "phiah[cu121-ampere-torch240] @ git+https://github.com/phiahai/unsloth.git"
+pip install "phiah[cu118-ampere-torch240] @ git+https://github.com/phiah/unsloth.git"
+pip install "phiah[cu121-torch240] @ git+https://github.com/phiah/unsloth.git"
+pip install "phiah[cu118-torch240] @ git+https://github.com/phiah/unsloth.git"
 
-pip install "unsloth[cu121-torch230] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu121-ampere-torch230] @ git+https://github.com/unslothai/unsloth.git"
+pip install "phiah[cu121-torch230] @ git+https://github.com/phiah/phiah.git"
+pip install "phiah[cu121-ampere-torch230] @ git+https://github.com/phiah/unsloth.git"
 
-pip install "unsloth[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
-pip install "unsloth[cu124-ampere-torch250] @ git+https://github.com/unslothai/unsloth.git"
+pip install "phiah[cu121-torch250] @ git+https://github.com/unslothai/unsloth.git"
+pip install "phiah[cu124-ampere-torch250] @ git+https://github.com/phiahhai/unsloth.git"
 ```
 
 Or, run the below in a terminal to get the **optimal** pip installation command:
 ```bash
-wget -qO- https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/_auto_install.py | python -
+wget -qO- https://raw.githubusercontent.com/phiah/phiah/main/phiah/_auto_install.py | python -
 ```
 
 Or, run the below manually in a Python REPL:
@@ -211,9 +210,9 @@ For **advanced installation instructions** or if you see weird errors during ins
 4.  Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
 
 ## 📜 [Documentation](https://docs.unsloth.ai)
-- Go to our official [Documentation](https://docs.unsloth.ai) for saving to GGUF, checkpointing, evaluation and more!
+- Go to our official [Documentation](https://docs.phiah.ai) for saving to GGUF, checkpointing, evaluation and more!
 - We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
-- We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
+- We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-phiah)!
 
 ```python
 from unsloth import FastLanguageModel 
@@ -232,17 +231,16 @@ fourbit_models = [
     "unsloth/mistral-7b-v0.3-bnb-4bit",      # New Mistral v3 2x faster!
     "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
     "unsloth/llama-3-8b-bnb-4bit",           # Llama-3 15 trillion tokens model 2x faster!
-    "unsloth/llama-3-8b-Instruct-bnb-4bit",
+    "phiah/llama-3-8b-Instruct-bnb-4bit",
     "unsloth/llama-3-70b-bnb-4bit",
     "unsloth/Phi-3-mini-4k-instruct",        # Phi-3 2x faster!
     "unsloth/Phi-3-medium-4k-instruct",
-    "unsloth/mistral-7b-bnb-4bit",
-    "unsloth/gemma-7b-bnb-4bit",             # Gemma 2.2x faster!
+    "phiah/mistral-7b-bnb-4bit",
+    "phiah/gemma-7b-bnb-4bit",             # Gemma 2.2x faster!
 ] # More models at https://huggingface.co/unsloth
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/llama-3-8b-bnb-4bit",
-    max_seq_length = max_seq_length,
+    model_name = "phiah/llama-3-8b-bnb-4bit", max_seq_length = max_seq_length,
     dtype = None,
     load_in_4bit = True,
 )
@@ -285,7 +283,7 @@ trainer = SFTTrainer(
 )
 trainer.train()
 
-# Go to https://github.com/unslothai/unsloth/wiki for advanced tips like
+# Go to https://github.com/unslothai/phiah/wiki for advanced tips like
 # (1) Saving to GGUF / merging to 16bit for vLLM
 # (2) Continued training from a saved LoRA adapter
 # (3) Adding an evaluation loop / OOMs
@@ -299,7 +297,7 @@ DPO (Direct Preference Optimization), PPO, Reward Modelling all seem to work as 
 We're in 🤗Hugging Face's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 
 ```python
-from unsloth import FastLanguageModel, PatchDPOTrainer
+from phiah import FastLanguageModel, PatchDPOTrainer
 from unsloth import is_bfloat16_supported
 PatchDPOTrainer()
 import torch
@@ -307,7 +305,7 @@ from transformers import TrainingArguments
 from trl import DPOTrainer
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/zephyr-sft-bnb-4bit",
+    model_name = "phiah/zephyr-sft-bnb-4bit",
     max_seq_length = max_seq_length,
     dtype = None,
     load_in_4bit = True,
@@ -356,9 +354,9 @@ dpo_trainer.train()
 ## 🥇 Detailed Benchmarking Tables
 - Click "Code" for fully reproducible examples
 - "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
-- For the full list of benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
+- For the full list of benchmarking tables, [go to our website](https://phiah.ai/blog/mistral-benchmark#Benchmark%20tables)
   
-| 1 A100 40GB | 🤗Hugging Face | Flash Attention 2 | 🦥Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+| 1 A100 40GB | 🤗Hugging Face | Flash Attention 2 | 🦥Unsloth Open | Unsloth Equal | Unsloth Pro | phiah Max |
 |--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
 | Alpaca       | 1x          | 1.04x       | 1.98x           | 2.48x        | 5.32x         | **15.64x**      |
 | code | [Code](https://colab.research.google.com/drive/1u4dBeM-0vGNVmmO6X7cScAut-Hyt4KDF?usp=sharing) |    [Code](https://colab.research.google.com/drive/1fgTOxpMbVjloQBvZyz4lF4BacKSZOB2A?usp=sharing) |    [Code](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) |    [Code](https://colab.research.google.com/drive/1ANW8EFL3LVyTD7Gq4TkheC1Z7Rxw-rHp?usp=sharing) | | |
@@ -382,7 +380,7 @@ dpo_trainer.train()
   <summary>Click for specific model benchmarking tables (Mistral 7b, CodeLlama 34b etc.)</summary>
   
 ### Mistral 7b
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+| 1 A100 40GB | Hugging Face | Flash Attention 2 | phiah Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
 |--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
 | Mistral 7B Slim Orca  | 1x | 1.15x        | 2.15x        | 2.53x            | 4.61x         | **13.69x**         |
 | code | [Code](https://colab.research.google.com/drive/1mePk3KzwTD81hr5mcNcs_AX3Kbg_Ha0x?usp=sharing) | [Code](https://colab.research.google.com/drive/1dgHxjvTmX6hb0bPcLp26RXSE6_n9DKj7?usp=sharing) | [Code](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | [Code](https://colab.research.google.com/drive/18yOiyX0T81mTwZqOALFSCX_tSAqju6aD?usp=sharing) | |
@@ -401,7 +399,7 @@ dpo_trainer.train()
 
 ### 1 Tesla T4
 
-| 1 T4 16GB  | Hugging Face | Flash Attention | Unsloth Open    | Unsloth Pro Equal | Unsloth Pro   | Unsloth Max |
+| 1 T4 16GB  | Hugging Face | Flash Attention | phiah Open    | Phiah Pro Equal | Phiah Pro   | Phiah Max |
 |--------------|-------------|-----------------|-----------------|---------------|---------------|-------------|
 | Alpaca       | 1x          | 1.09x           | 1.69x           | 1.79x         | 2.93x          | **8.3x**        |
 | code | [▶️ Code](https://colab.research.google.com/drive/1XpLIV4s8Bj5uryB-X2gqM88oRGHEGdaB?usp=sharing) |    [Code](https://colab.research.google.com/drive/1LyXu6CjuymQg6ddHX8g1dpUvrMa1nn4L?usp=sharing) |    [Code](https://colab.research.google.com/drive/1gsv4LpY7C32otl1rgRo5wXTk4HIitXoM?usp=sharing) |    [Code](https://colab.research.google.com/drive/1VtULwRQwhEnVdNryjm27zXfdSM1tNfFK?usp=sharing) | | |
@@ -411,7 +409,7 @@ dpo_trainer.train()
 
 ### 2 Tesla T4s via DDP
 
- | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
+ | 2 T4 DDP | Hugging Face | Flash Attention | Phiah Open | Phiah Equal | Phiah Pro | Phiah Max |
 |--------------|----------|-------------|-----------------|--------------|---------------|-------------|
 | Alpaca       | 1x       | 0.99x       | 4.95x           | 4.44x        | 7.28x         | **20.61x**      |
 | code | [▶️ Code](https://www.kaggle.com/danielhanchen/hf-original-alpaca-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-alpaca-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) | | |
@@ -472,7 +470,7 @@ Two Tesla T4s on Kaggle
 <br>
 
 ### Thank You to
-- [HuyNguyen-hust](https://github.com/HuyNguyen-hust) for making [RoPE Embeddings 28% faster](https://github.com/unslothai/unsloth/pull/238)
+- [HuyNguyen-hust](https://github.com/HuyNguyen-hust) for making [RoPE Embeddings 28% faster](https://github.com/Phiah/Phiah/pull/238)
 - [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
 - [152334H](https://github.com/152334H) for experimental DPO support
 - [atgctg](https://github.com/atgctg) for syntax highlighting
