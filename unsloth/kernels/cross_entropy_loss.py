@@ -19,6 +19,7 @@ from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh
 from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
 
+
 @triton.heuristics({
     "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
     "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
