@@ -20,11 +20,13 @@ import gc
 import numpy as np
 import itertools
 import datasets
+import re
 
 __all__ = [
-	"mean_of_trained_tokens",
-	"add_new_tokens",
+    "mean_of_trained_tokens",
+    "add_new_tokens",
     "fix_untrained_tokens",
+    "patch_tokenizer",
 ]
 
 
@@ -358,4 +360,135 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
         torch.cuda.empty_cache()
     pass
     return
+pass
+
+
+@torch.inference_mode
+def patch_tokenizer(model, tokenizer):
+    """
+        Phi3's pad_token isn't set. We set it to <|placeholder...
+        Llama-3 is <|reserved...
+        Llama-2 is <unk>
+        Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
+        Fixes https://github.com/unslothai/unsloth/issues/5
+    """
+    possible_reserved_tokens = (
+        "<|finetune_right_pad_id|>", # Llama-3.1
+        "<pad>",                     # Mistral Nemo
+        "<|reserved",                # Llama-3
+        "<|placeholder",             # Phi-3
+        "[control",                  # Mistral type models
+    )
+    joiner = "\1\0=+=\0\1"
+    number_repetitions = 3 - 1 # Number of reserved tokens needed
+
+    if model is not None:
+        model.config.update({"unsloth_version" : __version__})
+
+    bad_pad_token = False
+    if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
+        # Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
+        bad_pad_token = tokenizer.eos_token == tokenizer.pad_token
+    elif hasattr(tokenizer, "pad_token") and tokenizer.pad_token is None:
+        bad_pad_token = True
+    else:
+        bad_pad_token = False
+    pass
+
+    if bad_pad_token:
+        # Find a better pad token
+        added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
+        all_added_tokens = joiner.join(added_tokens[::-1])
+        all_added_tokens += joiner
+
+        final_pad_token  = None
+        final_good_match = False
+
+        for possible_reserved_token in possible_reserved_tokens:
+            possible_reserved_token = re.escape(possible_reserved_token)
+            found = re.finditer(f"{possible_reserved_token}", all_added_tokens)
+            first_match = None
+            good_match  = False
+            for j, x in enumerate(found):
+                if j == 0: first_match = x
+                if j >= number_repetitions:
+                    good_match = True
+                    break
+                pass
+            pass
+
+            if first_match is None: continue
+
+            # If it ends with |> or > etc, then set it as a good pad token!
+            start = first_match.span(0)[0]
+            possible_pad_token = first_match.group(0)
+            end = all_added_tokens.find(joiner, start)
+            first_match = all_added_tokens[start:end]
+
+            if first_match is not None:
+                good_match = possible_pad_token.endswith((">", "|>", "]", ")"))
+            pass
+            possible_pad_token = first_match
+
+            # Replace current pad token if another exact match is found
+            if not final_good_match and good_match:
+                final_good_match = True
+                final_pad_token = possible_pad_token
+                break
+            else:
+                final_good_match = False
+                final_pad_token = possible_pad_token
+            pass
+        pass
+        possible_pad_token = final_pad_token
+
+        # Try unk_token
+        if possible_pad_token is None and hasattr(tokenizer, "unk_token"):
+            possible_pad_token = tokenizer.unk_token
+        pass
+
+        # Check pad token's id must be less than vocab size
+        if possible_pad_token is not None:
+            check_pad_token = tokenizer(possible_pad_token, add_special_tokens = False).input_ids
+            if len(check_pad_token) != 1:
+                possible_pad_token = None
+            if model is not None and check_pad_token[0] >= model.config.vocab_size:
+                possible_pad_token = None
+        pass
+
+        if possible_pad_token is None:
+            # Failure to find a good replacement!! We shall manually add one!
+            new_pad_token = "<|PAD_TOKEN|>"
+            while new_pad_token in tokenizer.get_vocab():
+                new_pad_token = f"<{new_pad_token}>"
+            pass
+            possible_pad_token = new_pad_token
+        pass
+
+        name = model.config._name_or_path if model is not None else "Model"
+        logger.warning_once(
+            f"{name} does not have a padding token! Will use pad_token = {possible_pad_token}."
+        )
+        
+        # Edit pad_token
+        tokenizer.add_special_tokens({"pad_token" : possible_pad_token})
+        tokenizer.pad_token = possible_pad_token
+        if model is not None:
+            model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+            if getattr(model, "generation_config") is not None:
+                model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
+    else:
+        if model is not None:
+            if model.config.pad_token_id is None:
+                model.config.update({"pad_token_id" : tokenizer.pad_token_id})
+                if getattr(model, "generation_config") is not None:
+                    model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
+        pass
+    pass
+
+    if model is not None:
+        if getattr(model, "generation_config") is not None:
+            model.generation_config.update(max_length = model.config.max_position_embeddings)
+
+    return model, tokenizer
 pass
