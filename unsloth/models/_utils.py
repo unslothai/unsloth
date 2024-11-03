@@ -59,6 +59,11 @@ from packaging.version import Version
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer,
 )
+from unsloth_zoo.patching_utils import (
+    patch_compiling_bitsandbytes,
+    patch_layernorm,
+    patch_torch_compile,
+)
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
@@ -356,47 +361,27 @@ def is_big_gpu(index):
     return True
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
+patch_torch_compile()
 
-
-# Torch compile arguments
-torch_compile_arguments = [
-    "config.dce = True",
-    "config.memory_planning = True",
-    "config.memory_pool = 'combined'",
-    "config.coordinate_descent_tuning = True",
-    "config.max_autotune_gemm = False", # GEMM is unnecessary
-    "config.autotune_multi_device = False",
-    "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
-    "config.aggressive_fusion = False", # Careful changes results!
-    "config.cuda.enable_cuda_lto = True",
-    "config.cuda.use_fast_math = True",
-    "config.cuda.compile_opt_level = '-O2'",
-]
-# Torch dynamo arguments
-torch_dynamo_arguments = [
-    "config.accumulated_cache_size_limit = 1024", # Bump up a bit from 256
-    "config.suppress_errors = True", # Supress errors for now
-    "config.do_not_emit_runtime_asserts = True",
-    "config.cache_size_limit = 1024", # Flex Attention
-    "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
-]
-# import torch._inductor.config as config
-# for _try_compile_argument in torch_compile_arguments:
-#     try:    exec(_try_compile_argument)
-#     except: pass
-# pass
-# import torch._dynamo.config as config
-# for _try_dynamo_argument in torch_dynamo_arguments:
-#     try:    exec(_try_dynamo_argument)
-#     except: pass
-# pass
 torch_compile_options = {
     "epilogue_fusion"   : True,
     "max_autotune"      : True,
     "shape_padding"     : True,
-    "trace.enabled"     : False, # Output Triton kernel outputs!
+    "trace.enabled"     : False,
     "triton.cudagraphs" : False,
 }
+
+import accelerate
+def torch_compile_kwargs(*args, **kwargs):
+    print("Unsloth: Enabled auto compiling")
+    return {"dynamic" : True, "fullgraph" : False, "options" : torch_compile_options}
+pass
+
+accelerate.utils.dataclasses.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
+accelerate.utils.TorchDynamoPlugin.to_kwargs             = torch_compile_kwargs
+accelerate.accelerator.TorchDynamoPlugin.to_kwargs       = torch_compile_kwargs
+del accelerate
+
 # =============================================
 
 def prepare_model_for_kbit_training(
@@ -499,21 +484,7 @@ if Version(peft_version) < Version("0.12.0"):
     pass
 pass
 
-# Also disable compiling on bitsandbytes
-def patch_compiling_bitsandbytes():
-    # import peft.tuners.lora.bnb
-    # peft.tuners.lora.bnb.Linear4bit.forward = \
-    #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
-    # peft.tuners.lora.bnb.Linear8bitLt.forward = \
-    #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
-    # return
-    import bitsandbytes.nn.modules
-    bitsandbytes.nn.modules.Linear4bit.forward = \
-        torch._disable_dynamo(bitsandbytes.nn.modules.Linear4bit.forward)
-    return
-pass
 # =============================================
-
 
 import psutil
 def _get_statistics(statistics = None, force_download = True):
