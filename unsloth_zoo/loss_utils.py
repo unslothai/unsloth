@@ -2,7 +2,7 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
+# it under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
@@ -11,11 +11,10 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
-# You should have received a copy of the GNU General Public License
+# You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import torch
-from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
 
 __all__ = [
@@ -54,7 +53,7 @@ def transformers_losses_patcher(UnslothForCausalLMLoss):
         try:
             import transformers.loss.loss_utils
         except:
-            logger.warning_once("Unsloth: Cannot patch loss functions - update transformers for faster modules!")
+            print("Unsloth: Cannot patch loss functions - update transformers for faster modules!")
             return
         pass
 
@@ -67,6 +66,7 @@ def transformers_losses_patcher(UnslothForCausalLMLoss):
             transformers.modeling_utils.PreTrainedModel.loss_function = \
                 transformers.modeling_utils.PreTrainedModel.loss_function.fget.__wrapped__
         pass
+        print("Unsloth: Patched cross entropy losses.")
     pass
     return _patch_transformers_losses
 pass

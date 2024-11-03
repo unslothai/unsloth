@@ -2,7 +2,7 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
+# it under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
@@ -11,11 +11,10 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
-# You should have received a copy of the GNU General Public License
+# You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import torch
-from transformers.models.llama.modeling_llama import logger
 import gc
 import numpy as np
 import itertools
@@ -347,7 +346,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     mean_lm_head  [where_null] = 0
 
     # Set them to the mean
-    logger.warning(
+    print(
         "Unsloth: Setting embed_tokens & lm_head untrained tokens to "\
         "mean(trained) to counteract NaNs during training."
     )
@@ -466,7 +465,7 @@ def patch_tokenizer(model, tokenizer):
         pass
 
         name = model.config._name_or_path if model is not None else "Model"
-        logger.warning_once(
+        print(
             f"{name} does not have a padding token! Will use pad_token = {possible_pad_token}."
         )
         
