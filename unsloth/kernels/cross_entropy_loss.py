@@ -393,4 +393,4 @@ if (Version(torch.__version__) < Version("2.4.0")) and \
 pass
 
 # Patch CE Losses in transformers
-patch_losses = transformers_losses_patcher(causal_loss_function(fast_cross_entropy_loss))
+patch_loss_functions(fast_cross_entropy_loss)
