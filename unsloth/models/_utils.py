@@ -63,6 +63,7 @@ from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
     patch_layernorm,
     patch_torch_compile,
+    patch_regional_compilation,
 )
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
@@ -575,27 +576,6 @@ def get_statistics():
     except:
         pass
     if disabled: enable_progress_bars()
-pass
-
-
-# =============================================
-# Regional torch 2.5 Recompilation - weirdly very slow??
-def patch_regional_compilation():
-    if torch.nn.ModuleList.__name__ == "UnslothModuleList": return
-    # Only works for torch 2.5
-    if Version(torch.__version__) < Version("2.5.0"): return
-
-    old_module_list = torch.nn.ModuleList
-
-    def UnslothModuleList(*args, **kwargs):
-        if len(args) == 1 and len(kwargs) == 0 and type(args[0]) is list:
-            args = [old_module_list([torch.compile(x, dynamic = True, options = torch_compile_options, fullgraph = False) for x in args[0]])]
-        return old_module_list(*args, **kwargs)
-    pass
-    UnslothModuleList.__doc__ = old_module_list.__doc__
-
-    torch.nn.ModuleList = UnslothModuleList
-    return
 pass
 
 
