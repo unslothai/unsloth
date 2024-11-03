@@ -46,6 +46,8 @@ __all__ = [
     "patch_gradient_accumulation_fix",
     "patch_compiling_bitsandbytes",
     "patch_regional_compilation",
+    "patch_layernorm",
+    "patch_torch_compile",
 ]
 
 import torch
