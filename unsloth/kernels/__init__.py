@@ -15,6 +15,7 @@
 from .cross_entropy_loss import (
     fast_cross_entropy_loss,
     post_patch_loss_function,
+    patch_loss_functions,
 )
 from .rms_layernorm import (
     fast_rms_layernorm,
