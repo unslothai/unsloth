@@ -19,6 +19,12 @@ from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh
 from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
 
+from unsloth_zoo.loss_utils import (
+    causal_loss_function,
+    transformers_losses_patcher,
+    patch_loss_function,
+)
+
 
 @triton.heuristics({
     "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
@@ -354,7 +360,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
     pass
 pass
 
-# @torch._disable_dynamo
+
 def fast_cross_entropy_loss(
     logits,
     labels,
@@ -382,152 +388,10 @@ def fast_cross_entropy_loss(
         n_items = torch.count_nonzero(labels != -100)
     return loss.sum() / n_items
 pass
-if Version(torch.__version__) < Version("2.5.0"):
+if (Version(torch.__version__) < Version("2.4.0")) and \
+    not hasattr(fast_cross_entropy_loss, "__wrapped__"):
     fast_cross_entropy_loss = torch._disable_dynamo(fast_cross_entropy_loss)
 pass
 
-
-from transformers.models.llama.modeling_llama import (
-    LlamaForCausalLM,
-    CausalLMOutputWithPast,
-    Optional,
-    Union,
-    Cache,
-    List,
-    Tuple,
-)
-
-# Transformers 4.47 need Unpack, KwargsForCausalLM
-try:
-    from transformers.models.llama.modeling_llama import Unpack, KwargsForCausalLM
-except:
-    pass
-pass
-
-import inspect, re
-function = inspect.getsource(LlamaForCausalLM.forward)
-function = function.split("\n")
-i = re.match(r"[ ]{1,}", function[0]).span(0)[1]
-function = [x[i:] for x in function]
-function = "\n".join(function)
-function = function[function.find("def forward"):]
-replacement = """    loss = None
-    logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-    logit_scaling     = getattr(self.config, "logit_scale", 0)
-    if labels is not None:
-        shift_logits = logits
-        if not hasattr(self, "extra_ignored_labels"):
-            # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
-        pass
-        
-        shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-        loss = fast_cross_entropy_loss(
-            logits = shift_logits,
-            labels = shift_labels,
-            logit_softcapping = logit_softcapping,
-            logit_scaling     = logit_scaling,
-            n_items           = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None),
-        )
-    else:
-        if logit_scaling != 0:
-            if logits.requires_grad:
-                logits = logit_scaling * logits
-            else:
-                logits *= logit_scaling
-            pass
-        pass
-        if logit_softcapping != 0:
-            if logits.requires_grad:
-                logits = (1.0 / logit_softcapping) * logits
-                logits = torch.tanh(logits)
-                logits = logit_softcapping * logits
-            else:
-                logits *= (1.0 / logit_softcapping)
-                torch.tanh(logits, out = logits)
-                logits *= logit_softcapping
-            pass
-        pass
-    pass
-"""
-function = \
-    function[:function.find("    loss = None")] + \
-    replacement + \
-    function[ function.find("    if not return_dict"):]
-function = function.replace("logits = logits.float()", "\n")
-# Missed spaces
-function = function.split("\n")
-# Not the first one though!
-function = [function[0]] + [" "*4 + x for x in function[1:]]
-function = "\n".join(function)
-function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
-f"    {function}\n"
-exec(function, globals())
-del function, replacement, inspect, re
-
-
-def patch_llama_for_causal_lm():
-    import transformers.models.llama.modeling_llama
-    transformers.models.llama.modeling_llama.LlamaForCausalLM = Unsloth_LlamaForCausalLM
-    return
-pass
-
-
-def unpatch_llama_for_causal_lm():
-    import transformers.models.llama.modeling_llama
-    transformers.models.llama.modeling_llama.LlamaForCausalLM = LlamaForCausalLM
-    return
-pass
-
-
-def UnslothForCausalLMLoss(
-    logits, labels, vocab_size: int, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs
-):
-    shift_logits = logits
-    shift_labels = torch.empty_like(labels)
-    shift_labels[..., :-1] = labels[..., 1:]
-    shift_labels[..., -1] = -100
-    loss = fast_cross_entropy_loss(
-        logits  = shift_logits,
-        labels  = shift_labels,
-        n_items = num_items_in_batch,
-    )
-    return loss
-pass
-if Version(torch.__version__) < Version("2.5.0"):
-    UnslothForCausalLMLoss = torch._disable_dynamo(UnslothForCausalLMLoss)
-pass
-
-
-def patch_transformers_losses():
-    import re
-    try:
-        import transformers.loss.loss_utils
-    except:
-        logger.warning_once("Unsloth: Cannot patch loss functions - update transformers for faster modules!")
-        return
-    pass
-
-    import transformers.modeling_utils
-    LOSS_MAPPING = transformers.loss.loss_utils.LOSS_MAPPING
-    LOSS_MAPPING["ForCausalLM"] = UnslothForCausalLMLoss
-
-    # Remove @property and @lru_cache
-    if hasattr(transformers.modeling_utils.PreTrainedModel.loss_function, "fget"):
-        transformers.modeling_utils.PreTrainedModel.loss_function = \
-            transformers.modeling_utils.PreTrainedModel.loss_function.fget.__wrapped__
-    pass
-pass
-
-
-def patch_loss_function(model):
-    try:
-        # model.loss_function starts as a dict to a loss fx
-        # We invoke it to save it
-        model.loss_function = model.loss_function()
-    except:
-        # Failed means we already invoked it, and we need args to the loss fx
-        pass
-    pass
-    return model
-pass
+# Patch CE Losses in transformers
+patch_losses = transformers_losses_patcher(causal_loss_function(fast_cross_entropy_loss))
