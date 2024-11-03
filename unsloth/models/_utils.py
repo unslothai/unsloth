@@ -48,7 +48,6 @@ __all__ = [
     "patch_regional_compilation",
     "patch_layernorm",
     "patch_torch_compile",
-    "patch_loss_functions",
 ]
 
 import torch
