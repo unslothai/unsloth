@@ -53,11 +53,13 @@ pass
 # Reduce VRAM usage by reducing fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-# Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
-keynames = "\n" + "\n".join(os.environ.keys())
-if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
+# Hugging Face Hub faster downloads
+if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 pass
+
+# Log Unsloth is being used
+os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 try:
     import torch
