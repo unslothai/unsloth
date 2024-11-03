@@ -20,7 +20,7 @@ from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
 
 from unsloth_zoo.loss_utils import (
-    patch_loss_functions,
+    patch_loss_functions as _patch_loss_functions,
     post_patch_loss_function,
 )
 
@@ -393,4 +393,6 @@ if (Version(torch.__version__) < Version("2.4.0")) and \
 pass
 
 # Patch CE Losses in transformers
-patch_loss_functions(fast_cross_entropy_loss)
+def patch_loss_functions():
+    _patch_loss_functions(fast_cross_entropy_loss)
+pass
