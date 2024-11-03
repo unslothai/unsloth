@@ -20,9 +20,8 @@ from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
 
 from unsloth_zoo.loss_utils import (
-    causal_loss_function,
-    transformers_losses_patcher,
-    patch_loss_function,
+    patch_loss_functions,
+    post_patch_loss_function,
 )
 
 
