@@ -20,6 +20,7 @@ __all__ = [
     "patch_compiling_bitsandbytes",
     "patch_layernorm",
     "patch_torch_compile",
+    "patch_regional_compilation",
 ]
 
 # Also disable compiling on bitsandbytes
@@ -87,4 +88,24 @@ def patch_torch_compile(debug = True):
         try:    exec(_try_dynamo_argument)
         except: pass
     pass
+pass
+
+
+def patch_regional_compilation():
+    # Regional torch 2.5 Recompilation - weirdly very slow??
+    if torch.nn.ModuleList.__name__ == "UnslothModuleList": return
+    # Only works for torch 2.5
+    if Version(torch.__version__) < Version("2.5.0"): return
+
+    old_module_list = torch.nn.ModuleList
+
+    def UnslothModuleList(*args, **kwargs):
+        if len(args) == 1 and len(kwargs) == 0 and type(args[0]) is list:
+            args = [old_module_list([torch.compile(x, dynamic = True, options = torch_compile_options, fullgraph = False) for x in args[0]])]
+        return old_module_list(*args, **kwargs)
+    pass
+    UnslothModuleList.__doc__ = old_module_list.__doc__
+
+    torch.nn.ModuleList = UnslothModuleList
+    return
 pass

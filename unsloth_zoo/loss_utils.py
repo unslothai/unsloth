@@ -16,63 +16,73 @@
 
 import torch
 from packaging.version import Version
+torch_nn_functional_cross_entropy = torch.nn.functional.cross_entropy
 
 __all__ = [
-    "causal_loss_function",
-    "transformers_losses_patcher",
-    "patch_loss_function",
+    "patch_loss_functions",
+    "post_patch_loss_function",
 ]
 
 
-def causal_loss_function(_fast_cross_entropy_loss):
+def patch_loss_functions(_fast_cross_entropy_loss):
+    try:
+        import transformers.loss.loss_utils
+    except:
+        print("Unsloth: Cannot patch loss functions - update transformers for faster modules!")
+        return None
+    pass
+
+    # Generic cross entropy loss
+    def unsloth_fixed_cross_entropy(source, target, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs):
+        if ignore_index == -100:
+            loss = _fast_cross_entropy_loss(
+                logits  = source,
+                labels  = target,
+                n_items = num_items_in_batch,
+            )
+        else:
+            reduction = "sum" if num_items_in_batch is not None else "mean"
+            loss = torch_nn_functional_cross_entropy(
+                source,
+                target,
+                ignore_index = ignore_index,
+                reduction    = reduction,
+            )
+            if reduction == "sum": loss = loss / num_items_in_batch
+        return loss
+    pass
+    
+    # Causal LM loss
     def UnslothForCausalLMLoss(
         logits, labels, vocab_size: int, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs
     ):
         shift_logits = logits
         shift_labels = torch.empty_like(labels)
         shift_labels[..., :-1] = labels[..., 1:]
-        shift_labels[..., -1] = -100
-        loss = _fast_cross_entropy_loss(
-            logits  = shift_logits,
-            labels  = shift_labels,
-            n_items = num_items_in_batch,
-        )
+        shift_labels[..., -1] = ignore_index
+        loss = unsloth_fixed_cross_entropy(shift_logits, shift_labels, num_items_in_batch, ignore_index, **kwargs)
         return loss
     pass
 
     if (Version(torch.__version__) < Version("2.4.0")):
         UnslothForCausalLMLoss = torch._disable_dynamo(UnslothForCausalLMLoss)
     pass
-    return UnslothForCausalLMLoss
-pass
 
+    # Now patch the losses!
+    import transformers.modeling_utils
+    LOSS_MAPPING = transformers.loss.loss_utils.LOSS_MAPPING
+    LOSS_MAPPING["ForCausalLM"] = UnslothForCausalLMLoss
 
-def transformers_losses_patcher(UnslothForCausalLMLoss):
-    def _patch_transformers_losses():
-        import re
-        try:
-            import transformers.loss.loss_utils
-        except:
-            print("Unsloth: Cannot patch loss functions - update transformers for faster modules!")
-            return
-        pass
-
-        import transformers.modeling_utils
-        LOSS_MAPPING = transformers.loss.loss_utils.LOSS_MAPPING
-        LOSS_MAPPING["ForCausalLM"] = UnslothForCausalLMLoss
-
-        # Remove @property and @lru_cache
-        if hasattr(transformers.modeling_utils.PreTrainedModel.loss_function, "fget"):
-            transformers.modeling_utils.PreTrainedModel.loss_function = \
-                transformers.modeling_utils.PreTrainedModel.loss_function.fget.__wrapped__
-        pass
-        print("Unsloth: Patched cross entropy losses.")
+    # Remove @property and @lru_cache
+    if hasattr(transformers.modeling_utils.PreTrainedModel.loss_function, "fget"):
+        transformers.modeling_utils.PreTrainedModel.loss_function = \
+            transformers.modeling_utils.PreTrainedModel.loss_function.fget.__wrapped__
     pass
-    return _patch_transformers_losses
+    print("Unsloth: Patched cross entropy losses.")
 pass
 
 
-def patch_loss_function(model):
+def post_patch_loss_function(model):
     try:
         # model.loss_function starts as a dict to a loss fx
         # We invoke it to save it
