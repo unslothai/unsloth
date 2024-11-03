@@ -1,8 +1,18 @@
-# Copyright (C) 2024-present the Unsloth AI team. All rights reserved.
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import torch
 import math
@@ -13,7 +23,6 @@ from transformers import Trainer
 from transformers.trainer_utils import seed_worker as trainer_utils_seed_worker
 from tqdm import tqdm as ProgressBar
 from packaging.version import Version
-from transformers.models.llama.modeling_llama import logger
 import time
 
 __all__ = [
@@ -229,7 +238,7 @@ def unsloth_train(trainer):
         f'O^O/ \\_/ \\    Batch size per device = {training_args.per_device_train_batch_size:,} | Gradient Accumulation steps = {training_args.gradient_accumulation_steps}\n'\
         f'\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\n'\
         f' "-____-"     Number of trainable parameters = {n_parameters_to_train:,}'
-    logger.warning(debug_info)
+    print(debug_info)
 
     # Get per epoch counter
     max_iters_per_epoch = math.ceil(n_training_samples / total_train_batch_size)
@@ -304,16 +313,10 @@ def unsloth_train(trainer):
         pass
     pass
     unset_training(model)
-    logger.warning("Unsloth: Finished training!")
+    print("Unsloth: Finished training!")
     end_time = time.time()
 
     # Return stats
     trainer_stats = Trainer_Stats(metrics = {"train_runtime" : end_time - start_time})
     return trainer_stats
 pass
-
-# Copyright (C) 2024-present the Unsloth AI team. All rights reserved.
-#
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at https://mozilla.org/MPL/2.0/.
