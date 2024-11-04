@@ -36,7 +36,7 @@ def _cross_entropy_forward(
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        : tl.constexpr,
+    VOCAB_SIZE        ,
     BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
@@ -109,8 +109,8 @@ def _chunked_cross_entropy_forward(
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        : tl.constexpr,
-    N_CHUNKS          : tl.constexpr,
+    VOCAB_SIZE        ,
+    N_CHUNKS          ,
     BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
@@ -193,7 +193,7 @@ def _cross_entropy_backward(
     dloss_row_stride  ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        : tl.constexpr,
+    VOCAB_SIZE        ,
     BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
@@ -272,16 +272,20 @@ MAX_FUSED_SIZE = 65536 # 2**16
 
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, logits, labels, logit_softcapping = 0, logit_scaling = 0):
+    def forward(ctx, logits, labels, logit_softcapping : float = 0, logit_scaling : float = 0):
+        n_rows : int
+        vocab_size : int
         n_rows, vocab_size = logits.shape
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
-        n_chunks = div + (mod != 0)
+        n_chunks : int = div + (mod != 0)
         losses = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
         DO_SOFTCAPPING   : bool = bool(logit_softcapping != 0)
         DO_LOGIT_SCALING : bool = bool(logit_scaling != 0)
 
+        BLOCK_SIZE : int
+        num_warps  : int
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
@@ -336,11 +340,13 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dlosses):
         logits, logsumexp, labels = ctx.saved_tensors
+        n_rows : int
+        vocab_size : int
         n_rows, vocab_size = logits.shape
 
-        BLOCK_SIZE = 4096
+        BLOCK_SIZE : int = 4096
         div, mod = divmod(vocab_size, BLOCK_SIZE)
-        n_blocks = div + (mod != 0)
+        n_blocks : int = div + (mod != 0)
 
         _cross_entropy_backward[(n_rows, n_blocks,)](
             logits,   logits.stride(0),
