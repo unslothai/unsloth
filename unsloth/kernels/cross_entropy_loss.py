@@ -32,11 +32,11 @@ from unsloth_zoo.loss_utils import (
 @triton.jit
 def _cross_entropy_forward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr,
+    logits_row_stride ,
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
+    VOCAB_SIZE        : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
@@ -105,12 +105,12 @@ pass
 @triton.jit
 def _chunked_cross_entropy_forward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr,
+    logits_row_stride ,
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
-    N_CHUNKS          ,
+    VOCAB_SIZE        : tl.constexpr,
+    N_CHUNKS          : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
@@ -188,12 +188,12 @@ pass
 @triton.jit
 def _cross_entropy_backward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr,
+    logits_row_stride ,
     dloss_ptr         ,
     dloss_row_stride  ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
+    VOCAB_SIZE        : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
