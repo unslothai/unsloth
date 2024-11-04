@@ -32,16 +32,16 @@ from unsloth_zoo.loss_utils import (
 @triton.jit
 def _cross_entropy_forward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr(tl.int64),
+    logits_row_stride : tl.constexpr,
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        : tl.constexpr(tl.int32),
-    BLOCK_SIZE        : tl.constexpr(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
-    SOFTCAP           : tl.constexpr(tl.float32),
+    SOFTCAP           : tl.constexpr,
     DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       : tl.constexpr(tl.float32),
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
@@ -105,17 +105,17 @@ pass
 @triton.jit
 def _chunked_cross_entropy_forward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr(tl.int64),
+    logits_row_stride : tl.constexpr,
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        : tl.constexpr(tl.int32),
-    N_CHUNKS          : tl.constexpr(tl.int32),
-    BLOCK_SIZE        : tl.constexpr(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    N_CHUNKS          : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
-    SOFTCAP           : tl.constexpr(tl.float32),
+    SOFTCAP           : tl.constexpr,
     DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       : tl.constexpr(tl.float32),
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         256K vocab divided in 4 chunks
@@ -188,17 +188,17 @@ pass
 @triton.jit
 def _cross_entropy_backward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr(tl.int64),
+    logits_row_stride : tl.constexpr,
     dloss_ptr         ,
     dloss_row_stride  ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        : tl.constexpr(tl.int32),
-    BLOCK_SIZE        : tl.constexpr(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
-    SOFTCAP           : tl.constexpr(tl.float32),
+    SOFTCAP           : tl.constexpr,
     DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       : tl.constexpr(tl.float32),
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
