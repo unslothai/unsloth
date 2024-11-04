@@ -24,6 +24,11 @@ __all__ = [
     "prepare_n_gradient_checkpoints",
     "Unsloth_Offloaded_Gradient_Checkpointer",
     "unsloth_offloaded_gradient_checkpoint",
+    "patch_unsloth_gradient_checkpointing",
+    "unpatch_unsloth_gradient_checkpointing",
+
+    "Unsloth_Gradient_Checkpointer",
+    "unsloth_gradient_checkpoint",
     "patch_gradient_checkpointing",
     "unpatch_gradient_checkpointing",
 ]
@@ -155,6 +160,35 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
 pass
 
 
+class Unsloth_Gradient_Checkpointer(torch.autograd.Function):
+    """
+    Same as normal gradient checkpointing but cleaner
+    """
+    @staticmethod
+    @torch_amp_custom_fwd
+    def forward(ctx, forward_function, hidden_states, *args):
+        with torch.no_grad():
+            output = forward_function(hidden_states, *args)
+        ctx.save_for_backward(hidden_states)
+        ctx.forward_function = forward_function
+        ctx.args = args
+        return output
+    pass
+
+    @staticmethod
+    @torch_amp_custom_bwd
+    def backward(ctx, dY):
+        (hidden_states,) = ctx.saved_tensors
+        hidden_states = hidden_states.detach()
+        hidden_states.requires_grad_(True)
+        with torch.enable_grad():
+            (output,) = ctx.forward_function(hidden_states, *ctx.args)
+        torch.autograd.backward(output, dY)
+        return (None, hidden_states.grad,) + (None,)*len(ctx.args)
+    pass
+pass
+
+
 def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
     return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
 pass
@@ -166,12 +200,41 @@ if (Version(torch.__version__) < Version("2.4.0")) and \
 pass
 
 
-def patch_gradient_checkpointing():
+def unsloth_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
+    return Unsloth_Gradient_Checkpointer.apply(function, *args)
+pass
+if (Version(torch.__version__) < Version("2.4.0")) and \
+    not hasattr(unsloth_gradient_checkpoint, "__wrapped__"):
+    unsloth_gradient_checkpoint = torch._disable_dynamo(
+        unsloth_gradient_checkpoint
+    )
+pass
+
+
+def patch_unsloth_gradient_checkpointing():
     print("Unsloth: Patched gradient checkpointing for long context finetuning.")
     import torch.utils
     if torch.utils.checkpoint.checkpoint.__name__ == "unsloth_offloaded_gradient_checkpoint": return
     torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint
     torch.utils.checkpoint.checkpoint = unsloth_offloaded_gradient_checkpoint
+pass
+
+
+def patch_gradient_checkpointing():
+    print("Unsloth: Patched gradient checkpointing.")
+    import torch.utils
+    if torch.utils.checkpoint.checkpoint.__name__ == "unsloth_gradient_checkpoint": return
+    torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint
+    torch.utils.checkpoint.checkpoint = unsloth_gradient_checkpoint
+pass
+
+
+def unpatch_unsloth_gradient_checkpointing():
+    import torch.utils
+    if hasattr(torch.utils.checkpoint, "_old_checkpoint"):
+        torch.utils.checkpoint.checkpoint = torch.utils.checkpoint._old_checkpoint
+        del torch.utils.checkpoint._old_checkpoint
+    pass
 pass
 
 
