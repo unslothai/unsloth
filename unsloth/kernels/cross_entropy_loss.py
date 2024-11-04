@@ -38,9 +38,9 @@ def _cross_entropy_forward(
     labels_ptr        ,
     VOCAB_SIZE        : tl.constexpr(tl.int32),
     BLOCK_SIZE        : tl.constexpr(tl.int32),
-    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
+    DO_SOFTCAPPING    ,
     SOFTCAP           ,
-    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
+    DO_LOGIT_SCALING  ,
     LOGIT_SCALE       ,
 ):
     """
@@ -112,9 +112,9 @@ def _chunked_cross_entropy_forward(
     VOCAB_SIZE        : tl.constexpr(tl.int32),
     N_CHUNKS          : tl.constexpr(tl.int32),
     BLOCK_SIZE        : tl.constexpr(tl.int32),
-    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
+    DO_SOFTCAPPING    ,
     SOFTCAP           ,
-    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
+    DO_LOGIT_SCALING  ,
     LOGIT_SCALE       ,
 ):
     """
@@ -195,9 +195,9 @@ def _cross_entropy_backward(
     labels_ptr        ,
     VOCAB_SIZE        : tl.constexpr(tl.int32),
     BLOCK_SIZE        : tl.constexpr(tl.int32),
-    DO_SOFTCAPPING    : tl.constexpr(tl.int1),
+    DO_SOFTCAPPING    ,
     SOFTCAP           ,
-    DO_LOGIT_SCALING  : tl.constexpr(tl.int1),
+    DO_LOGIT_SCALING  ,
     LOGIT_SCALE       ,
 ):
     """
