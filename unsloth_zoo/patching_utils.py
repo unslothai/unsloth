@@ -113,7 +113,8 @@ def patch_regional_compilation():
 pass
 
 
-def patch_model_and_tokenizer(model, tokenizer):
+def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
+    assert(type(downcast_rope) is bool)
     import gc
 
     # Torch.compile fails on embedding matrix??
