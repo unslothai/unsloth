@@ -406,9 +406,6 @@ def patch_tokenizer(model, tokenizer):
     joiner = "\1\0=+=\0\1"
     number_repetitions = 3 - 1 # Number of reserved tokens needed
 
-    if model is not None:
-        model.config.update({"unsloth_version" : __version__})
-
     bad_pad_token = False
     if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
         # Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
