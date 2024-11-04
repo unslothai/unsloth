@@ -75,6 +75,11 @@ from unsloth_zoo.patching_utils import (
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
+    patch_unsloth_gradient_checkpointing,
+    unpatch_unsloth_gradient_checkpointing,
+
+    Unsloth_Gradient_Checkpointer,
+    unsloth_gradient_checkpoint,
     patch_gradient_checkpointing,
     unpatch_gradient_checkpointing,
 )
