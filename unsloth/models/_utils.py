@@ -48,6 +48,7 @@ __all__ = [
     "patch_regional_compilation",
     "patch_layernorm",
     "patch_torch_compile",
+    "patch_model_and_tokenizer",
 ]
 
 import torch
