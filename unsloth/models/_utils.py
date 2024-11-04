@@ -66,6 +66,7 @@ from unsloth_zoo.patching_utils import (
     patch_layernorm,
     patch_torch_compile,
     patch_regional_compilation,
+    patch_model_and_tokenizer,
 )
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
