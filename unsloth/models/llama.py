@@ -1804,6 +1804,7 @@ class FastLlamaModel:
     @staticmethod
     def post_patch(model, tokenizer):
         model, tokenizer = patch_model_and_tokenizer(model, tokenizer, downcast_rope = True)
+        return model, tokenizer
     pass
 
 
