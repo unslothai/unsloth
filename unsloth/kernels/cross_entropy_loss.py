@@ -110,7 +110,7 @@ def _chunked_cross_entropy_forward(
     logsumexp_ptr     ,
     labels_ptr        ,
     VOCAB_SIZE        : tl.constexpr,
-    N_CHUNKS          : tl.constexpr,
+    N_CHUNKS          ,
     BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
