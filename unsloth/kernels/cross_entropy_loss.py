@@ -190,7 +190,7 @@ def _cross_entropy_backward(
     logits_ptr        ,
     logits_row_stride : tl.constexpr(tl.int64),
     dloss_ptr         ,
-    dloss_row_stride  : tl.constexpr(tl.int32),
+    dloss_row_stride  ,
     logsumexp_ptr     ,
     labels_ptr        ,
     VOCAB_SIZE        : tl.constexpr(tl.int32),
