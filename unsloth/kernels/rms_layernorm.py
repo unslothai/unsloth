@@ -53,7 +53,7 @@ def _rms_layernorm_forward(
 pass
 
 
-@triton.heuristics({"GEMMA": lambda args: args["GEMMA"],})
+@triton.heuristics({"GEMMA": lambda args: bool(args["GEMMA"]),})
 @triton.jit
 def _rms_layernorm_backward(
     dY, dY_row_stride,
@@ -130,11 +130,15 @@ pass
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, eps, gemma = False):
+    def forward(ctx, X, W, eps :float, gemma : bool = False):
         shape = X.shape
-        dim = shape[-1]
+        dim : int = shape[-1]
         X = X.view(-1, dim)
+        n_rows : int
+        n_cols : int
         n_rows, n_cols = X.shape
+        BLOCK_SIZE : int
+        num_warps  : int
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
         Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
@@ -161,9 +165,11 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dY):
         shape = dY.shape
-        dim = shape[-1]
+        dim : int = shape[-1]
         dY = dY.view(-1, dim)
         X, W, r = ctx.saved_tensors
+        n_rows : int
+        n_cols : int
         n_rows, n_cols = dY.shape
         dW = X
 
