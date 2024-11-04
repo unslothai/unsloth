@@ -92,6 +92,17 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
+
+# Ignore logging messages
+class HideLoggingMessage(logging.Filter):
+    def __init__(self, text): self.text = text
+    def filter(self, x): return not x.getMessage().startswith(self.text)
+pass
+
+# The speedups for torchdynamo mostly come wih GPU Ampere or higher and which is not detected here.
+import transformers.training_args.logger
+transformers.training_args.logger.addFilter(HideLoggingMessage("The speedups"))
+
 # =============================================
 
 # =============================================
@@ -380,7 +391,7 @@ torch_compile_options = {
 import accelerate
 def torch_compile_kwargs(*args, **kwargs):
     print("Unsloth: Enabled auto compiling")
-    return {"dynamic" : True, "fullgraph" : False, "options" : torch_compile_options}
+    return {"dynamic" : True, "fullgraph" : False, "options" : torch_compile_options,}
 pass
 
 accelerate.utils.dataclasses.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
