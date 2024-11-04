@@ -38,10 +38,10 @@ def _cross_entropy_forward(
     labels_ptr        ,
     VOCAB_SIZE        : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
-    SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       ,
+    DO_SOFTCAPPING    : tl.constexpr,
+    SOFTCAP           : tl.constexpr,
+    DO_LOGIT_SCALING  : tl.constexpr,
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
@@ -64,7 +64,7 @@ def _cross_entropy_forward(
         This ensures exp(x - max(x))'s maximum is 1 as exp(0) = 1.
     """
     row_idx = tl.program_id(0)
-    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr    += row_idx * tl.cast(logits_row_stride, tl.int64)
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx
     labels_ptr    += row_idx
@@ -112,10 +112,10 @@ def _chunked_cross_entropy_forward(
     VOCAB_SIZE        : tl.constexpr,
     N_CHUNKS          : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
-    SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       ,
+    DO_SOFTCAPPING    : tl.constexpr,
+    SOFTCAP           : tl.constexpr,
+    DO_LOGIT_SCALING  : tl.constexpr,
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         256K vocab divided in 4 chunks
@@ -143,7 +143,7 @@ def _chunked_cross_entropy_forward(
     """
     row_idx   = tl.program_id(0)
     chunk_idx = tl.program_id(1)
-    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr    += row_idx * tl.cast(logits_row_stride, tl.int64)
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx * N_CHUNKS + chunk_idx
     labels_ptr    += row_idx
@@ -195,10 +195,10 @@ def _cross_entropy_backward(
     labels_ptr        ,
     VOCAB_SIZE        : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
-    SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       ,
+    DO_SOFTCAPPING    : tl.constexpr,
+    SOFTCAP           : tl.constexpr,
+    DO_LOGIT_SCALING  : tl.constexpr,
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
@@ -218,7 +218,7 @@ def _cross_entropy_backward(
     row_idx   = tl.program_id(0)
     block_idx = tl.program_id(1)
 
-    logits_ptr += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr += row_idx * tl.cast(logits_row_stride, tl.int64)
     dloss_ptr  += row_idx *  dloss_row_stride
     col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
