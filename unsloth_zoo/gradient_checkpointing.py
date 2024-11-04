@@ -167,7 +167,7 @@ pass
 
 
 def patch_gradient_checkpointing():
-    print("Unsloth: Patching Gradient Checkpointing with Unsloth's special version!")
+    print("Unsloth: Patched gradient checkpointing for long context finetuning.")
     import torch.utils
     if torch.utils.checkpoint.checkpoint.__name__ == "unsloth_offloaded_gradient_checkpoint": return
     torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint

@@ -54,18 +54,19 @@ def patch_layernorm(fast_layernorm):
 pass
 
 
-def patch_torch_compile(debug = True):
+def patch_torch_compile(debug = True, O3 = False):
     assert(type(debug) is bool)
+    assert(type(O3)    is bool)
     # Torch compile arguments
     torch_compile_arguments = [
         "config.dce = True",
         "config.memory_planning = True",
         "config.memory_pool = 'combined'",
         "config.coordinate_descent_tuning = True",
-        "config.max_autotune_gemm = False", # GEMM is unnecessary
+        f"config.max_autotune_gemm = {O3}", # GEMM is unnecessary
         "config.autotune_multi_device = False",
         "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
-        "config.aggressive_fusion = False", # Careful changes results!
+        f"config.aggressive_fusion = {O3}", # Careful changes results!
         "config.cuda.enable_cuda_lto = True",
         "config.cuda.use_fast_math = True",
         "config.cuda.compile_opt_level = '-O2'",
