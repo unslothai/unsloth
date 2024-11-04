@@ -354,6 +354,7 @@ pass
 
 # =============================================
 # Torch compile settings
+UNSLOTH_COMPILE_DEBUG = True
 
 # Just remove max_autotune_gemm warning
 import functools
@@ -366,13 +367,13 @@ def is_big_gpu(index):
     return True
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
-patch_torch_compile(debug = False, O3 = False)
+patch_torch_compile(debug = UNSLOTH_COMPILE_DEBUG, O3 = False)
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
     "max_autotune"      : True,
     "shape_padding"     : True,
-    "trace.enabled"     : False,
+    "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
     "triton.cudagraphs" : False,
 }
 
