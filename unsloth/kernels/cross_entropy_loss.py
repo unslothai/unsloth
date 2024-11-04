@@ -36,8 +36,8 @@ def _cross_entropy_forward(
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
-    BLOCK_SIZE        : tl.constexpr(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
     DO_LOGIT_SCALING  ,
@@ -64,7 +64,7 @@ def _cross_entropy_forward(
         This ensures exp(x - max(x))'s maximum is 1 as exp(0) = 1.
     """
     row_idx = tl.program_id(0)
-    logits_ptr    += row_idx * logits_row_stride
+    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx
     labels_ptr    += row_idx
@@ -109,9 +109,9 @@ def _chunked_cross_entropy_forward(
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
-    N_CHUNKS          ,
-    BLOCK_SIZE        : tl.constexpr(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    N_CHUNKS          : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
     DO_LOGIT_SCALING  ,
@@ -143,7 +143,7 @@ def _chunked_cross_entropy_forward(
     """
     row_idx   = tl.program_id(0)
     chunk_idx = tl.program_id(1)
-    logits_ptr    += row_idx * logits_row_stride
+    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx * N_CHUNKS + chunk_idx
     labels_ptr    += row_idx
@@ -193,8 +193,8 @@ def _cross_entropy_backward(
     dloss_row_stride  ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
-    BLOCK_SIZE        : tl.constexpr(tl.int32),
+    VOCAB_SIZE        : tl.constexpr,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
     DO_LOGIT_SCALING  ,
@@ -218,7 +218,7 @@ def _cross_entropy_backward(
     row_idx   = tl.program_id(0)
     block_idx = tl.program_id(1)
 
-    logits_ptr += row_idx * logits_row_stride
+    logits_ptr += row_idx * logits_row_stride.to(tl.int64)
     dloss_ptr  += row_idx *  dloss_row_stride
     col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
