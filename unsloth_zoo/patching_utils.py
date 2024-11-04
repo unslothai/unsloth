@@ -21,6 +21,7 @@ __all__ = [
     "patch_layernorm",
     "patch_torch_compile",
     "patch_regional_compilation",
+    "patch_model_and_tokenizer",
 ]
 
 # Also disable compiling on bitsandbytes
@@ -109,4 +110,147 @@ def patch_regional_compilation():
 
     torch.nn.ModuleList = UnslothModuleList
     return
+pass
+
+
+def patch_model_and_tokenizer(model, tokenizer):
+    import gc
+
+    # Torch.compile fails on embedding matrix??
+    try: old_input_embedding  = model.get_input_embeddings ().weight
+    except: return model, tokenizer
+
+    # Maybe not all models have a lm_head?
+    try: old_output_embedding = model.get_output_embeddings().weight
+    except: old_output_embedding = torch.zeros(0)
+
+    # Check for tied weights as well
+    is_tied = (old_input_embedding.data_ptr() == old_output_embedding.data_ptr()) \
+        or (model.config.tie_word_embeddings)
+
+    # Check pad token's id -> we need to expand the embedding
+    if len(tokenizer) > old_input_embedding.shape[0]:
+        # Workaround randomnly fixes it for torch versions < 2.
+        requires_grad = old_input_embedding.requires_grad
+        old_input_embedding.requires_grad_(False)
+        old_input_embedding.resize_(len(tokenizer), old_input_embedding.shape[1])
+        old_input_embedding.requires_grad_(requires_grad)
+
+        # Fix up all vocab sizes
+        current_model = model
+        while hasattr(current_model, "model") and hasattr(current_model, "config"):
+            if hasattr(current_model.config, "vocab_size"):
+                current_model.config.update({"vocab_size" : len(tokenizer)})
+            current_model.update({"unsloth_optimized" : True})
+            current_model = current_model.model
+        if hasattr(current_model, "model") and hasattr(current_model, "config"):
+            if hasattr(current_model.config, "vocab_size"):
+                current_model.config.update({"vocab_size" : len(tokenizer)})
+            current_model.update({"unsloth_optimized" : True})
+        pass
+    pass
+
+    model.set_input_embeddings(
+        torch.nn.Embedding.from_pretrained(
+            old_input_embedding,
+            padding_idx = getattr(model.config, "pad_token_id", None),
+        )
+    )
+
+    # We also do this for the lm_head
+    if old_output_embedding.numel() != 0:
+
+        requires_grad = old_output_embedding.requires_grad
+        lm_head = torch.nn.Linear(1, 1, bias = None)
+        del lm_head.weight
+
+        lm_head.weight = old_output_embedding if not is_tied else old_input_embedding
+        lm_head.in_features  = lm_head.weight.shape[1]
+        lm_head.out_features = lm_head.weight.shape[0]
+        
+        lm_head.weight.requires_grad_(requires_grad)
+        model.set_output_embeddings(lm_head)
+        if hasattr(model, "lm_head"): model.lm_head = lm_head
+        
+        correct_dtype = lm_head.weight.dtype
+    else:
+        correct_dtype = old_input_embedding.dtype
+    pass
+
+    # Must tie lm_head and embed_tokens if they are tied!
+    # Otherwise error will occur on saving models ie use save_model
+    if is_tied: model.tie_weights()
+
+    # Also fix torch_dtype
+    internal_model = model
+    while hasattr(internal_model, "model"):
+        if hasattr(internal_model, "config"):
+            if   internal_model.config.torch_dtype ==  "float32":
+                internal_model.config.torch_dtype = torch.float32
+            elif internal_model.config.torch_dtype == "bfloat16":
+                internal_model.config.torch_dtype = torch.bfloat16
+            elif internal_model.config.torch_dtype ==  "float16":
+                internal_model.config.torch_dtype = torch.float16
+            pass
+        pass
+        internal_model = internal_model.model
+    pass
+    if hasattr(internal_model, "config"):
+        if   internal_model.config.torch_dtype ==  "float32":
+            internal_model.config.torch_dtype = torch.float32
+        elif internal_model.config.torch_dtype == "bfloat16":
+            internal_model.config.torch_dtype = torch.bfloat16
+        elif internal_model.config.torch_dtype ==  "float16":
+            internal_model.config.torch_dtype = torch.float16
+        pass
+    pass
+    
+    # Also patch all dtypes - BnB seems to not allocate the correct type?
+    # BnB default dtype seems to be float16!
+    try:
+        from bitsandbytes.nn  import Linear4bit as Bnb_Linear4bit
+    except:
+        raise ImportError("Unsloth: Please install bitsandbytes via `pip install bitsandbytes`")
+    try:
+        from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+    except:
+        raise ImportError("Unsloth: Please install peft via `pip install peft`")
+    pass
+
+    for name, module in model.named_modules():
+        if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
+            weight = module.weight
+            quant_state = weight.quant_state
+
+            if type(quant_state) is list:
+                # BnB seems to have float16 as default!
+                module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
+            else:
+                # https://github.com/TimDettmers/bitsandbytes/pull/763/files
+                quant_state.dtype = correct_dtype
+            pass
+        pass
+        # Downcast RoPE embedding to correct data type
+        if downcast_rope and ((name.endswith("rotary_emb") or hasattr(module, "cos_cached"))):
+
+            if hasattr(module, "cos_cached") and \
+                (module.cos_cached.dtype != correct_dtype):
+
+                module.cos_cached = module.cos_cached.to(correct_dtype)
+                module.sin_cached = module.sin_cached.to(correct_dtype)
+
+            elif hasattr(module, "short_cos_cached") and \
+                (module.short_cos_cached.dtype != correct_dtype):
+                
+                module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
+                module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
+            pass
+        pass
+    pass
+
+    # Clear deleted GPU items
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
+    return model, tokenizer
 pass
