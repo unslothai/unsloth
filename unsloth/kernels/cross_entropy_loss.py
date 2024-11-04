@@ -346,9 +346,9 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             labels,
             VOCAB_SIZE       = vocab_size,
             BLOCK_SIZE       = BLOCK_SIZE,
-            DO_SOFTCAPPING   = ctx.DO_SOFTCAPPING,
+            DO_SOFTCAPPING   = bool(ctx.DO_SOFTCAPPING),
             SOFTCAP          = ctx.logit_softcapping,
-            DO_LOGIT_SCALING = ctx.DO_LOGIT_SCALING,
+            DO_LOGIT_SCALING = bool(ctx.DO_LOGIT_SCALING),
             LOGIT_SCALE      = ctx.logit_scaling,
             num_warps        = 8,
         )
