@@ -366,7 +366,7 @@ pass
 
 # =============================================
 # Torch compile settings
-UNSLOTH_COMPILE_DEBUG   = "UNSLOTH_COMPILE_DEBUG"   in os.environ
+UNSLOTH_COMPILE_DEBUG   = True #"UNSLOTH_COMPILE_DEBUG"   in os.environ
 UNSLOTH_COMPILE_MAXIMUM = "UNSLOTH_COMPILE_MAXIMUM" in os.environ
 # Just remove max_autotune_gemm warning
 import functools
