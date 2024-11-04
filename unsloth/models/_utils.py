@@ -59,7 +59,7 @@ import warnings, subprocess, re, inspect, psutil, os, math
 from packaging.version import Version
 
 from unsloth_zoo.tokenizer_utils import (
-    patch_tokenizer,
+    patch_tokenizer as _patch_tokenizer,
 )
 from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
@@ -982,4 +982,12 @@ def patch_gradient_accumulation_fix(Trainer):
     function = function.replace("def training_step", "def _unsloth_training_step", 1)
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
+pass
+
+
+def patch_tokenizer(model, tokenizer):
+    model, tokenizer = _patch_tokenizer(model, tokenizer)
+    if model is not None:
+        model.config.update({"unsloth_version" : __version__})
+    return model, tokenizer
 pass
