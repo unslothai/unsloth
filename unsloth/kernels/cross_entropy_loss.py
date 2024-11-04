@@ -37,7 +37,7 @@ def _cross_entropy_forward(
     logsumexp_ptr     ,
     labels_ptr        ,
     VOCAB_SIZE        ,
-    BLOCK_SIZE : tl.constexpr        ,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
     DO_LOGIT_SCALING  ,
@@ -69,7 +69,7 @@ def _cross_entropy_forward(
     logsumexp_ptr += row_idx
     labels_ptr    += row_idx
 
-    col_offsets = tl.arange(0, BLOCK_SIZE : tl.constexpr)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
@@ -111,7 +111,7 @@ def _chunked_cross_entropy_forward(
     labels_ptr        ,
     VOCAB_SIZE        ,
     N_CHUNKS          ,
-    BLOCK_SIZE : tl.constexpr        ,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
     DO_LOGIT_SCALING  ,
@@ -148,7 +148,7 @@ def _chunked_cross_entropy_forward(
     logsumexp_ptr += row_idx * N_CHUNKS + chunk_idx
     labels_ptr    += row_idx
 
-    col_offsets = chunk_idx*BLOCK_SIZE : tl.constexpr + tl.arange(0, BLOCK_SIZE : tl.constexpr)
+    col_offsets = chunk_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
@@ -194,7 +194,7 @@ def _cross_entropy_backward(
     logsumexp_ptr     ,
     labels_ptr        ,
     VOCAB_SIZE        ,
-    BLOCK_SIZE : tl.constexpr        ,
+    BLOCK_SIZE        : tl.constexpr,
     DO_SOFTCAPPING    ,
     SOFTCAP           ,
     DO_LOGIT_SCALING  ,
@@ -220,7 +220,7 @@ def _cross_entropy_backward(
 
     logits_ptr += row_idx * logits_row_stride
     dloss_ptr  += row_idx *  dloss_row_stride
-    col_offsets = block_idx*BLOCK_SIZE : tl.constexpr + tl.arange(0, BLOCK_SIZE : tl.constexpr)
+    col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
     label_idx = tl.load(labels_ptr + row_idx).to(tl.int32)
 
@@ -284,7 +284,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
-            BLOCK_SIZE : tl.constexpr, num_warps = calculate_settings(vocab_size)
+            BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
             logsumexp = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
             _cross_entropy_forward[(n_rows,)](
@@ -293,7 +293,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 logsumexp,
                 labels,
                 VOCAB_SIZE       = vocab_size,
-                BLOCK_SIZE : tl.constexpr       = BLOCK_SIZE : tl.constexpr,
+                BLOCK_SIZE       = BLOCK_SIZE,
                 DO_SOFTCAPPING   = DO_SOFTCAPPING,
                 SOFTCAP          = logit_softcapping,
                 DO_LOGIT_SCALING = DO_LOGIT_SCALING,
@@ -311,7 +311,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 labels,
                 VOCAB_SIZE       = vocab_size,
                 N_CHUNKS         = n_chunks,
-                BLOCK_SIZE : tl.constexpr       = MAX_FUSED_SIZE,
+                BLOCK_SIZE       = MAX_FUSED_SIZE,
                 DO_SOFTCAPPING   = DO_SOFTCAPPING,
                 SOFTCAP          = logit_softcapping,
                 DO_LOGIT_SCALING = DO_LOGIT_SCALING,
@@ -338,8 +338,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         logits, logsumexp, labels = ctx.saved_tensors
         n_rows, vocab_size = logits.shape
 
-        BLOCK_SIZE : tl.constexpr = 4096
-        div, mod = divmod(vocab_size, BLOCK_SIZE : tl.constexpr)
+        BLOCK_SIZE = 4096
+        div, mod = divmod(vocab_size, BLOCK_SIZE)
         n_blocks = div + (mod != 0)
 
         _cross_entropy_backward[(n_rows, n_blocks,)](
@@ -348,7 +348,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             logsumexp,
             labels,
             VOCAB_SIZE       = vocab_size,
-            BLOCK_SIZE : tl.constexpr       = BLOCK_SIZE : tl.constexpr,
+            BLOCK_SIZE       = BLOCK_SIZE,
             DO_SOFTCAPPING   = ctx.DO_SOFTCAPPING,
             SOFTCAP          = ctx.logit_softcapping,
             DO_LOGIT_SCALING = ctx.DO_LOGIT_SCALING,
