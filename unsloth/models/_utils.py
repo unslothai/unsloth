@@ -41,14 +41,17 @@ __all__ = [
     "torch_amp_custom_bwd",
     "accelerate_old_send_to_device",
     "accelerate_new_send_to_device",
-    "patch_gradient_checkpointing",
-    "unpatch_gradient_checkpointing",
     "patch_gradient_accumulation_fix",
     "patch_compiling_bitsandbytes",
     "patch_regional_compilation",
     "patch_layernorm",
     "patch_torch_compile",
     "patch_model_and_tokenizer",
+
+    "patch_unsloth_gradient_checkpointing",
+    "unpatch_unsloth_gradient_checkpointing",
+    "patch_gradient_checkpointing",
+    "unpatch_gradient_checkpointing",
 ]
 
 import torch
