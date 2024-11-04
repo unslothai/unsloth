@@ -32,7 +32,7 @@ from unsloth_zoo.loss_utils import (
 @triton.jit
 def _cross_entropy_forward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr(tl.int64),
+    logits_row_stride ,
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
@@ -105,7 +105,7 @@ pass
 @triton.jit
 def _chunked_cross_entropy_forward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr(tl.int64),
+    logits_row_stride ,
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
@@ -188,7 +188,7 @@ pass
 @triton.jit
 def _cross_entropy_backward(
     logits_ptr        ,
-    logits_row_stride : tl.constexpr(tl.int64),
+    logits_row_stride ,
     dloss_ptr         ,
     dloss_row_stride  ,
     logsumexp_ptr     ,
