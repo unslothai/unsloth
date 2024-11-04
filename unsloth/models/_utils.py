@@ -100,8 +100,9 @@ class HideLoggingMessage(logging.Filter):
 pass
 
 # The speedups for torchdynamo mostly come wih GPU Ampere or higher and which is not detected here.
-import transformers.training_args.logger
-transformers.training_args.logger.addFilter(HideLoggingMessage("The speedups"))
+from transformers.training_args import logger as transformers_training_args_logger
+transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
+del transformers_training_args_logger
 
 # =============================================
 
