@@ -17,7 +17,9 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings
-from unsloth_zoo import patch_layernorm
+from unsloth_zoo.patching_utils import (
+    patch_layernorm,
+)
 
 
 @triton.jit
