@@ -80,16 +80,16 @@ def patch_torch_compile(debug = True, O3 = False):
         "config.cache_size_limit = 1024", # Flex Attention
         "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
     ]
-    import torch._inductor.config as config
-    for _try_compile_argument in torch_compile_arguments:
-        try:    exec(_try_compile_argument)
-        except: pass
-    pass
-    import torch._dynamo.config as config
-    for _try_dynamo_argument in torch_dynamo_arguments:
-        try:    exec(_try_dynamo_argument)
-        except: pass
-    pass
+    # import torch._inductor.config as config
+    # for _try_compile_argument in torch_compile_arguments:
+    #     try:    exec(_try_compile_argument)
+    #     except: pass
+    # pass
+    # import torch._dynamo.config as config
+    # for _try_dynamo_argument in torch_dynamo_arguments:
+    #     try:    exec(_try_dynamo_argument)
+    #     except: pass
+    # pass
 pass
 
 
