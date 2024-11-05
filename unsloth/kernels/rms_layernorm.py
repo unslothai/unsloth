@@ -130,7 +130,7 @@ pass
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, eps :float, gemma : bool = False):
+    def forward(ctx, X, W, eps : float, gemma : bool = False):
         shape = X.shape
         dim : int = shape[-1]
         X = X.view(-1, dim)
@@ -144,16 +144,26 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
         r = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
-        fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
-        fx[(n_rows,)](
-            Y, Y.stride(0),
-            X, X.stride(0),
-            W, W.stride(0),
-            r, r.stride(0),
-            n_cols, eps,
-            BLOCK_SIZE = BLOCK_SIZE,
-            num_warps  = num_warps,
-        )
+        if not gemma:
+            _rms_layernorm_forward[(n_rows,)](
+                Y, Y.stride(0),
+                X, X.stride(0),
+                W, W.stride(0),
+                r, r.stride(0),
+                n_cols, eps,
+                BLOCK_SIZE = BLOCK_SIZE,
+                num_warps  = num_warps,
+            )
+        else:
+            _gemma_rms_layernorm_forward[(n_rows,)](
+                Y, Y.stride(0),
+                X, X.stride(0),
+                W, W.stride(0),
+                r, r.stride(0),
+                n_cols, eps,
+                BLOCK_SIZE = BLOCK_SIZE,
+                num_warps  = num_warps,
+            )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
