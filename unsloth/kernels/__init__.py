@@ -14,8 +14,8 @@
 
 from .cross_entropy_loss import (
     fast_cross_entropy_loss,
-    patch_llama_for_causal_lm,
-    unpatch_llama_for_causal_lm,
+    post_patch_loss_function,
+    patch_loss_functions,
 )
 from .rms_layernorm import (
     fast_rms_layernorm,
@@ -25,7 +25,6 @@ from .rms_layernorm import (
 from .layernorm import (
     fast_layernorm,
     patch_layernorm,
-    unpatch_layernorm,
 )
 from .rope_embedding import fast_rope_embedding, inplace_rope_embedding
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
@@ -54,8 +53,12 @@ from .flex_attention import (
     create_flex_attention_sliding_window_mask,
 )
 
-try:
-    print("🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.")
-except:
-    print("Unsloth: Will patch your computer to enable 2x faster free finetuning.")
+import os
+if "UNSLOTH_ZOO_IS_PRESENT" not in os.environ:
+    try:
+        print("🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.")
+    except:
+        print("Unsloth: Will patch your computer to enable 2x faster free finetuning.")
+    pass
 pass
+del os

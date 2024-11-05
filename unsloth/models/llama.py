@@ -57,8 +57,6 @@ from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 try:
@@ -1518,6 +1516,7 @@ class FastLlamaModel:
         pass
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         model_patcher.pre_patch()
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
@@ -1621,7 +1620,7 @@ class FastLlamaModel:
         )
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = model_patcher.post_patch(model)
+        model, tokenizer = model_patcher.post_patch(model, tokenizer)
 
         # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
@@ -1797,93 +1796,15 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model._saved_temp_tokenizer = tokenizer
-
-        # Also fix torch_dtype
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            if hasattr(internal_model, "config"):
-                if   internal_model.config.torch_dtype ==  "float32":
-                    internal_model.config.torch_dtype = torch.float32
-                elif internal_model.config.torch_dtype == "bfloat16":
-                    internal_model.config.torch_dtype = torch.bfloat16
-                elif internal_model.config.torch_dtype ==  "float16":
-                    internal_model.config.torch_dtype = torch.float16
-                pass
-            pass
-            internal_model = internal_model.model
-        pass
-        if hasattr(internal_model, "config"):
-            if   internal_model.config.torch_dtype ==  "float32":
-                internal_model.config.torch_dtype = torch.float32
-            elif internal_model.config.torch_dtype == "bfloat16":
-                internal_model.config.torch_dtype = torch.bfloat16
-            elif internal_model.config.torch_dtype ==  "float16":
-                internal_model.config.torch_dtype = torch.float16
-            pass
-        pass
         
         return model, tokenizer
     pass
 
 
     @staticmethod
-    def post_patch(model):
-        # Patch model
-        layers = model.model.layers
-
-        # Torch.compile fails on embedding matrix??
-        # Workaround randomnly fixes it for torch versions < 2.
-        model.set_input_embeddings(torch.nn.Embedding.from_pretrained(model.get_input_embeddings().weight))
-        model.config.update({"unsloth_version" : __version__})
-
-        # We also do this for the lm_head
-        lm_head = torch.nn.Linear(1, 1, bias = None)
-        del lm_head.weight
-        lm_head.weight = model.get_output_embeddings().weight
-        lm_head.in_features  = lm_head.weight.shape[1]
-        lm_head.out_features = lm_head.weight.shape[0]
-        model.lm_head = lm_head
-        
-        # Also patch all dtypes - BnB seems to not allocate the correct type?
-        # BnB default dtype seems to be float16!
-        correct_dtype = lm_head.weight.dtype
-
-        for name, module in model.named_modules():
-            if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
-                weight = module.weight
-                quant_state = weight.quant_state
-
-                if type(quant_state) is list:
-                    # BnB seems to have float16 as default!
-                    module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
-                else:
-                    # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-                    quant_state.dtype = correct_dtype
-                pass
-            pass
-            # Downcast RoPE embedding to correct data type
-            if (name.endswith("rotary_emb") or hasattr(module, "cos_cached")):
-
-                if hasattr(module, "cos_cached") and \
-                    (module.cos_cached.dtype != correct_dtype):
-
-                    module.cos_cached = module.cos_cached.to(correct_dtype)
-                    module.sin_cached = module.sin_cached.to(correct_dtype)
-
-                elif hasattr(module, "short_cos_cached") and \
-                    (module.short_cos_cached.dtype != correct_dtype):
-                    
-                    module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
-                    module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
-                pass
-            pass
-        pass
-
-        # Clear deleted GPU items
-        for _ in range(3):
-            gc.collect()
-            torch.cuda.empty_cache()
-        return model
+    def post_patch(model, tokenizer):
+        model, tokenizer = patch_model_and_tokenizer(model, tokenizer, downcast_rope = True)
+        return model, tokenizer
     pass
 
 
@@ -1909,6 +1830,11 @@ class FastLlamaModel:
         **kwargs,
     ):
         transformers_set_seed(random_state)
+
+        if type(r) is not int:
+            raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
+        if r <= 0:
+            raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
         if isinstance(model, PeftModelForCausalLM):
             # Check if exactly the same and then pass through!

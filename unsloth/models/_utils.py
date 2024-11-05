@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.10.7"
+__version__ = "2024.11.1"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -41,9 +41,17 @@ __all__ = [
     "torch_amp_custom_bwd",
     "accelerate_old_send_to_device",
     "accelerate_new_send_to_device",
+    "patch_gradient_accumulation_fix",
+    "patch_compiling_bitsandbytes",
+    "patch_regional_compilation",
+    "patch_layernorm",
+    "patch_torch_compile",
+    "patch_model_and_tokenizer",
+
+    "patch_unsloth_gradient_checkpointing",
+    "unpatch_unsloth_gradient_checkpointing",
     "patch_gradient_checkpointing",
     "unpatch_gradient_checkpointing",
-    "patch_gradient_accumulation_fix",
 ]
 
 import torch
@@ -53,6 +61,28 @@ platform_system = platform_system()
 import numpy as np
 import warnings, subprocess, re, inspect, psutil, os, math
 from packaging.version import Version
+
+from unsloth_zoo.tokenizer_utils import (
+    patch_tokenizer as _patch_tokenizer,
+)
+from unsloth_zoo.patching_utils import (
+    patch_compiling_bitsandbytes,
+    patch_layernorm,
+    patch_torch_compile,
+    patch_regional_compilation,
+    patch_model_and_tokenizer,
+)
+from unsloth_zoo.gradient_checkpointing import (
+    Unsloth_Offloaded_Gradient_Checkpointer,
+    unsloth_offloaded_gradient_checkpoint,
+    patch_unsloth_gradient_checkpointing,
+    unpatch_unsloth_gradient_checkpointing,
+
+    Unsloth_Gradient_Checkpointer,
+    unsloth_gradient_checkpoint,
+    patch_gradient_checkpointing,
+    unpatch_gradient_checkpointing,
+)
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -70,6 +100,18 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
+
+# Ignore logging messages
+class HideLoggingMessage(logging.Filter):
+    def __init__(self, text): self.text = text
+    def filter(self, x): return not x.getMessage().startswith(self.text)
+pass
+
+# The speedups for torchdynamo mostly come wih GPU Ampere or higher and which is not detected here.
+from transformers.training_args import logger as transformers_training_args_logger
+transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
+del transformers_training_args_logger
+
 # =============================================
 
 # =============================================
@@ -129,7 +171,6 @@ pass
 
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
-import torch
 torch_version = torch.__version__
 if Version(torch_version) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
@@ -333,7 +374,8 @@ pass
 
 # =============================================
 # Torch compile settings
-
+UNSLOTH_COMPILE_DEBUG   = "UNSLOTH_COMPILE_DEBUG"   in os.environ
+UNSLOTH_COMPILE_MAXIMUM = "UNSLOTH_COMPILE_MAXIMUM" in os.environ
 # Just remove max_autotune_gemm warning
 import functools
 @functools.lru_cache(None)
@@ -345,47 +387,27 @@ def is_big_gpu(index):
     return True
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
+patch_torch_compile(debug = UNSLOTH_COMPILE_DEBUG, O3 = UNSLOTH_COMPILE_MAXIMUM)
 
-
-# Torch compile arguments
-torch_compile_arguments = [
-    "config.dce = True",
-    "config.memory_planning = True",
-    "config.memory_pool = 'combined'",
-    "config.coordinate_descent_tuning = True",
-    "config.max_autotune_gemm = False", # GEMM is unnecessary
-    "config.autotune_multi_device = False",
-    "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
-    "config.aggressive_fusion = False", # Careful changes results!
-    "config.cuda.enable_cuda_lto = True",
-    "config.cuda.use_fast_math = True",
-    "config.cuda.compile_opt_level = '-O2'",
-]
-# Torch dynamo arguments
-torch_dynamo_arguments = [
-    "config.accumulated_cache_size_limit = 1024", # Bump up a bit from 256
-    "config.suppress_errors = True", # Supress errors for now
-    "config.do_not_emit_runtime_asserts = True",
-    "config.cache_size_limit = 1024", # Flex Attention
-    "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
-]
-import torch._inductor.config as config
-for _try_compile_argument in torch_compile_arguments:
-    try:    exec(_try_compile_argument)
-    except: pass
-pass
-import torch._dynamo.config as config
-for _try_dynamo_argument in torch_dynamo_arguments:
-    try:    exec(_try_dynamo_argument)
-    except: pass
-pass
 torch_compile_options = {
     "epilogue_fusion"   : True,
     "max_autotune"      : True,
     "shape_padding"     : True,
-    "trace.enabled"     : False, # Output Triton kernel outputs!
+    "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
     "triton.cudagraphs" : False,
 }
+
+import accelerate
+def torch_compile_kwargs(*args, **kwargs):
+    print("Unsloth: Enabled auto compiling")
+    return {"dynamic" : True, "fullgraph" : False, "options" : torch_compile_options,}
+pass
+
+accelerate.utils.dataclasses.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
+accelerate.utils.TorchDynamoPlugin.to_kwargs             = torch_compile_kwargs
+accelerate.accelerator.TorchDynamoPlugin.to_kwargs       = torch_compile_kwargs
+del accelerate
+
 # =============================================
 
 def prepare_model_for_kbit_training(
@@ -455,137 +477,6 @@ def prepare_model_for_kbit_training(
     return model
 pass
 
-
-def patch_tokenizer(model, tokenizer):
-    """
-        Phi3's pad_token isn't set. We set it to <|placeholder...
-        Llama-3 is <|reserved...
-        Llama-2 is <unk>
-        Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
-        Fixes https://github.com/unslothai/unsloth/issues/5
-    """
-    possible_reserved_tokens = (
-        "<|finetune_right_pad_id|>", # Llama-3.1
-        "<pad>",                     # Mistral Nemo
-        "<|reserved",                # Llama-3
-        "<|placeholder",             # Phi-3
-        "[control",                  # Mistral type models
-    )
-    joiner = "\1\0=+=\0\1"
-    number_repetitions = 3 - 1 # Number of reserved tokens needed
-
-    if model is not None:
-        model.config.update({"unsloth_version" : __version__})
-
-    bad_pad_token = False
-    if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
-        # Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
-        bad_pad_token = tokenizer.eos_token == tokenizer.pad_token
-    elif hasattr(tokenizer, "pad_token") and tokenizer.pad_token is None:
-        bad_pad_token = True
-    else:
-        bad_pad_token = False
-    pass
-
-    if bad_pad_token:
-        # Find a better pad token
-        added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
-        all_added_tokens = joiner.join(added_tokens[::-1])
-        all_added_tokens += joiner
-
-        final_pad_token  = None
-        final_good_match = False
-
-        for possible_reserved_token in possible_reserved_tokens:
-            possible_reserved_token = re.escape(possible_reserved_token)
-            found = re.finditer(f"{possible_reserved_token}", all_added_tokens)
-            first_match = None
-            good_match  = False
-            for j, x in enumerate(found):
-                if j == 0: first_match = x
-                if j >= number_repetitions:
-                    good_match = True
-                    break
-                pass
-            pass
-
-            if first_match is None: continue
-
-            # If it ends with |> or > etc, then set it as a good pad token!
-            start = first_match.span(0)[0]
-            possible_pad_token = first_match.group(0)
-            end = all_added_tokens.find(joiner, start)
-            first_match = all_added_tokens[start:end]
-
-            if first_match is not None:
-                good_match = possible_pad_token.endswith((">", "|>", "]", ")"))
-            pass
-            possible_pad_token = first_match
-
-            # Replace current pad token if another exact match is found
-            if not final_good_match and good_match:
-                final_good_match = True
-                final_pad_token = possible_pad_token
-                break
-            else:
-                final_good_match = False
-                final_pad_token = possible_pad_token
-            pass
-        pass
-        possible_pad_token = final_pad_token
-
-        # Try unk_token
-        if possible_pad_token is None and hasattr(tokenizer, "unk_token"):
-            possible_pad_token = tokenizer.unk_token
-        pass
-
-        # Check pad token's id must be less than vocab size
-        if possible_pad_token is not None:
-            check_pad_token = tokenizer(possible_pad_token, add_special_tokens = False).input_ids
-            if len(check_pad_token) != 1:
-                possible_pad_token = None
-            if model is not None and check_pad_token[0] >= model.config.vocab_size:
-                possible_pad_token = None
-        pass
-
-        if possible_pad_token is None:
-            # Failure to find a good replacement!! We shall manually add one!
-            new_pad_token = "<|PAD_TOKEN|>"
-            while new_pad_token in tokenizer.get_vocab():
-                new_pad_token = f"<{new_pad_token}>"
-            pass
-            possible_pad_token = new_pad_token
-        pass
-
-        name = model.config._name_or_path if model is not None else "Model"
-        logger.warning_once(
-            f"{name} does not have a padding token! Will use pad_token = {possible_pad_token}."
-        )
-        
-        # Edit pad_token
-        tokenizer.add_special_tokens({"pad_token" : possible_pad_token})
-        tokenizer.pad_token = possible_pad_token
-        if model is not None:
-            model.config.update({"pad_token_id" : tokenizer.pad_token_id})
-            if getattr(model, "generation_config") is not None:
-                model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
-    else:
-        if model is not None:
-            if model.config.pad_token_id is None:
-                model.config.update({"pad_token_id" : tokenizer.pad_token_id})
-                if getattr(model, "generation_config") is not None:
-                    model.generation_config.update(pad_token_id = tokenizer.pad_token_id)
-        pass
-    pass
-
-    if model is not None:
-        if getattr(model, "generation_config") is not None:
-            model.generation_config.update(max_length = model.config.max_position_embeddings)
-
-    return model, tokenizer
-pass
-
-
 # =============================================
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
@@ -618,6 +509,7 @@ if Version(peft_version) < Version("0.12.0"):
         )
     pass
 pass
+
 # =============================================
 
 import psutil
@@ -678,7 +570,9 @@ def get_statistics():
     # We log some basic stats about which environment is being used.
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
-    # You can disable this by commenting the below out
+    # You can disable this by setting UNSLOTH_DISABLE_STATISTICS
+    import os
+    if "UNSLOTH_DISABLE_STATISTICS" in os.environ: return
     from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
     disabled = False
     if not are_progress_bars_disabled():
@@ -707,139 +601,6 @@ def get_statistics():
     except:
         pass
     if disabled: enable_progress_bars()
-pass
-
-
-def _calculate_n_gradient_checkpoints(
-    n_layers : int,
-    method   : Optional[Union[str, int]] = "sqrt",
-) -> List[int]:
-    assert(type(n_layers) is int and n_layers > 0)
-
-    if method is None: method = "sqrt"
-
-    if method == "sqrt":
-        n_checkpoints = int(n_layers**0.5)
-    elif type(method) is int and method > 0:
-        n_checkpoints = int(np.ceil(n_layers / method))
-    else:
-        raise ValueError("method must be 'sqrt' or an int >0 and <= n_layers.")
-
-    size = n_layers // n_checkpoints
-    sizes = np.full(n_checkpoints, size, dtype = int)
-    leftovers = n_layers % n_checkpoints
-    # We append leftovers from the right
-    for k in range(leftovers):
-        sizes[n_checkpoints-1-k] += 1
-    boundaries = np.hstack((0, np.cumsum(sizes)))
-    boundaries = boundaries.tolist()
-    return boundaries
-pass
-
-
-def calculate_n_gradient_checkpoints(
-    n_layers              : int,
-    layers_per_checkpoint : Optional[Union[str, int]] = "sqrt",
-) -> List[int]:
-    assert(type(n_layers) is int and n_layers > 0)
-
-    if layers_per_checkpoint is None or layers_per_checkpoint == 1:
-        return None
-
-    boundaries = _calculate_n_gradient_checkpoints(n_layers, layers_per_checkpoint)
-
-    assert(boundaries[0] == 0 and boundaries[-1] == n_layers)
-    assert(min(boundaries) == 0 and max(boundaries) == n_layers)
-    assert(np.diff(boundaries).min() >= 0)
-    return boundaries
-pass
-
-
-def prepare_n_gradient_checkpoints(
-    model                 : Any,
-    layers_per_checkpoint : Optional[Union[str, int]] = "sqrt",
-    use_reentrant         : Optional[bool] = True,
-) -> None:
-    """
-    Calculates where to place the gradient checkpoints given n_layers.
-
-    Args:
-        model: Any LlamaModel with layers.
-        layers_per_checkpoint (`Union[str, int]`, *optional*):
-            Can either be `sqrt` or an integer for how many layers per checkpoint you want.
-            The more, the less memory usage, but can be slower. Default is `sqrt`.
-            Choose 1 for Pytorch gradient checkpointing. 2 to wrap 2 layers in 1 module etc.
-        use_reentrant (`bool`, *optional*):
-            https://github.com/pytorch/pytorch/blob/main/torch/utils/checkpoint.py#L354
-            Optimal gradient checkpointing algorithm `use_reentrant=False` which will
-            be the default in future Pytorch versions doesn't seem to work??
-    """
-    _model = None
-    if hasattr(model, "layers"):
-        _model = model
-    elif hasattr(model, "model"):
-        if hasattr(model.model, "layers"):
-            _model = model.model
-    if _model is None:
-        raise TypeError("`model` or `model.model` does not have attribute `layers`. Are you sure this is a model?")
-    pass
-
-    if use_reentrant is False:
-        use_reentrant = True
-    pass
-
-    n_layers = len(_model.layers)
-    boundaries = calculate_n_gradient_checkpoints(n_layers, layers_per_checkpoint)
-    _model._gradient_checkpointing_boundaries    = boundaries
-    _model._gradient_checkpointing_use_reentrant = use_reentrant
-pass
-
-
-class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
-    """
-    Saves VRAM by smartly offloading to RAM.
-    Tiny hit to performance, since we mask the movement via non blocking calls.
-    """
-    @staticmethod
-    @torch_amp_custom_fwd
-    def forward(ctx, forward_function, hidden_states, *args):
-        saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
-        with torch.no_grad():
-            output = forward_function(hidden_states, *args)
-        ctx.save_for_backward(saved_hidden_states)
-        ctx.forward_function = forward_function
-        ctx.args = args
-        return output
-    pass
-
-    @staticmethod
-    @torch_amp_custom_bwd
-    def backward(ctx, dY):
-        (hidden_states,) = ctx.saved_tensors
-        hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
-        hidden_states.requires_grad_(True)
-        with torch.enable_grad():
-            (output,) = ctx.forward_function(hidden_states, *ctx.args)
-        torch.autograd.backward(output, dY)
-        return (None, hidden_states.grad,) + (None,)*len(ctx.args)
-    pass
-pass
-
-
-@torch._disable_dynamo
-def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
-    return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
-pass
-
-
-import torch.utils
-old_checkpoint = torch.utils.checkpoint
-def patch_gradient_checkpointing():
-    torch.utils.checkpoint = unsloth_offloaded_gradient_checkpoint
-pass
-
-def unpatch_gradient_checkpointing():
-    torch.utils.checkpoint = old_checkpoint
 pass
 
 
@@ -1189,6 +950,7 @@ def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation 
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
+        if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
         if \
             not inspect.getsource(Trainer.get_batch_samples).strip()\
             .endswith("return batch_samples, num_items_in_batch"):
@@ -1215,6 +977,7 @@ def patch_gradient_accumulation_fix(Trainer):
     pass
 
     # Also fix up loss scaling ie negate loss *= self.args.gradient_accumulation_steps
+    if Trainer.training_step.__name__ == "_unsloth_training_step": return
     if "num_items_in_batch" not in inspect.signature(Trainer.training_step).parameters: return
 
     function = inspect.getsource(Trainer.training_step)
@@ -1242,4 +1005,12 @@ def patch_gradient_accumulation_fix(Trainer):
     function = function.replace("def training_step", "def _unsloth_training_step", 1)
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
+pass
+
+
+def patch_tokenizer(model, tokenizer):
+    model, tokenizer = _patch_tokenizer(model, tokenizer)
+    if model is not None:
+        model.config.update({"unsloth_version" : __version__})
+    return model, tokenizer
 pass
