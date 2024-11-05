@@ -25,9 +25,9 @@ def _rope_embedding(
     cos, cos_row_stride,
     sin, sin_row_stride,
     seqlen,
-    head_dim,
-    n_heads,
-    BACKWARD_PASS,
+    head_dim      : tl.constexpr,
+    n_heads       : tl.constexpr,
+    BACKWARD_PASS : tl.constexpr,
     BLOCK_SIZE    : tl.constexpr,
 ):
     """
@@ -144,7 +144,8 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
     pass
 pass
 
-
+# [TODO] Unsure why RoPE Embedding is not torch.compiling properly
+@torch.compiler.disable
 def fast_rope_embedding(Q, K, cos, sin):
     Q = Fast_RoPE_Embedding.apply(Q.transpose(1, 2), cos, sin).transpose(1, 2)
     K = Fast_RoPE_Embedding.apply(K.transpose(1, 2), cos, sin).transpose(1, 2)
