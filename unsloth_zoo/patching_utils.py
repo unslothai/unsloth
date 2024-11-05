@@ -60,14 +60,25 @@ def patch_torch_compile(debug = True, O3 = False):
     assert(type(O3)    is bool)
     # Torch compile arguments
     torch_compile_arguments = [
+        f"config.debug = {debug}",
         "config.dce = True",
         "config.memory_planning = True",
         "config.memory_pool = 'combined'",
-        "config.coordinate_descent_tuning = True",
+        "config.efficient_conv_bn_eval_fx_passes = True", # Reduces stability a little bit
+        "config.dynamic_scale_rblock = True", # Scale down RBLOCK for better occupancy
+        "config.reorder_for_compute_comm_overlap = True", # # enable reordering pass for increasing overlap between compute and communication
+        f"config.max_autotune = {O3}", # enable slow autotuning passes to select algorithms
+        f"config.max_autotune_pointwise = {O3}", # enable slow autotuning passes to select pointwise/reductions algorithms
         f"config.max_autotune_gemm = {O3}", # GEMM is unnecessary
-        "config.autotune_multi_device = False",
         "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
+        "config.autotune_fallback_to_aten = True", # Fallback to ATEN backend
+        "config.autotune_multi_device = True", # If autotuning in subprocess, whether to use multiple devices
+        "config.coordinate_descent_tuning = True",
         f"config.aggressive_fusion = {O3}", # Careful changes results!
+        "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
+        "config.combo_kernel_foreach_dynamic_shapes = True",
+        "config.freezing = False", # Freezes weights --> ** only useful for inference **
+        "config.triton.multi_kernel = True", # use tuning to pick between different subkernels
         "config.cuda.enable_cuda_lto = True",
         "config.cuda.use_fast_math = True",
         "config.cuda.compile_opt_level = '-O2'",
@@ -79,17 +90,20 @@ def patch_torch_compile(debug = True, O3 = False):
         f"config.do_not_emit_runtime_asserts = {not debug}",
         "config.cache_size_limit = 1024", # Flex Attention
         "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
+        "config.numpy_default_float = 'float32'",
+        "config.compiled_autograd = True", # New Torch 2.4 feature which can compile backwards passes
+        # https://pytorch.org/tutorials/intermediate/compiled_autograd_tutorial.html
     ]
-    # import torch._inductor.config as config
-    # for _try_compile_argument in torch_compile_arguments:
-    #     try:    exec(_try_compile_argument)
-    #     except: pass
-    # pass
-    # import torch._dynamo.config as config
-    # for _try_dynamo_argument in torch_dynamo_arguments:
-    #     try:    exec(_try_dynamo_argument)
-    #     except: pass
-    # pass
+    import torch._inductor.config as config
+    for _try_compile_argument in torch_compile_arguments:
+        try:    exec(_try_compile_argument)
+        except: pass
+    pass
+    import torch._dynamo.config as config
+    for _try_dynamo_argument in torch_dynamo_arguments:
+        try:    exec(_try_dynamo_argument)
+        except: pass
+    pass
 pass
 
 
