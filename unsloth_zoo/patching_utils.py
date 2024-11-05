@@ -58,6 +58,13 @@ pass
 def patch_torch_compile(debug = True, O3 = False):
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
+    import os
+    if debug:
+        os.environ["TORCHDYNAMO_VERBOSE"] = "1"
+    else:
+        os.environ.pop("TORCHDYNAMO_VERBOSE", None)
+    pass
+    
     # Torch compile arguments
     torch_compile_arguments = [
         f"config.debug = {debug}",
