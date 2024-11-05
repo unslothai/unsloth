@@ -395,13 +395,13 @@ torch_compile_options = {
     "max_autotune"      : True,
     "shape_padding"     : True,
     "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
-    "triton.cudagraphs" : False,
+    "triton.cudagraphs" : True,
 }
 
 import accelerate
 def torch_compile_kwargs(*args, **kwargs):
     print("Unsloth: Enabled auto compiling")
-    return {"dynamic" : True, "fullgraph" : False, "options" : torch_compile_options,}
+    return {"dynamic" : True, "fullgraph" : True, "options" : torch_compile_options,}
 pass
 
 accelerate.utils.dataclasses.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
