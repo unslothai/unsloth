@@ -138,7 +138,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     def forward(ctx, X, W, eps : float, gemma : bool = False):
         shape = X.shape
         dim : int = shape[-1]
-        X = X.view(-1, dim)
+        # X = X.view(-1, dim)
         n_rows : int
         n_cols : int
         n_rows, n_cols = X.shape
@@ -149,33 +149,33 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         Y : torch.Tensor = torch.empty(X.shape, dtype = X.dtype, device = "cuda:0")
         r : torch.Tensor = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
-        if not gemma:
-            _rms_layernorm_forward[(n_rows,)](
-                Y, Y.stride(0),
-                X, X.stride(0),
-                W, W.stride(0),
-                r, r.stride(0),
-                n_cols     = int(n_cols),
-                eps        = float(eps),
-                BLOCK_SIZE = triton.next_power_of_2(n_cols),
-                num_warps  = 16,
-            )
-        else:
-            _gemma_rms_layernorm_forward[(n_rows,)](
-                Y, Y.stride(0),
-                X, X.stride(0),
-                W, W.stride(0),
-                r, r.stride(0),
-                n_cols, eps,
-                BLOCK_SIZE = triton.next_power_of_2(n_cols),
-                num_warps  = 16,
-            )
+        # if not gemma:
+        _rms_layernorm_forward[(n_rows,)](
+            Y, Y.stride(0),
+            X, X.stride(0),
+            W, W.stride(0),
+            r, r.stride(0),
+            n_cols     = int(n_cols),
+            eps        = float(eps),
+            BLOCK_SIZE = triton.next_power_of_2(n_cols),
+            num_warps  = 16,
+        )
+        # else:
+        #     _gemma_rms_layernorm_forward[(n_rows,)](
+        #         Y, Y.stride(0),
+        #         X, X.stride(0),
+        #         W, W.stride(0),
+        #         r, r.stride(0),
+        #         n_cols, eps,
+        #         BLOCK_SIZE = triton.next_power_of_2(n_cols),
+        #         num_warps  = 16,
+        #     )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
         ctx.GEMMA = gemma
         ctx.save_for_backward(X, W, r)
-        return Y.view(*shape)
+        return Y#.view(*shape)
     pass
 
     @staticmethod
