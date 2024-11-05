@@ -66,13 +66,13 @@ def patch_torch_compile(debug = True, O3 = False):
         "config.memory_pool = 'combined'",
         "config.efficient_conv_bn_eval_fx_passes = True", # Reduces stability a little bit
         "config.dynamic_scale_rblock = True", # Scale down RBLOCK for better occupancy
-        "config.reorder_for_compute_comm_overlap = True", # # enable reordering pass for increasing overlap between compute and communication
+        # "config.reorder_for_compute_comm_overlap = True", # # enable reordering pass for increasing overlap between compute and communication
         f"config.max_autotune = {O3}", # enable slow autotuning passes to select algorithms
         f"config.max_autotune_pointwise = {O3}", # enable slow autotuning passes to select pointwise/reductions algorithms
         f"config.max_autotune_gemm = {O3}", # GEMM is unnecessary
         "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
         "config.autotune_fallback_to_aten = True", # Fallback to ATEN backend
-        "config.autotune_multi_device = False", # If autotuning in subprocess, whether to use multiple devices
+        "config.autotune_multi_device = True", # If autotuning in subprocess, whether to use multiple devices
         "config.coordinate_descent_tuning = True",
         f"config.aggressive_fusion = {O3}", # Careful changes results!
         "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
