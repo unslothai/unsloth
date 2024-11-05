@@ -64,11 +64,13 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = False):
     import os, logging
     if debug:
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
-        os.environ["TORCH_LOGS"] = "+dynamo"
+        os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs"
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
         torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
         torch._dynamo.config.verbose = True
     else:
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
+        os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
         os.environ.pop("TORCH_LOGS", None)
     pass
     os.environ["UNSLOTH_PATCHED"] = "1"

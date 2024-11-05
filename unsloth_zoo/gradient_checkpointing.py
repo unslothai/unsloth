@@ -155,7 +155,8 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
         hidden_states.requires_grad_(True)
         with torch.enable_grad():
             (output,) = ctx.forward_function(hidden_states, *ctx.args)
-        torch.autograd.backward(output, dY)
+        with torch._dynamo.compiled_autograd.disable():
+            torch.autograd.backward(output, dY)
         return (None, hidden_states.grad,) + (None,)*len(ctx.args)
     pass
 pass
