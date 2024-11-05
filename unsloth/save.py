@@ -49,6 +49,7 @@ __all__ = [
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT  = "\nCOLAB_"  in keynames
 IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
+KAGGLE_TMP = "/tmp"
 del keynames
 
 # Weights
@@ -447,13 +448,20 @@ def unsloth_save_model(
     if push_to_hub and "/" in save_directory:
 
         # +1 solves absolute path issues
-        username = save_directory[:save_directory.find("/")]
-        new_save_directory = save_directory[save_directory.find("/")+1:]
-
-        logger.warning_once(
-            f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
-            f"We shall truncate {save_directory} to {new_save_directory}"
-        )
+        new_save_directory = save_directory
+        username = new_save_directory[:new_save_directory.find("/")]
+        new_save_directory = new_save_directory[new_save_directory.find("/")+1:]
+        if IS_KAGGLE_ENVIRONMENT:
+            new_save_directory = os.path.join(KAGGLE_TMP, new_save_directory[new_save_directory.find("/")+1:])
+            logger.warning_once(
+                "Unsloth: You are pushing to hub in Kaggle environment.\n"\
+                f"To save memory, we shall move {save_directory} to {new_save_directory}"
+            )
+        else:
+            logger.warning_once(
+                f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
+                f"We shall truncate {save_directory} to {new_save_directory}"
+            )
 
         save_pretrained_settings["save_directory"] = new_save_directory
         tokenizer_save_settings ["save_directory"] = new_save_directory
@@ -506,6 +514,10 @@ def unsloth_save_model(
     print(f"Unsloth: Will use up to "\
           f"{round(max_ram/1024/1024/1024, 2)} out of "\
           f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving.")
+
+    # Move temporary_location to /tmp in Kaggle
+    if IS_KAGGLE_ENVIRONMENT:
+        temporary_location = os.path.join(KAGGLE_TMP, temporary_location)
 
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
@@ -708,7 +720,7 @@ def unsloth_save_model(
     print("Done.")
 
     if push_to_hub and hasattr(model, "config"):
-        print(f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
+        print(f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/').split('/')[-1]}")
     pass
 
     save_pretrained_settings["state_dict"] = None
@@ -1108,14 +1120,17 @@ def save_to_gguf(
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
         if IS_KAGGLE_ENVIRONMENT:
-            raise RuntimeError(
-                f"Unsloth: Quantization failed for {final_location}\n"\
-                "You are in a Kaggle environment, which might be the reason this is failing.\n"\
-                "Kaggle only provides 20GB of disk space. Merging to 16bit for 7b models use 16GB of space.\n"\
-                "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
-                "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
-                "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
-            )
+            if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+                raise RuntimeError(
+                    f"Unsloth: Quantization failed for {final_location}\n"\
+                    "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                    "Kaggle only provides 20GB of disk space in the working directory.\n"\
+                    "Merging to 16bit for 7b models use 16GB of space.\n"\
+                    "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                    "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                    "You can try saving it to the `/tmp` directory for larger disk space.\n"\
+                    "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+                )
         else:
             raise RuntimeError(
                 f"Unsloth: Quantization failed for {final_location}\n"\
@@ -1156,14 +1171,17 @@ def save_to_gguf(
             # Check if quantization succeeded!
             if not os.path.isfile(final_location):
                 if IS_KAGGLE_ENVIRONMENT:
-                    raise RuntimeError(
-                        f"Unsloth: Quantization failed for {final_location}\n"\
-                        "You are in a Kaggle environment, which might be the reason this is failing.\n"\
-                        "Kaggle only provides 20GB of disk space. Merging to 16bit for 7b models use 16GB of space.\n"\
-                        "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
-                        "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
-                        "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
-                    )
+                    if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+                        raise RuntimeError(
+                            f"Unsloth: Quantization failed for {final_location}\n"\
+                            "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                            "Kaggle only provides 20GB of disk space in the working directory.\n"\
+                            "Merging to 16bit for 7b models use 16GB of space.\n"\
+                            "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                            "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                            "You can try saving it to the `/tmp` directory for larger disk space.\n"\
+                            "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+                        )
                 else:
                     raise RuntimeError(
                         "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
