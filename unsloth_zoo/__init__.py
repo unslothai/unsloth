@@ -16,14 +16,22 @@
 
 __version__ = "2024.11.1"
 
-import importlib.util
-if importlib.util.find_spec("unsloth") is None:
+from importlib.util import find_spec
+if find_spec("unsloth") is None:
     raise ImportError("Please install Unsloth via `pip install unsloth`!")
 pass
-del importlib.util
+del find_spec
 
 import os
 if not ("UNSLOTH_IS_PRESENT" in os.environ):
     raise ImportError("Please install Unsloth via `pip install unsloth`!")
 pass
+
+try:
+    print("🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.")
+except:
+    print("Unsloth: Will patch your computer to enable 2x faster free finetuning.")
+pass
+# Log Unsloth-Zoo Utilities
+os.environ["UNSLOTH_ZOO_IS_PRESENT"] = "1"
 del os

@@ -104,9 +104,15 @@ def add_new_tokens(
     mean_lm_head   = mean_lm_head  .to(torch.float32)
 
     # Get old lengths
-    old_input_length  = model.get_input_embeddings ().weight.shape[0]
-    old_output_length = model.get_output_embeddings().weight.shape[0]
+    old_input_embedding  = model.get_input_embeddings ().weight
+    old_output_embedding = model.get_output_embeddings().weight
+    old_input_length  = old_input_embedding .shape[0]
+    old_output_length = old_output_embedding.shape[0]
     old_config_size   = model.config.vocab_size
+
+    # Check for tied weights as well
+    is_tied = (old_input_embedding.data_ptr() == old_output_embedding.data_ptr()) \
+        or (model.config.tie_word_embeddings)
 
     # Add tokens!
     old_length = len(tokenizer)
@@ -165,7 +171,26 @@ def add_new_tokens(
         internal_model = internal_model.model
     pass
     internal_model._need_to_train_embeddings = True
-    
+
+    # Fix up all vocab sizes
+    current_model = model
+    while hasattr(current_model, "model") and hasattr(current_model, "config"):
+        if hasattr(current_model.config, "vocab_size"):
+            current_model.config.update({"vocab_size" : len(tokenizer)})
+        current_model = current_model.model
+    if hasattr(current_model, "model") and hasattr(current_model, "config"):
+        if hasattr(current_model.config, "vocab_size"):
+            current_model.config.update({"vocab_size" : len(tokenizer)})
+    pass
+
+    # Must tie lm_head and embed_tokens if they are tied!
+    # Otherwise error will occur on saving models ie use save_model
+    if is_tied: model.tie_weights()
+
+    # Clear deleted GPU items
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
     return
 pass
 
@@ -380,9 +405,6 @@ def patch_tokenizer(model, tokenizer):
     )
     joiner = "\1\0=+=\0\1"
     number_repetitions = 3 - 1 # Number of reserved tokens needed
-
-    if model is not None:
-        model.config.update({"unsloth_version" : __version__})
 
     bad_pad_token = False
     if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
