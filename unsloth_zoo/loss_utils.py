@@ -74,7 +74,8 @@ def patch_loss_functions(_fast_cross_entropy_loss):
     LOSS_MAPPING["ForCausalLM"] = UnslothForCausalLMLoss
 
     # Remove @property and @lru_cache
-    if hasattr(transformers.modeling_utils.PreTrainedModel.loss_function, "fget"):
+    if hasattr(transformers.modeling_utils.PreTrainedModel.loss_function, "fget") and \
+        hasattr(transformers.modeling_utils.PreTrainedModel.loss_function.fget, "__wrapped__"):
         transformers.modeling_utils.PreTrainedModel.loss_function = \
             transformers.modeling_utils.PreTrainedModel.loss_function.fget.__wrapped__
     pass
