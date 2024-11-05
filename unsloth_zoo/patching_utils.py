@@ -66,6 +66,7 @@ def patch_torch_compile(debug = True, O3 = False):
         "config.memory_pool = 'combined'",
         "config.efficient_conv_bn_eval_fx_passes = True", # Reduces stability a little bit
         "config.dynamic_scale_rblock = True", # Scale down RBLOCK for better occupancy
+        # Disable reorder_for_compute_comm_overlap since it errors for non multi GPU systems
         # "config.reorder_for_compute_comm_overlap = True", # # enable reordering pass for increasing overlap between compute and communication
         f"config.max_autotune = {O3}", # enable slow autotuning passes to select algorithms
         f"config.max_autotune_pointwise = {O3}", # enable slow autotuning passes to select pointwise/reductions algorithms
