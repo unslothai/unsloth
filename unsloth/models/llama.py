@@ -1028,7 +1028,6 @@ def CausalLM_fast_forward(fast_forward_inference):
 pass
 
 
-@torch._disable_dynamo
 def PeftModelForCausalLM_fast_forward(
     self,
     input_ids=None,
