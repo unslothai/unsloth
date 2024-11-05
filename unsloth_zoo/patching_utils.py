@@ -62,7 +62,7 @@ def patch_torch_compile(debug = True, O3 = False):
     if debug:
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
         os.environ["TORCH_LOGS"] = "+dynamo"
-        torch._logging.set_logs(dynamo = logging.DEBUG)
+        torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
         torch._dynamo.config.verbose = True
     else:
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
