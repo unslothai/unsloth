@@ -72,7 +72,7 @@ def patch_torch_compile(debug = True, O3 = False):
         f"config.max_autotune_gemm = {O3}", # GEMM is unnecessary
         "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
         "config.autotune_fallback_to_aten = True", # Fallback to ATEN backend
-        "config.autotune_multi_device = True", # If autotuning in subprocess, whether to use multiple devices
+        "config.autotune_multi_device = False", # If autotuning in subprocess, whether to use multiple devices
         "config.coordinate_descent_tuning = True",
         f"config.aggressive_fusion = {O3}", # Careful changes results!
         "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
