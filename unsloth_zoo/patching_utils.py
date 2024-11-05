@@ -61,10 +61,12 @@ def patch_torch_compile(debug = True, O3 = False):
     import os
     if debug:
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
+        os.environ["TORCH_LOGS"] = "+dynamo"
     else:
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
+        os.environ.pop("TORCH_LOGS", None)
     pass
-    
+
     # Torch compile arguments
     torch_compile_arguments = [
         f"config.debug = {debug}",
