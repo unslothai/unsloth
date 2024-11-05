@@ -321,7 +321,8 @@ except Exception as error:
     )
 pass
 import xformers.ops.fmha as xformers
-xformers_attention = xformers.memory_efficient_attention
+# [TODO] Unsure why Xformers is also breaking as well
+xformers_attention = torch.compiler.disable(xformers.memory_efficient_attention)
 
 # Check TRL version
 from trl import __version__ as trl_version
