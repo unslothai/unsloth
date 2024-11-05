@@ -15,11 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import (
-    calculate_settings,
-    MAX_FUSED_SIZE,
-    next_power_of_2,
-)
+from .utils import calculate_settings
 
 
 @triton.jit
@@ -147,19 +143,13 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_cols : int
         n_rows, n_cols = X.shape
 
-        BLOCK_SIZE : int = n_cols
-        if BLOCK_SIZE > MAX_FUSED_SIZE:
-            raise RuntimeError(f"Cannot launch Triton kernel since n = {n_cols} exceeds "\
-                               f"the maximum CUDA blocksize = {MAX_FUSED_SIZE}.")
-        num_warps : int = 4
-        if   BLOCK_SIZE >= 32768: num_warps = 32
-        elif BLOCK_SIZE >=  8192: num_warps = 16
-        elif BLOCK_SIZE >=  2048: num_warps = 8
-
         Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
         r = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
+        BLOCK_SIZE : int
+        num_warps  : int
         if not gemma:
+            BLOCK_SIZE, num_warps = calculate_settings(n_cols)
             _rms_layernorm_forward[(n_rows,)](
                 Y, Y.stride(0),
                 X, X.stride(0),
