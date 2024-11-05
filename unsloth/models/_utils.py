@@ -467,13 +467,13 @@ def prepare_model_for_kbit_training(
     pass
 
     # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
-    if use_reentrant:
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    # if use_reentrant:
+    #     if hasattr(model, "enable_input_require_grads"):
+    #         model.enable_input_require_grads()
+    #     else:
+    #         def make_inputs_require_grad(module, input, output):
+    #             output.requires_grad_(True)
+    #         model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     return model
 pass

@@ -606,6 +606,7 @@ def LlamaModel_fast_forward(
     # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
+    inputs_embeds.requires_grad_(True)
 
     # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
     torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
