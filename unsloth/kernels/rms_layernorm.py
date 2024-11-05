@@ -20,12 +20,17 @@ from .utils import calculate_settings
 
 @triton.jit
 def _rms_layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W, W_row_stride,
-    r, r_row_stride,
-    n_cols, eps,
-    BLOCK_SIZE : tl.constexpr
+    Y,
+    Y_row_stride,
+    X,
+    X_row_stride,
+    W,
+    W_row_stride,
+    r,
+    r_row_stride,
+    n_cols,
+    eps,
+    BLOCK_SIZE : tl.constexpr,
 ):
     """
         Fast RMS Layernorm kernel
@@ -150,7 +155,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 X, X.stride(0),
                 W, W.stride(0),
                 r, r.stride(0),
-                n_cols, eps,
+                n_cols     = int(n_cols),
+                eps        = float(eps),
                 BLOCK_SIZE = BLOCK_SIZE,
                 num_warps  = num_warps,
             )
