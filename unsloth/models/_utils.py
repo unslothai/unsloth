@@ -393,7 +393,7 @@ UNSLOTH_COMPILE_DEBUG   = os.environ.get("UNSLOTH_COMPILE_DEBUG",   "0") == "1"
 UNSLOTH_COMPILE_MAXIMUM = os.environ.get("UNSLOTH_COMPILE_MAXIMUM", "0") == "1"
 patch_torch_compile(
     debug = UNSLOTH_COMPILE_DEBUG,
-    O3 = UNSLOTH_COMPILE_MAXIMUM,
+    O3    = UNSLOTH_COMPILE_MAXIMUM,
 )
 
 torch_compile_options = {
