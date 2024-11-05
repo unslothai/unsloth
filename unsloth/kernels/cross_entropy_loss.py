@@ -181,10 +181,10 @@ def _chunked_cross_entropy_forward(
 pass
 
 
-# @triton.heuristics({
-#     "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
-#     "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
-# })
+@triton.heuristics({
+    "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
+    "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
+})
 @triton.jit
 def _cross_entropy_backward(
     logits_ptr        ,
@@ -337,6 +337,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         return losses
     pass
 
+
+    @torch.compiler.disable
     @staticmethod
     def backward(ctx, dlosses):
         logits, logsumexp, labels = ctx.saved_tensors
