@@ -149,7 +149,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
         r = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
-        if not gemma:
+        if gemma == False:
             _rms_layernorm_forward[(n_rows,)](
                 Y, Y.stride(0),
                 X, X.stride(0),
