@@ -58,10 +58,12 @@ pass
 def patch_torch_compile(debug = True, O3 = False):
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
-    import os
+    import os, logging
     if debug:
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
         os.environ["TORCH_LOGS"] = "+dynamo"
+        torch._logging.set_logs(dynamo = logging.DEBUG)
+        torch._dynamo.config.verbose = True
     else:
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
         os.environ.pop("TORCH_LOGS", None)
