@@ -390,7 +390,7 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and attention_mask is None):
+    if False:#(not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -430,7 +430,7 @@ def LlamaAttention_fast_forward(
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+        A = scaled_dot_product_attention(Q, K, V, is_causal = True)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
@@ -606,7 +606,6 @@ def LlamaModel_fast_forward(
     # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
-    inputs_embeds.requires_grad_(True)
 
     # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
     torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
