@@ -16,7 +16,7 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings
-ROPE_GROUP_SIZE = 4
+ROPE_GROUP_SIZE : int = 4
 
 @triton.heuristics({"BACKWARD_PASS": lambda args: bool(args["BACKWARD_PASS"]),})
 @triton.jit
