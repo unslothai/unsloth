@@ -137,8 +137,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, W, eps : float, gemma : bool = False):
         shape = X.shape
-        dim : int = shape[-1]
-        # X = X.view(-1, dim)
+        # dim : int = shape[-1]
+        X = X.view(shape[0] * shape[1], shape[2])
         n_rows : int
         n_cols : int
         n_rows, n_cols = X.shape
