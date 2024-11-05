@@ -20,17 +20,12 @@ from .utils import calculate_settings
 
 @triton.jit
 def _rms_layernorm_forward(
-    Y,
-    Y_row_stride,
-    X,
-    X_row_stride,
-    W,
-    W_row_stride,
-    r,
-    r_row_stride,
-    n_cols,
-    eps,
-    BLOCK_SIZE : tl.constexpr,
+    Y, Y_row_stride,
+    X, X_row_stride,
+    W, W_row_stride,
+    r, r_row_stride,
+    n_cols, eps,
+    BLOCK_SIZE : tl.constexpr
 ):
     """
         Fast RMS Layernorm kernel
@@ -135,10 +130,10 @@ pass
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, eps : float, gemma : bool = False):
+    def forward(ctx, X, W, eps :float, gemma : bool = False):
         shape = X.shape
-        # dim : int = shape[-1]
-        X = X.view(shape[0] * shape[1], shape[2])
+        dim : int = shape[-1]
+        X = X.view(-1, dim)
         n_rows : int
         n_cols : int
         n_rows, n_cols = X.shape
@@ -146,36 +141,25 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         num_warps  : int
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
 
-        Y : torch.Tensor = torch.empty(X.shape, dtype = X.dtype, device = "cuda:0")
-        r : torch.Tensor = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
+        r = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
-        # if not gemma:
-        _rms_layernorm_forward[(n_rows,)](
+        fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
+        fx[(n_rows,)](
             Y, Y.stride(0),
             X, X.stride(0),
             W, W.stride(0),
             r, r.stride(0),
-            n_cols     = int(n_cols),
-            eps        = float(eps),
-            BLOCK_SIZE = triton.next_power_of_2(n_cols),
-            num_warps  = 16,
+            n_cols, eps,
+            BLOCK_SIZE = BLOCK_SIZE,
+            num_warps  = num_warps,
         )
-        # else:
-        #     _gemma_rms_layernorm_forward[(n_rows,)](
-        #         Y, Y.stride(0),
-        #         X, X.stride(0),
-        #         W, W.stride(0),
-        #         r, r.stride(0),
-        #         n_cols, eps,
-        #         BLOCK_SIZE = triton.next_power_of_2(n_cols),
-        #         num_warps  = 16,
-        #     )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
         ctx.GEMMA = gemma
         ctx.save_for_backward(X, W, r)
-        return Y#.view(*shape)
+        return Y.view(*shape)
     pass
 
     @staticmethod
@@ -206,9 +190,10 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
 pass
 
 
-def fast_rms_layernorm(layernorm, X, gemma : bool = False):
+@torch.compiler.disable
+def fast_rms_layernorm(layernorm, X, gemma = False):
     W   = layernorm.weight
-    eps : float = layernorm.variance_epsilon if \
+    eps = layernorm.variance_epsilon if \
         hasattr(layernorm, "variance_epsilon") \
         else layernorm.eps
     out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
