@@ -27,13 +27,6 @@ import numpy as np
 #     pass
 # pass
 
-# Check for unsloth_zoo
-try:
-    import unsloth_zoo
-except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth-zoo`")
-pass
-
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
@@ -60,6 +53,14 @@ pass
 # Reduce VRAM usage by reducing fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# Hugging Face Hub faster downloads
+if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+pass
+
+# Log Unsloth is being used
+os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
 try:
     import torch
 except ModuleNotFoundError:
@@ -69,12 +70,6 @@ except ModuleNotFoundError:
     )
 except Exception as exception:
     raise exception
-pass
-
-# Hugging Face Hub faster downloads (only enable during Colab and Kaggle sessions)
-keynames = "\n" + "\n".join(os.environ.keys())
-if "\nCOLAB_"  in keynames or "\nKAGGLE_" in keynames:
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 pass
 
 # We support Pytorch 2
@@ -163,6 +158,13 @@ if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
     pass
+pass
+
+# Check for unsloth_zoo
+try:
+    import unsloth_zoo
+except:
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth-zoo`")
 pass
 
 from .models import *
