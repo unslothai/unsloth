@@ -321,8 +321,7 @@ except Exception as error:
     )
 pass
 import xformers.ops.fmha as xformers
-# [TODO] Unsure why Xformers is also breaking as well
-xformers_attention = torch.compiler.disable(xformers.memory_efficient_attention)
+xformers_attention = xformers.memory_efficient_attention
 
 # Check TRL version
 from trl import __version__ as trl_version
@@ -375,8 +374,8 @@ pass
 
 # =============================================
 # Torch compile settings
-UNSLOTH_COMPILE_DEBUG   = True #"UNSLOTH_COMPILE_DEBUG"   in os.environ
-UNSLOTH_COMPILE_MAXIMUM = True #"UNSLOTH_COMPILE_MAXIMUM" in os.environ
+UNSLOTH_COMPILE_DEBUG   = "UNSLOTH_COMPILE_DEBUG"   in os.environ
+UNSLOTH_COMPILE_MAXIMUM = "UNSLOTH_COMPILE_MAXIMUM" in os.environ
 # Just remove max_autotune_gemm warning
 import functools
 @functools.lru_cache(None)
