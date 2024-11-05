@@ -18,6 +18,7 @@ import torch
 import numpy as np
 from typing import Union, Optional, List, Any, Callable, Tuple
 from packaging.version import Version
+import os
 
 __all__ = [
     "calculate_n_gradient_checkpoints",
@@ -217,6 +218,7 @@ def patch_unsloth_gradient_checkpointing():
     if torch.utils.checkpoint.checkpoint.__name__ == "unsloth_offloaded_gradient_checkpoint": return
     torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint
     torch.utils.checkpoint.checkpoint = unsloth_offloaded_gradient_checkpoint
+    os.environ["UNSLOTH_PATCHED"] = "1"
 pass
 
 
@@ -226,6 +228,7 @@ def patch_gradient_checkpointing():
     if torch.utils.checkpoint.checkpoint.__name__ == "unsloth_gradient_checkpoint": return
     torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint
     torch.utils.checkpoint.checkpoint = unsloth_gradient_checkpoint
+    os.environ["UNSLOTH_PATCHED"] = "1"
 pass
 
 

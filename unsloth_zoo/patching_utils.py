@@ -15,6 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import torch
+import os
 
 __all__ = [
     "patch_compiling_bitsandbytes",
@@ -32,6 +33,7 @@ def patch_compiling_bitsandbytes():
     # peft.tuners.lora.bnb.Linear8bitLt.forward = \
     #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
     # return
+    os.environ["UNSLOTH_PATCHED"] = "1"
     import bitsandbytes.nn.modules
     bitsandbytes.nn.modules.Linear4bit.forward = \
         torch._disable_dynamo(bitsandbytes.nn.modules.Linear4bit.forward)
@@ -42,6 +44,7 @@ pass
 def patch_layernorm(fast_layernorm):
     import torch.nn
     if torch.nn.LayerNorm.__name__ != "Unsloth_LayerNorm":
+        os.environ["UNSLOTH_PATCHED"] = "1"
 
         from torch.nn import LayerNorm
         class Unsloth_LayerNorm(LayerNorm):
@@ -68,6 +71,7 @@ def patch_torch_compile(debug = True, O3 = False):
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
         os.environ.pop("TORCH_LOGS", None)
     pass
+    os.environ["UNSLOTH_PATCHED"] = "1"
 
     # Torch compile arguments
     torch_compile_arguments = [
@@ -126,6 +130,7 @@ def patch_regional_compilation():
     if Version(torch.__version__) < Version("2.5.0"): return
 
     old_module_list = torch.nn.ModuleList
+    os.environ["UNSLOTH_PATCHED"] = "1"
 
     def UnslothModuleList(*args, **kwargs):
         if len(args) == 1 and len(kwargs) == 0 and type(args[0]) is list:
