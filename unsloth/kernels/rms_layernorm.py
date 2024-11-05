@@ -15,8 +15,11 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings
-next_power_of_2 = triton.next_power_of_2
+from .utils import (
+    calculate_settings,
+    MAX_FUSED_SIZE,
+    next_power_of_2,
+)
 
 
 @triton.jit
@@ -143,8 +146,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         n_rows : int
         n_cols : int
         n_rows, n_cols = X.shape
-        BLOCK_SIZE : int = next_power_of_2(n_cols)
-        MAX_FUSED_SIZE : int = 65536
+
+        BLOCK_SIZE : int = n_cols
         if BLOCK_SIZE > MAX_FUSED_SIZE:
             raise RuntimeError(f"Cannot launch Triton kernel since n = {n_cols} exceeds "\
                                f"the maximum CUDA blocksize = {MAX_FUSED_SIZE}.")
