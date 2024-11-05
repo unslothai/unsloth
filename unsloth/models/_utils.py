@@ -395,13 +395,13 @@ torch_compile_options = {
     "max_autotune"      : True,
     "shape_padding"     : True,
     "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
-    "triton.cudagraphs" : True,
+    "triton.cudagraphs" : False,
 }
 
 import accelerate
 def torch_compile_kwargs(*args, **kwargs):
     print("Unsloth: Enabled auto compiling")
-    return {"dynamic" : True, "fullgraph" : True, "options" : torch_compile_options,}
+    return {"dynamic" : True, "fullgraph" : False, "options" : torch_compile_options,}
 pass
 
 accelerate.utils.dataclasses.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
@@ -467,13 +467,13 @@ def prepare_model_for_kbit_training(
     pass
 
     # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
-    # if use_reentrant:
-    #     if hasattr(model, "enable_input_require_grads"):
-    #         model.enable_input_require_grads()
-    #     else:
-    #         def make_inputs_require_grad(module, input, output):
-    #             output.requires_grad_(True)
-    #         model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    if use_reentrant:
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            def make_inputs_require_grad(module, input, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     return model
 pass
