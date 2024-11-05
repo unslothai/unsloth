@@ -157,7 +157,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 r, r.stride(0),
                 n_cols     = int(n_cols),
                 eps        = float(eps),
-                BLOCK_SIZE = BLOCK_SIZE,
+                BLOCK_SIZE = triton.next_power_of_2(n_cols),
                 num_warps  = 16,
             )
         else:
@@ -167,7 +167,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
                 W, W.stride(0),
                 r, r.stride(0),
                 n_cols, eps,
-                BLOCK_SIZE = BLOCK_SIZE,
+                BLOCK_SIZE = triton.next_power_of_2(n_cols),
                 num_warps  = 16,
             )
         ctx.eps = eps
