@@ -25,9 +25,9 @@ def _rope_embedding(
     cos, cos_row_stride,
     sin, sin_row_stride,
     seqlen,
-    head_dim      : tl.constexpr,
-    n_heads       : tl.constexpr,
-    BACKWARD_PASS : tl.constexpr,
+    head_dim,
+    n_heads,
+    BACKWARD_PASS,
     BLOCK_SIZE    : tl.constexpr,
 ):
     """
