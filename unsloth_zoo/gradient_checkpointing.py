@@ -139,7 +139,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @torch_amp_custom_fwd
     def forward(ctx, forward_function, hidden_states, *args):
         saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
-        with torch.no_grad(), torch.compiler.disable():
+        with torch.no_grad():
             output = forward_function(hidden_states, *args)
         ctx.save_for_backward(saved_hidden_states)
         ctx.forward_function = forward_function
@@ -150,14 +150,13 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_bwd
     def backward(ctx, dY):
-        with torch.compiler.disable():
-            (hidden_states,) = ctx.saved_tensors
-            hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
-            hidden_states.requires_grad_(True)
-            with torch.enable_grad():
-                (output,) = ctx.forward_function(hidden_states, *ctx.args)
-            torch.autograd.backward(output, dY)
-            return (None, hidden_states.grad,) + (None,)*len(ctx.args)
+        (hidden_states,) = ctx.saved_tensors
+        hidden_states = hidden_states.to("cuda:0", non_blocking = True).detach()
+        hidden_states.requires_grad_(True)
+        with torch.enable_grad():
+            (output,) = ctx.forward_function(hidden_states, *ctx.args)
+        torch.autograd.backward(output, dY)
+        return (None, hidden_states.grad,) + (None,)*len(ctx.args)
     pass
 pass
 
