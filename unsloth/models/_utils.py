@@ -88,8 +88,9 @@ from unsloth_zoo.gradient_checkpointing import (
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
-warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "trl")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "xformers")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
@@ -374,8 +375,9 @@ pass
 
 # =============================================
 # Torch compile settings
-UNSLOTH_COMPILE_DEBUG   = "UNSLOTH_COMPILE_DEBUG"   in os.environ
-UNSLOTH_COMPILE_MAXIMUM = "UNSLOTH_COMPILE_MAXIMUM" in os.environ
+UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
+UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
+UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
 # Just remove max_autotune_gemm warning
 import functools
 @functools.lru_cache(None)
@@ -387,7 +389,11 @@ def is_big_gpu(index):
     return True
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
-patch_torch_compile(debug = UNSLOTH_COMPILE_DEBUG, O3 = UNSLOTH_COMPILE_MAXIMUM)
+patch_torch_compile(
+    debug = UNSLOTH_COMPILE_DEBUG,
+    O3 = UNSLOTH_COMPILE_MAXIMUM,
+    ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
+)
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
