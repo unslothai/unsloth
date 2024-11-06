@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.11.2"
+__version__ = "2024.11.3"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -69,7 +69,6 @@ from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
     patch_layernorm,
     patch_torch_compile,
-    patch_regional_compilation,
     patch_model_and_tokenizer,
 )
 from unsloth_zoo.gradient_checkpointing import (
@@ -88,8 +87,9 @@ from unsloth_zoo.gradient_checkpointing import (
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
-warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "trl")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "trl")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "xformers")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "subprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "transformers")
@@ -374,8 +374,9 @@ pass
 
 # =============================================
 # Torch compile settings
-UNSLOTH_COMPILE_DEBUG   = "UNSLOTH_COMPILE_DEBUG"   in os.environ
-UNSLOTH_COMPILE_MAXIMUM = "UNSLOTH_COMPILE_MAXIMUM" in os.environ
+UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
+UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
+UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
 import functools
 @functools.lru_cache(None)
@@ -387,7 +388,11 @@ def is_big_gpu(index):
     return True
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
-patch_torch_compile(debug = UNSLOTH_COMPILE_DEBUG, O3 = UNSLOTH_COMPILE_MAXIMUM)
+patch_torch_compile(
+    debug = UNSLOTH_COMPILE_DEBUG,
+    O3 = UNSLOTH_COMPILE_MAXIMUM,
+    ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
+)
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -407,6 +412,26 @@ accelerate.utils.dataclasses.TorchDynamoPlugin.to_kwargs = torch_compile_kwargs
 accelerate.utils.TorchDynamoPlugin.to_kwargs             = torch_compile_kwargs
 accelerate.accelerator.TorchDynamoPlugin.to_kwargs       = torch_compile_kwargs
 del accelerate
+
+def patch_regional_compilation():
+    # Regional torch 2.5 Recompilation - weirdly very slow??
+    if torch.nn.ModuleList.__name__ == "UnslothModuleList": return
+    # Only works for torch 2.5
+    if Version(torch.__version__) < Version("2.5.0"): return
+
+    old_module_list = torch.nn.ModuleList
+    os.environ["UNSLOTH_PATCHED"] = "1"
+
+    def UnslothModuleList(*args, **kwargs):
+        if len(args) == 1 and len(kwargs) == 0 and type(args[0]) is list:
+            args = [old_module_list([torch.compile(x, dynamic = True, options = torch_compile_options, fullgraph = False) for x in args[0]])]
+        return old_module_list(*args, **kwargs)
+    pass
+    UnslothModuleList.__doc__ = old_module_list.__doc__
+
+    torch.nn.ModuleList = UnslothModuleList
+    return
+pass
 
 # =============================================
 
