@@ -44,6 +44,25 @@ if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
 pass
 
+def get_dtype_from_input(
+  dtype  
+):
+    '''Converts user-defined dtype input string to a usable dtype'''
+    TORCH_FLOAT16_SYNONYMS = {"torch.float16"}
+    TORCH_BFLOAT16_SYNONYMS = {"torch.bfloat16"}
+    TORCH_FLOAT32_SYNONYMS = {"torch.float32"}
+    if dtype in TORCH_FLOAT16_SYNONYMS:
+        return torch.float16
+    if dtype in TORCH_BFLOAT16_SYNONYMS:
+        return torch.bfloat16
+    if dtype in TORCH_FLOAT32_SYNONYMS:
+        return torch.float32
+    if dtype != "None":
+        print(f"--------------------------------------------------\n"\
+            f"User-specified dtype not recognised. Defaulting to dtype = None\n"\
+            f"--------------------------------------------------")
+    return None
+
 
 def __get_model_name(
     model_name,
@@ -332,7 +351,7 @@ class FastLanguageModel(FastLlamaModel):
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
-            dtype             = dtype,
+            dtype             = get_dtype_from_input(dtype),
             load_in_4bit      = load_in_4bit,
             token             = token,
             device_map        = device_map,
