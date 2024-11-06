@@ -43,7 +43,7 @@ if SUPPORTS_GEMMA:
 if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
 pass
-
+import torch
 
 def _get_dtype(dtype):
     __DTYPE_MAP = {
