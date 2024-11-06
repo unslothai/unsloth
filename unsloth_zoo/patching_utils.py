@@ -16,6 +16,7 @@
 
 import torch
 import os
+from packaging.version import Version
 
 __all__ = [
     "patch_compiling_bitsandbytes",
@@ -27,9 +28,6 @@ __all__ = [
 
 # Also disable compiling on bitsandbytes
 def patch_compiling_bitsandbytes():
-    # import peft.tuners.lora.bnb
-    # peft.tuners.lora.bnb.Linear4bit.forward = \
-    #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
     # peft.tuners.lora.bnb.Linear8bitLt.forward = \
     #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
     # return
@@ -37,6 +35,9 @@ def patch_compiling_bitsandbytes():
     import bitsandbytes.nn.modules
     bitsandbytes.nn.modules.Linear4bit.forward = \
         torch._disable_dynamo(bitsandbytes.nn.modules.Linear4bit.forward)
+    import peft.tuners.lora.bnb
+    peft.tuners.lora.bnb.Linear4bit.forward = \
+        torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
     return
 pass
 
