@@ -73,14 +73,13 @@ def _cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING: logits = LOGIT_SCALE * logits
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-    if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits.to(tl.float32) / SOFTCAP).to(logits.dtype)
-
-    logits = logits.to(tl.float32)
+    if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
+    
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
@@ -152,14 +151,13 @@ def _chunked_cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING: logits = LOGIT_SCALE * logits
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-    if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits.to(tl.float32) / SOFTCAP).to(logits.dtype)
+    if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
 
-    logits = logits.to(tl.float32)
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
@@ -229,7 +227,7 @@ def _cross_entropy_backward(
     else:
         dloss = 0.0
 
-    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Do logit scaling for Cohere
     if DO_LOGIT_SCALING:
@@ -241,12 +239,12 @@ def _cross_entropy_backward(
     partial = x
     if DO_SOFTCAPPING:
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
-        partial = triton_tanh(x.to(tl.float32) / SOFTCAP).to(x.dtype)
+        partial = triton_tanh(x / SOFTCAP)
         x = SOFTCAP * partial
     pass
 
     logsumexp = tl.load(logsumexp_ptr + row_idx)
-    y = tl.exp(x.to(tl.float32) - logsumexp)
+    y = tl.exp(x - logsumexp)
     y = tl.where(
         col_offsets == label_idx,
         y - 1.0, # exp(x - logsumexp) - 1
@@ -337,6 +335,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         return losses
     pass
 
+
     @staticmethod
     def backward(ctx, dlosses):
         logits, logsumexp, labels = ctx.saved_tensors
@@ -345,6 +344,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         n_rows, vocab_size = logits.shape
 
         BLOCK_SIZE : int = 4096
+        div : int
+        mod : int
         div, mod = divmod(vocab_size, BLOCK_SIZE)
         n_blocks : int = div + (mod != 0)
 
