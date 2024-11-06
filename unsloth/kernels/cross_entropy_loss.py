@@ -104,18 +104,17 @@ pass
 })
 @triton.jit
 def _chunked_cross_entropy_forward(
-    logits_ptr        ,
-    logits_row_stride ,
-    loss_ptr          ,
-    logsumexp_ptr     ,
-    labels_ptr        ,
-    VOCAB_SIZE        ,
-    N_CHUNKS          ,
-    BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
-    SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       ,
+    logits_ptr, logits_row_stride,
+    loss_ptr,
+    logsumexp_ptr,
+    labels_ptr,
+    VOCAB_SIZE      : tl.constexpr,
+    N_CHUNKS        : tl.constexpr,
+    BLOCK_SIZE      : tl.constexpr,
+    DO_SOFTCAPPING  : tl.constexpr,
+    SOFTCAP         : tl.constexpr,
+    DO_LOGIT_SCALING: tl.constexpr,
+    LOGIT_SCALE     : tl.constexpr,
 ):
     """
         256K vocab divided in 4 chunks
@@ -143,7 +142,7 @@ def _chunked_cross_entropy_forward(
     """
     row_idx   = tl.program_id(0)
     chunk_idx = tl.program_id(1)
-    logits_ptr    += row_idx * tl.cast(logits_row_stride, tl.int64)
+    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx * N_CHUNKS + chunk_idx
     labels_ptr    += row_idx
@@ -157,7 +156,7 @@ def _chunked_cross_entropy_forward(
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING: logits = LOGIT_SCALE * logits
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-    if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits.to(tl.float32) / SOFTCAP).to(logits.dtype)
+    if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
 
     logits = logits.to(tl.float32)
     c = tl.max(logits, 0)
@@ -338,7 +337,6 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
     pass
 
 
-    @torch.compiler.disable
     @staticmethod
     def backward(ctx, dlosses):
         logits, logsumexp, labels = ctx.saved_tensors
