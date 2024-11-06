@@ -890,7 +890,7 @@ CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False,
 DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
 pass
 
-def _change_system_message(template: str, type_chat_template: str | None, system_message: str | None = None) -> tuple[str, str]:
+def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
     system_message_pattern = r"\{system_message\}"
     
     # For predefined templates, check if default system message exists
