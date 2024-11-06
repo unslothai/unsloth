@@ -388,11 +388,11 @@ def is_big_gpu(index):
     return True
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
-patch_torch_compile(
-    debug = UNSLOTH_COMPILE_DEBUG,
-    O3 = UNSLOTH_COMPILE_MAXIMUM,
-    ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
-)
+# patch_torch_compile(
+#     debug = UNSLOTH_COMPILE_DEBUG,
+#     O3 = UNSLOTH_COMPILE_MAXIMUM,
+#     ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
+# )
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
