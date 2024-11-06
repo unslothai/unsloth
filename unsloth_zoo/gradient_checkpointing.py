@@ -148,6 +148,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     pass
 
     @staticmethod
+    @torch._dynamo.disable
     @torch_amp_custom_bwd
     def backward(ctx, dY):
         (hidden_states,) = ctx.saved_tensors
