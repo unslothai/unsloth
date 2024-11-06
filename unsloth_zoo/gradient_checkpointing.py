@@ -192,7 +192,7 @@ class Unsloth_Gradient_Checkpointer(torch.autograd.Function):
 pass
 
 
-# @torch._disable_dynamo
+@torch._disable_dynamo
 def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
     return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
 pass
