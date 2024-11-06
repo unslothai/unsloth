@@ -1381,7 +1381,11 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
             if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
                 if kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"] > model.config.max_position_embeddings:
-                    raise ValueError(f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds `max_position_embeddings` {model.config.max_position_embeddings}! consider passing max_position_embeddings flag while initializing the model.')
+                    raise ValueError(
+                        f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {model.config.max_position_embeddings}!\n'\
+                        'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
+                    )
+        pass
 
         # Set a flag for generation!
         internal_model = model
