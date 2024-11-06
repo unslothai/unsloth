@@ -62,6 +62,7 @@ if HAS_FLASH_ATTENTION_SOFTCAPPING:
 # [TODO] We must randomnly use torch.compile?
 # I checked the gradients and formulas and I'm sure it's correct.
 # I'm stumped :(
+torch._dynamo.config.compiled_autograd = False # Need to disable this or it'll raise threads error!
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
     old_dtype = X.dtype
