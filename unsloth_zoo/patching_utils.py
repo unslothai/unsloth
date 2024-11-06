@@ -15,26 +15,27 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import torch
+import os
 
 __all__ = [
     "patch_compiling_bitsandbytes",
     "patch_layernorm",
     "patch_torch_compile",
-    "patch_regional_compilation",
     "patch_model_and_tokenizer",
 ]
 
 # Also disable compiling on bitsandbytes
 def patch_compiling_bitsandbytes():
-    # import peft.tuners.lora.bnb
-    # peft.tuners.lora.bnb.Linear4bit.forward = \
-    #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
     # peft.tuners.lora.bnb.Linear8bitLt.forward = \
     #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
     # return
+    os.environ["UNSLOTH_PATCHED"] = "1"
     import bitsandbytes.nn.modules
     bitsandbytes.nn.modules.Linear4bit.forward = \
         torch._disable_dynamo(bitsandbytes.nn.modules.Linear4bit.forward)
+    import peft.tuners.lora.bnb
+    peft.tuners.lora.bnb.Linear4bit.forward = \
+        torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
     return
 pass
 
@@ -42,6 +43,7 @@ pass
 def patch_layernorm(fast_layernorm):
     import torch.nn
     if torch.nn.LayerNorm.__name__ != "Unsloth_LayerNorm":
+        os.environ["UNSLOTH_PATCHED"] = "1"
 
         from torch.nn import LayerNorm
         class Unsloth_LayerNorm(LayerNorm):
@@ -55,19 +57,22 @@ def patch_layernorm(fast_layernorm):
 pass
 
 
-def patch_torch_compile(debug = True, O3 = False):
+def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
     import os, logging
     if debug:
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
-        os.environ["TORCH_LOGS"] = "+dynamo"
+        os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs,compiled_autograd_verbose"
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
         torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
         torch._dynamo.config.verbose = True
     else:
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
+        os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
         os.environ.pop("TORCH_LOGS", None)
     pass
+    os.environ["UNSLOTH_PATCHED"] = "1"
 
     # Torch compile arguments
     torch_compile_arguments = [
@@ -98,7 +103,7 @@ def patch_torch_compile(debug = True, O3 = False):
     # Torch dynamo arguments
     torch_dynamo_arguments = [
         "config.accumulated_cache_size_limit = 1024", # Bump up a bit from 256
-        f"config.suppress_errors = {not debug}", # Supress errors for now
+        f"config.suppress_errors = {not debug or ignore_errors}", # Supress errors for now
         f"config.do_not_emit_runtime_asserts = {not debug}",
         "config.cache_size_limit = 1024", # Flex Attention
         "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
@@ -116,26 +121,6 @@ def patch_torch_compile(debug = True, O3 = False):
         try:    exec(_try_dynamo_argument)
         except: pass
     pass
-pass
-
-
-def patch_regional_compilation():
-    # Regional torch 2.5 Recompilation - weirdly very slow??
-    if torch.nn.ModuleList.__name__ == "UnslothModuleList": return
-    # Only works for torch 2.5
-    if Version(torch.__version__) < Version("2.5.0"): return
-
-    old_module_list = torch.nn.ModuleList
-
-    def UnslothModuleList(*args, **kwargs):
-        if len(args) == 1 and len(kwargs) == 0 and type(args[0]) is list:
-            args = [old_module_list([torch.compile(x, dynamic = True, options = torch_compile_options, fullgraph = False) for x in args[0]])]
-        return old_module_list(*args, **kwargs)
-    pass
-    UnslothModuleList.__doc__ = old_module_list.__doc__
-
-    torch.nn.ModuleList = UnslothModuleList
-    return
 pass
 
 

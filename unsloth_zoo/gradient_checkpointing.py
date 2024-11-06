@@ -18,6 +18,7 @@ import torch
 import numpy as np
 from typing import Union, Optional, List, Any, Callable, Tuple
 from packaging.version import Version
+import os
 
 __all__ = [
     "calculate_n_gradient_checkpoints",
@@ -189,25 +190,15 @@ class Unsloth_Gradient_Checkpointer(torch.autograd.Function):
 pass
 
 
+@torch._disable_dynamo
 def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
     return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
 pass
-if (Version(torch.__version__) < Version("2.4.0")) and \
-    not hasattr(unsloth_offloaded_gradient_checkpoint, "__wrapped__"):
-    unsloth_offloaded_gradient_checkpoint = torch._disable_dynamo(
-        unsloth_offloaded_gradient_checkpoint
-    )
-pass
 
 
+@torch._disable_dynamo
 def unsloth_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
     return Unsloth_Gradient_Checkpointer.apply(function, *args)
-pass
-if (Version(torch.__version__) < Version("2.4.0")) and \
-    not hasattr(unsloth_gradient_checkpoint, "__wrapped__"):
-    unsloth_gradient_checkpoint = torch._disable_dynamo(
-        unsloth_gradient_checkpoint
-    )
 pass
 
 
@@ -217,6 +208,9 @@ def patch_unsloth_gradient_checkpointing():
     if torch.utils.checkpoint.checkpoint.__name__ == "unsloth_offloaded_gradient_checkpoint": return
     torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint
     torch.utils.checkpoint.checkpoint = unsloth_offloaded_gradient_checkpoint
+    import transformers.modeling_utils
+    transformers.modeling_utils.checkpoint = unsloth_offloaded_gradient_checkpoint
+    os.environ["UNSLOTH_PATCHED"] = "1"
 pass
 
 
@@ -226,6 +220,9 @@ def patch_gradient_checkpointing():
     if torch.utils.checkpoint.checkpoint.__name__ == "unsloth_gradient_checkpoint": return
     torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint
     torch.utils.checkpoint.checkpoint = unsloth_gradient_checkpoint
+    import transformers.modeling_utils
+    transformers.modeling_utils.checkpoint = unsloth_gradient_checkpoint
+    os.environ["UNSLOTH_PATCHED"] = "1"
 pass
 
 

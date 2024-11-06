@@ -16,6 +16,7 @@
 
 import torch
 from packaging.version import Version
+import os
 torch_nn_functional_cross_entropy = torch.nn.functional.cross_entropy
 
 __all__ = [
@@ -80,6 +81,7 @@ def patch_loss_functions(_fast_cross_entropy_loss):
             transformers.modeling_utils.PreTrainedModel.loss_function.fget.__wrapped__
     pass
     print("Unsloth: Patched cross entropy losses.")
+    os.environ["UNSLOTH_PATCHED"] = "1"
 pass
 
 
