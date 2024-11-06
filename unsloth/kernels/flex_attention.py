@@ -44,7 +44,7 @@ if not HAS_FLEX_ATTENTION:
     try:
         disable_compiled_autograd = torch._dynamo.compiled_autograd.disable
     except:
-        disable_compiled_autograd = lambda *args, **kwargs: *args, **kwargs
+        disable_compiled_autograd = lambda f: f
     pass
 
     # Logit softcapping
