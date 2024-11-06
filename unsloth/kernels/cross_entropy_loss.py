@@ -84,7 +84,7 @@ def _cross_entropy_forward(
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
     if label_idx != -100:
-        x = tl.load(logits_ptr + label_idx)
+        x = tl.load(logits_ptr + label_idx).to(tl.float32) # need to cast to tl.float32 or else erro
         # Go logit scaling for Cohere: t * x
         if DO_LOGIT_SCALING: x = LOGIT_SCALE * x
         # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
