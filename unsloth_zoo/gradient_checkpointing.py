@@ -190,25 +190,15 @@ class Unsloth_Gradient_Checkpointer(torch.autograd.Function):
 pass
 
 
+@torch._disable_dynamo
 def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
     return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
 pass
-if (Version(torch.__version__) < Version("2.4.0")) and \
-    not hasattr(unsloth_offloaded_gradient_checkpoint, "__wrapped__"):
-    unsloth_offloaded_gradient_checkpoint = torch._disable_dynamo(
-        unsloth_offloaded_gradient_checkpoint
-    )
-pass
 
 
+@torch._disable_dynamo
 def unsloth_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
     return Unsloth_Gradient_Checkpointer.apply(function, *args)
-pass
-if (Version(torch.__version__) < Version("2.4.0")) and \
-    not hasattr(unsloth_gradient_checkpoint, "__wrapped__"):
-    unsloth_gradient_checkpoint = torch._disable_dynamo(
-        unsloth_gradient_checkpoint
-    )
 pass
 
 
