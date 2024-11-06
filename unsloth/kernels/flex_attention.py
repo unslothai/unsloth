@@ -15,6 +15,7 @@
 import torch
 from functools import lru_cache
 from transformers.models.llama.modeling_llama import logger
+import os
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
