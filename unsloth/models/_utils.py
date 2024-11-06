@@ -396,8 +396,8 @@ patch_torch_compile(
 )
 
 torch_compile_options = {
-    "epilogue_fusion"   : True,
-    "max_autotune"      : True,
+    "epilogue_fusion"   : False,
+    "max_autotune"      : False,
     "shape_padding"     : True,
     "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
     "triton.cudagraphs" : False,
