@@ -377,7 +377,7 @@ pass
 # Torch compile settings
 UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
-UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
+UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
 import functools
 @functools.lru_cache(None)
@@ -396,8 +396,8 @@ patch_torch_compile(
 )
 
 torch_compile_options = {
-    "epilogue_fusion"   : False,
-    "max_autotune"      : False,
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
     "shape_padding"     : True,
     "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
     "triton.cudagraphs" : False,
