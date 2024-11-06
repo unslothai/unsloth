@@ -17,6 +17,9 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings
+from unsloth_zoo.patching_utils import (
+    patch_layernorm,
+)
 
 
 @triton.jit
@@ -161,27 +164,6 @@ def fast_layernorm(layernorm, X):
     return out
 pass
 
-
-from torch.nn import LayerNorm
-class Unsloth_LayerNorm(LayerNorm):
-    def forward(self, X):
-        return fast_layernorm(self, X)
-    pass
-pass
-
-
-def patch_layernorm():
-    import torch.nn
-    torch.nn.LayerNorm = Unsloth_LayerNorm
-    return
-pass
-
-
-def unpatch_layernorm():
-    import torch.nn
-    torch.nn.LayerNorm = LayerNorm
-    return
-pass
 
 
 def test_layernorm(
