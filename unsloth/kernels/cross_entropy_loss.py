@@ -84,12 +84,12 @@ def _cross_entropy_forward(
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
     if label_idx != -100:
-        x = tl.load(logits_ptr + label_idx)
+        x = tl.load(logits_ptr + label_idx).to(tl.float32)
         # Go logit scaling for Cohere: t * x
         if DO_LOGIT_SCALING: x = LOGIT_SCALE * x
         # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
         if DO_SOFTCAPPING:   x = SOFTCAP * triton_tanh(x / SOFTCAP)
-        loss = logsumexp - x.to(tl.float32)
+        loss = logsumexp - x
     else:
         loss = 0.0
     tl.store(logsumexp_ptr, logsumexp)
@@ -170,7 +170,7 @@ def _chunked_cross_entropy_forward(
             if DO_LOGIT_SCALING: x = LOGIT_SCALE * x
             # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
             if DO_SOFTCAPPING:   x = SOFTCAP * triton_tanh(x / SOFTCAP)
-            loss = -1.0 * x.to(tl.float32)
+            loss = -1.0 * x
         else:
             loss = 0.0
         tl.store(loss_ptr, loss)
