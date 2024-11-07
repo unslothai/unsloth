@@ -86,13 +86,19 @@ pass
 
 
 def post_patch_loss_function(model):
-    try:
-        # model.loss_function starts as a dict to a loss fx
-        # We invoke it to save it
-        model.loss_function = model.loss_function()
-    except:
-        # Failed means we already invoked it, and we need args to the loss fx
+    current_model = model
+    while hasattr(current_model, "model"):
+        try:
+            # model.loss_function starts as a dict to a loss fx
+            # We invoke it to save it
+            current_model.loss_function = current_model.loss_function()
+        except:
+            # Failed means we already invoked it, and we need args to the loss fx
+            pass
         pass
+        current_model = current_model.model
     pass
+    try: current_model.loss_function = current_model.loss_function()
+    except: pass
     return model
 pass
