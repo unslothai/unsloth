@@ -15,12 +15,13 @@
 import torch
 from functools import lru_cache
 from transformers.models.llama.modeling_llama import logger
+import os
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
     "max_autotune"      : True,
     "shape_padding"     : True,
-    "trace.enabled"     : False, # Output Triton kernel outputs!
+    "trace.enabled"     : os.environ.get("UNSLOTH_COMPILE_DEBUG", "0") == "1",
     "triton.cudagraphs" : False,
 }
 
