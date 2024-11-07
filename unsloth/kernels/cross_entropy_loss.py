@@ -400,6 +400,6 @@ if (Version(torch.__version__) < Version("2.4.0")) and \
 pass
 
 # Patch CE Losses in transformers
-def patch_loss_functions():
-    _patch_loss_functions(fast_cross_entropy_loss)
+def patch_loss_functions(torch_compile = True):
+    _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
 pass
