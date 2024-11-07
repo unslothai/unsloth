@@ -54,8 +54,8 @@ def _get_dtype(dtype):
         "bfloat16": torch.bfloat16,
         torch.bfloat16: torch.bfloat16,
     }
-    if dtype is None or dtype == None: return None
-    if dtype in __DTYPE_MAP: return __DTYPE_MAP[dtype]
+    if   dtype is None or dtype == None: return None
+    elif dtype in __DTYPE_MAP: return __DTYPE_MAP[dtype]
     else:
         print(f"Unsloth: {dtype} is not recognized, so we'll default to None")
         return None
