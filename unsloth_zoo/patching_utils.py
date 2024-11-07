@@ -108,7 +108,8 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         "config.cache_size_limit = 1024", # Flex Attention
         "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
         "config.numpy_default_float = 'float32'",
-        "config.compiled_autograd = True", # New Torch 2.4 feature which can compile backwards passes
+        # FAILS for Gemma!
+        "config.compiled_autograd = False", # New Torch 2.4 feature which can compile backwards passes
         # https://pytorch.org/tutorials/intermediate/compiled_autograd_tutorial.html
     ]
     import torch._inductor.config as config
