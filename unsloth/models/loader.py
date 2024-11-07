@@ -43,6 +43,24 @@ if SUPPORTS_GEMMA:
 if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
 pass
+import torch
+
+def _get_dtype(dtype):
+    __DTYPE_MAP = {
+        "float32": torch.float32,
+        torch.float32: torch.float32,
+        "float16": torch.float16,
+        torch.float16: torch.float16,
+        "bfloat16": torch.bfloat16,
+        torch.bfloat16: torch.bfloat16,
+    }
+    if dtype in __DTYPE_MAP:
+        return __DTYPE_MAP[dtype]
+    else:
+        print(f"Unsloth: {dtype} is not recognized, so we'll default to torch.float16")
+        return torch.float16
+    pass
+pass
 
 
 def __get_model_name(
@@ -332,7 +350,7 @@ class FastLanguageModel(FastLlamaModel):
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
-            dtype             = dtype,
+            dtype             = _get_dtype(dtype),
             load_in_4bit      = load_in_4bit,
             token             = token,
             device_map        = device_map,
