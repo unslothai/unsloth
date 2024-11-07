@@ -40,15 +40,8 @@ pass
 
 if not HAS_FLEX_ATTENTION:
 
-    # Below fails on compiled_autograd, so disable it
-    try:
-        disable_compile = torch._dynamo.compiled_autograd.disable
-    except:
-        disable_compile = lambda f: f
-    pass
-
     # Logit softcapping
-    @disable_compile(torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options))
+    @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
     def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads    = self.num_heads
         head_dim   = self.head_dim
