@@ -210,6 +210,12 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
         return
     pass
 
+    # Sometimes the sizes can be different like in vision models
+    # Ie <image> is in input, but not in output
+    min_size = min(embedding_matrix.shape[1], lm_head_matrix.shape[1])
+    embedding_matrix = embedding_matrix[:min_size]
+    lm_head_matrix   = lm_head_matrix  [:min_size]
+    
     # Get untrained tokens
     indicator_untrained1 = torch.amax(embedding_matrix, axis = 1) <= eps
     # Check lm_head as well
