@@ -48,7 +48,6 @@ def patch_layernorm(fast_layernorm):
         from torch.nn import LayerNorm
         class Unsloth_LayerNorm(LayerNorm):
             def forward(self, X):
-                print(1)
                 return fast_layernorm(self, X)
             pass
         pass
