@@ -306,6 +306,9 @@ import torch
 from transformers import TrainingArguments
 from trl import DPOTrainer
 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '0' # TO SELECT DIFFERENT DEVICES YOU CAN USE COMMA SEPARATED LIST - '1,2,3' or SINGLE DEVICE USE - '1'
+
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/zephyr-sft-bnb-4bit",
     max_seq_length = max_seq_length,
