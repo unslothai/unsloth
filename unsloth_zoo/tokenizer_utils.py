@@ -204,6 +204,8 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     """
     embedding_matrix = model.get_input_embeddings ().weight
     lm_head_matrix   = model.get_output_embeddings().weight
+    chat_template = getattr(tokenizer, "chat_template", None)
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
 
     # Ignore some model checks for now
     if model.config._name_or_path in IGNORED_TOKENIZER_NAMES:
@@ -262,7 +264,6 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     if_bad_first  = False
     if_bad_second = False
     # Check tokenizer's chat template for any untrained tokens
-    chat_template = getattr(tokenizer, "chat_template", None)
     if chat_template is not None:
         if_bad_first = any(x in chat_template for x in actual_bad_tokens)
     pass
