@@ -1001,7 +1001,7 @@ def patch_sft_trainer_tokenizer():
         # Also DPO weirdly tokenizes non numeric columns? Delete them!
         check_text += \
         "\n"\
-        "if hasattr(self.train_dataset, 'column_names''):\n"
+        "if hasattr(self.train_dataset, 'column_names'):\n"
         "    column_names = set(self.train_dataset.column_names)\n"\
         "    check = ['chosen', 'rejected', 'prompt', 'chosen_input_ids', 'chosen_attention_mask',\n"\
         "        'chosen_labels', 'rejected_input_ids', 'rejected_attention_mask', 'rejected_labels',\n"\
