@@ -1015,6 +1015,8 @@ def patch_sft_trainer_tokenizer():
         check_text = "\n".join(" "*where + x for x in check_text)
 
         function = function.replace(replacer, check_text + replacer)
+        print(function)
+        raise
         exec(function, globals())
 
         exec(f"trl.trainer.{path_to_trainer}.{function_name} = {function_name}", globals())
