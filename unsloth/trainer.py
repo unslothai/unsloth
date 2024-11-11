@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Optional
+from functools import wraps
 
+import trl
 from trl import SFTTrainer
 try:
     from trl import SFTConfig as TrainingArguments
@@ -46,6 +49,7 @@ __all__ = [
     "UnslothTrainingArguments",
     "UnslothTrainer",
     "unsloth_train",
+    "_patch_sft_trainer",
 ]
 
 
@@ -119,3 +123,62 @@ class UnslothTrainer(SFTTrainer):
         return self.optimizer
     pass
 pass
+
+# From `trl>=0.13.0`, they changed how to pass several params to the trainer
+# We need to patch to make the transition smooth
+
+def _patch_sft_trainer():
+    """
+    Patches the SFTTrainer to maintain backward compatibility with the old syntax
+    """
+    import dataclasses
+
+    original_init = SFTTrainer.__init__
+    list_moved_kwargs = ['max_seq_length', 'dataset_num_proc', 'packing', 'dataset_text_field']
+
+    @wraps(original_init)
+    def new_init(self, *args, **kwargs):
+        if Version(trl.__version__) >= Version("0.13.0.dev0"):
+            if "args" in kwargs and not isinstance(kwargs["args"], trl.SFTConfig):
+                warnings.warn(
+                    "You are using TRL ≥0.13.0 with the old API style. While this will work for now, "
+                    "consider updating your code to use SFTConfig in the future.",
+                    DeprecationWarning,
+                    stacklevel=2
+                )
+
+                training_args = kwargs.pop("args", None)
+
+                # Need to manually add here by checking the fields
+                # Since `TrainingArguments` is a subclass of `SFTConfig`
+                # But has `post_init` argument which is not received
+                # by the __init__ of `SFTConfig`
+
+                # Get only the fields that should be passed to __init__
+                sft_fields = {
+                    field.name: field for field in dataclasses.fields(trl.SFTConfig) 
+                    if field.init  # Only get fields where init=True
+                }
+                
+                # Create config dict with only valid init fields
+                config_dict = {
+                    name: getattr(training_args, name)
+                    for name in sft_fields
+                    if hasattr(training_args, name)
+                }
+                
+                # Add the parameters that were previously separate
+                for param in list_moved_kwargs:
+                    if param in kwargs:
+                        config_dict[param] = kwargs.pop(param)
+
+                
+                sft_config = trl.SFTConfig(**config_dict)
+                    
+                kwargs["args"] = sft_config
+
+            original_init(self, *args, **kwargs)
+        else:
+            original_init(self, *args, **kwargs)
+                
+    SFTTrainer.__init__ = new_init

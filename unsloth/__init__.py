@@ -172,3 +172,6 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+
+# patch sft trainer
+_patch_sft_trainer()
