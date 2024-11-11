@@ -28,29 +28,35 @@ from . import is_bfloat16_supported
 from unsloth_zoo.training_utils import unsloth_train as _unsloth_train
 from packaging.version import Version
 
-# Unsloth gradient accumulation fix:
-from transformers import __version__ as transformers_version
-if Version(transformers_version) > Version("4.45.2"):
-    def unsloth_train(trainer):
-        return trainer.train()
-    pass
-else:
-    def unsloth_train(trainer):
-        print(
-            "Unsloth: Using our custom gradient accumulation fixed trainer, which is not feature complete.\n"\
-            "If you want to use our fix inside of HF, please update `transformers` to the latest version via:\n"\
-            '`pip uninstall transformers -y && pip install --upgrade --no-cache-dir "git+https://github.com/huggingface/transformers.git"`'
-        )
-        return _unsloth_train(trainer)
-    pass
-pass
-
 __all__ = [
     "UnslothTrainingArguments",
     "UnslothTrainer",
     "unsloth_train",
     "_patch_sft_trainer",
 ]
+
+# Unsloth gradient accumulation fix:
+from transformers import __version__ as transformers_version
+if Version(transformers_version) > Version("4.45.2"):
+    def unsloth_train(trainer, *args, **kwargs):
+        return trainer.train(*args, **kwargs)
+    pass
+else:
+    def unsloth_train(trainer, *args, **kwargs):
+        if len(args) != 0 or len(kwargs) != 0:
+            raise RuntimeError(
+                "Unsloth: Our custom gradient accumulation fixed trainer does not support other arguments.\n"\
+                "If you want to use our fix inside of HF, please update `transformers` to the latest version via:\n"\
+                '`pip uninstall transformers -y && pip install --upgrade --no-cache-dir transformers`'
+            )
+        print(
+            "Unsloth: Using our custom gradient accumulation fixed trainer, which is not feature complete.\n"\
+            "If you want to use our fix inside of HF, please update `transformers` to the latest version via:\n"\
+            '`pip uninstall transformers -y && pip install --upgrade --no-cache-dir transformers`'
+        )
+        return _unsloth_train(trainer)
+    pass
+pass
 
 
 @dataclass
@@ -135,18 +141,11 @@ def _patch_sft_trainer():
 
     original_init = SFTTrainer.__init__
     list_moved_kwargs = ['max_seq_length', 'dataset_num_proc', 'packing', 'dataset_text_field']
-
+    
     @wraps(original_init)
     def new_init(self, *args, **kwargs):
-        if Version(trl.__version__) >= Version("0.13.0.dev0"):
+        if Version(trl.__version__) >= Version("0.13.0"):
             if "args" in kwargs and not isinstance(kwargs["args"], trl.SFTConfig):
-                warnings.warn(
-                    "You are using TRL ≥0.13.0 with the old API style. While this will work for now, "
-                    "consider updating your code to use SFTConfig in the future.",
-                    DeprecationWarning,
-                    stacklevel=2
-                )
-
                 training_args = kwargs.pop("args", None)
 
                 # Need to manually add here by checking the fields
@@ -171,14 +170,14 @@ def _patch_sft_trainer():
                 for param in list_moved_kwargs:
                     if param in kwargs:
                         config_dict[param] = kwargs.pop(param)
-
-                
+                pass                
                 sft_config = trl.SFTConfig(**config_dict)
-                    
                 kwargs["args"] = sft_config
-
+            pass
             original_init(self, *args, **kwargs)
         else:
             original_init(self, *args, **kwargs)
-                
+        pass
+    pass        
     SFTTrainer.__init__ = new_init
+pass
