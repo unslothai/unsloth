@@ -244,6 +244,13 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
 
     # Combine both checks
     indicator_untrained = indicator_untrained1 & indicator_untrained2
+
+    # Remove pad token possibility
+    if hasattr(tokenizer, "pad_token_id"):
+        pad_token_id = tokenizer.pad_token_id
+        if pad_token_id < indicator_untrained.shape[0]:
+            indicator_untrained[pad_token_id] = False
+    pass
     
     where_untrained = torch.where(indicator_untrained)[0]
     n_untrained = where_untrained.shape[0]
