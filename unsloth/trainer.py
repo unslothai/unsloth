@@ -27,6 +27,7 @@ pass
 from . import is_bfloat16_supported
 from unsloth_zoo.training_utils import unsloth_train as _unsloth_train
 from packaging.version import Version
+import dataclasses
 
 __all__ = [
     "UnslothTrainingArguments",
@@ -132,27 +133,23 @@ pass
 
 # From `trl>=0.13.0`, they changed how to pass several params to the trainer
 # We need to patch to make the transition smooth
-
-def _patch_sft_trainer():
-    """
-    Patches the SFTTrainer to maintain backward compatibility with the old syntax
-    """
-    import dataclasses
-
-    original_init = SFTTrainer.__init__
-    list_moved_kwargs = ['max_seq_length', 'dataset_num_proc', 'packing', 'dataset_text_field']
-    
-    @wraps(original_init)
-    def new_init(self, *args, **kwargs):
-        if Version(trl.__version__) >= Version("0.13.0"):
+if Version(trl.__version__) >= Version("0.13.0.dev0"):
+    def _patch_sft_trainer():
+        """
+        Patches the SFTTrainer to maintain backward compatibility with the old syntax
+        """
+        original_init = SFTTrainer.__init__
+        
+        @wraps(original_init)
+        def new_init(self, *args, **kwargs):
             if "args" in kwargs and not isinstance(kwargs["args"], trl.SFTConfig):
                 training_args = kwargs.pop("args", None)
-
+    
                 # Need to manually add here by checking the fields
                 # Since `TrainingArguments` is a subclass of `SFTConfig`
                 # But has `post_init` argument which is not received
                 # by the __init__ of `SFTConfig`
-
+    
                 # Get only the fields that should be passed to __init__
                 sft_fields = {
                     field.name: field for field in dataclasses.fields(trl.SFTConfig) 
@@ -165,19 +162,23 @@ def _patch_sft_trainer():
                     for name in sft_fields
                     if hasattr(training_args, name)
                 }
-                
+                import trl, inspect
+                from transformers import TrainingArguments
+                list_moved_kwargs = list(
+                    inspect.signature(trl.SFTConfig).parameters.keys() - \
+                    inspect.signature(TrainingArguments).parameters.keys()
+                )
                 # Add the parameters that were previously separate
                 for param in list_moved_kwargs:
-                    if param in kwargs:
-                        config_dict[param] = kwargs.pop(param)
-                pass                
+                    if param in kwargs: config_dict[param] = kwargs.pop(param)
+                pass
                 sft_config = trl.SFTConfig(**config_dict)
                 kwargs["args"] = sft_config
             pass
             original_init(self, *args, **kwargs)
-        else:
-            original_init(self, *args, **kwargs)
         pass
-    pass        
-    SFTTrainer.__init__ = new_init
+        SFTTrainer.__init__ = new_init
+    pass
+else:
+    def _patch_sft_trainer(): return
 pass
