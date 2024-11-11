@@ -772,10 +772,38 @@ def install_llama_cpp_make_non_blocking():
 pass
 
 
-def install_python_non_blocking(packages = []):
-    full_command = ["pip", "install"] + packages
-    run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
-    return run_installer
+def install_python_non_blocking(packages=[]):
+    processes = []
+    
+    if "protobuf" in packages:
+        # First uninstall protobuf if it exists
+        uninstall_cmd = ["pip", "uninstall", "-y", "protobuf"]
+        processes.append(subprocess.Popen(uninstall_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT))
+        
+        # Install other packages (except protobuf) if any
+        other_packages = [pkg for pkg in packages if pkg != "protobuf"]
+        if other_packages:
+            install_cmd = ["pip", "install"] + other_packages
+            processes.append(subprocess.Popen(install_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT))
+        
+        # Install protobuf with special handling
+        protobuf_cmd = ["pip", "install", "--no-binary=protobuf", "protobuf"]
+        processes.append(subprocess.Popen(protobuf_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT))
+    else:
+        # Regular installation for other packages
+        full_command = ["pip", "install"] + packages
+        processes.append(subprocess.Popen(full_command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT))
+    
+    # Return a wrapper object that can wait for all processes
+    class ProcessWrapper:
+        def __init__(self, processes):
+            self.processes = processes
+            
+        def wait(self):
+            for process in self.processes:
+                process.wait()
+    
+    return ProcessWrapper(processes)
 pass
 
 
