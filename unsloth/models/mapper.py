@@ -384,21 +384,53 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2.5-Math-72B-Instruct",
         "Qwen/Qwen2.5-Math-72B-Instruct",
     ),
+    "unsloth/Qwen2.5-Coder-0.5B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-0.5B",
+        "Qwen/Qwen2.5-Coder-0.5B",
+    ),
     "unsloth/Qwen2.5-Coder-1.5B-bnb-4bit" : (
         "unsloth/Qwen2.5-Coder-1.5B",
         "Qwen/Qwen2.5-Coder-1.5B",
+    ),
+    "unsloth/Qwen2.5-Coder-3B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-3B",
+        "Qwen/Qwen2.5-Coder-3B",
     ),
     "unsloth/Qwen2.5-Coder-7B-bnb-4bit" : (
         "unsloth/Qwen2.5-Coder-7B",
         "Qwen/Qwen2.5-Coder-7B",
     ),
+    "unsloth/Qwen2.5-Coder-14B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-14B",
+        "Qwen/Qwen2.5-Coder-14B",
+    ),
+    "unsloth/Qwen2.5-Coder-32B-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-32B",
+        "Qwen/Qwen2.5-Coder-32B",
+    ),
+    "unsloth/Qwen2.5-Coder-0.5B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-Instruct-0.5B",
+        "Qwen/Qwen2.5-Coder-Instruct-0.5B",
+    ),
     "unsloth/Qwen2.5-Coder-1.5B-Instruct-bnb-4bit" : (
         "unsloth/Qwen2.5-Coder-Instruct-1.5B",
         "Qwen/Qwen2.5-Coder-Instruct-1.5B",
     ),
+    "unsloth/Qwen2.5-Coder-3B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-3B-Instruct",
+        "Qwen/Qwen2.5-Coder-3B-Instruct",
+    ),
     "unsloth/Qwen2.5-Coder-7B-Instruct-bnb-4bit" : (
         "unsloth/Qwen2.5-Coder-7B-Instruct",
         "Qwen/Qwen2.5-Coder-7B-Instruct",
+    ),
+    "unsloth/Qwen2.5-Coder-14B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-14B-Instruct",
+        "Qwen/Qwen2.5-Coder-14B-Instruct",
+    ),
+    "unsloth/Qwen2.5-Coder-32B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2.5-Coder-32B-Instruct",
+        "Qwen/Qwen2.5-Coder-32B-Instruct",
     ),
     "unsloth/Llama-3.2-1B-bnb-4bit" : (
         "unsloth/Llama-3.2-1B",
