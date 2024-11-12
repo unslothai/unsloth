@@ -889,6 +889,11 @@ def save_to_gguf(
     #     "undergoing some major bug fixes as at 5th of May 2024. This is not an Unsloth issue.\n"\
     #     "Please be patient - GGUF saving should still work, but might not work as well."
     # )
+
+    # Fixes this issue
+    # https://github.com/unslothai/unsloth/issues/1266
+    os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = 'python'
+
     assert(model_dtype == "float16" or model_dtype == "bfloat16")
     model_dtype = "f16" if model_dtype == "float16" else "bf16"
 
