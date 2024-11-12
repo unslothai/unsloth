@@ -25,7 +25,7 @@ __all__ = [
 ]
 
 
-def patch_loss_functions(_fast_cross_entropy_loss):
+def patch_loss_functions(_fast_cross_entropy_loss, torch_compile = True):
     try:
         import transformers.loss.loss_utils
     except:
@@ -67,6 +67,21 @@ def patch_loss_functions(_fast_cross_entropy_loss):
 
     if (Version(torch.__version__) < Version("2.4.0")):
         UnslothForCausalLMLoss = torch._disable_dynamo(UnslothForCausalLMLoss)
+    
+    elif torch_compile:
+        torch_compile_options = {
+            "epilogue_fusion"   : True,
+            "max_autotune"      : True,
+            "shape_padding"     : True,
+            "trace.enabled"     : os.environ.get("UNSLOTH_COMPILE_DEBUG", "0") == "1",
+            "triton.cudagraphs" : False,
+        }
+        UnslothForCausalLMLoss = torch.compile(
+            UnslothForCausalLMLoss,
+            dynamic = True,
+            fullgraph = False,
+            options = torch_compile_options,
+        )
     pass
 
     # Now patch the losses!
@@ -86,13 +101,19 @@ pass
 
 
 def post_patch_loss_function(model):
-    try:
-        # model.loss_function starts as a dict to a loss fx
-        # We invoke it to save it
-        model.loss_function = model.loss_function()
-    except:
-        # Failed means we already invoked it, and we need args to the loss fx
+    current_model = model
+    while hasattr(current_model, "model"):
+        try:
+            # model.loss_function starts as a dict to a loss fx
+            # We invoke it to save it
+            current_model.loss_function = current_model.loss_function()
+        except:
+            # Failed means we already invoked it, and we need args to the loss fx
+            pass
         pass
+        current_model = current_model.model
     pass
+    try: current_model.loss_function = current_model.loss_function()
+    except: pass
     return model
 pass

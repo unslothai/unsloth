@@ -204,12 +204,20 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     """
     embedding_matrix = model.get_input_embeddings ().weight
     lm_head_matrix   = model.get_output_embeddings().weight
+    chat_template = getattr(tokenizer, "chat_template", None)
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
 
     # Ignore some model checks for now
     if model.config._name_or_path in IGNORED_TOKENIZER_NAMES:
         return
     pass
 
+    # Sometimes the sizes can be different like in vision models
+    # Ie <image> is in input, but not in output
+    min_size = min(embedding_matrix.shape[1], lm_head_matrix.shape[1])
+    embedding_matrix = embedding_matrix[:min_size]
+    lm_head_matrix   = lm_head_matrix  [:min_size]
+    
     # Get untrained tokens
     indicator_untrained1 = torch.amax(embedding_matrix, axis = 1) <= eps
     # Check lm_head as well
@@ -236,6 +244,13 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
 
     # Combine both checks
     indicator_untrained = indicator_untrained1 & indicator_untrained2
+
+    # Remove pad token possibility
+    if hasattr(tokenizer, "pad_token_id"):
+        pad_token_id = tokenizer.pad_token_id
+        if pad_token_id < indicator_untrained.shape[0]:
+            indicator_untrained[pad_token_id] = False
+    pass
     
     where_untrained = torch.where(indicator_untrained)[0]
     n_untrained = where_untrained.shape[0]
@@ -256,7 +271,6 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     if_bad_first  = False
     if_bad_second = False
     # Check tokenizer's chat template for any untrained tokens
-    chat_template = getattr(tokenizer, "chat_template", None)
     if chat_template is not None:
         if_bad_first = any(x in chat_template for x in actual_bad_tokens)
     pass

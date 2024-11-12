@@ -62,6 +62,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     assert(type(O3)    is bool)
     import os, logging
     if debug:
+        print("Unsloth: Torch.compile debugging turned on")
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
         os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs,compiled_autograd_verbose"
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
@@ -71,6 +72,8 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
         os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
         os.environ.pop("TORCH_LOGS", None)
+        torch._logging.set_logs(dynamo = logging.CRITICAL, inductor = logging.CRITICAL)
+        torch._dynamo.config.verbose = False
     pass
     os.environ["UNSLOTH_PATCHED"] = "1"
 
@@ -92,10 +95,11 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         "config.autotune_multi_device = True", # If autotuning in subprocess, whether to use multiple devices
         "config.coordinate_descent_tuning = True",
         f"config.aggressive_fusion = {O3}", # Careful changes results!
-        "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
-        "config.combo_kernel_foreach_dynamic_shapes = True",
+        # [TODO] COMBO KERNELS makes everything slower!
+        # "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
+        # "config.combo_kernel_foreach_dynamic_shapes = True",
         "config.freezing = False", # Freezes weights --> ** only useful for inference **
-        "config.triton.multi_kernel = True", # use tuning to pick between different subkernels
+        f"config.triton.multi_kernel = {O3}", # use tuning to pick between different subkernels
         "config.cuda.enable_cuda_lto = True",
         "config.cuda.use_fast_math = True",
         "config.cuda.compile_opt_level = '-O2'",
