@@ -31,12 +31,18 @@ pass
 # tl.math.tanh now is libdevice.tanh
 from packaging.version import Version
 import triton
+import triton.language as tl
 if Version(triton.__version__) >= Version("3.0.0"):
     from triton.language.extra import libdevice
     triton_tanh = libdevice.tanh
+    triton_cast = tl.cast
 else:
-    import triton.language as tl
     triton_tanh = tl.math.tanh
+    # No casting in old Triton versions
+    @triton.jit
+    def triton_cast(x, dtype):
+        return x.to(dtype)
+    pass
 pass
 
 
