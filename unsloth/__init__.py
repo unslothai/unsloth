@@ -174,4 +174,4 @@ from .tokenizer_utils import *
 from .trainer import *
 
 # patch sft trainer
-_patch_sft_trainer()
+_patch_trl_trainer()

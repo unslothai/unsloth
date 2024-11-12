@@ -18,7 +18,8 @@ from typing import Optional
 from functools import wraps
 
 import trl
-from trl import SFTTrainer
+import inspect
+from trl import SFTTrainer, DPOTrainer, ORPOTrainer, KTOTrainer
 try:
     from trl import SFTConfig as TrainingArguments
 except:
@@ -33,7 +34,7 @@ __all__ = [
     "UnslothTrainingArguments",
     "UnslothTrainer",
     "unsloth_train",
-    "_patch_sft_trainer",
+    "_patch_trl_trainer",
 ]
 
 # Unsloth gradient accumulation fix:
@@ -133,52 +134,76 @@ pass
 
 # From `trl>=0.13.0`, they changed how to pass several params to the trainer
 # We need to patch to make the transition smooth
+def create_backwards_compatible_trainer(trainer_class, config_class):
+    original_init = trainer_class.__init__
+    
+    @wraps(original_init)
+    def new_init(self, *args, **kwargs):
+        # All Trainer tokenizer is now called processing_class
+        if "tokenizer" in kwargs:
+            kwargs["processing_class"] = kwargs.pop("tokenizer")
+
+        if "args" in kwargs:
+            training_args = kwargs.pop("args", None)
+
+            # Get parameters that Trainer.__init__ actually expects
+            trainer_params = set(inspect.signature(original_init).parameters.keys())
+            trainer_params.remove('self')
+            trainer_params.remove('args')
+
+            # Get fields that should be passed to Config init
+            config_fields = {
+                field.name: field for field in dataclasses.fields(config_class) 
+                if field.init
+            }
+            
+            # Create config dict with valid fields from training_args
+            config_dict = {
+                name: getattr(training_args, name)
+                for name in config_fields
+                if hasattr(training_args, name)
+            }
+
+            # Get parameters that exist in Config but not in TrainingArguments
+            moved_params = set(
+                inspect.signature(config_class).parameters.keys()
+            ) - set(
+                inspect.signature(TrainingArguments).parameters.keys()
+            )
+
+            # Separate kwargs into trainer kwargs and config kwargs
+            trainer_kwargs = {}
+            additional_config_kwargs = {}
+
+            for key, value in kwargs.items():
+                if key in trainer_params:
+                    trainer_kwargs[key] = value
+                elif key in moved_params or key in config_fields:
+                    additional_config_kwargs[key] = value
+                else:
+                    additional_config_kwargs[key] = value
+
+            # Update config_dict with additional kwargs
+            config_dict.update(additional_config_kwargs)
+
+            # Create Config with all the collected parameters
+            config = config_class(**config_dict)
+            
+            # Reconstruct kwargs for Trainer
+            kwargs = trainer_kwargs
+            kwargs["args"] = config
+
+        original_init(self, *args, **kwargs)
+    
+    return new_init
+
 if Version(trl.__version__) >= Version("0.13.0.dev0"):
-    def _patch_sft_trainer():
-        """
-        Patches the SFTTrainer to maintain backward compatibility with the old syntax
-        """
-        original_init = SFTTrainer.__init__
-        
-        @wraps(original_init)
-        def new_init(self, *args, **kwargs):
-            if "args" in kwargs and not isinstance(kwargs["args"], trl.SFTConfig):
-                training_args = kwargs.pop("args", None)
-    
-                # Need to manually add here by checking the fields
-                # Since `TrainingArguments` is a subclass of `SFTConfig`
-                # But has `post_init` argument which is not received
-                # by the __init__ of `SFTConfig`
-    
-                # Get only the fields that should be passed to __init__
-                sft_fields = {
-                    field.name: field for field in dataclasses.fields(trl.SFTConfig) 
-                    if field.init  # Only get fields where init=True
-                }
-                
-                # Create config dict with only valid init fields
-                config_dict = {
-                    name: getattr(training_args, name)
-                    for name in sft_fields
-                    if hasattr(training_args, name)
-                }
-                import trl, inspect
-                from transformers import TrainingArguments
-                list_moved_kwargs = list(
-                    inspect.signature(trl.SFTConfig).parameters.keys() - \
-                    inspect.signature(TrainingArguments).parameters.keys()
-                )
-                # Add the parameters that were previously separate
-                for param in list_moved_kwargs:
-                    if param in kwargs: config_dict[param] = kwargs.pop(param)
-                pass
-                sft_config = trl.SFTConfig(**config_dict)
-                kwargs["args"] = sft_config
-            pass
-            original_init(self, *args, **kwargs)
-        pass
-        SFTTrainer.__init__ = new_init
-    pass
+    print("Patching TRL Trainer to maintain backward compatibility with the old syntax.")
+    def _patch_trl_trainer():
+        SFTTrainer.__init__ = create_backwards_compatible_trainer(SFTTrainer, trl.SFTConfig)
+        DPOTrainer.__init__ = create_backwards_compatible_trainer(DPOTrainer, trl.DPOConfig)
+        KTOTrainer.__init__ = create_backwards_compatible_trainer(KTOTrainer, trl.KTOConfig)
+        ORPOTrainer.__init__ = create_backwards_compatible_trainer(ORPOTrainer, trl.ORPOConfig)
 else:
-    def _patch_sft_trainer(): return
+    def _patch_trl_trainer(): return
 pass
