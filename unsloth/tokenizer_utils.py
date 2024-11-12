@@ -588,15 +588,21 @@ pass
 def _fix_chat_template(chat_template):
     endfor = "{% endfor %}"
     where = chat_template.find(endfor)
-    if where == -1: return chat_template
+    if where == -1:
+        endfor = "{%- endfor %}"
+        where = chat_template.find(endfor)
+    if where == -1:
+        return chat_template
 
     after_endfor = chat_template[where + len(endfor):]
 
-    if "{% if" not in after_endfor and "{% set " not in after_endfor and \
+    dash = "-" if endfor.startswith("{%-") else ""
+
+    if "{%" + dash + " if" not in after_endfor and "{%" + dash + " set " not in after_endfor and \
         after_endfor.startswith("{{") and after_endfor.endswith("}}") and \
         after_endfor.count("{{") == 1 and after_endfor.count("}}") == 1:
 
-        after_endfor = "{% if add_generation_prompt %}" + after_endfor + "{% endif %}"
+        after_endfor = "{%" + dash + " if add_generation_prompt %}" + after_endfor + endfor
 
         chat_template = chat_template[:where + len(endfor)] + after_endfor
     pass
@@ -643,10 +649,12 @@ def fix_chat_template(tokenizer):
 
     if no == yes:
         # SAME?! That's not good! We check for add_generation_prompt
-        if "{% if add_generation_prompt %}" not in chat_template:
+        if   "{% if add_generation_prompt %}" not in chat_template and \
+            "{%- if add_generation_prompt %}" not in chat_template:
             # Try fixing it by adding it
             new_chat_template = _fix_chat_template(chat_template)
-            if "{% if add_generation_prompt %}" not in new_chat_template:
+            if   "{% if add_generation_prompt %}" not in new_chat_template and \
+                "{%- if add_generation_prompt %}" not in new_chat_template:
                 raise RuntimeError(
                     f"Unsloth: The tokenizer `{tokenizer.name_or_path}`\n"\
                     "does not have a {% if add_generation_prompt %} for generation purposes.\n"\
@@ -1001,13 +1009,14 @@ def patch_sft_trainer_tokenizer():
         # Also DPO weirdly tokenizes non numeric columns? Delete them!
         check_text += \
         "\n"\
-        "column_names = set(self.train_dataset.column_names)\n"\
-        "check = ['chosen', 'rejected', 'prompt', 'chosen_input_ids', 'chosen_attention_mask',\n"\
-        " 'chosen_labels', 'rejected_input_ids', 'rejected_attention_mask', 'rejected_labels',\n"\
-        " 'prompt_input_ids', 'prompt_attention_mask']\n"\
-        "if all(x in column_names for x in check):\n"\
-        "    self.train_dataset = self.train_dataset.remove_columns(['chosen', 'rejected', 'prompt'])\n"\
-        "del check, column_names\n"\
+        "if hasattr(self.train_dataset, 'column_names'):\n"\
+        "    column_names = set(self.train_dataset.column_names)\n"\
+        "    check = ['chosen', 'rejected', 'prompt', 'chosen_input_ids', 'chosen_attention_mask',\n"\
+        "        'chosen_labels', 'rejected_input_ids', 'rejected_attention_mask', 'rejected_labels',\n"\
+        "        'prompt_input_ids', 'prompt_attention_mask']\n"\
+        "    if all(x in column_names for x in check):\n"\
+        "        self.train_dataset = self.train_dataset.remove_columns(['chosen', 'rejected', 'prompt'])\n"\
+        "    del check, column_names\n"\
         "\n"
 
         check_text = check_text.split("\n")

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.11.5"
+__version__ = "2024.11.6"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -104,13 +104,21 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
     def __init__(self, text): self.text = text
-    def filter(self, x): return not x.getMessage().startswith(self.text)
+    def filter(self, x): return not (self.text in x.getMessage())
 pass
 
 # The speedups for torchdynamo mostly come wih GPU Ampere or higher and which is not detected here.
 from transformers.training_args import logger as transformers_training_args_logger
 transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 del transformers_training_args_logger
+
+# Using the default loss: `ForCausalLMLoss`.
+try:
+    from transformers.modeling_utils import logger as transformers_modeling_utils_logger
+    transformers_modeling_utils_logger.addFilter(HideLoggingMessage("ForCausalLMLoss"))
+    del transformers_modeling_utils_logger
+except:
+    pass
 
 # =============================================
 
