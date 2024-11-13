@@ -37,7 +37,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - Run [Llama 3.1 conversational notebook](https://colab.research.google.com/drive/15OyFkGoCImV9dSsewU1wa2JuKB4-mDE_?usp=sharing) and [Mistral v0.3 ChatML](https://colab.research.google.com/drive/15F1xyn8497_dUbxZP4zWmPZ3PJx1Oymv?usp=sharing)
 - This [text completion notebook](https://colab.research.google.com/drive/1ef-tab5bhkvWmBOObepl1WgJvfvSzn5Q?usp=sharing) is for continued pretraining / raw text
 - This [continued pretraining notebook](https://colab.research.google.com/drive/1tEd1FrOXWMnCU9UIvdYhs61tkxdMuKZu?usp=sharing) is for learning another language
-- Click [here](https://github.com/unslothai/unsloth/wiki) for detailed documentation for Unsloth.
+- Click [here](https://github.com/unslothai/unsloth/wiki)  for detailed documentation for Unsloth.
 
 ## 🦥 Unsloth.ai News
 - 📣 NEW! We found and helped fix a [gradient accumulation bug](https://unsloth.ai/blog/gradient)! Please update Unsloth and transformers.
