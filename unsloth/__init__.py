@@ -32,8 +32,8 @@ import numpy as np
 # We do have a beta version, which you can contact us about!
 # Thank you for your understanding and we appreciate it immensely!
 
-# Fixing https://github.com/unslothai/unsloth/issues/1266
-os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = 'python'
+# Fixes https://github.com/unslothai/unsloth/issues/1266
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 if "CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
