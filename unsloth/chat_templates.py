@@ -279,7 +279,7 @@ PARAMETER min_p 0.1
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\\'s questions."
+DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
 pass
 
 # =========================================== Vicuna Old
@@ -903,6 +903,7 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
                 "You need to manually add the system message in your data."
             )
         return template, system_message
+    pass
     
     # For custom templates
     if type_chat_template is None:
@@ -915,13 +916,16 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
             return new_template, system_message
         
         return template, system_message
+    pass
         
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
     new_template = re.sub(system_message_pattern, message_to_use, template)
     
     return new_template, message_to_use
-    
+pass
+
+
 def get_chat_template(
     tokenizer,
     chat_template = "chatml",
@@ -954,7 +958,8 @@ def get_chat_template(
     old_padding_side = tokenizer.padding_side
 
     same_padding_token = False
-
+    type_chat_template = None
+    
     if type(chat_template) in (list, tuple,):
         # For changing system message later
         # Since it's not supported yet, we will raise an error first!
@@ -1147,7 +1152,6 @@ def get_chat_template(
 
     # Patch saving functions
     tokenizer = patch_saving_functions(tokenizer)
-
 
     # Add Ollama
     tokenizer._ollama_modelfile = ollama_modelfile
