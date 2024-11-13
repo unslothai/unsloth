@@ -19,7 +19,7 @@ from functools import wraps
 
 import trl
 import inspect
-from trl import SFTTrainer, DPOTrainer, ORPOTrainer, KTOTrainer
+from trl import SFTTrainer
 try:
     from trl import SFTConfig as TrainingArguments
 except:
@@ -165,23 +165,21 @@ def create_backwards_compatible_trainer(trainer_class, config_class):
             }
 
             # Get parameters that exist in Config but not in TrainingArguments
-            moved_params = set(
-                inspect.signature(config_class).parameters.keys()
-            ) - set(
-                inspect.signature(TrainingArguments).parameters.keys()
-            )
-
+            moved_params = \
+                set(inspect.signature(config_class)     .parameters.keys()) - \
+                set(inspect.signature(TrainingArguments).parameters.keys())
+            
             # Separate kwargs into trainer kwargs and config kwargs
             trainer_kwargs = {}
             additional_config_kwargs = {}
 
             for key, value in kwargs.items():
-                if key in trainer_params:
-                    trainer_kwargs[key] = value
+                if key in trainer_params: trainer_kwargs[key] = value
                 elif key in moved_params or key in config_fields:
                     additional_config_kwargs[key] = value
                 else:
                     additional_config_kwargs[key] = value
+            pass
 
             # Update config_dict with additional kwargs
             config_dict.update(additional_config_kwargs)
@@ -192,18 +190,22 @@ def create_backwards_compatible_trainer(trainer_class, config_class):
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config
-
+        pass
         original_init(self, *args, **kwargs)
-    
+    pass
     return new_init
 
 if Version(trl.__version__) >= Version("0.13.0.dev0"):
-    print("Patching TRL Trainer to maintain backward compatibility with the old syntax.")
+    # print("Patching TRL Trainer to maintain backward compatibility with the old syntax.")
     def _patch_trl_trainer():
-        SFTTrainer.__init__ = create_backwards_compatible_trainer(SFTTrainer, trl.SFTConfig)
-        DPOTrainer.__init__ = create_backwards_compatible_trainer(DPOTrainer, trl.DPOConfig)
-        KTOTrainer.__init__ = create_backwards_compatible_trainer(KTOTrainer, trl.KTOConfig)
-        ORPOTrainer.__init__ = create_backwards_compatible_trainer(ORPOTrainer, trl.ORPOConfig)
+        import trl.trainer
+        trl_classes = dir(trl.trainer)
+        trl_trainers = set(x[:-len("Trainer")] for x in trl_classes if x.endswith("Trainer"))
+        trl_configs  = set(x[:-len("Config")]  for x in trl_classes if x.endswith("Config"))
+        trl_classes = list(trl_trainers & trl_configs)
+        for x in trl_classes:
+            exec(f"{x}Trainer.__init__ = create_backwards_compatible_trainer({x}Trainer, trl.{x}Config)", globals())
+    pass
 else:
     def _patch_trl_trainer(): return
 pass
