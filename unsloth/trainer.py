@@ -200,11 +200,13 @@ if Version(trl.__version__) >= Version("0.13.0.dev0"):
     def _patch_trl_trainer():
         import trl.trainer
         trl_classes = dir(trl.trainer)
-        trl_trainers = set(x[:-len("Trainer")] for x in trl_classes if x.endswith("Trainer"))
-        trl_configs  = set(x[:-len("Config")]  for x in trl_classes if x.endswith("Config"))
+
+        non_convertable_trainer = set(["PPOv2", "AlignProp"])
+        trl_trainers = set(x[:-len("Trainer")] for x in trl_classes if x.endswith("Trainer")) - non_convertable_trainer
+        trl_configs  = set(x[:-len("Config")]  for x in trl_classes if x.endswith("Config")) - non_convertable_trainer
         trl_classes = list(trl_trainers & trl_configs)
         for x in trl_classes:
-            exec(f"{x}Trainer.__init__ = create_backwards_compatible_trainer({x}Trainer, trl.{x}Config)", globals())
+            exec(f"trl.{x}Trainer.__init__ = create_backwards_compatible_trainer(trl.{x}Trainer, trl.{x}Config)", globals())
     pass
 else:
     def _patch_trl_trainer(): return
