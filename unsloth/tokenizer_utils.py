@@ -586,10 +586,10 @@ pass
 
 
 def _fix_chat_template(chat_template):
-    endfor = "{% endfor %}"
+    endfor = "{% endif %}"
     where = chat_template.find(endfor)
     if where == -1:
-        endfor = "{%- endfor %}"
+        endfor = "{%- endif %}"
         where = chat_template.find(endfor)
     if where == -1:
         return chat_template
