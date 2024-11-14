@@ -139,15 +139,17 @@ def create_backwards_compatible_trainer(trainer_class, config_class):
     
     @wraps(original_init)
     def new_init(self, *args, **kwargs):
-        # All Trainer tokenizer is now called processing_class
-        if "tokenizer" in kwargs:
-            kwargs["processing_class"] = kwargs.pop("tokenizer")
+        # All Trainer tokenizer are now called processing_class
+        trainer_params = set(inspect.signature(original_init).parameters.keys())
 
-        if "args" in kwargs:
+        if "processing_class" in trainer_params and "tokenizer" in kwargs:
+            kwargs["processing_class"] = kwargs.pop("tokenizer")
+        pass
+
+        if ("args" in kwargs) and (Version(trl.__version__) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
             # Get parameters that Trainer.__init__ actually expects
-            trainer_params = set(inspect.signature(original_init).parameters.keys())
             trainer_params.remove('self')
             trainer_params.remove('args')
 
@@ -179,6 +181,7 @@ def create_backwards_compatible_trainer(trainer_class, config_class):
                     additional_config_kwargs[key] = value
                 else:
                     additional_config_kwargs[key] = value
+                pass
             pass
 
             # Update config_dict with additional kwargs
@@ -194,20 +197,24 @@ def create_backwards_compatible_trainer(trainer_class, config_class):
         original_init(self, *args, **kwargs)
     pass
     return new_init
+pass
 
-if Version(trl.__version__) >= Version("0.13.0.dev0"):
-    # print("Patching TRL Trainer to maintain backward compatibility with the old syntax.")
-    def _patch_trl_trainer():
-        import trl.trainer
-        trl_classes = dir(trl.trainer)
 
-        non_convertable_trainer = set(["PPOv2", "AlignProp"])
-        trl_trainers = set(x[:-len("Trainer")] for x in trl_classes if x.endswith("Trainer")) - non_convertable_trainer
-        trl_configs  = set(x[:-len("Config")]  for x in trl_classes if x.endswith("Config")) - non_convertable_trainer
-        trl_classes = list(trl_trainers & trl_configs)
-        for x in trl_classes:
-            exec(f"trl.{x}Trainer.__init__ = create_backwards_compatible_trainer(trl.{x}Trainer, trl.{x}Config)", globals())
+def _patch_trl_trainer():
+    if hasattr(trl, "__UNSLOTH_BACKWARDS_COMPATIBLE__"): return
+    if Version(trl.__version__) <= Version("0.11.0"): return
+
+    import trl.trainer
+    trl_classes = dir(trl.trainer)
+
+    non_convertable_trainer = set(["PPOv2", "AlignProp"])
+    trl_trainers = set(x[:-len("Trainer")] for x in trl_classes if x.endswith("Trainer")) - non_convertable_trainer
+    trl_configs  = set(x[:-len("Config")]  for x in trl_classes if x.endswith("Config"))  - non_convertable_trainer
+    trl_classes = list(trl_trainers & trl_configs)
+
+    for x in trl_classes:
+        exec(f"trl.{x}Trainer.__init__ = create_backwards_compatible_trainer(trl.{x}Trainer, trl.{x}Config)", globals())
     pass
-else:
-    def _patch_trl_trainer(): return
+
+    trl.__UNSLOTH_BACKWARDS_COMPATIBLE__ = True
 pass
