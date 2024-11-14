@@ -738,6 +738,10 @@ def LlamaModel_fast_forward(
                 past_key_values_length,
                 sliding_window = None,
             )
+            # Fixes https://github.com/unslothai/unsloth/issues/853
+            # Unsloth needs a 2D mask, not a [2, 1, n, n] mask!
+            if self.SWA_mask.dim() == 4: self.SWA_mask = self.SWA_mask[0][0]
+            if self. GA_mask.dim() == 4: self. GA_mask = self. GA_mask[0][0]
         elif not hasattr(self, "SWA_mask"):
             if HAS_FLEX_ATTENTION:
                 # Use Flex Attention instead!
