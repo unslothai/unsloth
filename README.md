@@ -299,6 +299,9 @@ DPO (Direct Preference Optimization), PPO, Reward Modelling all seem to work as 
 We're in 🤗Hugging Face's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
 
 ```python
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0" # Optional set GPU device ID
+
 from unsloth import FastLanguageModel, PatchDPOTrainer
 from unsloth import is_bfloat16_supported
 PatchDPOTrainer()
