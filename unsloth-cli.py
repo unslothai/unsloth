@@ -31,6 +31,8 @@ Happy fine-tuning!
 
 import argparse
 
+from unsloth.devices import has_mps
+
 def run(args):
     import torch
     from unsloth import FastLanguageModel
@@ -40,29 +42,60 @@ def run(args):
     from unsloth import is_bfloat16_supported
     import logging
     logging.getLogger('hf-to-gguf').setLevel(logging.WARNING)
+    if has_mps:
+        import mlx.optimizers as optim
+        import mlx.core as mx
+        from unsloth.models import mlx_utils as lora_utils
+        from unsloth.models import mlx_lora
+        import numpy as np
+        from unsloth.models.mlx_models import LoRALinear
+        from mlx.utils import tree_flatten
+        from pathlib import Path
 
+    if not has_mps:
     # Load model and tokenizer
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model_name,
-        max_seq_length=args.max_seq_length,
-        dtype=args.dtype,
-        load_in_4bit=args.load_in_4bit,
-    )
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=args.model_name,
+            max_seq_length=args.max_seq_length,
+            dtype=args.dtype,
+            load_in_4bit=args.load_in_4bit,
+        )
+    else:
+        np.random.seed(args.seed)
+
+        # Building tokenizer_config
+        tokenizer_config = {}
+
+        print("Loading pretrained model")
+        model, tokenizer, config = lora_utils.load(args.model_name, tokenizer_config)
+        # Freeze all layers other than LORA linears
+        model.freeze()
+        for l in model.model.layers[len(model.model.layers) - args.r :]:
+            l.self_attn.q_proj = LoRALinear.from_linear(l.self_attn.q_proj)
+            l.self_attn.v_proj = LoRALinear.from_linear(l.self_attn.v_proj)
+            if hasattr(l, "block_sparse_moe"):
+                l.block_sparse_moe.gate = LoRALinear.from_linear(l.block_sparse_moe.gate)
+
+        p = sum(v.size for _, v in tree_flatten(model.parameters())) / 10**6
+        print(f"Total parameters {p:.3f}M")
+        p = sum(v.size for _, v in tree_flatten(model.trainable_parameters())) / 10**6
+        print(f"Trainable parameters {p:.3f}M")
 
     # Configure PEFT model
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=args.r,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias=args.bias,
-        use_gradient_checkpointing=args.use_gradient_checkpointing,
-        random_state=args.random_state,
-        use_rslora=args.use_rslora,
-        loftq_config=args.loftq_config,
-    )
+    if not has_mps:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.r,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias=args.bias,
+            use_gradient_checkpointing=args.use_gradient_checkpointing,
+            random_state=args.random_state,
+            use_rslora=args.use_rslora,
+            loftq_config=args.loftq_config,
+        )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
@@ -110,19 +143,25 @@ def run(args):
     )
 
     # Initialize trainer
-    trainer = SFTTrainer(
-        model=model,
-        tokenizer=tokenizer,
-        train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=args.max_seq_length,
-        dataset_num_proc=2,
-        packing=False,
-        args=training_args,
-    )
+    if not has_mps:
+        trainer = SFTTrainer(
+            model=model,
+            tokenizer=tokenizer,
+            train_dataset=dataset,
+            dataset_text_field="text",
+            max_seq_length=args.max_seq_length,
+            dataset_num_proc=2,
+            packing=False,
+            args=training_args,
+        )
 
     # Train model
-    trainer_stats = trainer.train()
+        trainer_stats = trainer.train()
+    else:
+        datasets = dataset.train_test_split(test_size=0.1)
+        opt = optim.Adam(learning_rate=args.learning_rate)
+        mlx_lora.train(model, datasets["train"], datasets["test"], opt, mlx_lora.loss, tokenizer, args)
+
 
     # Save model
     if args.save_model:
@@ -152,9 +191,13 @@ def run(args):
                         quantization_method=quantization_method,
                     )
         else:
-            model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
-            if args.push_model:
-                model.push_to_hub_merged(args.save_path, tokenizer, args.hub_token)
+            if has_mps:
+                mx.savez(Path(args.save_path,args.adapter_file), **dict(tree_flatten(model.trainable_parameters())))
+                model.save_merged_model(args)
+            else:
+                model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
+                if args.push_model:
+                    model.push_to_hub_merged(args.save_path, tokenizer, args.hub_token)
     else:
         print("Warning: The model is not saved!")
 
@@ -203,6 +246,7 @@ if __name__ == "__main__":
 
     # Saving and pushing arguments
     save_group = parser.add_argument_group('💾 Save Model Options')
+    save_group.add_argument('--adapter_file', type=str, default="adapters.npz", help="Adapters file name")
     save_group.add_argument('--output_dir', type=str, default="outputs", help="Output directory")
     save_group.add_argument('--save_model', action='store_true', help="Save the model after training")
     save_group.add_argument('--save_method', type=str, default="merged_16bit", choices=["merged_16bit", "merged_4bit", "lora"], help="Save method for the model, default is 'merged_16bit'")

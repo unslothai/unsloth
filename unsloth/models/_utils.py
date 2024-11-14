@@ -227,11 +227,17 @@ pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
+from unsloth import devices
+if not devices.has_mps:
+    import bitsandbytes as bnb
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
-major_version, minor_version = torch.cuda.get_device_capability()
+devices.get_optimal_device()
+if torch.cuda.is_available():
+    major_version, minor_version = torch.cuda.get_device_capability()
+else:
+    major_version,minor_version = 0,0
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
@@ -906,7 +912,7 @@ def check_nvidia():
         output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
         output = np.array([int(x.decode('utf-8'))/1024 for x in output])
     except:
-        if not torch.cuda.is_available():
+        if not torch.cuda.is_available() and not devices.has_mps:
             raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")    
     return output
 pass

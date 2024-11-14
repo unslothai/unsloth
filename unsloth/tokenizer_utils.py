@@ -24,6 +24,7 @@ import itertools
 import collections
 import numpy as np
 import gc
+from unsloth import devices
 import subprocess
 
 from unsloth_zoo.tokenizer_utils import (
@@ -837,7 +838,7 @@ def check_nvidia():
         output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
         output = np.array([int(x.decode('utf-8'))/1024 for x in output])
     except:
-        if not torch.cuda.is_available():
+        if not torch.cuda.is_available() and not devices.has_mps:
             raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
     return output
 pass
