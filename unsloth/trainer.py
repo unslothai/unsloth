@@ -201,10 +201,8 @@ pass
 
 
 def _patch_trl_trainer():
-    try:
-        trl.__UNSLOTH_BACKWARDS_COMPATIBLE__
-        return
-    except: pass
+    import trl
+    if hasattr(trl, "__UNSLOTH_BACKWARDS_COMPATIBLE__"): return
     if Version(trl.__version__) <= Version("0.11.0"): return
 
     import trl.trainer
