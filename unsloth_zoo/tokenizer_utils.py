@@ -413,6 +413,9 @@ def patch_tokenizer(model, tokenizer):
     possible_reserved_tokens = (
         "<|finetune_right_pad_id|>", # Llama-3.1
         "<pad>",                     # Mistral Nemo
+        "<|vision_pad|>",            # Qwen 2.5
+        "<|image_pad|>",             # Qwen 2.5
+        "<|video_pad|>",             # Qwen 2.5
         "<|reserved",                # Llama-3
         "<|placeholder",             # Phi-3
         "[control",                  # Mistral type models
