@@ -20,11 +20,8 @@ from functools import wraps
 import trl
 import inspect
 from trl import SFTTrainer
-try:
-    from trl import SFTConfig as TrainingArguments
-except:
-    from transformers import TrainingArguments
-pass
+from trl import SFTConfig 
+from transformers import TrainingArguments
 from . import is_bfloat16_supported
 from unsloth_zoo.training_utils import unsloth_train as _unsloth_train
 from packaging.version import Version
@@ -62,7 +59,7 @@ pass
 
 
 @dataclass
-class UnslothTrainingArguments(TrainingArguments):
+class UnslothTrainingArguments(SFTConfig):
     embedding_learning_rate : Optional[float] = field(
         default = None,
         metadata = {"help" : "Different learning rates for embeddings and lm_head."}
