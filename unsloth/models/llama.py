@@ -719,29 +719,33 @@ def LlamaModel_fast_forward(
     pass
 
     # Gemma2 has alternating SWA and global attn
+    use_static_mask  = True
+    dynamic_SWA_mask = None
+    dynamic_GA_mask  = None
     if IS_GEMMA2:
         if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
             self.SWA_mask = True
             self.GA_mask  = False
         elif attention_mask is not None:
-            self.SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+
+            # Fixes https://github.com/unslothai/unsloth/issues/853
+            # Unsloth needs a 2D mask, not a [2, 1, n, n] mask!
+            dynamic_SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
                 sliding_window = self.config.sliding_window,
-            )
-            self.GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+            )[0][0]
+            dynamic_GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
                 sliding_window = None,
-            )
-            # Fixes https://github.com/unslothai/unsloth/issues/853
-            # Unsloth needs a 2D mask, not a [2, 1, n, n] mask!
-            if self.SWA_mask.dim() == 4: self.SWA_mask = self.SWA_mask[0][0]
-            if self. GA_mask.dim() == 4: self. GA_mask = self. GA_mask[0][0]
+            )[0][0]
+            use_static_mask = False
+
         elif not hasattr(self, "SWA_mask"):
             if HAS_FLEX_ATTENTION:
                 # Use Flex Attention instead!
@@ -776,7 +780,12 @@ def LlamaModel_fast_forward(
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         mask = causal_mask
-        if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
+        if IS_GEMMA2:
+            if (idx % 2 == 0):
+                mask = self.SWA_mask if use_static_mask else dynamic_SWA_mask
+            else:
+                mask = self. GA_mask if use_static_mask else dynamic_GA_mask
+        pass
 
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
