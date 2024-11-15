@@ -21,6 +21,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
+from ..tokenizer_utils import add_new_tokens
 import os
 try:
     from huggingface_hub.utils import get_token
@@ -366,6 +367,16 @@ class FastLanguageModel(FastLlamaModel):
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
+
+        # Check if tokenizer is updated -> Add tokens in process
+        # Only for PEFT -> Assume it's checkpoint since checkpoit only saves adapter
+        if is_peft and model_config.vocab_size < len(tokenizer.vocab):
+            logger.warning_once(
+                "Unsloth: Your model's vocab size is less than the tokenizer's vocab size.\n"\
+                "We shall add the new tokens to the model's vocab."
+            )
+            add_new_tokens(model, tokenizer, resize_tokenizer = False)
+
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
