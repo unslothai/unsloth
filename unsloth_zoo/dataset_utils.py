@@ -138,6 +138,16 @@ def _find_common_token_ids(component, tokenizer):
     # substring = substring.split(", ")[:-1]
     # substring = [int(x) for x in substring if x.isdigit()]
     substring = _longest_common_sublist([x + [0] for x in all_input_ids])
+
+    # If substring is simply [0], this might be just the original single token
+    # Fixes https://github.com/unslothai/unsloth/issues/1290
+    # Mistral [INST] [/INST] singular tokens breaks since we output [0] but we need [3] [4]
+    if substring == [0] and len(all_input_ids[0]) == 1:
+        single_token = all_input_ids[0][0]
+        # Confirm single token in every single possible match
+        if all(single_token in x for x in all_input_ids):
+            substring = [single_token]
+    pass
     
     # Also get rest of tokenized string
     original = tokenizer(component, add_special_tokens = False).input_ids
