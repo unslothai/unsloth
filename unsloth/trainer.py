@@ -55,7 +55,6 @@ else:
     pass
 pass
 
-from trl import SFTConfig
 try:
     from trl import SFTConfig as TrainingArguments
 except:
