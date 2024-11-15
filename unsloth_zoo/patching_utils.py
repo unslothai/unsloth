@@ -158,12 +158,12 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
         while hasattr(current_model, "model") and hasattr(current_model, "config"):
             if hasattr(current_model.config, "vocab_size"):
                 current_model.config.update({"vocab_size" : len(tokenizer)})
-            current_model.update({"unsloth_optimized" : True})
+            current_model.config.update({"unsloth_optimized" : True})
             current_model = current_model.model
         if hasattr(current_model, "model") and hasattr(current_model, "config"):
             if hasattr(current_model.config, "vocab_size"):
                 current_model.config.update({"vocab_size" : len(tokenizer)})
-            current_model.update({"unsloth_optimized" : True})
+            current_model.config.update({"unsloth_optimized" : True})
         pass
     pass
 
