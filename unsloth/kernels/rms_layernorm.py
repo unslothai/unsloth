@@ -190,7 +190,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
             BLOCK_SIZE = ctx.BLOCK_SIZE,
             num_warps  = ctx.num_warps,
         )
-        dX = dY.view(*shape)
+        dX = dX.view(*shape)
         return dX, None, None, None
     pass
 pass
