@@ -89,17 +89,17 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         # "config.reorder_for_compute_comm_overlap = True", # # enable reordering pass for increasing overlap between compute and communication
         f"config.max_autotune = {O3}", # enable slow autotuning passes to select algorithms
         f"config.max_autotune_pointwise = {O3}", # enable slow autotuning passes to select pointwise/reductions algorithms
-        f"config.max_autotune_gemm = {O3}", # GEMM is unnecessary
+        f"config.max_autotune_gemm = False", # GEMM is unnecessary
         "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
         "config.autotune_fallback_to_aten = True", # Fallback to ATEN backend
         "config.autotune_multi_device = True", # If autotuning in subprocess, whether to use multiple devices
         "config.coordinate_descent_tuning = True",
         f"config.aggressive_fusion = {O3}", # Careful changes results!
         # [TODO] COMBO KERNELS makes everything slower!
-        "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
-        "config.combo_kernel_foreach_dynamic_shapes = True",
+        # "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
+        # "config.combo_kernel_foreach_dynamic_shapes = True",
         "config.freezing = False", # Freezes weights --> ** only useful for inference **
-        f"config.triton.multi_kernel = {O3}", # use tuning to pick between different subkernels
+        # f"config.triton.multi_kernel = {O3}", # use tuning to pick between different subkernels
         "config.cuda.enable_cuda_lto = True",
         "config.cuda.use_fast_math = True",
         "config.cuda.compile_opt_level = '-O2'",
@@ -118,7 +118,6 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     ]
     import torch._inductor.config as config
     for _try_compile_argument in torch_compile_arguments:
-        print(_try_compile_argument)
         try:    exec(_try_compile_argument)
         except: pass
     pass
