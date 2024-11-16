@@ -118,6 +118,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     ]
     import torch._inductor.config as config
     for _try_compile_argument in torch_compile_arguments:
+        print(_try_compile_argument)
         try:    exec(_try_compile_argument)
         except: pass
     pass
