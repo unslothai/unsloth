@@ -66,13 +66,14 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     assert(type(O3)    is bool)
     import os, logging
     if debug:
-        print("Unsloth: Torch.compile debugging turned on")
+        print("Unsloth: Automatic Compiler turned on with debugging!")
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
         os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs,compiled_autograd_verbose"
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
         torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
         torch._dynamo.config.verbose = True
     else:
+        print("Unsloth: Automatic Compiler turned on!")
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
         os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
         os.environ.pop("TORCH_LOGS", None)
