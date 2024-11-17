@@ -25,8 +25,7 @@ __all__ = [
     "patch_compiled_autograd",
 ]
 
-global UNSLOTH_COMPILE_LOCATION
-from .patching_utils import UNSLOTH_COMPILE_LOCATION
+from .compiler import UNSLOTH_COMPILE_LOCATION
 
 
 # Also disable compiling on bitsandbytes
