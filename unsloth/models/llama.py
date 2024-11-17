@@ -969,27 +969,38 @@ def CausalLM_fast_forward(fast_forward_inference):
         pass
         hidden_states = outputs[0]
 
-        # from cut_cross_entropy import linear_cross_entropy
-        # loss = linear_cross_entropy(
-        #     hidden_states,
-        #     self.lm_head.weight,
-        #     targets = labels,
-        #     ignore_index = -100,
-        #     softcap = None,
-        #     reduction = "sum",
-        #     shift = True,
-        #     filter_eps = "auto",
-        # ) / kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
-        # logits = None
-
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
+        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+        logit_scaling     = getattr(self.config, "logit_scale", 0)
+
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
         else:
+            if HAS_CUT_CROSS_ENTROPY and labels is not None:
+                n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
+                loss = fused_linear_cross_entropy(
+                    hidden_states      = hidden_states,
+                    lm_weight          = lm_head,
+                    labels             = labels,
+                    num_items_in_batch = n_items,
+                    logit_softcapping  = logit_softcapping,
+                )
+                if not return_dict:
+                    output = (logits,) + outputs[1:]
+                    return (loss,) + output if loss is not None else output
+
+                return CausalLMOutputWithPast(
+                    loss=loss,
+                    logits=None,
+                    past_key_values=outputs.past_key_values,
+                    hidden_states=outputs.hidden_states,
+                    attentions=outputs.attentions,
+                )
+            pass
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
 
@@ -1001,8 +1012,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         pass
 
         loss = None
-        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-        logit_scaling     = getattr(self.config, "logit_scale", 0)
         if labels is not None:
             shift_logits = logits
             if not hasattr(self, "extra_ignored_labels"):
