@@ -917,9 +917,6 @@ def LlamaModel_fast_forward_inference(
 pass
 
 
-from cut_cross_entropy import linear_cross_entropy
-
-
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -972,74 +969,75 @@ def CausalLM_fast_forward(fast_forward_inference):
         pass
         hidden_states = outputs[0]
 
-        loss = linear_cross_entropy(
-            hidden_states,
-            self.lm_head.weight,
-            targets = labels,
-            ignore_index = -100,
-            softcap = None,
-            reduction = "sum",
-            shift = True,
-            filter_eps = "auto",
-        ) / kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
-        logits = None
+        # from cut_cross_entropy import linear_cross_entropy
+        # loss = linear_cross_entropy(
+        #     hidden_states,
+        #     self.lm_head.weight,
+        #     targets = labels,
+        #     ignore_index = -100,
+        #     softcap = None,
+        #     reduction = "sum",
+        #     shift = True,
+        #     filter_eps = "auto",
+        # ) / kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
+        # logits = None
 
-        # bsz, q_len, hd = hidden_states.shape
-        # lm_head = self.lm_head.weight
-        # if bsz == 1 and q_len == 1:
-        #     logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
-        #     logits = logits.unsqueeze(0).unsqueeze(0)
-        # elif num_logits_to_keep != 0:
-        #     logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
-        # else:
-        #     logits = self.lm_head(hidden_states.to(lm_head.dtype))
-        # pass
+        bsz, q_len, hd = hidden_states.shape
+        lm_head = self.lm_head.weight
+        if bsz == 1 and q_len == 1:
+            logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
+            logits = logits.unsqueeze(0).unsqueeze(0)
+        elif num_logits_to_keep != 0:
+            logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
+        else:
+            logits = self.lm_head(hidden_states.to(lm_head.dtype))
+        pass
 
-        # torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
-        # if torch_dtype is not None:
-        #     logits = logits.to(torch_dtype)
-        # else:
-        #     raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
-        # pass
+        torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
+        if torch_dtype is not None:
+            logits = logits.to(torch_dtype)
+        else:
+            raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
+        pass
 
-        # loss = None
-        # logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-        # logit_scaling     = getattr(self.config, "logit_scale", 0)
-        # if labels is not None:
-        #     shift_logits = logits
-        #     if not hasattr(self, "extra_ignored_labels"):
-        #         # Fixes https://github.com/unslothai/unsloth/issues/10
-        #         self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
-        #     pass
+        loss = None
+        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+        logit_scaling     = getattr(self.config, "logit_scale", 0)
+        if labels is not None:
+            shift_logits = logits
+            if not hasattr(self, "extra_ignored_labels"):
+                # Fixes https://github.com/unslothai/unsloth/issues/10
+                self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
+            pass
 
-        #     shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-        #     loss = fast_cross_entropy_loss(
-        #         logits = shift_logits,
-        #         labels = shift_labels,
-        #         logit_softcapping = logit_softcapping,
-        #         logit_scaling     = logit_scaling,
-        #         n_items           = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None),
-        #     )
-        # else:
-        #     if logit_scaling != 0:
-        #         if logits.requires_grad:
-        #             logits = logit_scaling * logits
-        #         else:
-        #             logits *= logit_scaling
-        #         pass
-        #     pass
-        #     if logit_softcapping != 0:
-        #         if logits.requires_grad:
-        #             logits = (1.0 / logit_softcapping) * logits
-        #             logits = torch.tanh(logits)
-        #             logits = logit_softcapping * logits
-        #         else:
-        #             logits *= (1.0 / logit_softcapping)
-        #             torch.tanh(logits, out = logits)
-        #             logits *= logit_softcapping
-        #         pass
-        #     pass
-        # pass
+            shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+            loss = fast_cross_entropy_loss(
+                logits = shift_logits,
+                labels = shift_labels,
+                logit_softcapping = logit_softcapping,
+                logit_scaling     = logit_scaling,
+                n_items           = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None),
+            )
+        else:
+            if logit_scaling != 0:
+                if logits.requires_grad:
+                    logits = logit_scaling * logits
+                else:
+                    logits *= logit_scaling
+                pass
+            pass
+            if logit_softcapping != 0:
+                if logits.requires_grad:
+                    logits = (1.0 / logit_softcapping) * logits
+                    logits = torch.tanh(logits)
+                    logits = logit_softcapping * logits
+                else:
+                    logits *= (1.0 / logit_softcapping)
+                    torch.tanh(logits, out = logits)
+                    logits *= logit_softcapping
+                pass
+            pass
+        pass
 
         if not return_dict:
             output = (logits,) + outputs[1:]
