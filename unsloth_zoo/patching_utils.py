@@ -22,10 +22,11 @@ __all__ = [
     "patch_layernorm",
     "patch_torch_compile",
     "patch_model_and_tokenizer",
+    "patch_compiled_autograd",
 ]
 
 global UNSLOTH_COMPILE_LOCATION
-UNSLOTH_COMPILE_LOCATION = "unsloth_compiled_cache"
+from .patching_utils import UNSLOTH_COMPILE_LOCATION
 
 
 # Also disable compiling on bitsandbytes
@@ -289,3 +290,72 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
         torch.cuda.empty_cache()
     return model, tokenizer
 pass
+
+
+def patch_compiled_autograd():
+    # Fixes double compilation of functions during gradient checkpointing
+    # See https://github.com/pytorch/pytorch/issues/135298
+    # Code licensed under LGPL
+    import inspect, re
+
+    # From https://github.com/pytorch/pytorch/pull/135795/files
+    import torch._dynamo.compiled_autograd
+    fx = torch._dynamo.compiled_autograd.AutogradCompilerInstance.end_capture
+    if fx.__name__ == "unsloth_end_capture": return
+    source = inspect.getsource(fx)
+    if "with disable()" in source: return
+    spaces = source.find("def")
+    source = source.split("\n")
+    source = "\n".join(x[spaces:] for x in source)
+    old = "return compiled_fn(inputs, sizes, scalars, hooks)"
+    n = len(re.search(r"\n([ ]{1,})return compiled_fn", source).group(1))
+    source = source.replace(old, f"with disable():\n{' '*(n + 4)}{'print(1111111); '}{old}")
+    source = source.replace("def end_capture", "def unsloth_end_capture", 1)
+
+    # Import items to make the function executable
+    all_items = dir(torch._dynamo.compiled_autograd)
+    good_items = [x for x in all_items if x in source]
+    exec("from torch._dynamo.compiled_autograd import (" + ", ".join(x for x in good_items) + ")", globals())
+    exec(source, globals())
+    torch._dynamo.compiled_autograd.AutogradCompilerInstance.end_capture = unsloth_end_capture
+
+    # From https://github.com/pytorch/pytorch/pull/135795/files
+    import torch._dynamo.variables.misc
+    fx = torch._dynamo.variables.misc.AutogradEngineVariable.call_method
+    if fx.__name__ == "unsloth_call_method": return
+    source = inspect.getsource(fx)
+    if "in_compiled_autograd_region" in source: return
+    spaces = source.find("def")
+    source = source.split("\n")
+    source = "\n".join(x[spaces:] for x in source)
+    source = source.replace(
+        "torch._dynamo.compiled_autograd.compiled_autograd_enabled",
+        "torch._dynamo.compiled_autograd.in_compiled_autograd_region",
+        1,
+    )
+    source = source.replace("def call_method", "def unsloth_call_method", 1)
+
+    # Import items to make the function executable
+    all_items = dir(torch._dynamo.variables.misc)
+    good_items = [x for x in all_items if x in source]
+    exec("from torch._dynamo.variables.misc import (" + ", ".join(x for x in good_items) + ")", globals())
+    exec(source, globals())
+    torch._dynamo.variables.misc.AutogradEngineVariable.call_method = unsloth_call_method
+    return
+pass
+
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

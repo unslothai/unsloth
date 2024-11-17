@@ -36,6 +36,7 @@ def mean_of_trained_tokens(model, eps = 1e-16):
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
+    # Code licensed under LGPL
     embedding_matrix = model.get_input_embeddings ().weight.clone()
     lm_head_matrix   = model.get_output_embeddings().weight.clone()
 
@@ -79,6 +80,7 @@ def add_new_tokens(
     Smartly resizes the tokenizer and adds new tokens to the model.
     We also disregard untrained tokens by removing them from the mean calculation.
     """
+    # Code licensed under LGPL
     assert(isinstance(new_tokens, (list, tuple)))
     assert(len(new_tokens) > 0)
     assert(method == "mean" or method == "interpolation")
@@ -202,6 +204,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
+    # Code licensed under LGPL
     embedding_matrix = model.get_input_embeddings ().weight
     lm_head_matrix   = model.get_output_embeddings().weight
     chat_template = getattr(tokenizer, "chat_template", None)
@@ -410,6 +413,7 @@ def patch_tokenizer(model, tokenizer):
         Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
         Fixes https://github.com/unslothai/unsloth/issues/5
     """
+    # Code licensed under LGPL
     possible_reserved_tokens = (
         "<|finetune_right_pad_id|>", # Llama-3.1
         "<pad>",                     # Mistral Nemo
@@ -530,3 +534,19 @@ def patch_tokenizer(model, tokenizer):
 
     return model, tokenizer
 pass
+
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

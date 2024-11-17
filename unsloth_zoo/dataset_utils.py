@@ -169,6 +169,7 @@ def train_on_responses_only(
     Trains only on responses and not on the instruction by masking out
     the labels with -100 for the instruction part.
     """
+    # Code licensed under LGPL
     tokenizer = trainer.processing_class if hasattr(trainer, "processing_class") else trainer.tokenizer
     
     if  not hasattr(tokenizer, "_unsloth_input_part") or \
@@ -291,3 +292,19 @@ def train_on_responses_only(
     pass
     return trainer
 pass
+
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
