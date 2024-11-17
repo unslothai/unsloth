@@ -93,7 +93,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         "config.max_autotune_gemm_backends = 'ATEN,TRITON,CPP'", # Not much faster
         "config.autotune_fallback_to_aten = True", # Fallback to ATEN backend
         "config.autotune_multi_device = True", # If autotuning in subprocess, whether to use multiple devices
-        "config.coordinate_descent_tuning = True",
+        f"config.coordinate_descent_tuning = {O3}",
         f"config.aggressive_fusion = {O3}", # Careful changes results!
         # [TODO] COMBO KERNELS makes everything slower!
         # "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
@@ -102,7 +102,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         # f"config.triton.multi_kernel = {O3}", # use tuning to pick between different subkernels
         "config.cuda.enable_cuda_lto = True",
         "config.cuda.use_fast_math = True",
-        "config.cuda.compile_opt_level = '-O2'",
+        "config.cuda.compile_opt_level = '-O1'",
     ]
     # Torch dynamo arguments
     torch_dynamo_arguments = [
