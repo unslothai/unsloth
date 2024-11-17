@@ -423,6 +423,7 @@ def patch_tokenizer(model, tokenizer):
         "<|reserved",                # Llama-3
         "<|placeholder",             # Phi-3
         "[control",                  # Mistral type models
+        "|<EXTRA_TOKENS_",           # Molmo
     )
     joiner = "\1\0=+=\0\1"
     number_repetitions = 3 - 1 # Number of reserved tokens needed

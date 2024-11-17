@@ -39,6 +39,7 @@ dependencies = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
+    "cut_cross_entropy",
 ]
 
 [tool.setuptools.dynamic]

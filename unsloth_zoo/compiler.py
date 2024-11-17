@@ -259,7 +259,16 @@ def convert_attention_masks_to_bool(module, old_source):
 pass
 
 
-def compile_transformers_model_type(model_type):
+def unsloth_compile_transformers(
+    model_type           : str = "llama",
+    sdpa_causal_only     : bool = False,
+    sdap_bool_masks      : bool = True,
+    sdpa_gqa_replace     : bool = True,
+    sdpa_disable_compile : bool = True,
+    remove_causal_masks  : bool = True,
+    import_from_cache    : bool = False,
+    compile_functions    : bool = True,
+):
     # Code licensed under LGPL
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
@@ -361,47 +370,52 @@ def compile_transformers_model_type(model_type):
             r"(\=[\s]{1,}[A-Za-z\.]{1,}scaled\_dot\_product\_attention)"
 
         new_source = source
-        # if len(re.findall(causal_mask_find, source, flags = re.DOTALL)) == 1:
-            # new_source = re.sub(
-            #     causal_mask_find,
-            #     r"\1\3\4None\5True",
-            #     source,
-            #     flags = re.DOTALL,
-            # )
-            # new_source = source
-        # else:
-            # new_source = re.sub(
-            #     scaled_dot_product_attention_find,
-            #     "= disable_compile_scaled_dot_product_attention",
-            #     source,
-            #     flags = re.DOTALL,
-            # )
-            # disabled_scaled_dot_product_attention_modules.append(module)
-        new_source = re.sub(
-            r"if output_attentions\:.+?return super\(\)\.forward.+?\)",
-            "if output_attentions: raise RuntimeError('Unsloth: Not supported')",
-            new_source,
-            flags = re.DOTALL | re.MULTILINE,
-        )
+        if sdpa_causal_only:
+            if len(re.findall(causal_mask_find, source, flags = re.DOTALL)) == 1:
+                new_source = re.sub(
+                    causal_mask_find,
+                    r"\1\3\4None\5True",
+                    source,
+                    flags = re.DOTALL,
+                )
+                new_source = source
+            else:
+                new_source = re.sub(
+                    scaled_dot_product_attention_find,
+                    "= disable_compile_scaled_dot_product_attention",
+                    source,
+                    flags = re.DOTALL,
+                )
+                disabled_scaled_dot_product_attention_modules.append(module)
+        else:
+            new_source = re.sub(
+                r"if output_attentions\:.+?return super\(\)\.forward.+?\)",
+                "if output_attentions: raise RuntimeError('Unsloth: Not supported')",
+                new_source,
+                flags = re.DOTALL | re.MULTILINE,
+            )
+        pass
         scaled_dot_product_attention_modules[module] = new_source
     pass
 
     # Fix modules with _update_causal_mask if SDPA can be used with causal masks
     remove_causal_masks = []
-    for module in other_classes:
-        source = eval(f"{model_location}.{module}")
-        if not hasattr(source, "_update_causal_mask"): continue
+    if remove_causal_masks:
+        for module in other_classes:
+            source = eval(f"{model_location}.{module}")
+            if not hasattr(source, "_update_causal_mask"): continue
 
-        try: source = inspect.getsource(source.__init__)
-        except: continue
+            try: source = inspect.getsource(source.__init__)
+            except: continue
 
-        can_remove = True
-        for x in disabled_scaled_dot_product_attention_modules:
-            if x in source:
-                can_remove = False
-                break
+            can_remove = True
+            for x in disabled_scaled_dot_product_attention_modules:
+                if x in source:
+                    can_remove = False
+                    break
+            pass
+            if can_remove: remove_causal_masks.append(module)
         pass
-        if can_remove: remove_causal_masks.append(module)
     pass
 
     # Remove modules which have attention mechanisms
@@ -436,17 +450,19 @@ def compile_transformers_model_type(model_type):
 
     # SDPA
     for module, forward_source in scaled_dot_product_attention_modules.items():
-        forward_source = replace_with_grouped_query_attention(
-            module,
-            forward_source,
-        )
+        if sdpa_gqa_replace:
+            forward_source = replace_with_grouped_query_attention(
+                module,
+                forward_source,
+            )
+        pass
         try:
             new_module = create_standalone_class(
                 module,
                 model_location,
                 functions,
                 fullgraph = fullgraph,
-                disable = True,
+                disable = sdpa_disable_compile,
                 forward_source = forward_source,
             )
             print(f"Unsloth: Fast Attention patch for {module}.")
@@ -522,7 +538,8 @@ def compile_transformers_model_type(model_type):
         if module in all_standalone_classes: continue
         function = eval(f"{model_location}.{module}")
         source = inspect.getsource(function)
-        source = convert_attention_masks_to_bool(module, source)
+        if sdap_bool_masks:
+            source = convert_attention_masks_to_bool(module, source)
         source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
         all_standalone_classes[module] = source
         print(f"Unsloth: Compiled function {module}.")
@@ -538,34 +555,45 @@ def compile_transformers_model_type(model_type):
 
     all_code = "\n\n".join(final_all_standalone_classes)
 
-    # combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}")
-    combined_module = create_new_function(
-        COMBINED_UNSLOTH_NAME,
-        all_code,
-        model_location,
-        functions,
-        prepend = \
-            _disabled_sdpa_code + \
-            f"\ntorch_compile_options = {torch_compile_options}\n"
-    )
+    if import_from_cache:
+        try:
+            combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}")
+            import_from_cache = True
+        except:
+            import_from_cache = False
+    else:
+        import_from_cache = False
+    if not import_from_cache:
+        combined_module = create_new_function(
+            COMBINED_UNSLOTH_NAME,
+            all_code,
+            model_location,
+            functions,
+            prepend = \
+                _disabled_sdpa_code + \
+                f"\ntorch_compile_options = {torch_compile_options}\n"
+        )
+    pass
 
-    for module in _patch_functions:
-        try: source = eval(f"{model_location}.torch")
-        except: continue
-        if not hasattr(source, "nn"): continue
-        if not hasattr(source.nn, module): continue
-        function = eval(f"source.nn.{module}")
-        if not hasattr(function, "forward"): continue
-        if hasattr(function.forward, "get_compiler_config"): continue
+    if compile_functions:
+        for module in _patch_functions:
+            try: source = eval(f"{model_location}.torch")
+            except: continue
+            if not hasattr(source, "nn"): continue
+            if not hasattr(source.nn, module): continue
+            function = eval(f"source.nn.{module}")
+            if not hasattr(function, "forward"): continue
+            if hasattr(function.forward, "get_compiler_config"): continue
 
-        source = inspect.getsource(function.forward).rstrip()
-        forward = create_new_function(module, source, model_location, functions, append = ".to(input.dtype)\n").forward
-        exec(f"{model_location}.torch.nn.{module}.forward = forward", globals())
-        try:  exec(f"{model_location}.nn.{module}.forward = forward", globals())
-        except: pass
-        exec( f"combined_module.torch.nn.{module}.forward = forward", globals())
-        try:  exec( f"combined_module.nn.{module}.forward = forward", globals())
-        except: pass
+            source = inspect.getsource(function.forward).rstrip()
+            forward = create_new_function(module, source, model_location, functions, append = ".to(input.dtype)\n").forward
+            exec(f"{model_location}.torch.nn.{module}.forward = forward", globals())
+            try:  exec(f"{model_location}.nn.{module}.forward = forward", globals())
+            except: pass
+            exec( f"combined_module.torch.nn.{module}.forward = forward", globals())
+            try:  exec( f"combined_module.nn.{module}.forward = forward", globals())
+            except: pass
+        pass
     pass
 
     # Import and replace with new module
