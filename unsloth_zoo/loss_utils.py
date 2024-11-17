@@ -18,6 +18,10 @@ import torch
 from packaging.version import Version
 import os
 torch_nn_functional_cross_entropy = torch.nn.functional.cross_entropy
+from cut_cross_entropy import linear_cross_entropy
+from cut_cross_entropy.transformers.utils import PatchOptions
+from cut_cross_entropy import LinearCrossEntropyImpl
+patch_options = PatchOptions(impl = LinearCrossEntropyImpl(1), reduction = "sum")
 
 __all__ = [
     "patch_loss_functions",
@@ -35,21 +39,29 @@ def patch_loss_functions(_fast_cross_entropy_loss, torch_compile = True):
 
     # Generic cross entropy loss
     def unsloth_fixed_cross_entropy(source, target, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs):
-        if ignore_index == -100:
-            loss = _fast_cross_entropy_loss(
-                logits  = source,
-                labels  = target,
-                n_items = num_items_in_batch,
-            )
-        else:
-            reduction = "sum" if num_items_in_batch is not None else "mean"
-            loss = torch_nn_functional_cross_entropy(
-                source,
-                target,
-                ignore_index = ignore_index,
-                reduction    = reduction,
-            )
-            if reduction == "sum": loss = loss / num_items_in_batch
+        loss = linear_cross_entropy(
+            source,
+            self.lm_head.weight,
+            target,
+            shift = True,
+            impl = patch_options.impl,
+            reduction=  patch_options.reduction,
+        )
+        # if ignore_index == -100:
+        #     loss = _fast_cross_entropy_loss(
+        #         logits  = source,
+        #         labels  = target,
+        #         n_items = num_items_in_batch,
+        #     )
+        # else:
+        #     reduction = "sum" if num_items_in_batch is not None else "mean"
+        #     loss = torch_nn_functional_cross_entropy(
+        #         source,
+        #         target,
+        #         ignore_index = ignore_index,
+        #         reduction    = reduction,
+        #     )
+        #     if reduction == "sum": loss = loss / num_items_in_batch
         return loss
     pass
     
@@ -57,11 +69,11 @@ def patch_loss_functions(_fast_cross_entropy_loss, torch_compile = True):
     def UnslothForCausalLMLoss(
         logits, labels, vocab_size: int, num_items_in_batch: int = None, ignore_index: int = -100, **kwargs
     ):
-        shift_logits = logits
-        shift_labels = torch.empty_like(labels)
-        shift_labels[..., :-1] = labels[..., 1:]
-        shift_labels[..., -1] = ignore_index
-        loss = unsloth_fixed_cross_entropy(shift_logits, shift_labels, num_items_in_batch, ignore_index, **kwargs)
+        # shift_logits = logits
+        # shift_labels = torch.empty_like(labels)
+        # shift_labels[..., :-1] = labels[..., 1:]
+        # shift_labels[..., -1] = ignore_index
+        loss = unsloth_fixed_cross_entropy(logits, labels, num_items_in_batch, ignore_index, **kwargs)
         return loss
     pass
 
