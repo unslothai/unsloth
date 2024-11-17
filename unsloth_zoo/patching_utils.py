@@ -309,7 +309,7 @@ def patch_compiled_autograd():
     source = "\n".join(x[spaces:] for x in source)
     old = "return compiled_fn(inputs, sizes, scalars, hooks)"
     n = len(re.search(r"\n([ ]{1,})return compiled_fn", source).group(1))
-    source = source.replace(old, f"with disable():\n{' '*(n + 4)}{'print(1111111); '}{old}")
+    source = source.replace(old, f"with disable():\n{' '*(n + 4)}{old}")
     source = source.replace("def end_capture", "def unsloth_end_capture", 1)
 
     # Import items to make the function executable
