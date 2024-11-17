@@ -65,24 +65,32 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
     import os, logging
+
     if debug:
-        print("Unsloth: Automatic Compiler turned on with debugging!")
+        DEBUGGING = " with debugging"
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
         os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs,compiled_autograd_verbose"
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
         torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
         torch._dynamo.config.verbose = True
     else:
-        print("Unsloth: Automatic Compiler turned on!")
+        DEBUGGING = ""
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
         os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
         os.environ.pop("TORCH_LOGS", None)
         torch._logging.set_logs(dynamo = logging.CRITICAL, inductor = logging.CRITICAL)
         torch._dynamo.config.verbose = False
     pass
+    try:
+        print("🦥 Unsloth: Automatic Compiler turned on{DEBUGGING}!")
+    except:
+        print("Unsloth: Automatic Compiler turned on{DEBUGGING}!")
+    pass
+
     os.environ["UNSLOTH_PATCHED"] = "1"
     # See https://pytorch.org/tutorials/recipes/torch_compile_caching_tutorial.html
     # Caches kernel generations for faster restarts
+    # https://dev-discuss.pytorch.org/t/impact-of-multithreading-and-local-caching-on-torch-compile/2498/3
     os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
     os.environ["TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE"] = "1"
     os.environ["TORCHINDUCTOR_CACHE_DIR"] = UNSLOTH_COMPILE_LOCATION
