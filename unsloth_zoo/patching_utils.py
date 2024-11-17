@@ -90,7 +90,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         f"config.max_autotune = {O3}", # enable slow autotuning passes to select algorithms
         f"config.max_autotune_pointwise = {O3}", # enable slow autotuning passes to select pointwise/reductions algorithms
         f"config.max_autotune_gemm = False", # GEMM is unnecessary
-        "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
+        "config.max_autotune_gemm_backends = 'ATEN,TRITON,CPP'", # Not much faster
         "config.autotune_fallback_to_aten = True", # Fallback to ATEN backend
         "config.autotune_multi_device = True", # If autotuning in subprocess, whether to use multiple devices
         "config.coordinate_descent_tuning = True",
