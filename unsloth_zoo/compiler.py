@@ -609,7 +609,7 @@ def unsloth_compile_transformers(
                         disable = True,
                         forward_source = source,
                     )
-                    print(f"Unsloth: Fast LM Head patch for {module}.")
+                    print(f"Unsloth: Fast fused linear cross entropy patch for {module}.")
                     all_standalone_classes[module] = new_module
                 pass
             pass
