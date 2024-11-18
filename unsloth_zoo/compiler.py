@@ -150,7 +150,7 @@ def replace_with_grouped_query_attention(module, source):
 pass
 
 
-def create_new_function(name, new_source, model_location, functions, prepend = "", append = ""):
+def create_new_function(name, new_source, model_location, functions, prepend = "", append = "", overwrite = True):
     # Code licensed under LGPL
     global UNSLOTH_CREATED_FUNCTIONS
     global UNSLOTH_COMPILE_LOCATION
@@ -174,10 +174,12 @@ def create_new_function(name, new_source, model_location, functions, prepend = "
     if not os.path.exists(UNSLOTH_COMPILE_LOCATION): os.makedirs(UNSLOTH_COMPILE_LOCATION)
 
     location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
-    with open(location, "w") as file:
-        file.write(new_source)
-        file.flush()
-        os.fsync(file)
+    if overwrite or not os.path.isfile(location):
+        with open(location, "w") as file:
+            file.write(new_source)
+            file.flush()
+            os.fsync(file)
+        pass
     pass
 
     new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
@@ -823,7 +825,7 @@ def unsloth_compile_transformers(
             if hasattr(function.forward, "get_compiler_config"): continue
 
             source = inspect.getsource(function.forward).rstrip()
-            forward = create_new_function(module, source, model_location, functions, append = ".to(input.dtype)\n").forward
+            forward = create_new_function(module, source, model_location, functions, append = ".to(input.dtype)\n", overwrite = False).forward
             exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
             try:  exec(f"{model_location}.nn.{module}.forward = forward", globals(), locals())
             except: pass
