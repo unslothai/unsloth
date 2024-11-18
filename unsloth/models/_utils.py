@@ -105,7 +105,8 @@ from unsloth_zoo.vision_utils import (
     process_vision_info,
 )
 from unsloth_zoo.compiler import (
-    unsloth_compile_transformers,
+    get_transformers_model_type,
+    unsloth_compile_transformers as _unsloth_compile_transformers,
 )
 
 # =============================================
@@ -1071,4 +1072,41 @@ def patch_tokenizer(model, tokenizer):
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
     return model, tokenizer
+pass
+
+
+def unsloth_compile_transformers(
+    model_name,
+    token                       = None,
+    revision                    = None,
+    trust_remote_code    : bool = False,
+    sdpa_causal_only     : bool = False,
+    sdap_bool_masks      : bool = True,
+    sdpa_gqa_replace     : bool = True,
+    sdpa_disable_compile : bool = True,
+    remove_causal_masks  : bool = True,
+    import_from_cache    : bool = False,
+    compile_functions    : bool = True,
+    fuse_lm_head         : bool = True,
+):
+    model_types = get_transformers_model_type(
+        model_name        = model_name,
+        token             = token,
+        revision          = revision,
+        trust_remote_code = trust_remote_code,
+    )
+    for model_type in model_types:
+        _unsloth_compile_transformers(
+            model_type           = model_type,
+            sdpa_causal_only     = sdpa_causal_only,
+            sdap_bool_masks      = sdap_bool_masks,
+            sdpa_gqa_replace     = sdpa_gqa_replace,
+            sdpa_disable_compile = sdpa_disable_compile,
+            remove_causal_masks  = remove_causal_masks,
+            import_from_cache    = import_from_cache,
+            compile_functions    = compile_functions,
+            fuse_lm_head         = fuse_lm_head,
+        )
+    pass
+    return
 pass
