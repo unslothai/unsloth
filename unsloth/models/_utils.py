@@ -1096,6 +1096,7 @@ def unsloth_compile_transformers(
         trust_remote_code = trust_remote_code,
     )
     for model_type in model_types:
+        print("Unsloth: Automatic compiler will now patch {model_type}")
         _unsloth_compile_transformers(
             model_type           = model_type,
             sdpa_causal_only     = sdpa_causal_only,
