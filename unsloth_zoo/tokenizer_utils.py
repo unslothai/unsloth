@@ -429,6 +429,9 @@ def patch_tokenizer(model, tokenizer):
     joiner = "\1\0=+=\0\1"
     number_repetitions = 3 - 1 # Number of reserved tokens needed
 
+    original_tokenizer = tokenizer
+    if hasattr(tokenizer, "tokenizer"): tokenizer = tokenizer.tokenizer
+
     bad_pad_token = False
     if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
         # Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
@@ -534,7 +537,7 @@ def patch_tokenizer(model, tokenizer):
         if getattr(model, "generation_config") is not None:
             model.generation_config.update(max_length = model.config.max_position_embeddings)
 
-    return model, tokenizer
+    return model, original_tokenizer
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
