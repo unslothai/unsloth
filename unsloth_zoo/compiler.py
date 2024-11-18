@@ -650,7 +650,7 @@ def unsloth_compile_transformers(
         f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}\\n'\\
-        f'🦥 The Unsloth automatic compiler will take about 1-2 minutes to load - please wait!'
+        f"🦥 Unsloth's automatic compiler will take 1-2 minutes to process - please wait!"
         logger.warning(debug_info)
         import subprocess, re, gc, numpy as np
         a = np.array([0,])
