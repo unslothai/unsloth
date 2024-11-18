@@ -324,7 +324,8 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             if torch.is_tensor(arg):
                 pointer = arg.data_ptr()
                 if pointer in CHECKPOINT_MAPPING:
-                    tensor_inputs.append(CHECKPOINT_BUFFERS[CHECKPOINT_MAPPING[pointer]])
+                    buffer = CHECKPOINT_BUFFERS[CHECKPOINT_MAPPING[pointer]]
+                    tensor_inputs.append(buffer.view(arg.shape, dtype = arg.dtype))
                 else:
                     array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
                     if arg.dtype == array.dtype:
