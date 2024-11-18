@@ -982,7 +982,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             if HAS_CUT_CROSS_ENTROPY and labels is not None:
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
-                print(HAS_CUT_CROSS_ENTROPY, labels)
                 loss = fused_linear_cross_entropy(
                     hidden_states      = hidden_states,
                     lm_weight          = lm_head,
