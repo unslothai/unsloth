@@ -91,14 +91,26 @@ def get_transformers_model_type(
     )
     if not was_disabled: enable_progress_bars()
 
-    model_type = config.model_type.replace("_", "").replace("-", "").lower()
+    model_types = []
+    model_types.append(config.model_type.replace("_", "").replace("-", "").lower())
+    
+    # Llava based
+    if hasattr(config, "text_config"):
+        model_types.append(config.text_config  .model_type.replace("_", "").replace("-", "").lower())
+    if hasattr(config, "vision_config"):
+        model_types.append(config.vision_config.model_type.replace("_", "").replace("-", "").lower())
+    pass
+
     from transformers import models
     models = dir(models)
     all_model_types = set()
     for name in models:
-        if model_type in name.lower():
-            all_model_types.add(model_type)
+        for model_type in model_types:
+            if model_type in name.lower():
+                all_model_types.add(model_type)
+                break
     pass
+
     all_model_types = list(all_model_types)
     return all_model_types
 pass
