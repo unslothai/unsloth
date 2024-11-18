@@ -349,6 +349,34 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
             pass
         pass
 
+        # If no bad tokens, possibly chat template itself has issues?
+        if len(final_bad_items) == 0:
+            # Recheck 2000 and last 2000 items
+            size_dataset = len(train_dataset)
+            size = min(size_dataset, 2000)
+            for j in range(size):
+                input_ids = train_dataset[j]
+                if "input_ids" in input_ids:
+                    input_ids = input_ids["input_ids"]
+                    for item in input_ids:
+                        if item in where_untrained_set: final_bad_items.append(item)
+                pass
+            pass
+
+            # Re-check last 2000
+            left = max(size_dataset-2000, 0)
+            for j in range(left, size_dataset):
+                input_ids = train_dataset[j]
+                if "input_ids" in input_ids:
+                    input_ids = input_ids["input_ids"]
+                    for item in input_ids:
+                        if item in where_untrained_set: final_bad_items.append(item)
+                pass
+            pass
+            # Most likely false signal!
+            if len(final_bad_items) == 0: return
+        pass
+
         raise ValueError(
             f'Unsloth: Untrained tokens of [{list(set(final_bad_items))}] found, but embed_tokens & lm_head not trainable, causing NaNs. '\
             'Restart then add `embed_tokens` & `lm_head` to '\
@@ -542,7 +570,7 @@ def patch_tokenizer(model, tokenizer):
             if hasattr(model.config, "max_position_embeddings"):
                 model.generation_config.update(max_length = model.config.max_position_embeddings)
     pass
-    
+
     return model, original_tokenizer
 pass
 
