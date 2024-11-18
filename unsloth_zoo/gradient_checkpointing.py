@@ -15,9 +15,11 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 global CHECKPOINT_BUFFERS
+global CHECKPOINT_MAPPING
 global CHECKPOINT_INDEX
 global MAX_CHECKPOINT_RANGE
 CHECKPOINT_BUFFERS = []
+CHECKPOINT_MAPPING = {}
 CHECKPOINT_INDEX = 0
 MAX_CHECKPOINT_RANGE = 1000
 
@@ -260,6 +262,10 @@ def create_gradient_checkpointing_buffer(dtype = torch.float16):
     global CHECKPOINT_BUFFERS
     global CHECKPOINT_INDEX
     global MAX_CHECKPOINT_RANGE
+    global CHECKPOINT_MAPPING
+    CHECKPOINT_INDEX = 0
+    CHECKPOINT_BUFFERS = []
+    CHECKPOINT_MAPPING = {}
     if len(CHECKPOINT_BUFFERS) != 0: return
 
     for _ in range(MAX_CHECKPOINT_RANGE):
@@ -286,6 +292,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
     def forward(ctx, run_function, preserve_rng_state, *args):
         global CHECKPOINT_BUFFERS
         global CHECKPOINT_INDEX
+        global CHECKPOINT_MAPPING
 
         check_backward_validity(args)
         ctx.run_function = run_function
@@ -312,25 +319,29 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         ctx.inputs = []
         ctx.tensor_indices = []
         tensor_inputs = []
-        done = False
+
         for i, arg in enumerate(args):
             if torch.is_tensor(arg):
-                array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
-                if not done and arg.dtype == array.dtype:
-                    done = True
-                    old_size = array.numel()
-                    new_size = arg.numel()
-                    if new_size > old_size:
-                        CHECKPOINT_BUFFERS[CHECKPOINT_INDEX].resize_(new_size)
-                        array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
-                    array[:new_size].copy_(arg.ravel(), non_blocking = True)
-                    tensor_inputs.append(array[:new_size].view(arg.shape))
-                    CHECKPOINT_INDEX += 1
+                pointer = arg.data_ptr()
+                if pointer in CHECKPOINT_MAPPING:
+                    tensor_inputs.append(CHECKPOINT_BUFFERS[CHECKPOINT_MAPPING[pointer]])
                 else:
-                    tensor_inputs.append(arg)
+                    array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
+                    if arg.dtype == array.dtype:
+                        old_size = array.numel()
+                        new_size = arg.numel()
+                        if new_size > old_size:
+                            CHECKPOINT_BUFFERS[CHECKPOINT_INDEX].resize_(new_size)
+                            array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
+                        array[:new_size].copy_(arg.ravel(), non_blocking = True)
+                        tensor_inputs.append(array[:new_size].view(arg.shape))
+                        CHECKPOINT_MAPPING[pointer] = CHECKPOINT_INDEX
+                        CHECKPOINT_INDEX += 1
+                    else:
+                        tensor_inputs.append(arg)
+                pass
                 ctx.tensor_indices.append(i)
                 ctx.inputs.append(None)
-                done = True
             else:
                 ctx.inputs.append(arg)
         with torch.no_grad():
@@ -344,6 +355,8 @@ class UnslothCheckpointFunction(torch.autograd.Function):
     def backward(ctx, *args):
         # Code licensed under LGPL
         global CHECKPOINT_INDEX
+        global CHECKPOINT_MAPPING
+
         if not torch.autograd._is_checkpoint_valid():
             raise RuntimeError(
                 "When use_reentrant=True, torch.utils.checkpoint is incompatible"
@@ -363,7 +376,10 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                 array = array.to("cuda:0", non_blocking = True)
             inputs[idx] = array.detach()
         pass
-        CHECKPOINT_INDEX = 0
+        if CHECKPOINT_INDEX != 0:
+            CHECKPOINT_INDEX = 0
+            CHECKPOINT_MAPPING = {}
+        pass
 
         # Stash the surrounding rng state, and mimic the state that was
         # present at this time during forward.  Restore the surrounding state
