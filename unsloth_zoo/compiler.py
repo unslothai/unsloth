@@ -641,10 +641,10 @@ def unsloth_compile_transformers(
     inner_training_loop = inner_training_loop.replace(original_debug, debug_info)
 
     debug_info = """n_total_devices = total_train_batch_size // \\
-        args.gradient_accumulation_steps // self._train_batch_size
-    if n_total_devices > 1:
-        logger.warning_once('Unsloth currently does not support multi GPU setups - but we are working on it!')
-    debug_info ="""
+            args.gradient_accumulation_steps // self._train_batch_size
+        if n_total_devices > 1:
+            logger.warning_once('Unsloth currently does not support multi GPU setups - but we are working on it!')
+        debug_info ="""
     debug_info = debug_info.split('\n')
     debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
     inner_training_loop = inner_training_loop.replace("debug_info =", debug_info, 1)
