@@ -18,10 +18,12 @@ global CHECKPOINT_BUFFERS
 global CHECKPOINT_MAPPING
 global CHECKPOINT_INDEX
 global MAX_CHECKPOINT_RANGE
+global CHECKPOINT_LOGGING
 CHECKPOINT_BUFFERS = []
 CHECKPOINT_MAPPING = {}
 CHECKPOINT_INDEX = 0
 MAX_CHECKPOINT_RANGE = 1000
+CHECKPOINT_LOGGING = True
 
 import torch
 import numpy as np
@@ -259,13 +261,16 @@ pass
 
 
 def create_gradient_checkpointing_buffer(dtype = torch.float16):
+    # Code licensed under LGPL
     global CHECKPOINT_BUFFERS
     global CHECKPOINT_INDEX
     global MAX_CHECKPOINT_RANGE
     global CHECKPOINT_MAPPING
+    global CHECKPOINT_LOGGING
     CHECKPOINT_INDEX = 0
     CHECKPOINT_BUFFERS = []
     CHECKPOINT_MAPPING = {}
+    CHECKPOINT_LOGGING = True
     if len(CHECKPOINT_BUFFERS) != 0: return
 
     for _ in range(MAX_CHECKPOINT_RANGE):
@@ -293,6 +298,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         global CHECKPOINT_BUFFERS
         global CHECKPOINT_INDEX
         global CHECKPOINT_MAPPING
+        global CHECKPOINT_LOGGING
 
         check_backward_validity(args)
         ctx.run_function = run_function
@@ -332,6 +338,14 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                     array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
                     dtype = arg.dtype
                     if dtype == array.dtype:
+                        if CHECKPOINT_LOGGING:
+                            CHECKPOINT_LOGGING = False
+                            try:
+                                print("🦥 Unsloth: Smart Gradient Checkpointing turned on")
+                            except:
+                                print("Unsloth: Smart Gradient Checkpointing turned on")
+                            pass
+                        pass
                         old_size = array.numel()
                         new_size = arg.numel()
                         if new_size > old_size:
