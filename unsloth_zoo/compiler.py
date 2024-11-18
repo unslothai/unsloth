@@ -825,20 +825,14 @@ def unsloth_compile_transformers(
 
             source = inspect.getsource(function.forward).rstrip()
             forward = create_new_function(module, source, model_location, functions, append = ".to(input.dtype)\n").forward
-            print(forward)
-            exec(f"{model_location}.torch.nn.{module}.forward", globals())
-            print(forward)
-            exec(f"{model_location}.torch.nn.{module}.forward = forward", globals())
-            print(forward)
-            try:  exec(f"{model_location}.nn.{module}.forward = forward", globals())
+            exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
+            try:  exec(f"{model_location}.nn.{module}.forward = forward", globals(), locals())
             except: pass
-            exec( f"combined_module.torch.nn.{module}.forward = forward", globals())
-            print(forward)
-            try:  exec( f"combined_module.nn.{module}.forward = forward", globals())
+            exec( f"combined_module.torch.nn.{module}.forward = forward", globals(), locals())
+            try:  exec( f"combined_module.nn.{module}.forward = forward", globals(), locals())
             except: pass
         pass
     pass
-    print(3)
 
     # Import and replace with new module
     for module in all_standalone_classes.keys():
