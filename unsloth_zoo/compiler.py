@@ -298,7 +298,7 @@ def unsloth_compile_transformers(
     sdap_bool_masks      : bool = True,
     sdpa_gqa_replace     : bool = True,
     sdpa_disable_compile : bool = True,
-    remove_causal_masks  : bool = True,
+    disable_causal_masks : bool = True,
     import_from_cache    : bool = False,
     compile_functions    : bool = True,
     fuse_lm_head         : bool = True,
@@ -449,7 +449,7 @@ def unsloth_compile_transformers(
 
     # Fix modules with _update_causal_mask if SDPA can be used with causal masks
     remove_causal_masks = []
-    if remove_causal_masks:
+    if disable_causal_masks:
         for module in other_classes:
             source = eval(f"{model_location}.{module}")
             if not hasattr(source, "_update_causal_mask"): continue
@@ -541,7 +541,7 @@ def unsloth_compile_transformers(
         source = eval(f"{model_location}.{module}")
         if not hasattr(source, "_update_causal_mask"): continue
 
-        exec(f"{model_location}.{module}._update_causal_mask = no_update_causal_mask")
+        exec(f"{model_location}.{module}._update_causal_mask = no_update_causal_mask", globals())
         print(f"Unsloth: Removed causal mask for {module} to reduce memory usage.")
     pass
 
