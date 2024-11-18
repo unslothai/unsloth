@@ -322,7 +322,6 @@ def unsloth_compile_transformers(
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
     modeling_file = eval(model_location)
-    print(modeling_file)
     if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
 
     # torch_compile_options
@@ -809,7 +808,7 @@ def unsloth_compile_transformers(
 
     if import_from_cache:
         try:
-            combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}")
+            combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}__{model_type}")
             import_from_cache = True
         except:
             import_from_cache = False
@@ -818,7 +817,7 @@ def unsloth_compile_transformers(
     pass
     if not import_from_cache:
         combined_module = create_new_function(
-            COMBINED_UNSLOTH_NAME,
+            f"{COMBINED_UNSLOTH_NAME}_{model_type}",
             all_code,
             model_location,
             functions,
