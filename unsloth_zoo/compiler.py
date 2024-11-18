@@ -26,6 +26,7 @@ import importlib
 import numpy as np
 import os
 import torch
+import subprocess
 
 global COMBINED_UNSLOTH_NAME
 global UNSLOTH_COMPILE_LOCATION
@@ -93,7 +94,7 @@ def get_transformers_model_type(
 
     model_types = []
     model_types.append(config.model_type.replace("_", "").replace("-", "").lower())
-    
+
     # Llava based
     if hasattr(config, "text_config"):
         model_types.append(config.text_config  .model_type.replace("_", "").replace("-", "").lower())
@@ -343,10 +344,10 @@ def unsloth_compile_transformers(
     ordered_functions = functions.copy()
 
     # Get class LlamaAttention(nn.Module)
-    torch_modules = re.findall(r"class (.+?)\(.+?\.Module\)", full_source)
+    torch_modules = re.findall(r"class ([^\s]{1,})\(.+?\.Module\)", full_source)
     # Also get class LlamaSdpaAttention(LlamaAttention)
-    inherited_class = "(?:" + "|".join(re.findall(r"class (.+?)\(.+?\.Module\)", full_source)) + ")"
-    inherited_modules = re.findall(r"class (.+?)\(" + inherited_class + "\)", full_source)
+    inherited_class = "(?:" + "|".join(re.findall(r"class ([^\s]{1,})\(.+?\.Module\)", full_source)) + ")"
+    inherited_modules = re.findall(r"class ([^\s]{1,})\(" + inherited_class + "\)", full_source)
     # OrderedSet
     torch_modules = list(dict.fromkeys(torch_modules + inherited_modules))
     # Get all functions as well
@@ -411,7 +412,7 @@ def unsloth_compile_transformers(
     pass
 
     # Get other classes
-    other_classes = re.findall(r"class (.+?)\(.+?\)", full_source)
+    other_classes = re.findall(r"class ([^\s]{1,})\(.+?\)", full_source)
     other_classes = [x for x in other_classes if x not in torch_modules and x not in removal]
 
     # Fix scaled dot product attention up if possible
