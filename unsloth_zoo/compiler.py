@@ -17,7 +17,7 @@
 __all__ = [
     "UNSLOTH_COMPILE_LOCATION",
     "get_transformers_model_type",
-    "compile_transformers_model_type",
+    "unsloth_compile_transformers",
 ]
 
 import inspect
@@ -58,7 +58,7 @@ def get_transformers_model_type(
     model_name,
     token = None,
     revision = None,
-    trust_remote_code = False
+    trust_remote_code = False,
 ):
     from transformers import AutoConfig
     from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
