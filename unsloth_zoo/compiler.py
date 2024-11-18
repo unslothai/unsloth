@@ -320,7 +320,7 @@ def unsloth_compile_transformers(
         "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
         "triton.cudagraphs" : False,
     }
-    
+
     modeling_file.__UNSLOTH_PATCHED__ = True
     functions = dir(modeling_file)
     full_source = inspect.getsource(modeling_file)
@@ -798,6 +798,8 @@ def unsloth_compile_transformers(
             import_from_cache = False
     else:
         import_from_cache = False
+    pass
+    print(1)
     if not import_from_cache:
         combined_module = create_new_function(
             COMBINED_UNSLOTH_NAME,
@@ -809,6 +811,7 @@ def unsloth_compile_transformers(
                 f"\ntorch_compile_options = {torch_compile_options}\n"
         )
     pass
+    print(2)
 
     if compile_functions:
         for module in _patch_functions:
@@ -830,6 +833,7 @@ def unsloth_compile_transformers(
             except: pass
         pass
     pass
+    print(3)
 
     # Import and replace with new module
     for module in all_standalone_classes.keys():
