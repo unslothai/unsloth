@@ -615,26 +615,26 @@ def unsloth_compile_transformers(
     front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
 
     debug_info = """debug_info = \\
-    f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
-    f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
-    f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
-    f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
-    f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
-    logger.warning(debug_info)
-    import subprocess, re, gc, numpy as np
-    a = np.array([0,])
-    try:
-        a = subprocess.check_output('nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
-        a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)
-        a = np.array([int(x.decode('utf-8'))/1024 for x in a])
-    except:
-        if not torch.cuda.is_available():
-            raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')
-    if ((a - PRE_CHECK) >= 1).sum() > 1:
-        raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
-    for _ in range(3):
-        gc.collect()
-        torch.cuda.empty_cache()"""
+        f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
+        f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
+        f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
+        f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
+        f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
+        logger.warning(debug_info)
+        import subprocess, re, gc, numpy as np
+        a = np.array([0,])
+        try:
+            a = subprocess.check_output('nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
+            a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)
+            a = np.array([int(x.decode('utf-8'))/1024 for x in a])
+        except:
+            if not torch.cuda.is_available():
+                raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')
+        if ((a - PRE_CHECK) >= 1).sum() > 1:
+            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()"""
 
     debug_info = debug_info.split('\n')
     debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -663,17 +663,17 @@ def unsloth_compile_transformers(
     )
 
     check_batches = """train_dataloader = self.get_train_dataloader()
-    ga  = args.gradient_accumulation_steps
-    bsz = self._train_batch_size
-    total_batches = bsz * ga * args.world_size
-    n_total_devices = total_batches // ga // bsz
-    if n_total_devices > 1:
-        logger.warning_once('Unsloth currently does not support multi GPU setups - but we are working on it!')
-        divisor = n_total_devices / 1
-        bsz = self._train_batch_size = max(int(bsz / divisor), 1)
-        if total_batches // ga // bsz > 1:
+        ga  = args.gradient_accumulation_steps
+        bsz = self._train_batch_size
+        total_batches = bsz * ga * args.world_size
+        n_total_devices = total_batches // ga // bsz
+        if n_total_devices > 1:
+            logger.warning_once('Unsloth currently does not support multi GPU setups - but we are working on it!')
             divisor = n_total_devices / 1
-            ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
+            bsz = self._train_batch_size = max(int(bsz / divisor), 1)
+            if total_batches // ga // bsz > 1:
+                divisor = n_total_devices / 1
+                ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
     check_batches = check_batches.split('\n')
     check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])
     inner_training_loop = inner_training_loop.replace(
