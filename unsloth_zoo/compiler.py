@@ -799,7 +799,6 @@ def unsloth_compile_transformers(
     else:
         import_from_cache = False
     pass
-    print(1)
     if not import_from_cache:
         combined_module = create_new_function(
             COMBINED_UNSLOTH_NAME,
@@ -811,7 +810,6 @@ def unsloth_compile_transformers(
                 f"\ntorch_compile_options = {torch_compile_options}\n"
         )
     pass
-    print(2)
 
     if compile_functions:
         for module in _patch_functions:
@@ -836,7 +834,7 @@ def unsloth_compile_transformers(
 
     # Import and replace with new module
     for module in all_standalone_classes.keys():
-        exec(f"{model_location}.{module} = combined_module.{module}", globals())
+        exec(f"{model_location}.{module} = combined_module.{module}", globals(), locals())
     pass
 
     # Finally edit dictionary items inside the target file
@@ -851,7 +849,7 @@ def unsloth_compile_transformers(
             found = False
             for replaced_class in replaced_classes:
                 if replaced_class in value:
-                    exec(f"{model_location}.{check}['{key}'] = combined_module.{replaced_class}", globals())
+                    exec(f"{model_location}.{check}['{key}'] = combined_module.{replaced_class}", globals(), locals())
                     # print(f"Unsloth: Replacing {check} with {replaced_class}")
                     break
                 pass
