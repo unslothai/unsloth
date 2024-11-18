@@ -32,6 +32,7 @@ __all__ = [
     "process_vision_info",
 ]
 
+import torch
 from PIL import Image
 import math
 IMAGE_FACTOR = 28
