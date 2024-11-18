@@ -825,6 +825,7 @@ def unsloth_compile_transformers(
 
             source = inspect.getsource(function.forward).rstrip()
             forward = create_new_function(module, source, model_location, functions, append = ".to(input.dtype)\n").forward
+            print(forward)
             exec(f"{model_location}.torch.nn.{module}.forward = forward", globals())
             try:  exec(f"{model_location}.nn.{module}.forward = forward", globals())
             except: pass
