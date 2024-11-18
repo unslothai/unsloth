@@ -61,6 +61,7 @@ __all__ = [
 
     "patch_compiled_autograd",
     "process_vision_info",
+    "unsloth_compile_transformers",
 ]
 
 import torch
@@ -102,6 +103,9 @@ from unsloth_zoo.loss_utils import (
 )
 from unsloth_zoo.vision_utils import (
     process_vision_info,
+)
+from unsloth_zoo.compiler import (
+    unsloth_compile_transformers,
 )
 
 # =============================================
