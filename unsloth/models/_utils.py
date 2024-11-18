@@ -59,6 +59,7 @@ __all__ = [
     "unpatch_unsloth_smart_gradient_checkpointing",
 
     "patch_compiled_autograd",
+    "process_vision_info",
 ]
 
 import torch
@@ -96,6 +97,9 @@ from unsloth_zoo.gradient_checkpointing import (
 from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
     fused_linear_cross_entropy,
+)
+from unsloth_zoo.vision_utils import (
+    process_vision_info,
 )
 
 # =============================================
