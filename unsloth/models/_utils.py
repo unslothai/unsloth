@@ -55,6 +55,10 @@ __all__ = [
 
     "HAS_CUT_CROSS_ENTROPY",
     "fused_linear_cross_entropy",
+    "patch_unsloth_smart_gradient_checkpointing",
+    "unpatch_unsloth_smart_gradient_checkpointing",
+
+    "patch_compiled_autograd",
 ]
 
 import torch
@@ -73,6 +77,7 @@ from unsloth_zoo.patching_utils import (
     patch_layernorm,
     patch_torch_compile,
     patch_model_and_tokenizer,
+    patch_compiled_autograd,
 )
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
@@ -84,6 +89,9 @@ from unsloth_zoo.gradient_checkpointing import (
     unsloth_gradient_checkpoint,
     patch_gradient_checkpointing,
     unpatch_gradient_checkpointing,
+
+    patch_unsloth_smart_gradient_checkpointing,
+    unpatch_unsloth_smart_gradient_checkpointing,
 )
 from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
