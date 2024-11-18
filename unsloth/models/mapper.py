@@ -409,12 +409,12 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/Qwen2.5-Coder-32B",
     ),
     "unsloth/Qwen2.5-Coder-0.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-Instruct-0.5B",
-        "Qwen/Qwen2.5-Coder-Instruct-0.5B",
+        "unsloth/Qwen2.5-Coder-0.5B-Instruct",
+        "Qwen/Qwen2.5-Coder-0.5B-Instruct",
     ),
     "unsloth/Qwen2.5-Coder-1.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-Instruct-1.5B",
-        "Qwen/Qwen2.5-Coder-Instruct-1.5B",
+        "unsloth/Qwen2.5-Coder-1.5B-Instruct",
+        "Qwen/Qwen2.5-Coder-1.5B-Instruct",
     ),
     "unsloth/Qwen2.5-Coder-3B-Instruct-bnb-4bit" : (
         "unsloth/Qwen2.5-Coder-3B-Instruct",
