@@ -189,7 +189,7 @@ def create_new_function(
 
     if add_torch_compile:
         new_source = \
-            "@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n"\
+            "@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)\n"\
             f"{new_source}"
     pass
 
