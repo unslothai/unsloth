@@ -1081,7 +1081,7 @@ def unsloth_compile_transformers(
     revision                    = None,
     trust_remote_code    : bool = False,
     sdpa_causal_only     : bool = False,
-    sdap_bool_masks      : bool = True,
+    sdpa_bool_masks      : bool = True,
     sdpa_gqa_replace     : bool = True,
     sdpa_disable_compile : bool = True,
     disable_causal_masks : bool = True,
@@ -1100,7 +1100,7 @@ def unsloth_compile_transformers(
         _unsloth_compile_transformers(
             model_type           = model_type,
             sdpa_causal_only     = sdpa_causal_only,
-            sdap_bool_masks      = sdap_bool_masks,
+            sdpa_bool_masks      = sdpa_bool_masks,
             sdpa_gqa_replace     = sdpa_gqa_replace,
             sdpa_disable_compile = sdpa_disable_compile,
             disable_causal_masks = disable_causal_masks,
