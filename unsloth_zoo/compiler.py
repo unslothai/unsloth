@@ -28,6 +28,7 @@ import os
 import torch
 import subprocess
 import types
+import time
 
 global COMBINED_UNSLOTH_NAME
 global UNSLOTH_COMPILE_LOCATION
@@ -221,7 +222,17 @@ def create_new_function(
         pass
     pass
 
-    new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
+    new_module = None
+    for trial in range(3):
+        try:
+            new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
+        except:
+            time.sleep(0.2 + trial)
+            continue
+    pass
+    if new_module is None:
+        raise ImportError(f"Unsloth: Cannot import {location}")
+
     # Must save to global state or else temp file closes
     UNSLOTH_CREATED_FUNCTIONS.append(location)
     return new_module
