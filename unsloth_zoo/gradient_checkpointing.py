@@ -402,12 +402,6 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             for inp in detached_inputs
         )
 
-        for i in range(len(detached_inputs)):
-            detached_inputs[i] = None
-            inputs[i] = None
-        del detached_inputs
-        del inputs
-
         return (None, None) + grads
 pass
 
