@@ -251,12 +251,10 @@ def create_standalone_class(
     leftover = full_class[full_class.find(definition) + len(definition):]
 
     # Add **loss_kwargs
-    print(source)
     if add_loss_kwargs and "**" not in parameters:
         parameters += ", **loss_kwargs"
         definition = re.sub(r"(\,[\n][\s]{1,}\))", r",**loss_kwargs\1", definition)
-        print(source)
-        source = re.sub(r"(\,[\n][\s]{1,}\) \-\>)", r",**loss_kwargs\1", source)
+        source = re.sub(r"(\,[\n]\) \-\>)", r",**loss_kwargs\1", source)
     pass
 
     source = f"@{compile}\n{source}\n"
