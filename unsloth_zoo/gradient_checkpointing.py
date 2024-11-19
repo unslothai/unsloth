@@ -329,9 +329,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                     tensor_inputs.append(arg)
                 else:
                     done = True
-                    array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
-                    dtype = arg.dtype
-                    if dtype == array.dtype:
+                    saved_arg = arg.to("cpu", non_blocking = True)
                         if CHECKPOINT_LOGGING:
                             CHECKPOINT_LOGGING = False
                             try:
@@ -425,23 +423,21 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                 args_with_grad.append(args[i])
         if len(outputs_with_grad) == 0:
             # Return no gradients instead
-            # raise RuntimeError(
-            #     "none of output has requires_grad=True,"
-            #     " this checkpoint() is not necessary"
-            # )
-            pass
-        else:
-            torch.autograd.backward(outputs_with_grad, args_with_grad)
+            raise RuntimeError(
+                "none of output has requires_grad=True,"
+                " this checkpoint() is not necessary"
+            )
+        torch.autograd.backward(outputs_with_grad, args_with_grad)
         grads = tuple(
             inp.grad if isinstance(inp, torch.Tensor) else None
             for inp in detached_inputs
         )
 
-        for i in range(len(detached_inputs)):
-            detached_inputs[i] = None
-            inputs[i] = None
-        del inputs
-        del detached_inputs
+        # for i in range(len(detached_inputs)):
+        #     detached_inputs[i] = None
+        #     inputs[i] = None
+        # del inputs
+        # del detached_inputs
 
         return (None, None) + grads
     pass
