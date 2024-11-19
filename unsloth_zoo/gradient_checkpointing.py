@@ -324,12 +324,9 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         done = False
         for i, arg in enumerate(args):
             if torch.is_tensor(arg):
-                shape = arg.shape
-                if done:
-                    tensor_inputs.append(arg)
-                else:
+                if not done:
+                    arg = arg.to("cpu", non_blocking = True)
                     done = True
-                    saved_arg = arg.to("cpu", non_blocking = True)
                     if CHECKPOINT_LOGGING:
                         CHECKPOINT_LOGGING = False
                         try:
@@ -338,18 +335,10 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                             print("Unsloth: Smart Gradient Checkpointing turned on")
                         pass
                     pass
-                    old_size = array.numel()
-                    new_size = arg.numel()
-                    # if new_size > old_size:
-                    #     CHECKPOINT_BUFFERS[CHECKPOINT_INDEX].resize_(new_size)
-                    #     array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
-                    # array = array[:new_size].view(shape)
-                    # array.copy_(arg, non_blocking = True)
-                    tensor_inputs.append(arg.to("cpu", non_blocking = True))
-                    CHECKPOINT_INDEX += 1
                 pass
                 ctx.tensor_indices.append(i)
                 ctx.inputs.append(None)
+                tensor_inputs.append(arg)
             else:
                 ctx.inputs.append(arg)
         with torch.no_grad():
