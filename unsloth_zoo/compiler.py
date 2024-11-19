@@ -931,6 +931,15 @@ def unsloth_compile_transformers(
             if hasattr(function.forward, "get_compiler_config"): continue
 
             source = inspect.getsource(function.forward).rstrip()
+            def create_standalone_class(
+                module,
+                model_location,
+                functions,
+                fullgraph = False,
+                forward_source = None,
+                disable = False,
+                add_loss_kwargs = False,
+            )
             forward = create_new_function(
                 module, source, model_location, [],
                 prepend = \
@@ -941,17 +950,11 @@ def unsloth_compile_transformers(
                 add_torch_compile = False,
             ).forward
 
-            exec(f"{model_location}.torch.nn.{module}.forward = types.MethodType("\
-                 f"forward, {model_location}.torch.nn.{module})", globals(), locals())
-            try:  
-                exec(f"{model_location}.nn.{module}.forward = types.MethodType("\
-                     f"forward, {model_location}.nn.{module})",   globals(), locals())
+            exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
+            try: exec( f"{model_location}.nn.{module}.forward = forward", globals(), locals())
             except: pass
-            exec(f"combined_module.torch.nn.{module}.forward = types.MethodType("\
-                 f"forward, combined_module.torch.nn.{module})",  globals(), locals())
-            try:
-                exec(f"combined_module.nn.{module}.forward = types.MethodType("\
-                 f"forward, combined_module.nn.{module})",        globals(), locals())
+            exec(f"combined_module.torch.nn.{module}.forward = forward)",  globals(), locals())
+            try: exec( f"combined_module.nn.{module}.forward = forward)",  globals(), locals())
             except: pass
         pass
     pass
