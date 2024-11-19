@@ -345,8 +345,9 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                         if new_size > old_size:
                             CHECKPOINT_BUFFERS[CHECKPOINT_INDEX].resize_(new_size)
                             array = CHECKPOINT_BUFFERS[CHECKPOINT_INDEX]
-                        array[:new_size].copy_(arg.ravel(), non_blocking = True)
-                        tensor_inputs.append(array[:new_size].view(shape))
+                        array = array[:new_size].view(shape)
+                        array.copy_(arg, non_blocking = True)
+                        tensor_inputs.append(array)
                         CHECKPOINT_INDEX += 1
                     else:
                         tensor_inputs.append(arg)
