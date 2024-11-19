@@ -24,7 +24,15 @@ from torch import Tensor
 import torch
 from torch.nn import functional as F
 from torch.nn import _reduction as _Reduction, grad
-from torch.nn.functional import (List, Optional, Tensor, handle_torch_function, has_torch_function, has_torch_function_variadic, normalize, np)
+from torch.nn.functional import (
+    handle_torch_function,
+    has_torch_function,
+    has_torch_function_variadic,
+    normalize, 
+    np,
+)
+from typing import Callable, List, Optional, Tuple, Union
+
 
 @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
 def layer_norm(
