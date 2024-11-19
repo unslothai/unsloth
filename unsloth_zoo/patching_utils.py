@@ -67,6 +67,7 @@ pass
 
 
 def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
+    # Code licensed under LGPL
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
     import os, logging
@@ -153,6 +154,7 @@ pass
 
 
 def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
+    # Code licensed under LGPL
     assert(type(downcast_rope) is bool)
     import gc
 

@@ -79,6 +79,7 @@ def get_transformers_model_type(
     revision = None,
     trust_remote_code = False,
 ):
+    # Code licensed under LGPL
     from transformers import AutoConfig
     from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
     was_disabled = are_progress_bars_disabled()
