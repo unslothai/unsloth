@@ -446,13 +446,12 @@ pass
 
 def unsloth_compile_transformers(
     model_type             : str = "llama",
-    sdpa_causal_only       : bool = False,
+    sdpa_dynamic_mask      : bool = True,
     sdpa_bool_masks        : bool = True,
     sdpa_gqa_replace       : bool = True,
     sdpa_disable_compile   : bool = True,
     compile_attention      : bool = True,
     disable_causal_masks   : bool = True,
-    import_from_cache      : bool = False,
     compile_torch_modules  : bool = True,
     compile_custom_modules : bool = True,
     compile_function_calls : bool = True,
@@ -462,6 +461,7 @@ def unsloth_compile_transformers(
     shape_padding          : bool = True,
     cudagraphs             : bool = True,
     debug                  : bool = False,
+    import_from_cache      : bool = False,
 ):
     # Code licensed under LGPL
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
@@ -579,7 +579,14 @@ def unsloth_compile_transformers(
             r"(\=[\s]{1,}[A-Za-z\.]{1,}scaled\_dot\_product\_attention)"
 
         new_source = source
-        if sdpa_causal_only:
+        if sdpa_dynamic_mask:
+            new_source = re.sub(
+                r"if output_attentions\:.+?return super\(\)\.forward.+?\)",
+                "if output_attentions: raise RuntimeError('Unsloth: Not supported')",
+                new_source,
+                flags = re.DOTALL | re.MULTILINE,
+            )
+        else:
             if len(re.findall(causal_mask_find, source, flags = re.DOTALL)) == 1:
                 new_source = re.sub(
                     causal_mask_find,
@@ -596,13 +603,7 @@ def unsloth_compile_transformers(
                     flags = re.DOTALL,
                 )
                 disabled_scaled_dot_product_attention_modules.append(module)
-        else:
-            new_source = re.sub(
-                r"if output_attentions\:.+?return super\(\)\.forward.+?\)",
-                "if output_attentions: raise RuntimeError('Unsloth: Not supported')",
-                new_source,
-                flags = re.DOTALL | re.MULTILINE,
-            )
+            pass
         pass
         scaled_dot_product_attention_modules[module] = new_source
     pass
