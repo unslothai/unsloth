@@ -140,7 +140,7 @@ def fused_linear_cross_entropy(
     ignore_index       : int = -100,
     reduction          : str = "mean",
     logit_softcapping  : float = 0,
-    accuracy_threshold : str = "auto",
+    accuracy_threshold : str = "high",
 ):
     reduction = "sum" if num_items_in_batch is not None else "mean"
     if logit_softcapping == 0: logit_softcapping = None
