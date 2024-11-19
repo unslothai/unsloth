@@ -913,7 +913,11 @@ def unsloth_compile_transformers(
             if hasattr(function.forward, "get_compiler_config"): continue
 
             source = inspect.getsource(function.forward).rstrip()
-            source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
+            source = source.replace(
+                "def forward",
+                "@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n"\
+                "def forward",
+            )
             forward = create_new_function(
                 module, source, model_location, functions,
                 prepend = \
