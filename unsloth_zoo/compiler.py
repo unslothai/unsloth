@@ -176,6 +176,7 @@ def create_new_function(name, new_source, model_location, functions, prepend = "
         new_source = new_source.split("\n")
         new_source = "\n".join(x[spaces:] for x in new_source)
     pass
+    print(new_source)
 
     # Import items to make the function executable
     items = [x for x in functions if ((x in new_source) and (x != name) and not (f"def {x}" in new_source))]
@@ -919,8 +920,8 @@ def unsloth_compile_transformers(
                     _license_header + \
                     f"\ntorch_compile_options = {torch_compile_options}\n",
                 append = ".to(input.dtype)\n",
-                overwrite = False)\
-            .forward
+                overwrite = False,
+            ).forward
 
             exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
             try:  exec(f"{model_location}.nn.{module}.forward = forward", globals(), locals())
