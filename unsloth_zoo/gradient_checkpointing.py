@@ -352,7 +352,10 @@ class CheckpointFunction(torch.autograd.Function):
         tensors = ctx.saved_tensors
 
         # Fill in inputs with appropriate saved tensors.
-        for i, idx in enumerate(tensor_indices):
+        if len(tensor_indices) != 0:
+            inputs[tensor_indices[0]] = tensors[0].to("cuda:0", non_blocking = True)
+
+        for i, idx in enumerate(tensor_indices[1:], start = 1):
             inputs[idx] = tensors[i].to("cuda:0", non_blocking = True)
 
         # Stash the surrounding rng state, and mimic the state that was
