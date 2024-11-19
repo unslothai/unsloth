@@ -453,6 +453,7 @@ def patch_tokenizer(model, tokenizer):
         "[control",                  # Mistral type models
         "|<EXTRA_TOKENS_",           # Molmo
         "<SPECIAL_",                 # Pixtral
+        "<unused",                   # PaliGemma
     )
     joiner = "\1\0=+=\0\1"
     number_repetitions = 3 - 1 # Number of reserved tokens needed
