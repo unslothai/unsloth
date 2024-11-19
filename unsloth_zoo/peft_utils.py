@@ -20,6 +20,7 @@ __all__ = [
 
 import torch
 
+
 def get_peft_regex(
     model,
     finetune_vision_layers     : bool = True,
@@ -54,7 +55,7 @@ def get_peft_regex(
     all_linear_modules = Counter(x.rsplit(".")[-1] for x in linear_modules)
 
     # Isolate lm_head / projection matrices if count == 1
-    if target_modules is not None:
+    if target_modules is None:
         only_linear_modules = []
         projection_modules  = {}
         for j, (proj, count) in enumerate(all_linear_modules.items()):
