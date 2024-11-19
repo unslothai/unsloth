@@ -27,6 +27,7 @@ import numpy as np
 import os
 import torch
 import subprocess
+import types
 
 global COMBINED_UNSLOTH_NAME
 global UNSLOTH_COMPILE_LOCATION
@@ -935,15 +936,20 @@ def unsloth_compile_transformers(
                     f"\ntorch_compile_options = {torch_compile_options}\n",
                 append = ".to(input.dtype)\n",
                 overwrite = False,
-                # [TODO] Need to create a whole new class and not wrapping for this!
-                # add_torch_compile = True,
+                add_torch_compile = True,
             ).forward
 
-            exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
-            try:  exec(f"{model_location}.nn.{module}.forward = forward", globals(), locals())
+            exec(f"{model_location}.torch.nn.{module}.forward = types.MethodType("\
+                 f"forward, {model_location}.torch.nn.{module})", globals(), locals())
+            try:  
+                exec(f"{model_location}.nn.{module}.forward = types.MethodType("\
+                     f"forward, {model_location}.nn.{module})",   globals(), locals())
             except: pass
-            exec( f"combined_module.torch.nn.{module}.forward = forward", globals(), locals())
-            try:  exec( f"combined_module.nn.{module}.forward = forward", globals(), locals())
+            exec(f"combined_module.torch.nn.{module}.forward = types.MethodType("\
+                 f"forward, combined_module.torch.nn.{module})",  globals(), locals())
+            try:
+                exec(f"combined_module.nn.{module}.forward = types.MethodType("\
+                 f"forward, combined_module.nn.{module})",        globals(), locals())
             except: pass
         pass
     pass
