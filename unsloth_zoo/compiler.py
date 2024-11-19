@@ -215,7 +215,7 @@ def create_new_function(
 
     location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
     if overwrite or not os.path.isfile(location):
-        with open(location, "w") as file:
+        with open(location, "w", buffering = 0) as file:
             file.write(new_source)
             file.flush()
             # os.fsync(file)
