@@ -493,7 +493,7 @@ def unsloth_compile_transformers(
     # OrderedSet
     torch_modules = list(dict.fromkeys(torch_modules + inherited_modules))
     # Get all functions as well
-    functions = [x for x in functions if x not in torch_modules]
+    functions = [x for x in functions if x not in torch_modules or not compile_torch_modules]
 
     # Remove if no forward function
     final_torch_modules = []
