@@ -446,7 +446,7 @@ def unsloth_compile_transformers(
     sdpa_dynamic_mask      : bool = True,
     sdpa_bool_masks        : bool = True,
     sdpa_gqa_replace       : bool = True,
-    sdpa_disable_compile   : bool = True,
+    sdpa_dynamic_compile   : bool = True,
     compile_attention      : bool = True,
     disable_causal_masks   : bool = True,
     compile_torch_modules  : bool = True,
@@ -681,7 +681,7 @@ def unsloth_compile_transformers(
                     model_location,
                     functions,
                     fullgraph = fullgraph,
-                    disable = sdpa_disable_compile,
+                    disable = sdpa_dynamic_compile,
                     forward_source = forward_source,
                 )
                 print(f"Unsloth: Fast Attention patch for {module}.")
