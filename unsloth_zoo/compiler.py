@@ -234,8 +234,6 @@ def create_standalone_class(
         if not disable else \
         "torch.compiler.disable(recursive = False)"
 
-    source = f"@{compile}\n{source}\n"
-
     # Create new forward calling optimized function
     parameters = inspect.signature(f.forward).parameters
     # .parameters removes **kwargs and *args so we get it back!
@@ -256,7 +254,10 @@ def create_standalone_class(
     if add_loss_kwargs and "**" not in parameters:
         parameters += ", **loss_kwargs"
         definition = re.sub(r"(\,[\n][\s]{1,}\))", r",**loss_kwargs\1", definition)
+        source = re.sub(r"(\,[\n][\s]{1,}\) \-\>)", r",**loss_kwargs\1", source)
     pass
+
+    source = f"@{compile}\n{source}\n"
 
     left = re.match("[\s\n]{4,}", leftover).span()[1]
     new_forward = definition + leftover[:left] + \
