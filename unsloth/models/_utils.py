@@ -684,7 +684,7 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
 )
 
 def _prepare_backend(
-    self, cpu: bool = False, sagemaker_dp = False, backend: str = None,
+    self, cpu = False, sagemaker_dp = False, backend: str = None,
 ) -> tuple[str, DistributedType]:
     return None, DistributedType.NO
 pass
@@ -1077,25 +1077,25 @@ pass
 
 def unsloth_compile_transformers(
     model_name,
-    token                         = None,
-    revision                      = None,
-    trust_remote_code      : bool = False,
-    sdpa_causal_only       : bool = False,
-    sdpa_bool_masks        : bool = True,
-    sdpa_gqa_replace       : bool = True,
-    sdpa_disable_compile   : bool = True,
-    compile_attention      : bool = True,
-    disable_causal_masks   : bool = True,
-    import_from_cache      : bool = False,
-    compile_torch_modules  : bool = True,
-    compile_custom_modules : bool = True,
-    compile_function_calls : bool = True,
-    fuse_lm_head           : bool = True,
-    epilogue_fusion        : bool = True,
-    max_autotune           : bool = False,
-    shape_padding          : bool = True,
-    cudagraphs             : bool = True,
-    debug                  : bool = False,
+    token                   = None,
+    revision                = None,
+    trust_remote_code       = False,
+    sdpa_causal_only        = False,
+    sdpa_bool_masks         = True,
+    sdpa_gqa_replace        = True,
+    sdpa_disable_compile    = True,
+    compile_attention       = True,
+    disable_causal_masks    = True,
+    import_from_cache       = False,
+    compile_torch_modules   = True,
+    compile_custom_modules  = True,
+    compile_function_calls  = True,
+    fuse_lm_head            = True,
+    epilogue_fusion         = True,
+    max_autotune            = False,
+    shape_padding           = True,
+    cudagraphs              = True,
+    debug                   = False,
 ):
     model_types = get_transformers_model_type(
         model_name        = model_name,
@@ -1107,22 +1107,22 @@ def unsloth_compile_transformers(
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
-            sdpa_causal_only,
-            sdpa_bool_masks,
-            sdpa_gqa_replace,
-            sdpa_disable_compile,
-            compile_attention,
-            disable_causal_masks,
-            import_from_cache,
-            compile_torch_modules,
-            compile_custom_modules,
-            compile_function_calls,
-            fuse_lm_head,
-            epilogue_fusion,
-            max_autotune,
-            shape_padding,
-            cudagraphs,
-            debug,
+            sdpa_causal_only = sdpa_causal_only,
+            sdpa_bool_masks = sdpa_bool_masks,
+            sdpa_gqa_replace = sdpa_gqa_replace,
+            sdpa_disable_compile = sdpa_disable_compile,
+            compile_attention = compile_attention,
+            disable_causal_masks = disable_causal_masks,
+            import_from_cache = import_from_cache,
+            compile_torch_modules = compile_torch_modules,
+            compile_custom_modules = compile_custom_modules,
+            compile_function_calls = compile_function_calls,
+            fuse_lm_head = fuse_lm_head,
+            epilogue_fusion = epilogue_fusion,
+            max_autotune = max_autotune,
+            shape_padding = shape_padding,
+            cudagraphs = cudagraphs,
+            debug = debug,
         )
     pass
     return
