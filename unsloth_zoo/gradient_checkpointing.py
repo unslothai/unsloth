@@ -287,7 +287,7 @@ from torch.utils.checkpoint import (
     detach_variable,
     contextlib,
 )
-class CheckpointFunction(torch.autograd.Function):
+class UnslothCheckpointFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_function, preserve_rng_state, *args):
         check_backward_validity(args)
