@@ -96,7 +96,7 @@ def get_transformers_model_type(
     model_types = []
     config = str(config.to_dict())
     model_types = re.findall(r"'model_type': '([^\s\']{1,})'", config)
-    model_types = [x.replace("_", "").replace("-", "").lower() for x in model_types]
+    model_types = [x.replace("-", "_").lower() for x in model_types]
 
     from transformers import models
     models = dir(models)
