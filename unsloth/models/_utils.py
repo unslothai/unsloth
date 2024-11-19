@@ -1080,13 +1080,12 @@ def unsloth_compile_transformers(
     token                   = None,
     revision                = None,
     trust_remote_code       = False,
-    sdpa_causal_only        = False,
+    sdpa_dynamic_mask       = True,
     sdpa_bool_masks         = True,
     sdpa_gqa_replace        = True,
     sdpa_disable_compile    = True,
     compile_attention       = True,
     disable_causal_masks    = True,
-    import_from_cache       = False,
     compile_torch_modules   = True,
     compile_custom_modules  = True,
     compile_function_calls  = True,
@@ -1096,6 +1095,7 @@ def unsloth_compile_transformers(
     shape_padding           = True,
     cudagraphs              = True,
     debug                   = False,
+    import_from_cache       = False,
 ):
     model_types = get_transformers_model_type(
         model_name        = model_name,
@@ -1107,13 +1107,12 @@ def unsloth_compile_transformers(
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
-            sdpa_causal_only       = sdpa_causal_only,
+            sdpa_dynamic_mask      = sdpa_dynamic_mask,
             sdpa_bool_masks        = sdpa_bool_masks,
             sdpa_gqa_replace       = sdpa_gqa_replace,
             sdpa_disable_compile   = sdpa_disable_compile,
             compile_attention      = compile_attention,
             disable_causal_masks   = disable_causal_masks,
-            import_from_cache      = import_from_cache,
             compile_torch_modules  = compile_torch_modules,
             compile_custom_modules = compile_custom_modules,
             compile_function_calls = compile_function_calls,
@@ -1123,6 +1122,7 @@ def unsloth_compile_transformers(
             shape_padding          = shape_padding,
             cudagraphs             = cudagraphs,
             debug                  = debug,
+            import_from_cache      = import_from_cache,
         )
     pass
     return
