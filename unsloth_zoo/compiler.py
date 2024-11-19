@@ -218,7 +218,7 @@ def create_new_function(
         with open(location, "wb", buffering = 0) as file:
             file.write(new_source.encode("utf-8"))
             file.flush()
-            # os.fsync(file)
+            os.fsync(file)
         pass
     pass
 
