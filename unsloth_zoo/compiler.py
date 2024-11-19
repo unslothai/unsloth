@@ -743,6 +743,20 @@ def unsloth_compile_transformers(
     exec(inner_training_loop, globals())
     Trainer._inner_training_loop = _fast_inner_training_loop
 
+    # Check if creating arrays in inside the function
+    final_called_functions = []
+    for module in called_functions:
+        if module in all_standalone_classes: continue
+        function = eval(f"{model_location}.{module}")
+        source = inspect.getsource(function)
+        if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
+            print(f"** Unsloth: Failed compiling function {module} since array creations are done.")
+        else:
+            final_called_functions.append(moduke)
+        pass
+    pass
+    called_functions = final_called_functions
+
     # Fix up function signatures
     for module in called_functions:
         function = eval(f"{model_location}.{module}")
@@ -785,16 +799,13 @@ def unsloth_compile_transformers(
         if module in all_standalone_classes: continue
         function = eval(f"{model_location}.{module}")
         source = inspect.getsource(function)
+        
         if sdap_bool_masks:
             source = convert_attention_masks_to_bool(module, source)
-        # Check if creating arrays in inside the function
-        if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
-            print(f"** Unsloth: Failed compiling function {module} since array creations are done.")
-        else:
-            source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
-            all_standalone_classes[module] = source
-            print(f"Unsloth: Compiled function {module}.")
-        pass
+
+        source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
+        all_standalone_classes[module] = source
+        print(f"Unsloth: Compiled function {module}.")
     pass
 
     # Order all components
