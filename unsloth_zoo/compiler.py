@@ -197,6 +197,8 @@ def create_new_function(
     # Import items to make the function executable
     items = [x for x in functions if ((x in new_source) and (x != name) and not (f"def {x}" in new_source))]
     imports = "from torch import Tensor\n"
+    imports += "import torch\n"
+    imports += "from torch.nn import functional as F\n"
     imports += f"from {model_location} import (" + ", ".join(x for x in items) + ")" if len(items) != 0 else ""
     new_source = imports + "\n\n" + new_source
     new_source = prepend + new_source + append
@@ -930,7 +932,7 @@ def unsloth_compile_transformers(
 
             source = inspect.getsource(function.forward).rstrip()
             forward = create_new_function(
-                module, source, model_location, functions,
+                module, source, model_location, [],
                 prepend = \
                     _license_header + \
                     f"\ntorch_compile_options = {torch_compile_options}\n",
