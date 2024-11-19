@@ -445,15 +445,23 @@ pass
 
 
 def unsloth_compile_transformers(
-    model_type           : str = "llama",
-    sdpa_causal_only     : bool = False,
-    sdpa_bool_masks      : bool = True,
-    sdpa_gqa_replace     : bool = True,
-    sdpa_disable_compile : bool = True,
-    disable_causal_masks : bool = True,
-    import_from_cache    : bool = False,
-    compile_functions    : bool = True,
-    fuse_lm_head         : bool = True,
+    model_type             : str = "llama",
+    sdpa_causal_only       : bool = False,
+    sdpa_bool_masks        : bool = True,
+    sdpa_gqa_replace       : bool = True,
+    sdpa_disable_compile   : bool = True,
+    compile_attention      : bool = True,
+    disable_causal_masks   : bool = True,
+    import_from_cache      : bool = False,
+    compile_torch_modules  : bool = True,
+    compile_custom_modules : bool = True,
+    compile_function_calls : bool = True,
+    fuse_lm_head           : bool = True,
+    epilogue_fusion        : bool = True,
+    max_autotune           : bool = False,
+    shape_padding          : bool = True,
+    cudagraphs             : bool = True,
+    debug                  : bool = False,
 ):
     # Code licensed under LGPL
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
@@ -466,11 +474,11 @@ def unsloth_compile_transformers(
     UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
     UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
     torch_compile_options = {
-        "epilogue_fusion"   : True,
-        "max_autotune"      : False,
-        "shape_padding"     : True,
-        "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
-        "triton.cudagraphs" : False,
+        "epilogue_fusion"   : epilogue_fusion,
+        "max_autotune"      : max_autotune,
+        "shape_padding"     : shape_padding,
+        "trace.enabled"     : UNSLOTH_COMPILE_DEBUG or debug,
+        "triton.cudagraphs" : cudagraphs,
     }
 
     modeling_file.__UNSLOTH_PATCHED__ = True
@@ -641,60 +649,64 @@ def unsloth_compile_transformers(
         pass
     pass
 
-    # Now patch modules
+    # Now patch modules ie LlamaRMSNorm
     all_standalone_classes = {}
-    for module, fullgraph in torch_modules.items():
-        if module in bad_torch_modules: continue
-        try:
-            new_module = create_standalone_class(
-                module,
-                model_location,
-                functions,
-                fullgraph = fullgraph,
-            )
-            print(f"Unsloth: Compiled module {module}.")
-            all_standalone_classes[module] = new_module
-        except:
-            continue
+    if compile_custom_modules:
+        for module, fullgraph in torch_modules.items():
+            if module in bad_torch_modules: continue
+            try:
+                new_module = create_standalone_class(
+                    module,
+                    model_location,
+                    functions,
+                    fullgraph = fullgraph,
+                )
+                print(f"Unsloth: Compiled module {module}.")
+                all_standalone_classes[module] = new_module
+            except:
+                continue
+        pass
     pass
 
     # SDPA
-    for module, forward_source in scaled_dot_product_attention_modules.items():
-        if sdpa_gqa_replace:
-            forward_source = replace_with_grouped_query_attention(
-                module,
-                forward_source,
-            )
+    if compile_attention:
+        for module, forward_source in scaled_dot_product_attention_modules.items():
+            if sdpa_gqa_replace:
+                forward_source = replace_with_grouped_query_attention(
+                    module,
+                    forward_source,
+                )
+            pass
+            try:
+                new_module = create_standalone_class(
+                    module,
+                    model_location,
+                    functions,
+                    fullgraph = fullgraph,
+                    disable = sdpa_disable_compile,
+                    forward_source = forward_source,
+                )
+                print(f"Unsloth: Fast Attention patch for {module}.")
+                all_standalone_classes[module] = new_module
+            except:
+                continue
         pass
-        try:
-            new_module = create_standalone_class(
-                module,
-                model_location,
-                functions,
-                fullgraph = fullgraph,
-                disable = sdpa_disable_compile,
-                forward_source = forward_source,
-            )
-            print(f"Unsloth: Fast Attention patch for {module}.")
-            all_standalone_classes[module] = new_module
-        except:
-            continue
-    pass
 
-    # Patch full attention modules
-    for module in full_attention_modules:
-        try:
-            new_module = create_standalone_class(
-                module,
-                model_location,
-                functions,
-                fullgraph = False,
-                disable = True,
-            )
-            print(f"Unsloth: Slow Attention patch for {module}.")
-            all_standalone_classes[module] = new_module
-        except:
-            continue
+        # Patch full attention modules
+        for module in full_attention_modules:
+            try:
+                new_module = create_standalone_class(
+                    module,
+                    model_location,
+                    functions,
+                    fullgraph = False,
+                    disable = True,
+                )
+                print(f"Unsloth: Slow Attention patch for {module}.")
+                all_standalone_classes[module] = new_module
+            except:
+                continue
+        pass
     pass
 
     # Remove causal masks
@@ -852,55 +864,57 @@ def unsloth_compile_transformers(
     exec(inner_training_loop, globals())
     Trainer._inner_training_loop = _fast_inner_training_loop
 
-    # Fix up function signatures
-    for module in called_functions:
-        function = eval(f"{model_location}.{module}")
-
-        parameters = inspect.signature(function)
-        params = list(parameters.parameters.keys())
-        source = inspect.getsource(function)
-
-        where = source.find(str(parameters))
-        if where == -1: where = source.find("\n") + 1
-        else: where = where + len(str(parameters))
-        code_section = source[where:]
-        cleaned_code_section = re.sub(r'\"\"\".+?\"\"\"', "", code_section, flags = re.DOTALL)
-
-        bad_params = []
-        for param in params:
-            if not param in cleaned_code_section:
-                bad_params.append(param)
-        pass
-        if len(bad_params) == 0: continue
-
-        for bad_param in bad_params:
-            parameters = re.sub(
-                re.escape(bad_param) + r"[\s]{0,}\=[\s]{0,}None[\s]{0,}\,",
-                "", # Remove them entirely
-                str(parameters),
-                flags = re.DOTALL,
-            )
-        pass
-        parameters = f"def {module}" + parameters + code_section
-        print(f"Unsloth: Fixed up function {module}.")
-
-        parameters = \
-            f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{parameters}"
-        all_standalone_classes[module] = parameters
-    pass
-
     # All other functions
-    for module in called_functions:
-        if module in all_standalone_classes: continue
-        function = eval(f"{model_location}.{module}")
-        source = inspect.getsource(function)
+    if compile_function_calls:
+        # Fix up function signatures
+        for module in called_functions:
+            function = eval(f"{model_location}.{module}")
 
-        if sdpa_bool_masks:
-            source = convert_attention_masks_to_bool(module, source)
+            parameters = inspect.signature(function)
+            params = list(parameters.parameters.keys())
+            source = inspect.getsource(function)
 
-        source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
-        all_standalone_classes[module] = source
-        print(f"Unsloth: Compiled function {module}.")
+            where = source.find(str(parameters))
+            if where == -1: where = source.find("\n") + 1
+            else: where = where + len(str(parameters))
+            code_section = source[where:]
+            cleaned_code_section = re.sub(r'\"\"\".+?\"\"\"', "", code_section, flags = re.DOTALL)
+
+            bad_params = []
+            for param in params:
+                if not param in cleaned_code_section:
+                    bad_params.append(param)
+            pass
+            if len(bad_params) == 0: continue
+
+            for bad_param in bad_params:
+                parameters = re.sub(
+                    re.escape(bad_param) + r"[\s]{0,}\=[\s]{0,}None[\s]{0,}\,",
+                    "", # Remove them entirely
+                    str(parameters),
+                    flags = re.DOTALL,
+                )
+            pass
+            parameters = f"def {module}" + parameters + code_section
+            print(f"Unsloth: Fixed up function {module}.")
+
+            parameters = \
+                f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{parameters}"
+            all_standalone_classes[module] = parameters
+        pass
+
+        for module in called_functions:
+            if module in all_standalone_classes: continue
+            function = eval(f"{model_location}.{module}")
+            source = inspect.getsource(function)
+
+            if sdpa_bool_masks:
+                source = convert_attention_masks_to_bool(module, source)
+
+            source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
+            all_standalone_classes[module] = source
+            print(f"Unsloth: Compiled function {module}.")
+        pass
     pass
 
     # Order all components
@@ -934,7 +948,7 @@ def unsloth_compile_transformers(
         )
     pass
 
-    if compile_functions:
+    if compile_torch_modules:
         for module in _patch_functions:
             try: source = eval(f"{model_location}.torch")
             except: continue
