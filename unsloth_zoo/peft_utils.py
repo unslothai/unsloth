@@ -30,7 +30,7 @@ def get_peft_regex(
     target_modules             : list[str] = None,
     vision_tags                : list[str] = ["vision", "image",],
     language_tags              : list[str] = ["language", "text",],
-    attention_tags             : list[str] = ["self_attn", "attention",],
+    attention_tags             : list[str] = ["self_attn", "attention", "attn",],
     mlp_tags                   : list[str] = ["mlp",],
 ) -> str:
     """
