@@ -944,8 +944,8 @@ def unsloth_compile_transformers(
             exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
             try: exec( f"{model_location}.nn.{module}.forward = forward", globals(), locals())
             except: pass
-            exec(f"combined_module.torch.nn.{module}.forward = forward)",  globals(), locals())
-            try: exec( f"combined_module.nn.{module}.forward = forward)",  globals(), locals())
+            exec( f"combined_module.torch.nn.{module}.forward = forward", globals(), locals())
+            try: exec(  f"combined_module.nn.{module}.forward = forward", globals(), locals())
             except: pass
         pass
     pass
