@@ -910,7 +910,16 @@ def unsloth_compile_transformers(
             if hasattr(function.forward, "get_compiler_config"): continue
 
             source = inspect.getsource(function.forward).rstrip()
-            forward = create_new_function(module, source, model_location, functions, append = ".to(input.dtype)\n", overwrite = False).forward
+            source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
+            forward = create_new_function(
+                module, source, model_location, functions,
+                prepend = \
+                    _disabled_sdpa_code + \
+                    f"\ntorch_compile_options = {torch_compile_options}\n",
+                append = ".to(input.dtype)\n",
+                overwrite = False)\
+            .forward
+
             exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
             try:  exec(f"{model_location}.nn.{module}.forward = forward", globals(), locals())
             except: pass
