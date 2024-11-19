@@ -752,7 +752,7 @@ def unsloth_compile_transformers(
         if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
             print(f"** Unsloth: Failed compiling function {module} since array creations are done.")
         else:
-            final_called_functions.append(moduke)
+            final_called_functions.append(module)
         pass
     pass
     called_functions = final_called_functions
@@ -799,7 +799,7 @@ def unsloth_compile_transformers(
         if module in all_standalone_classes: continue
         function = eval(f"{model_location}.{module}")
         source = inspect.getsource(function)
-        
+
         if sdap_bool_masks:
             source = convert_attention_masks_to_bool(module, source)
 
