@@ -256,7 +256,7 @@ def create_standalone_class(
     if add_loss_kwargs and "**" not in parameters:
         parameters += "**loss_kwargs"
         function_definition = full_class[:full_class.find(definition) + len(definition)]
-        function_definition = re.sub(r"(\,[\n][\s]{1,}\))", r",\*\*loss_kwargs\1")
+        function_definition = re.sub(r"(\,[\n][\s]{1,}\))", r",\*\*loss_kwargs\1", function_definition)
         full_class = function_definition + leftover
     pass
 
