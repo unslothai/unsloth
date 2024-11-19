@@ -142,10 +142,16 @@ def replace_with_grouped_query_attention(module, source):
                 source,
                 flags = re.DOTALL | re.MULTILINE,
             )
-            source = source.replace(
-                "dropout_p=self.dropout if self.training else 0.0,",
-                "dropout_p=self.dropout if self.training else 0.0, enable_gqa=self.num_key_value_groups != 1,",
-            )
+            source = source\
+                .replace(
+                    "dropout_p=self.dropout if self.training else 0.0,",
+                    "dropout_p=self.dropout if self.training else 0.0, "\
+                    "enable_gqa=self.num_key_value_groups != 1,",
+                ).replace(
+                    "dropout_p=self.attention_dropout if self.training else 0.0,",
+                    "dropout_p=self.attention_dropout if self.training else 0.0, "\
+                    "enable_gqa=self.num_key_value_groups != 1,",
+                )
         pass
     pass
 
