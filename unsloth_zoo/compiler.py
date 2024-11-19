@@ -926,16 +926,11 @@ def unsloth_compile_transformers(
     all_code = "\n\n".join(final_all_standalone_classes)
 
     if import_from_cache:
-        try:
-            combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}_{model_type}")
-            import_from_cache = True
-        except:
-            import_from_cache = False
+        combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}_{model_type}")
     else:
         import_from_cache = False
     pass
     if not import_from_cache:
-        print(1)
         combined_module = create_new_function(
             f"{COMBINED_UNSLOTH_NAME}_{model_type}",
             all_code,
