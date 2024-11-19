@@ -930,7 +930,7 @@ def unsloth_compile_transformers(
 
     if import_from_cache:
         try:
-            combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}__{model_type}")
+            combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}_{model_type}")
             import_from_cache = True
         except:
             import_from_cache = False
