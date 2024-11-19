@@ -72,6 +72,7 @@ _patch_functions = [
     "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d",
     "BatchNorm1d", "BatchNorm2d", "BatchNorm3d",
     "GroupNorm", "LayerNorm", "RMSNorm",
+    "CrossEntropyLoss",
 ]
 
 
