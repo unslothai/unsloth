@@ -486,9 +486,18 @@ def unsloth_compile_transformers(
         if not hasattr(source, "forward"): continue
         try: source = inspect.getsource(source.forward)
         except: continue
+
         if "attn_weights" in source or "self.self_attn" in source:
             print(f"Unsloth: Will not compile {module}.")
             bad_torch_modules.add(module)
+        pass
+
+        # Check if creating arrays in inside the function
+        # Error: DataDependentOutputException: aten._local_scalar_dense.default
+        if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
+            print(f"Unsloth: Failed compiling function {module} since array creations are done.")
+            bad_torch_modules.add(module)
+        pass
     pass
 
     # Now patch modules
@@ -742,20 +751,6 @@ def unsloth_compile_transformers(
     )
     exec(inner_training_loop, globals())
     Trainer._inner_training_loop = _fast_inner_training_loop
-
-    # Check if creating arrays in inside the function
-    final_called_functions = []
-    for module in called_functions:
-        if module in all_standalone_classes: continue
-        function = eval(f"{model_location}.{module}")
-        source = inspect.getsource(function)
-        if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
-            print(f"** Unsloth: Failed compiling function {module} since array creations are done.")
-        else:
-            final_called_functions.append(module)
-        pass
-    pass
-    called_functions = final_called_functions
 
     # Fix up function signatures
     for module in called_functions:
