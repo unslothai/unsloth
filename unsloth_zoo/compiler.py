@@ -931,15 +931,6 @@ def unsloth_compile_transformers(
             if hasattr(function.forward, "get_compiler_config"): continue
 
             source = inspect.getsource(function.forward).rstrip()
-            def create_standalone_class(
-                module,
-                model_location,
-                functions,
-                fullgraph = False,
-                forward_source = None,
-                disable = False,
-                add_loss_kwargs = False,
-            )
             forward = create_new_function(
                 module, source, model_location, [],
                 prepend = \
