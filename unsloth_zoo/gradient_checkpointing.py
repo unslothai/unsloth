@@ -287,7 +287,7 @@ from torch.utils.checkpoint import (
     detach_variable,
     contextlib,
 )
-class UnslothCheckpointFunction(torch.autograd.Function):
+class CheckpointFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_function, preserve_rng_state, *args):
         check_backward_validity(args)
@@ -318,14 +318,12 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         if len(args) != 0:
             arg = args[0]
             if torch.is_tensor(arg):
-                arg = arg.to("cpu", non_blocking = True)
+                tensor_inputs.append(arg)
                 ctx.tensor_indices.append(0)
                 ctx.inputs.append(None)
-                tensor_inputs.append(arg)
             else:
                 ctx.inputs.append(arg)
-        pass
-        for i, arg in enumerate(args[1:]):
+        for i, arg in enumerate(args[1:], start = 1):
             if torch.is_tensor(arg):
                 tensor_inputs.append(arg)
                 ctx.tensor_indices.append(i)
@@ -402,7 +400,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         )
 
         return (None, None) + grads
-
+pass
 
 
 def patch_unsloth_smart_gradient_checkpointing():
