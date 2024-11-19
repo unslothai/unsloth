@@ -28,7 +28,7 @@ def get_peft_regex(
     finetune_attention_modules : bool = True,
     finetune_mlp_modules       : bool = True,
     target_modules             : list[str] = None,
-    vision_tags                : list[str] = ["vision", "image",],
+    vision_tags                : list[str] = ["vision", "image", "visual",],
     language_tags              : list[str] = ["language", "text",],
     attention_tags             : list[str] = ["self_attn", "attention", "attn",],
     mlp_tags                   : list[str] = ["mlp",],
