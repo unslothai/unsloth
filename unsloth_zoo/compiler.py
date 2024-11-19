@@ -72,9 +72,12 @@ _patch_functions = [
     "Conv1d", "Conv2d", "Conv3d",
     "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d",
     "BatchNorm1d", "BatchNorm2d", "BatchNorm3d",
-    "GroupNorm", "LayerNorm", "RMSNorm",
-    "CrossEntropyLoss",
+    "GroupNorm", "RMSNorm",
+    # "CrossEntropyLoss", "LayerNorm",
 ]
+
+from .patch_torch_functions import patch_torch_functions
+patch_torch_functions()
 
 
 def get_transformers_model_type(
