@@ -326,8 +326,11 @@ def patch_compiled_autograd():
     torch._dynamo.compiled_autograd.AutogradCompilerInstance.end_capture = unsloth_end_capture
 
     # From https://github.com/pytorch/pytorch/pull/135795/files
-    import torch._dynamo.variables.misc
-    fx = torch._dynamo.variables.misc.AutogradEngineVariable.call_method
+    try:
+        import torch._dynamo.variables.misc
+        fx = torch._dynamo.variables.misc.AutogradEngineVariable.call_method
+    except:
+        return
     if fx.__name__ == "unsloth_call_method": return
     source = inspect.getsource(fx)
     if "in_compiled_autograd_region" in source: return
