@@ -176,7 +176,6 @@ def create_new_function(name, new_source, model_location, functions, prepend = "
         new_source = new_source.split("\n")
         new_source = "\n".join(x[spaces:] for x in new_source)
     pass
-    print(new_source)
 
     # Import items to make the function executable
     items = [x for x in functions if ((x in new_source) and (x != name) and not (f"def {x}" in new_source))]
