@@ -140,11 +140,11 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         "config.compiled_autograd = False", # New Torch 2.4 feature which can compile backwards passes
         # https://pytorch.org/tutorials/intermediate/compiled_autograd_tutorial.html
     ]
-    import torch._inductor.config as config
-    for _try_compile_argument in torch_compile_arguments:
-        try:    exec(_try_compile_argument)
-        except: pass
-    pass
+    # import torch._inductor.config as config
+    # for _try_compile_argument in torch_compile_arguments:
+    #     try:    exec(_try_compile_argument)
+    #     except: pass
+    # pass
     import torch._dynamo.config as config
     for _try_dynamo_argument in torch_dynamo_arguments:
         try:    exec(_try_dynamo_argument)

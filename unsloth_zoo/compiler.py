@@ -467,7 +467,7 @@ def unsloth_compile_transformers(
     UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
     torch_compile_options = {
         "epilogue_fusion"   : True,
-        "max_autotune"      : True,
+        "max_autotune"      : False,
         "shape_padding"     : True,
         "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
         "triton.cudagraphs" : False,
