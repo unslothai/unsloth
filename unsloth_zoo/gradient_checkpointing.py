@@ -356,7 +356,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             inputs[tensor_indices[0]] = tensors[0].to("cuda:0", non_blocking = True)
 
         for i, idx in enumerate(tensor_indices[1:], start = 1):
-            inputs[idx] = tensors[i].to("cuda:0", non_blocking = True)
+            inputs[idx] = tensors[i].to("cuda:0", non_blocking = True).detach()
 
         # Stash the surrounding rng state, and mimic the state that was
         # present at this time during forward.  Restore the surrounding state
@@ -371,7 +371,8 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                 torch.set_rng_state(ctx.fwd_cpu_state)
                 if ctx.had_device_in_fwd:
                     set_device_states(ctx.fwd_devices, ctx.fwd_device_states, device_type=ctx.device_type)
-            detached_inputs = detach_variable(tuple(inputs))
+            # detached_inputs = detach_variable(tuple(inputs))
+            detached_inputs = inputs
 
             device_autocast_ctx = torch.amp.autocast(
                 device_type=ctx.device_type, **ctx.device_autocast_kwargs
@@ -401,6 +402,12 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             inp.grad if isinstance(inp, torch.Tensor) else None
             for inp in detached_inputs
         )
+
+        for i in range(len(detached_inputs)):
+            detached_inputs[i] = None
+            inputs[i] = None
+        del detached_inputs
+        del inputs
 
         return (None, None) + grads
 pass
