@@ -789,7 +789,7 @@ def unsloth_compile_transformers(
             source = convert_attention_masks_to_bool(module, source)
         # Check if creating arrays in inside the function
         if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
-            print(f"Unsloth: Failed compiling function {module} since array creations are done.")
+            print(f"** Unsloth: Failed compiling function {module} since array creations are done.")
         else:
             source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
             all_standalone_classes[module] = source
