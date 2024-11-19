@@ -935,15 +935,18 @@ def unsloth_compile_transformers(
         import_from_cache = False
     pass
     if not import_from_cache:
-        combined_module = create_new_function(
-            f"{COMBINED_UNSLOTH_NAME}_{model_type}",
-            all_code,
-            model_location,
-            functions,
-            prepend = \
-                _disabled_sdpa_code + \
-                f"\ntorch_compile_options = {torch_compile_options}\n"
-        )
+        try:
+            combined_module = create_new_function(
+                f"{COMBINED_UNSLOTH_NAME}_{model_type}",
+                all_code,
+                model_location,
+                functions,
+                prepend = \
+                    _disabled_sdpa_code + \
+                    f"\ntorch_compile_options = {torch_compile_options}\n"
+            )
+        except:
+            combined_module = None
     pass
 
     if compile_torch_modules:
@@ -974,8 +977,10 @@ def unsloth_compile_transformers(
             exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
             try: exec( f"{model_location}.nn.{module}.forward = forward", globals(), locals())
             except: pass
-            exec( f"combined_module.torch.nn.{module}.forward = forward", globals(), locals())
-            try: exec(  f"combined_module.nn.{module}.forward = forward", globals(), locals())
+            try:
+                exec( f"combined_module.torch.nn.{module}.forward = forward", globals(), locals())
+                try: exec(  f"combined_module.nn.{module}.forward = forward", globals(), locals())
+                except: pass
             except: pass
         pass
     pass
@@ -997,7 +1002,10 @@ def unsloth_compile_transformers(
             found = False
             for replaced_class in replaced_classes:
                 if replaced_class in value:
-                    exec(f"{model_location}.{check}['{key}'] = combined_module.{replaced_class}", globals(), locals())
+                    try:
+                        exec(f"{model_location}.{check}['{key}'] = combined_module.{replaced_class}", globals(), locals())
+                    except:
+                        pass
                     # print(f"Unsloth: Replacing {check} with {replaced_class}")
                     break
                 pass
