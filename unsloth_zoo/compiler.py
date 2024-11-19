@@ -218,7 +218,7 @@ def create_new_function(
         with open(location, "w") as file:
             file.write(new_source)
             file.flush()
-            os.fsync(file)
+            # os.fsync(file)
         pass
     pass
 
