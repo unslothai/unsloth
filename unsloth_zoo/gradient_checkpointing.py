@@ -355,7 +355,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
 
         # Fill in inputs with appropriate saved tensors.
         if len(tensor_indices) != 0:
-            inputs[0] = tensors[0].to("cuda:0", non_blocking = True)
+            inputs[tensor_indices[0]] = tensors[0].to("cuda:0", non_blocking = True)
         for i, idx in enumerate(tensor_indices, start = 1):
             inputs[idx] = tensors[i]
 
