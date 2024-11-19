@@ -1093,7 +1093,7 @@ def unsloth_compile_transformers(
     epilogue_fusion         = True,
     max_autotune            = False,
     shape_padding           = True,
-    cudagraphs              = True,
+    cudagraphs              = False,
     debug                   = False,
     import_from_cache       = False,
 ):
