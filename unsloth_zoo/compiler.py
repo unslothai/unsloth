@@ -935,6 +935,7 @@ def unsloth_compile_transformers(
         import_from_cache = False
     pass
     if not import_from_cache:
+        print(1)
         combined_module = create_new_function(
             f"{COMBINED_UNSLOTH_NAME}_{model_type}",
             all_code,
@@ -947,7 +948,7 @@ def unsloth_compile_transformers(
     pass
 
     if compile_torch_modules:
-        
+
         from .patch_torch_functions import patch_torch_functions
         patch_torch_functions()
 
