@@ -315,7 +315,17 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         ctx.inputs = []
         ctx.tensor_indices = []
         tensor_inputs = []
-        for i, arg in enumerate(args):
+        if len(args) != 0:
+            arg = args[0]
+            if torch.is_tensor(arg):
+                arg = arg.to("cpu", non_blocking = True)
+                ctx.tensor_indices.append(0)
+                ctx.inputs.append(None)
+                tensor_inputs.append(arg)
+            else:
+                ctx.inputs.append(arg)
+        pass
+        for i, arg in enumerate(args[1:]):
             if torch.is_tensor(arg):
                 tensor_inputs.append(arg)
                 ctx.tensor_indices.append(i)
@@ -344,7 +354,9 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         tensors = ctx.saved_tensors
 
         # Fill in inputs with appropriate saved tensors.
-        for i, idx in enumerate(tensor_indices):
+        if len(tensor_indices) != 0:
+            inputs[0] = tensors[0].to("cuda:0", non_blocking = True)
+        for i, idx in enumerate(tensor_indices, start = 1):
             inputs[idx] = tensors[i]
 
         # Stash the surrounding rng state, and mimic the state that was
