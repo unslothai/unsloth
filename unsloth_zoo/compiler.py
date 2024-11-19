@@ -370,7 +370,7 @@ def unsloth_compile_transformers(
             gradient_checkpointed_modules.append(module)
         elif "scaled_dot_product_attention" in source:
             scaled_dot_product_attention_modules.append(module)
-        elif "nn.functional.softmax" in source:
+        elif "nn.functional.softmax" in source or "flash_attn_varlen_func" in source or "_flash_attention_forward" in source:
             full_attention_modules.append(module)
     pass
     removal = set(
@@ -787,9 +787,14 @@ def unsloth_compile_transformers(
         source = inspect.getsource(function)
         if sdap_bool_masks:
             source = convert_attention_masks_to_bool(module, source)
-        source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
-        all_standalone_classes[module] = source
-        print(f"Unsloth: Compiled function {module}.")
+        # Check if creating arrays in inside the function
+        if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
+            print(f"Unsloth: Failed compiling function {module} since array creations are done.")
+        else:
+            source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
+            all_standalone_classes[module] = source
+            print(f"Unsloth: Compiled function {module}.")
+        pass
     pass
 
     # Order all components
