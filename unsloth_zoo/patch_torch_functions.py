@@ -19,7 +19,15 @@ __all__ = [
     "patch_torch_functions",
 ]
 
-torch_compile_options = {'epilogue_fusion': True, 'max_autotune': True, 'shape_padding': True, 'trace.enabled': False, 'triton.cudagraphs': False}
+import os
+UNSLOTH_COMPILE_DEBUG = os.environ.get("UNSLOTH_COMPILE_DEBUG", "0") == "1"
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
+    "shape_padding"     : True,
+    "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
+    "triton.cudagraphs" : False,
+}
 from torch import Tensor
 import torch
 from torch.nn import functional as F
