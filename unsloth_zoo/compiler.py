@@ -935,7 +935,7 @@ def unsloth_compile_transformers(
 
             source = inspect.getsource(function.forward).rstrip()
             forward = create_new_function(
-                module, source, model_location, [],
+                module, source, model_location, functions,
                 prepend = \
                     _license_header + \
                     f"\ntorch_compile_options = {torch_compile_options}\n",
