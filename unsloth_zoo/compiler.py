@@ -167,7 +167,16 @@ def replace_with_grouped_query_attention(module, source):
 pass
 
 
-def create_new_function(name, new_source, model_location, functions, prepend = "", append = "", overwrite = True):
+def create_new_function(
+    name,
+    new_source,
+    model_location,
+    functions,
+    prepend = "",
+    append = "",
+    overwrite = True,
+    add_torch_compile = False,
+):
     # Code licensed under LGPL
     global UNSLOTH_CREATED_FUNCTIONS
     global UNSLOTH_COMPILE_LOCATION
@@ -175,6 +184,12 @@ def create_new_function(name, new_source, model_location, functions, prepend = "
         spaces = new_source.find("def")
         new_source = new_source.split("\n")
         new_source = "\n".join(x[spaces:] for x in new_source)
+    pass
+
+    if add_torch_compile:
+        new_source = \
+            "@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n"\
+            f"{new_source}"
     pass
 
     # Import items to make the function executable
@@ -919,6 +934,7 @@ def unsloth_compile_transformers(
                     f"\ntorch_compile_options = {torch_compile_options}\n",
                 append = ".to(input.dtype)\n",
                 overwrite = False,
+                add_torch_compile = True,
             ).forward
 
             exec(f"{model_location}.torch.nn.{module}.forward = forward", globals(), locals())
