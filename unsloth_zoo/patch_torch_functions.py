@@ -46,7 +46,6 @@ def layer_norm(
 
     See :class:`~torch.nn.LayerNorm` for details.
     """
-    print(1)
     if has_torch_function_variadic(input, weight, bias):
         return handle_torch_function(
             layer_norm,
@@ -139,7 +138,6 @@ def cross_entropy(
         >>> loss = F.cross_entropy(input, target)
         >>> loss.backward()
     """
-    print(2)
     if has_torch_function_variadic(input, target, weight):
         return handle_torch_function(
             cross_entropy,
