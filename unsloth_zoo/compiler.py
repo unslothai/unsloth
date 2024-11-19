@@ -447,7 +447,7 @@ pass
 def unsloth_compile_transformers(
     model_type           : str = "llama",
     sdpa_causal_only     : bool = False,
-    sdap_bool_masks      : bool = True,
+    sdpa_bool_masks      : bool = True,
     sdpa_gqa_replace     : bool = True,
     sdpa_disable_compile : bool = True,
     disable_causal_masks : bool = True,
@@ -895,7 +895,7 @@ def unsloth_compile_transformers(
         function = eval(f"{model_location}.{module}")
         source = inspect.getsource(function)
 
-        if sdap_bool_masks:
+        if sdpa_bool_masks:
             source = convert_attention_masks_to_bool(module, source)
 
         source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
