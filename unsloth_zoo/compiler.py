@@ -36,7 +36,7 @@ UNSLOTH_COMPILE_LOCATION = "unsloth_compiled_cache"
 UNSLOTH_CREATED_FUNCTIONS = []
 
 
-_disabled_sdpa_code = """
+_license_header = """
 # Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
@@ -51,7 +51,9 @@ _disabled_sdpa_code = """
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# along with this program.  If not, see <https://www.gnu.org/licenses/>."""
+
+_disabled_sdpa_code = f"""{_license_header}
 
 import torch
 from unsloth_zoo.loss_utils import fused_linear_cross_entropy
@@ -914,7 +916,7 @@ def unsloth_compile_transformers(
             forward = create_new_function(
                 module, source, model_location, functions,
                 prepend = \
-                    _disabled_sdpa_code + \
+                    _license_header + \
                     f"\ntorch_compile_options = {torch_compile_options}\n",
                 append = ".to(input.dtype)\n",
                 overwrite = False)\
