@@ -18,6 +18,7 @@ __all__ = [
     "get_peft_regex",
 ]
 
+import torch
 
 def get_peft_regex(
     model,
