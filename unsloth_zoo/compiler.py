@@ -77,9 +77,6 @@ _patch_functions = [
     # "CrossEntropyLoss", "LayerNorm",
 ]
 
-from .patch_torch_functions import patch_torch_functions
-patch_torch_functions()
-
 
 def get_transformers_model_type(
     model_name,
@@ -950,6 +947,10 @@ def unsloth_compile_transformers(
     pass
 
     if compile_torch_modules:
+        
+        from .patch_torch_functions import patch_torch_functions
+        patch_torch_functions()
+
         for module in _patch_functions:
             try: source = eval(f"{model_location}.torch")
             except: continue
