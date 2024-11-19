@@ -211,6 +211,7 @@ def create_standalone_class(
     fullgraph = False,
     forward_source = None,
     disable = False,
+    add_loss_kwargs = False,
 ) -> str:
     # Code licensed under LGPL
     # Create optimized standalone forward function
@@ -250,6 +251,15 @@ def create_standalone_class(
     # Now create the forward function!
     definition = re.findall(r"[\s\n]{1,}def[^\(]{1,}\([^\)]{1,}\)[^\:]{0,}\:", old_source, flags = re.MULTILINE)[0]
     leftover = full_class[full_class.find(definition) + len(definition):]
+
+    # Add **loss_kwargs
+    if add_loss_kwargs and "**" not in parameters:
+        parameters += "**loss_kwargs"
+        function_definition = full_class[:full_class.find(definition) + len(definition)]
+        function_definition = re.sub(r"(\,[\n][\s]{1,}\))", r",\*\*loss_kwargs\1")
+        full_class = function_definition + leftover
+    pass
+
     left = re.match("[\s\n]{4,}", leftover).span()[1]
     new_forward = definition + leftover[:left] + \
         f"return {module}_forward({parameters})\n"
@@ -276,10 +286,10 @@ loss = loss_fct(shift_logits, shift_labels)
 """
 
 cross_entropy_replacement_1 = """
-n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
+n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
 loss = fused_linear_cross_entropy(
     hidden_states      = hidden_states,
-    lm_weight          = lm_head.weight,
+    lm_weight          = self.lm_head.weight,
     labels             = labels,
     num_items_in_batch = n_items,
     logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
@@ -683,6 +693,7 @@ def unsloth_compile_transformers(
                         fullgraph = False,
                         disable = True,
                         forward_source = new_source,
+                        add_loss_kwargs = True,
                     )
                     print(f"Unsloth: Fast fused linear cross entropy patch for {module}.")
                     all_standalone_classes[module] = new_module
