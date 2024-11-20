@@ -439,7 +439,7 @@ def unsloth_save_model(
             print("Saved to https://huggingface.co/" + save_pretrained_settings["save_directory"])
         pass
 
-        print(" Done.")
+        print(" Done. Model were saved at " + save_pretrained_settings["save_directory"])
         return save_directory, None
     pass
 
@@ -1120,7 +1120,7 @@ def save_to_gguf(
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
         if IS_KAGGLE_ENVIRONMENT:
-            if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+            if not Path(final_location).resolve().is_relative_to(Path(KAGGLE_TMP).resolve()):
                 raise RuntimeError(
                     f"Unsloth: Quantization failed for {final_location}\n"\
                     "You are in a Kaggle environment, which might be the reason this is failing.\n"\
@@ -1171,7 +1171,7 @@ def save_to_gguf(
             # Check if quantization succeeded!
             if not os.path.isfile(final_location):
                 if IS_KAGGLE_ENVIRONMENT:
-                    if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+                    if not Path(final_location).resolve().is_relative_to(Path(KAGGLE_TMP).resolve()):
                         raise RuntimeError(
                             f"Unsloth: Quantization failed for {final_location}\n"\
                             "You are in a Kaggle environment, which might be the reason this is failing.\n"\
@@ -1612,6 +1612,9 @@ def unsloth_save_pretrained_gguf(
     del arguments["quantization_method"]
     del arguments["first_conversion"]
 
+    if IS_KAGGLE_ENVIRONMENT:
+        arguments["save_directory"] = os.path.join(KAGGLE_TMP, save_directory)
+
     # Fix tokenizer adding an extra BOS token at the front
     fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
@@ -1702,6 +1705,29 @@ def unsloth_save_pretrained_gguf(
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
+
+    if IS_KAGGLE_ENVIRONMENT:
+        print(
+            "Unsloth: We zipped the file for you to download since we store it in the Kaggle",
+            f"{KAGGLE_TMP} directory.\n"\
+        )
+        from zipfile import ZipFile, ZIP_DEFLATED
+
+        list_of_files = list(all_file_locations)
+        if modelfile_location is not None:
+            list_of_files.append(modelfile_location)
+        print(f"Unsloth: Zipping {list_of_files}...")
+        with ZipFile(os.path.join(KAGGLE_TMP, "unsloth_gguf.zip"), "w", compression=ZIP_DEFLATED) as zip_file:
+            for file in list_of_files:
+                try:
+                    zip_file.write(file)
+                except FileNotFoundError as _:
+                    logger.warning(f"Unsloth: file {file} not found. Skipping...")
+            pass
+
+        # Now expose the zipfile to user
+        from IPython.display import FileLink
+        FileLink(os.path.join(KAGGLE_TMP, "unsloth_gguf.zip"))
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
