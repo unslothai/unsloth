@@ -482,6 +482,10 @@ def patch_gradient_checkpointing(module, source):
     layer, spaces, args = find[0]
     span = re.search(finder, forward).span(0)
     replacer = replace_gradient_checkpointing.strip()
+
+    # Gradient checkpointing calling must remove arg=arg convention
+    args = re.sub(r"([^\s]{1,})[\s]?\=[\s]?\1", r"\1", args)
+    
     replacer = replacer\
         .replace("LAYER", layer).replace("MODULELIST_ITEM", modulelist_item)\
         .replace("ARGS", args).replace("$", spaces)
