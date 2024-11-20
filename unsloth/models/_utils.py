@@ -62,6 +62,7 @@ __all__ = [
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
+    "patch_fast_lora",
 ]
 
 import torch
@@ -1078,6 +1079,12 @@ def patch_tokenizer(model, tokenizer):
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
     return model, tokenizer
+pass
+
+
+def patch_fast_lora():
+    import peft.tuners.lora.bnb
+    peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 pass
 
 
