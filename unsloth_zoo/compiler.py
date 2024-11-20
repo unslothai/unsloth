@@ -701,6 +701,8 @@ def unsloth_compile_transformers(
             bad_torch_modules.add(module)
         pass
     pass
+    # Add back to functions since failed compiling
+    functions += list(bad_torch_modules)
 
     # Now patch modules ie LlamaRMSNorm
     all_standalone_classes = {}
