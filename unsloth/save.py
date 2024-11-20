@@ -1806,6 +1806,9 @@ def unsloth_push_to_hub_gguf(
     del arguments["quantization_method"]
     del arguments["first_conversion"]
 
+    if IS_KAGGLE_ENVIRONMENT:
+        arguments["save_directory"] = os.path.join(KAGGLE_TMP, arguments["save_directory"])
+
     # Fix tokenizer adding an extra BOS token at the front
     fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
