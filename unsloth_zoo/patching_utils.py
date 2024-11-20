@@ -34,17 +34,17 @@ def patch_compiling_bitsandbytes():
     #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
     # return
     os.environ["UNSLOTH_PATCHED"] = "1"
-    # import bitsandbytes.nn.modules
-    # bitsandbytes.nn.modules.Linear4bit.forward = \
-    #     torch._disable_dynamo(bitsandbytes.nn.modules.Linear4bit.forward)
-    # import peft.tuners.lora.bnb
-    # peft.tuners.lora.bnb.Linear4bit.forward = \
-    #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
+    import bitsandbytes.nn.modules
+    bitsandbytes.nn.modules.Linear4bit.forward = \
+        torch._disable_dynamo(bitsandbytes.nn.modules.Linear4bit.forward)
+    import peft.tuners.lora.bnb
+    peft.tuners.lora.bnb.Linear4bit.forward = \
+        torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
 
-    import bitsandbytes.autograd._functions
-    bitsandbytes.autograd._functions.matmul_4bit = torch._disable_dynamo(
-        bitsandbytes.autograd._functions.matmul_4bit
-    )
+    # import bitsandbytes.autograd._functions
+    # bitsandbytes.autograd._functions.matmul_4bit = torch._disable_dynamo(
+    #     bitsandbytes.autograd._functions.matmul_4bit
+    # )
     return
 pass
 
