@@ -485,7 +485,7 @@ def patch_gradient_checkpointing(module, source):
 
     # Gradient checkpointing calling must remove arg=arg convention
     args = re.sub(r"([^\s]{1,})[\s]?\=[\s]?\1", r"\1", args)
-    
+
     replacer = replacer\
         .replace("LAYER", layer).replace("MODULELIST_ITEM", modulelist_item)\
         .replace("ARGS", args).replace("$", spaces)
@@ -522,7 +522,7 @@ def unsloth_compile_transformers(
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
     modeling_file = eval(model_location)
-    # if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
+    if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
 
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
@@ -692,7 +692,8 @@ def unsloth_compile_transformers(
         try: source = inspect.getsource(source.forward)
         except: continue
 
-        if "attn_weights" in source or "self.self_attn" in source or "_ATTENTION_CLASSES" in source:
+        init = inspect.getsource(source.__init__)
+        if "attn_weights" in source or "self.self_attn" in source or "_ATTENTION_CLASSES" in init:
 
             print(f"Unsloth: Will not compile {module}.")
             bad_torch_modules.add(module)
