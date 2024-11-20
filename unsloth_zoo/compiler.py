@@ -634,7 +634,8 @@ def unsloth_compile_transformers(
         try: source = inspect.getsource(source.forward)
         except: continue
 
-        if "attn_weights" in source or "self.self_attn" in source:
+        if "attn_weights" in source or "self.self_attn" in source or "_ATTENTION_CLASSES" in source:
+
             print(f"Unsloth: Will not compile {module}.")
             bad_torch_modules.add(module)
         pass
