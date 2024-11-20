@@ -16,6 +16,7 @@
 
 __all__ = [
     "get_peft_regex",
+    "merge_and_overwrite_lora",
 ]
 
 import torch
@@ -115,6 +116,194 @@ def get_peft_regex(
     return regex_matcher
 pass
 
+
+from huggingface_hub import (
+    HfFileSystem,
+    snapshot_download,
+    hf_hub_download,
+)
+from safetensors import safe_open
+from safetensors.torch import save_file
+from collections import OrderedDict
+from tqdm import tqdm as ProgressBar
+import os, shutil
+
+
+def _merge_and_overwrite_lora(save_location, filename, lora_weights,):
+    # Code licensed under LGPL
+    # Merges LoRA and overwrites the safetensors file it was merged to
+    filename = os.path.join(save_location, filename)
+    tensors = OrderedDict()
+    with safe_open(filename, framework = "pt", device = "cpu") as file:
+        for key in file.keys():
+            W = file.get_tensor(key)
+            if key in lora_weights:
+                A, B, scaling = lora_weights[key]
+                old_dtype = W.dtype
+                W = W.to("cuda", dtype = torch.float32, non_blocking = True)
+
+                W = W.addmm_(B.to(torch.float32), A.to(torch.float32), alpha = scaling)
+
+                maximum_element = torch.max(W.min().abs(), W.max())
+                if not torch.isfinite(maximum_element).item():
+                    raise ValueError(f"Unsloth: Merge failed.\n{key} has some elements = infinity.")
+                W = W.to(old_dtype)
+            pass
+            tensors[key] = W
+        pass
+    pass
+    save_file(tensors, filename, metadata = {"format": "pt"})
+pass
+
+
+def merge_and_overwrite_lora(
+    get_model_name,
+    create_huggingface_repo,
+    model,
+    save_location        = "unsloth_finetuned_merge",
+    push_to_hub          = False,
+    token                = None,
+    upload_location      = None,
+    low_disk_space_usage = True,
+    private              = False,
+):
+    # Code licensed under LGPL
+    ignore_files = [
+        "*.gitattributes",
+        "*.md",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+        "tokenizer.json",
+        "tokenizer.model",
+    ]
+    model_name = get_model_name(model.config._name_or_path, load_in_4bit = False)
+    print(f"Unsloth: Merging QLoRA weights directly to the 16bit version of {model_name}.")
+
+    if push_to_hub and upload_location is None:
+        raise RuntimeError(
+            "Unsloth: You're trying to upload to a HuggingFace repo, but did not provide an `upload_location`. Please do!"
+        )
+    pass
+
+    if upload_location is not None:
+        upload_location, hf_api = create_huggingface_repo(
+            model = model,
+            save_directory = upload_location,
+            token = token,
+            private = private,
+        )
+    pass
+
+    # Find all LoRA A and B matrices
+    lora_weights = {}
+    for name, param in model.named_parameters():
+        if "lora_A" in name:
+            assert(name.startswith("base_model."))
+            name = name[len("base_model."):]
+            name = name.replace(".lora_A.default", "")
+            lora_weights[name] = [param, None, None,]
+        elif "lora_B" in name:
+            assert(name.startswith("base_model."))
+            name = name[len("base_model."):]
+            name = name.replace(".lora_B.default", "")
+            lora_weights[name][1] = param
+        pass
+    pass
+
+    import peft.tuners.lora.bnb
+    for name, module in model.named_modules():
+        if isinstance(module, peft.tuners.lora.bnb.Linear4bit):
+            assert(name.startswith("base_model."))
+            name = name[len("base_model."):]
+            active_adapter = module.active_adapters[0] if \
+                hasattr(module, "active_adapters") else module.active_adapter
+            scaling = module.scaling[active_adapter]
+            lora_weights[name + ".weight"][2] = scaling
+        pass
+    pass
+
+    # Only enable low_disk_space_usage for uploading
+    if upload_location is not None and low_disk_space_usage:
+        file_list = HfFileSystem().ls(model_name, detail = False)
+        file_list = [x for x in file_list if x.endswith(".safetensors")]
+        file_list = [x[len(model_name):].strip("/\\") for x in file_list if x.startswith(model_name)]
+
+        # Download other items that are not .safetensors
+        snapshot_download(
+            repo_id = model_name,
+            local_dir = save_location,
+            ignore_patterns = ["*.safetensors"] + ignore_files,
+        )
+
+        for filename in ProgressBar(file_list):
+            hf_hub_download(
+                repo_id = model_name,
+                filename = filename,
+                repo_type = "model",
+                local_dir = save_location,
+            )
+            _merge_and_overwrite_lora(
+                save_location = save_location,
+                filename = filename,
+                lora_weights = lora_weights,
+            )
+
+            if upload_location is not None:
+                location_to_file = os.path.join(save_location, filename)
+                hf_api.upload_file(
+                    path_or_fileobj = location_to_file,
+                    path_in_repo = filename,
+                    repo_id = upload_location,
+                    repo_type = "model",
+                    commit_message  = "(Trained with Unsloth)",
+                )
+                # Remove safetensors file
+                os.remove(location_to_file)
+            pass
+        pass
+
+        # Upload rest of files that are not safetensors
+        if upload_location is not None:
+            hf_api.upload_folder(
+                folder_path = save_location,
+                repo_id = upload_location,
+                repo_type = "model",
+                commit_message  = "(Trained with Unsloth)",
+                ignore_patterns = ["*.safetensors"] + ignore_files,
+            )
+            # Delete entire repo at the end!
+            shutil.rmtree(save_location, ignore_errors = True)
+        pass
+    else:
+        # Download entire repo in 1 call
+        snapshot_download(
+            repo_id = model_name,
+            local_dir = save_location,
+            ignore_patterns = ignore_files,
+        )
+
+        file_list = os.listdir(save_location)
+        file_list = [x for x in file_list if x.endswith(".safetensors")]
+        for filename in ProgressBar(file_list):
+            _merge_and_overwrite_lora(
+                save_location = save_location,
+                filename = filename,
+                lora_weights = lora_weights,
+            )
+        pass
+
+        # Upload repo
+        if upload_location is not None:
+            hf_api.upload_folder(
+                folder_path = save_location,
+                repo_id = upload_location,
+                repo_type = "model",
+                commit_message  = "(Trained with Unsloth)",
+                ignore_patterns = ignore_files,
+            )
+        pass
+    pass
+pass
 
 # Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
