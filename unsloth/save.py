@@ -1707,27 +1707,17 @@ def unsloth_save_pretrained_gguf(
     pass
 
     if IS_KAGGLE_ENVIRONMENT:
-        print(
-            "Unsloth: We zipped the file for you to download since we store it in the Kaggle",
-            f"{KAGGLE_TMP} directory.\n"\
-        )
-        from zipfile import ZipFile, ZIP_DEFLATED
-
         list_of_files = list(all_file_locations)
         if modelfile_location is not None:
             list_of_files.append(modelfile_location)
-        print(f"Unsloth: Zipping {list_of_files}...")
-        with ZipFile(os.path.join(KAGGLE_TMP, "unsloth_gguf.zip"), "w", compression=ZIP_DEFLATED) as zip_file:
-            for file in list_of_files:
-                try:
-                    zip_file.write(file)
-                except FileNotFoundError as _:
-                    logger.warning(f"Unsloth: file {file} not found. Skipping...")
-            pass
 
-        # Now expose the zipfile to user
-        from IPython.display import FileLink
-        FileLink(os.path.join(KAGGLE_TMP, "unsloth_gguf.zip"))
+        from IPython.display import FileLink, display
+
+        for file_location in list_of_files:
+            if file_location is not None:
+                display(FileLink(file_location))
+
+        logger.info("Unsloth: Click the above links to download the files.")
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
