@@ -689,10 +689,11 @@ def unsloth_compile_transformers(
     for module, fullgraph in torch_modules.items():
         source = eval(f"{model_location}.{module}")
         if not hasattr(source, "forward"): continue
-        try: source = inspect.getsource(source.forward)
+        try:
+            init   = inspect.getsource(source.__init__)
+            source = inspect.getsource(source.forward)
         except: continue
 
-        init = inspect.getsource(source.__init__)
         if "attn_weights" in source or "self.self_attn" in source or "_ATTENTION_CLASSES" in init:
 
             print(f"Unsloth: Will not compile {module}.")
