@@ -1906,6 +1906,10 @@ def unsloth_push_to_hub_gguf(
             if username not in new_save_directory else \
             new_save_directory.lstrip('/.')
 
+        if IS_KAGGLE_ENVIRONMENT:
+            # Take last 2 parts of the link
+            link = "/".join(link.split("/")[-2:])
+
         print(f"Saved GGUF to https://huggingface.co/{link}")
     pass
 
@@ -1915,6 +1919,10 @@ def unsloth_push_to_hub_gguf(
             self, repo_id, token,
             "GGUF converted", "gguf", modelfile_location, old_username, private,
         )
+        if IS_KAGGLE_ENVIRONMENT:
+            # Take last 2 parts of the link
+            link = "/".join(link.split("/")[-2:])
+
         print(f"Saved Ollama Modelfile to https://huggingface.co/{link}")
     pass
 
