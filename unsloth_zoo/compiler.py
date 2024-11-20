@@ -244,12 +244,14 @@ def create_standalone_class(
     forward_source = None,
     disable = False,
     add_loss_kwargs = False,
+    new_init = None,
 ) -> str:
     # Code licensed under LGPL
     # Create optimized standalone forward function
     f = eval(f"{model_location}.{module}")
     full_class = inspect.getsource(f)
     old_source = inspect.getsource(f.forward)
+    old_init   = inspect.getsource(f.__init__)
     if forward_source is None: forward_source = old_source
 
     source = re.sub(
@@ -295,6 +297,10 @@ def create_standalone_class(
     new_forward = definition + leftover[:left] + \
         f"return {module}_forward({parameters})\n"
     full_class = full_class.replace(old_source, new_forward)
+
+    # New init as well
+    if new_init is not None:
+        full_class = full_class.replace(old_init, new_init)
 
     # Combine all into file
     source = source + full_class
@@ -441,6 +447,53 @@ def convert_attention_masks_to_bool(module, old_source):
 pass
 
 
+replace_gradient_checkpointing = """
+for LAYER in MODULELIST_ITEM:
+$if self.gradient_checkpointing and self.training:
+$    hidden_states = self._gradient_checkpointing_func(
+$        LAYER.__call__, ARGS
+$    )
+$else:
+$    hidden_states = LAYER(ARGS)
+"""
+def patch_gradient_checkpointing(module, source):
+    try: init = inspect.getsource(source.__init__)
+    except: return None
+    if "nn.ModuleList" not in init: return None
+    try: forward = inspect.getsource(source.forward)
+    except: return None
+    if "_gradient_checkpointing_func" in forward: return None
+
+    # No gradient checkpointing?
+    modulelist_items = re.findall(r"(self\.[^\s]{1,}) = .*?nn\.ModuleList\(", init)
+    if len(modulelist_items) != 1: return None
+    modulelist_item = modulelist_items[0]
+
+    # Check in forward source
+    finder = \
+        r"for ([^\s]{1,}) in " + modulelist_item + "\:[\n]" + \
+        r"([\s]{4,})hidden_states = \1\(([^\)]{1,})\)"
+    find = re.findall(finder, forward)
+    if len(find) == 0:
+        print(f"Unsloth: Failed patching {module} with gradient checkpointing")
+        return None
+    pass
+
+    layer, spaces, args = find[0]
+    span = re.search(finder, forward).span(0)
+    replacer = replace_gradient_checkpointing.strip()
+    replacer = replacer\
+        .replace("LAYER", layer).replace("MODULELIST_ITEM", modulelist_item)\
+        .replace("ARGS", args).replace("$", spaces)
+    forward = forward.replace(forward[span[0] : span[1]], replacer)
+    
+    # Also fix init
+    spaces = init.find("def")
+    init = init + "\n" + (spaces + 4) * " " + "self.gradient_checkpointing = False\n\n"
+    return init, forward
+pass
+
+
 def unsloth_compile_transformers(
     model_type             : str = "llama",
     sdpa_dynamic_mask      : bool = True,
@@ -453,6 +506,7 @@ def unsloth_compile_transformers(
     compile_custom_modules : bool = True,
     compile_function_calls : bool = True,
     fuse_lm_head           : bool = True,
+    gradient_checkpointing : bool = True,
     epilogue_fusion        : bool = True,
     max_autotune           : bool = False,
     shape_padding          : bool = True,
@@ -464,7 +518,7 @@ def unsloth_compile_transformers(
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
     modeling_file = eval(model_location)
-    if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
+    # if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
 
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
@@ -744,6 +798,29 @@ def unsloth_compile_transformers(
                     all_standalone_classes[module] = new_module
                 pass
             pass
+        pass
+    pass
+
+    # Allow gradient checkpointing if not enabled
+    if gradient_checkpointing:
+        for module in other_classes:
+            source = eval(f"{model_location}.{module}")
+            output = patch_gradient_checkpointing(module, source)
+            if output is None: continue
+
+            init, forward = output
+            new_module = create_standalone_class(
+                module,
+                model_location,
+                functions,
+                fullgraph = False,
+                disable = True,
+                forward_source = forward,
+                add_loss_kwargs = False,
+                new_init = init,
+            )
+            all_standalone_classes[module] = new_module
+            print(f"Unsloth: Patched {module} by adding gradient checkpointing")
         pass
     pass
 
