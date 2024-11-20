@@ -235,7 +235,7 @@ def merge_and_overwrite_lora(
             ignore_patterns = ["*.safetensors"] + ignore_files,
         )
 
-        for filename in ProgressBar(file_list):
+        for filename in ProgressBar(file_list, desc = "Unsloth: Merging weights into 16bit"):
             hf_hub_download(
                 repo_id = model_name,
                 filename = filename,
@@ -284,7 +284,7 @@ def merge_and_overwrite_lora(
 
         file_list = os.listdir(save_location)
         file_list = [x for x in file_list if x.endswith(".safetensors")]
-        for filename in ProgressBar(file_list):
+        for filename in ProgressBar(file_list, desc = "Unsloth: Merging weights into 16bit"):
             _merge_and_overwrite_lora(
                 save_location = save_location,
                 filename = filename,
