@@ -94,6 +94,13 @@ def get_peft_regex(
             r").*?"   + match_linear_modules + ".*?"
     pass
 
+    # Also account for model.layers.0.self_attn/mlp type modules like Qwen
+    if finetune_language_layers:
+        regex_matcher = r"(?:" + regex_matcher + \
+        r")|(?:\bmodel\.layers\.[\d]{1,}\.(?:" + regex_components + \
+        r")\.(?:" + match_linear_modules + r"))"
+    pass
+
     # Final check to confirm if matches exist
     check = any(re.search(regex_matcher, name, flags = re.DOTALL) for name in linear_modules)
     if not check and target_modules is not None:
