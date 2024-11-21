@@ -21,7 +21,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import get_model_name
-import os
+import os, contextlib, sys
 try:
     from huggingface_hub.utils import get_token
 except:
@@ -360,28 +360,30 @@ class FastVisionModel(FastBaseVisionModel):
         old_model_name = model_name
         model_name = get_model_name(model_name, load_in_4bit)
 
-        model_types = unsloth_compile_transformers(
-            model_name              = model_name,
-            sdpa_dynamic_mask       = True,
-            sdpa_bool_masks         = True,
-            sdpa_gqa_replace        = True,
-            sdpa_dynamic_compile    = True,
-            compile_attention       = True,
-            disable_causal_masks    = True,
-            compile_torch_modules   = True,
-            compile_custom_modules  = True,
-            compile_function_calls  = True,
-            fuse_lm_head            = True,
-            gradient_checkpointing  = True,
-            manual_replacements     = True,
-            epilogue_fusion         = True,
-            max_autotune            = False,
-            shape_padding           = True,
-            cudagraphs              = False,
-            debug                   = False,
-            import_from_cache       = False,
-            disable                 = False,
-        )
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            model_types = unsloth_compile_transformers(
+                model_name              = model_name,
+                sdpa_dynamic_mask       = True,
+                sdpa_bool_masks         = True,
+                sdpa_gqa_replace        = True,
+                sdpa_dynamic_compile    = True,
+                compile_attention       = True,
+                disable_causal_masks    = True,
+                compile_torch_modules   = True,
+                compile_custom_modules  = True,
+                compile_function_calls  = True,
+                fuse_lm_head            = True,
+                gradient_checkpointing  = True,
+                manual_replacements     = True,
+                epilogue_fusion         = True,
+                max_autotune            = False,
+                shape_padding           = True,
+                cudagraphs              = False,
+                debug                   = False,
+                import_from_cache       = False,
+                disable                 = False,
+            )
+        pass
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
