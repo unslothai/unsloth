@@ -19,9 +19,22 @@ from packaging.version import Version
 import os
 torch_nn_functional_cross_entropy = torch.nn.functional.cross_entropy
 
+global HAS_CUT_CROSS_ENTROPY
+if Version(torch.__version__) >= Version("2.4.0"):
+    try:
+        from cut_cross_entropy import linear_cross_entropy
+        HAS_CUT_CROSS_ENTROPY = True
+    except:
+        HAS_CUT_CROSS_ENTROPY = False
+else:
+    HAS_CUT_CROSS_ENTROPY = False
+pass
+
 __all__ = [
     "patch_loss_functions",
     "post_patch_loss_function",
+    "HAS_CUT_CROSS_ENTROPY",
+    "fused_linear_cross_entropy",
 ]
 
 
@@ -117,3 +130,46 @@ def post_patch_loss_function(model):
     except: pass
     return model
 pass
+
+
+def fused_linear_cross_entropy(
+    hidden_states      : torch.Tensor,
+    lm_weight          : torch.Tensor,
+    labels             : torch.Tensor,
+    num_items_in_batch : int = None,
+    ignore_index       : int = -100,
+    reduction          : str = "mean",
+    logit_softcapping  : float = 0,
+    accuracy_threshold : str = "auto",
+):
+    reduction = "sum" if num_items_in_batch is not None else "mean"
+    if logit_softcapping == 0: logit_softcapping = None
+    loss = linear_cross_entropy(
+        hidden_states,
+        lm_weight,
+        targets      = labels,
+        ignore_index = ignore_index,
+        softcap      = logit_softcapping,
+        reduction    = reduction,
+        shift        = True,
+        filter_eps   = accuracy_threshold,
+    )
+    if num_items_in_batch is not None: loss = loss / num_items_in_batch
+    return loss
+pass
+
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

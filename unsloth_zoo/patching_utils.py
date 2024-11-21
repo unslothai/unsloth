@@ -22,7 +22,11 @@ __all__ = [
     "patch_layernorm",
     "patch_torch_compile",
     "patch_model_and_tokenizer",
+    "patch_compiled_autograd",
 ]
+
+from .compiler import UNSLOTH_COMPILE_LOCATION
+
 
 # Also disable compiling on bitsandbytes
 def patch_compiling_bitsandbytes():
@@ -36,6 +40,11 @@ def patch_compiling_bitsandbytes():
     import peft.tuners.lora.bnb
     peft.tuners.lora.bnb.Linear4bit.forward = \
         torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
+
+    # import bitsandbytes.autograd._functions
+    # bitsandbytes.autograd._functions.matmul_4bit = torch._disable_dynamo(
+    #     bitsandbytes.autograd._functions.matmul_4bit
+    # )
     return
 pass
 
@@ -58,24 +67,40 @@ pass
 
 
 def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
+    # Code licensed under LGPL
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
     import os, logging
+
     if debug:
-        print("Unsloth: Torch.compile debugging turned on")
+        DEBUGGING = " with debugging"
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
         os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs,compiled_autograd_verbose"
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
         torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
         torch._dynamo.config.verbose = True
     else:
+        DEBUGGING = ""
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
         os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
         os.environ.pop("TORCH_LOGS", None)
         torch._logging.set_logs(dynamo = logging.CRITICAL, inductor = logging.CRITICAL)
         torch._dynamo.config.verbose = False
     pass
+    try:
+        print(f"🦥 Unsloth Zoo will now patch everything{DEBUGGING} to make training faster!")
+    except:
+        print(f"Unsloth Zoo will now patch everything{DEBUGGING} to make training faster!")
+    pass
+
     os.environ["UNSLOTH_PATCHED"] = "1"
+    # See https://pytorch.org/tutorials/recipes/torch_compile_caching_tutorial.html
+    # Caches kernel generations for faster restarts
+    # https://dev-discuss.pytorch.org/t/impact-of-multithreading-and-local-caching-on-torch-compile/2498/3
+    os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
+    os.environ["TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE"] = "1"
+    os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
+    # os.environ["TORCHINDUCTOR_CACHE_DIR"] = UNSLOTH_COMPILE_LOCATION
 
     # Torch compile arguments
     torch_compile_arguments = [
@@ -89,20 +114,22 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         # "config.reorder_for_compute_comm_overlap = True", # # enable reordering pass for increasing overlap between compute and communication
         f"config.max_autotune = {O3}", # enable slow autotuning passes to select algorithms
         f"config.max_autotune_pointwise = {O3}", # enable slow autotuning passes to select pointwise/reductions algorithms
-        f"config.max_autotune_gemm = {O3}", # GEMM is unnecessary
-        "config.max_autotune_gemm_backends = 'TRITON,ATEN,CPP'", # Not much faster
+        f"config.max_autotune_gemm = False", # GEMM is unnecessary
+        "config.max_autotune_gemm_backends = 'ATEN,TRITON,CPP'", # Not much faster
         "config.autotune_fallback_to_aten = True", # Fallback to ATEN backend
         "config.autotune_multi_device = True", # If autotuning in subprocess, whether to use multiple devices
-        "config.coordinate_descent_tuning = True",
+        f"config.coordinate_descent_tuning = {O3}",
         f"config.aggressive_fusion = {O3}", # Careful changes results!
         # [TODO] COMBO KERNELS makes everything slower!
         # "config.combo_kernels = True", # Experimental - enable the combo kernel that combines data-independent kernels
         # "config.combo_kernel_foreach_dynamic_shapes = True",
         "config.freezing = False", # Freezes weights --> ** only useful for inference **
-        f"config.triton.multi_kernel = {O3}", # use tuning to pick between different subkernels
+        # f"config.triton.multi_kernel = {O3}", # use tuning to pick between different subkernels
         "config.cuda.enable_cuda_lto = True",
         "config.cuda.use_fast_math = True",
-        "config.cuda.compile_opt_level = '-O2'",
+        "config.cuda.compile_opt_level = '-O1'",
+        # Capture torch.arange(...), torch.zeros(...)
+        "config.capture_dynamic_output_shape_ops = True",
     ]
     # Torch dynamo arguments
     torch_dynamo_arguments = [
@@ -130,6 +157,7 @@ pass
 
 
 def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
+    # Code licensed under LGPL
     assert(type(downcast_rope) is bool)
     import gc
 
@@ -158,12 +186,12 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
         while hasattr(current_model, "model") and hasattr(current_model, "config"):
             if hasattr(current_model.config, "vocab_size"):
                 current_model.config.update({"vocab_size" : len(tokenizer)})
-            current_model.update({"unsloth_optimized" : True})
+            current_model.config.update({"unsloth_optimized" : True})
             current_model = current_model.model
         if hasattr(current_model, "model") and hasattr(current_model, "config"):
             if hasattr(current_model.config, "vocab_size"):
                 current_model.config.update({"vocab_size" : len(tokenizer)})
-            current_model.update({"unsloth_optimized" : True})
+            current_model.config.update({"unsloth_optimized" : True})
         pass
     pass
 
@@ -271,3 +299,75 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
         torch.cuda.empty_cache()
     return model, tokenizer
 pass
+
+
+def patch_compiled_autograd():
+    # Fixes double compilation of functions during gradient checkpointing
+    # See https://github.com/pytorch/pytorch/issues/135298
+    # Code licensed under LGPL
+    import inspect, re
+
+    # From https://github.com/pytorch/pytorch/pull/135795/files
+    import torch._dynamo.compiled_autograd
+    fx = torch._dynamo.compiled_autograd.AutogradCompilerInstance.end_capture
+    if fx.__name__ == "unsloth_end_capture": return
+    source = inspect.getsource(fx)
+    if "with disable()" in source: return
+    spaces = source.find("def")
+    source = source.split("\n")
+    source = "\n".join(x[spaces:] for x in source)
+    old = "return compiled_fn(inputs, sizes, scalars, hooks)"
+    n = len(re.search(r"\n([ ]{1,})return compiled_fn", source).group(1))
+    source = source.replace(old, f"with disable():\n{' '*(n + 4)}{old}")
+    source = source.replace("def end_capture", "def unsloth_end_capture", 1)
+
+    # Import items to make the function executable
+    all_items = dir(torch._dynamo.compiled_autograd)
+    good_items = [x for x in all_items if x in source]
+    exec("from torch._dynamo.compiled_autograd import (" + ", ".join(x for x in good_items) + ")", globals())
+    exec(source, globals())
+    torch._dynamo.compiled_autograd.AutogradCompilerInstance.end_capture = unsloth_end_capture
+
+    # From https://github.com/pytorch/pytorch/pull/135795/files
+    try:
+        import torch._dynamo.variables.misc
+        fx = torch._dynamo.variables.misc.AutogradEngineVariable.call_method
+    except:
+        return
+    if fx.__name__ == "unsloth_call_method": return
+    source = inspect.getsource(fx)
+    if "in_compiled_autograd_region" in source: return
+    spaces = source.find("def")
+    source = source.split("\n")
+    source = "\n".join(x[spaces:] for x in source)
+    source = source.replace(
+        "torch._dynamo.compiled_autograd.compiled_autograd_enabled",
+        "torch._dynamo.compiled_autograd.in_compiled_autograd_region",
+        1,
+    )
+    source = source.replace("def call_method", "def unsloth_call_method", 1)
+
+    # Import items to make the function executable
+    all_items = dir(torch._dynamo.variables.misc)
+    good_items = [x for x in all_items if x in source]
+    exec("from torch._dynamo.variables.misc import (" + ", ".join(x for x in good_items) + ")", globals())
+    exec(source, globals())
+    torch._dynamo.variables.misc.AutogradEngineVariable.call_method = unsloth_call_method
+    return
+pass
+
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

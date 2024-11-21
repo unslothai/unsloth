@@ -36,6 +36,7 @@ def mean_of_trained_tokens(model, eps = 1e-16):
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
+    # Code licensed under LGPL
     embedding_matrix = model.get_input_embeddings ().weight.clone()
     lm_head_matrix   = model.get_output_embeddings().weight.clone()
 
@@ -79,6 +80,7 @@ def add_new_tokens(
     Smartly resizes the tokenizer and adds new tokens to the model.
     We also disregard untrained tokens by removing them from the mean calculation.
     """
+    # Code licensed under LGPL
     assert(isinstance(new_tokens, (list, tuple)))
     assert(len(new_tokens) > 0)
     assert(method == "mean" or method == "interpolation")
@@ -202,6 +204,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
+    # Code licensed under LGPL
     embedding_matrix = model.get_input_embeddings ().weight
     lm_head_matrix   = model.get_output_embeddings().weight
     chat_template = getattr(tokenizer, "chat_template", None)
@@ -248,7 +251,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     # Remove pad token possibility
     if hasattr(tokenizer, "pad_token_id"):
         pad_token_id = tokenizer.pad_token_id
-        if pad_token_id < indicator_untrained.shape[0]:
+        if pad_token_id is not None and pad_token_id < indicator_untrained.shape[0]:
             indicator_untrained[pad_token_id] = False
     pass
     
@@ -346,6 +349,34 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
             pass
         pass
 
+        # If no bad tokens, possibly chat template itself has issues?
+        if len(final_bad_items) == 0:
+            # Recheck 2000 and last 2000 items
+            size_dataset = len(train_dataset)
+            size = min(size_dataset, 2000)
+            for j in range(size):
+                input_ids = train_dataset[j]
+                if "input_ids" in input_ids:
+                    input_ids = input_ids["input_ids"]
+                    for item in input_ids:
+                        if item in where_untrained_set: final_bad_items.append(item)
+                pass
+            pass
+
+            # Re-check last 2000
+            left = max(size_dataset-2000, 0)
+            for j in range(left, size_dataset):
+                input_ids = train_dataset[j]
+                if "input_ids" in input_ids:
+                    input_ids = input_ids["input_ids"]
+                    for item in input_ids:
+                        if item in where_untrained_set: final_bad_items.append(item)
+                pass
+            pass
+            # Most likely false signal!
+            if len(final_bad_items) == 0: return
+        pass
+
         raise ValueError(
             f'Unsloth: Untrained tokens of [{list(set(final_bad_items))}] found, but embed_tokens & lm_head not trainable, causing NaNs. '\
             'Restart then add `embed_tokens` & `lm_head` to '\
@@ -410,15 +441,25 @@ def patch_tokenizer(model, tokenizer):
         Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
         Fixes https://github.com/unslothai/unsloth/issues/5
     """
+    # Code licensed under LGPL
     possible_reserved_tokens = (
         "<|finetune_right_pad_id|>", # Llama-3.1
         "<pad>",                     # Mistral Nemo
+        "<|vision_pad|>",            # Qwen 2.5
+        "<|image_pad|>",             # Qwen 2.5
+        "<|video_pad|>",             # Qwen 2.5
         "<|reserved",                # Llama-3
         "<|placeholder",             # Phi-3
         "[control",                  # Mistral type models
+        "|<EXTRA_TOKENS_",           # Molmo
+        "<SPECIAL_",                 # Pixtral
+        "<unused",                   # PaliGemma
     )
     joiner = "\1\0=+=\0\1"
     number_repetitions = 3 - 1 # Number of reserved tokens needed
+
+    original_tokenizer = tokenizer
+    if hasattr(tokenizer, "tokenizer"): tokenizer = tokenizer.tokenizer
 
     bad_pad_token = False
     if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
@@ -487,7 +528,11 @@ def patch_tokenizer(model, tokenizer):
             check_pad_token = tokenizer(possible_pad_token, add_special_tokens = False).input_ids
             if len(check_pad_token) != 1:
                 possible_pad_token = None
-            if model is not None and check_pad_token[0] >= model.config.vocab_size:
+
+            if model is not None and \
+                hasattr(model.config, "vocab_size") and \
+                check_pad_token[0] >= model.config.vocab_size:
+
                 possible_pad_token = None
         pass
 
@@ -523,7 +568,25 @@ def patch_tokenizer(model, tokenizer):
 
     if model is not None:
         if getattr(model, "generation_config") is not None:
-            model.generation_config.update(max_length = model.config.max_position_embeddings)
+            if hasattr(model.config, "max_position_embeddings"):
+                model.generation_config.update(max_length = model.config.max_position_embeddings)
+    pass
 
-    return model, tokenizer
+    return model, original_tokenizer
 pass
+
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.

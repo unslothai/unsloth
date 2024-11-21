@@ -14,6 +14,15 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+global CHECKPOINT_BUFFERS
+global CHECKPOINT_INDEX
+global MAX_CHECKPOINT_RANGE
+global CHECKPOINT_LOGGING
+CHECKPOINT_BUFFERS = []
+CHECKPOINT_INDEX = 0
+MAX_CHECKPOINT_RANGE = 1000
+CHECKPOINT_LOGGING = True
+
 import torch
 import numpy as np
 from typing import Union, Optional, List, Any, Callable, Tuple
@@ -32,8 +41,11 @@ __all__ = [
     "unsloth_gradient_checkpoint",
     "patch_gradient_checkpointing",
     "unpatch_gradient_checkpointing",
-]
 
+    "create_gradient_checkpointing_buffer",
+    "patch_unsloth_smart_gradient_checkpointing",
+    "unpatch_unsloth_smart_gradient_checkpointing"
+]
 
 torch_version = torch.__version__
 if Version(torch_version) < Version("2.4.0"):
@@ -132,6 +144,7 @@ pass
 
 class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     """
+    Code licensed under LGPL
     Saves VRAM by smartly offloading to RAM.
     Tiny hit to performance, since we mask the movement via non blocking calls.
     """
@@ -163,6 +176,7 @@ pass
 
 class Unsloth_Gradient_Checkpointer(torch.autograd.Function):
     """
+    Code licensed under LGPL
     Same as normal gradient checkpointing but cleaner
     """
     @staticmethod
@@ -242,3 +256,181 @@ def unpatch_gradient_checkpointing():
         del torch.utils.checkpoint._old_checkpoint
     pass
 pass
+
+
+def create_gradient_checkpointing_buffer(dtype = torch.float16):
+    # Code licensed under LGPL
+    global CHECKPOINT_BUFFERS
+    global CHECKPOINT_INDEX
+    global MAX_CHECKPOINT_RANGE
+    global CHECKPOINT_LOGGING
+    CHECKPOINT_INDEX = 0
+    CHECKPOINT_BUFFERS = []
+    CHECKPOINT_LOGGING = True
+    if len(CHECKPOINT_BUFFERS) != 0: return
+
+    for _ in range(MAX_CHECKPOINT_RANGE):
+        x = torch.empty(0, pin_memory = True, dtype = dtype)
+        x.__UNSLOTH_BUFFER__ = True
+        CHECKPOINT_BUFFERS.append(x)
+    pass
+pass
+
+
+from torch.utils.checkpoint import (
+    check_backward_validity,
+    _infer_device_type,
+    _get_autocast_kwargs,
+    _get_device_module,
+    get_device_states,
+    set_device_states,
+    detach_variable,
+    contextlib,
+)
+class UnslothCheckpointFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, run_function, preserve_rng_state, *args):
+        check_backward_validity(args)
+        ctx.run_function = run_function
+        ctx.preserve_rng_state = preserve_rng_state
+        # Accommodates the (remote) possibility that autocast is enabled for cpu AND gpu.
+        ctx.device_type = _infer_device_type(*args)
+        ctx.device_autocast_kwargs, ctx.cpu_autocast_kwargs = _get_autocast_kwargs(
+            ctx.device_type
+        )
+        if preserve_rng_state:
+            ctx.fwd_cpu_state = torch.get_rng_state()
+            # Don't eagerly initialize the cuda context by accident.
+            # (If the user intends that the context is initialized later, within their
+            # run_function, we SHOULD actually stash the cuda state here.  Unfortunately,
+            # we have no way to anticipate this will happen before we run the function.)
+            ctx.had_device_in_fwd = False
+            device_module = _get_device_module(ctx.device_type)
+            if getattr(device_module, "_initialized", False):
+                ctx.had_device_in_fwd = True
+                ctx.fwd_devices, ctx.fwd_device_states = get_device_states(*args)
+
+        # Save non-tensor inputs in ctx, keep a placeholder None for tensors
+        # to be filled out during the backward.
+        ctx.inputs = []
+        ctx.tensor_indices = []
+        tensor_inputs = []
+        if len(args) != 0:
+            arg = args[0]
+            if torch.is_tensor(arg):
+                tensor_inputs.append(arg)
+                ctx.tensor_indices.append(0)
+                ctx.inputs.append(None)
+            else:
+                ctx.inputs.append(arg)
+        for i, arg in enumerate(args[1:], start = 1):
+            if torch.is_tensor(arg):
+                tensor_inputs.append(arg)
+                ctx.tensor_indices.append(i)
+                ctx.inputs.append(None)
+            else:
+                ctx.inputs.append(arg)
+
+        ctx.save_for_backward(*tensor_inputs)
+
+        with torch.no_grad():
+            outputs = run_function(*args)
+        return outputs
+
+    @staticmethod
+    def backward(ctx, *args):
+        if not torch.autograd._is_checkpoint_valid():
+            raise RuntimeError(
+                "When use_reentrant=True, torch.utils.checkpoint is incompatible"
+                " with .grad() or passing an `inputs` parameter to .backward()."
+                " To resolve this error, you can either set use_reentrant=False,"
+                " or call .backward() without passing the `inputs` argument."
+            )
+        # Copy the list to avoid modifying original list.
+        inputs = list(ctx.inputs)
+        tensor_indices = ctx.tensor_indices
+        tensors = ctx.saved_tensors
+
+        # Fill in inputs with appropriate saved tensors.
+        if len(tensor_indices) != 0:
+            inputs[tensor_indices[0]] = tensors[0].to("cuda:0", non_blocking = True)
+
+        for i, idx in enumerate(tensor_indices[1:], start = 1):
+            inputs[idx] = tensors[i].to("cuda:0", non_blocking = True)
+
+        # Stash the surrounding rng state, and mimic the state that was
+        # present at this time during forward.  Restore the surrounding state
+        # when we're done.
+        rng_devices = []
+        if ctx.preserve_rng_state and ctx.had_device_in_fwd:
+            rng_devices = ctx.fwd_devices
+        with torch.random.fork_rng(
+            devices=rng_devices, enabled=ctx.preserve_rng_state, device_type=ctx.device_type
+        ):
+            if ctx.preserve_rng_state:
+                torch.set_rng_state(ctx.fwd_cpu_state)
+                if ctx.had_device_in_fwd:
+                    set_device_states(ctx.fwd_devices, ctx.fwd_device_states, device_type=ctx.device_type)
+            detached_inputs = detach_variable(tuple(inputs))
+
+            device_autocast_ctx = torch.amp.autocast(
+                device_type=ctx.device_type, **ctx.device_autocast_kwargs
+            ) if torch.amp.is_autocast_available(ctx.device_type) else contextlib.nullcontext()
+            with torch.enable_grad(), device_autocast_ctx, torch.amp.autocast("cpu", **ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
+                outputs = ctx.run_function(*detached_inputs)
+
+        if isinstance(outputs, torch.Tensor):
+            outputs = (outputs,)
+
+        # run backward() with only tensor that requires grad
+        outputs_with_grad = []
+        args_with_grad = []
+        for i in range(len(outputs)):
+            if torch.is_tensor(outputs[i]) and outputs[i].requires_grad:
+                outputs_with_grad.append(outputs[i])
+                args_with_grad.append(args[i])
+        if len(outputs_with_grad) == 0:
+            # raise RuntimeError(
+            #     "none of output has requires_grad=True,"
+            #     " this checkpoint() is not necessary"
+            # )
+            pass
+        else:
+            torch.autograd.backward(outputs_with_grad, args_with_grad)
+        grads = tuple(
+            inp.grad if isinstance(inp, torch.Tensor) else None
+            for inp in detached_inputs
+        )
+
+        return (None, None) + grads
+pass
+
+
+def patch_unsloth_smart_gradient_checkpointing():
+    if torch.utils.checkpoint.CheckpointFunction.__name__ == "UnslothCheckpointFunction": return
+    torch.utils.checkpoint._old_CheckpointFunction = torch.utils.checkpoint.CheckpointFunction
+    torch.utils.checkpoint.CheckpointFunction = UnslothCheckpointFunction
+pass
+
+
+def unpatch_unsloth_smart_gradient_checkpointing():
+    if torch.utils.checkpoint.CheckpointFunction.__name__ != "UnslothCheckpointFunction": return
+    if not hasattr(torch.utils.checkpoint.CheckpointFunction, "_old_CheckpointFunction"): return
+    torch.utils.checkpoint.CheckpointFunction = torch.utils.checkpoint._old_CheckpointFunction
+pass
+
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
