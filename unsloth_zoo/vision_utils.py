@@ -296,7 +296,7 @@ class UnslothVisionDataCollator:
             pass
             batch["pixel_values"] = pixel_values
         else:
-            batch["pixel_values"] = batch["pixel_values"].to(dtype)
+            batch["pixel_values"] = batch["pixel_values"].to(self.dtype)
         pass
 
         # Mask image tokens and pad tokens
