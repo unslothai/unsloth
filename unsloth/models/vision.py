@@ -53,6 +53,10 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
 
         kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
+        if "pixel_values" in kwargs:
+            kwargs["pixel_values"] = kwargs["pixel_values"].to(model.dtype)
+        pass
+
         # Autocasted
         with torch.autocast(device_type = device_type, dtype = dtype):
             output = generate(*args, **kwargs)
