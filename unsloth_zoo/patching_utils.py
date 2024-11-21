@@ -99,7 +99,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     # https://dev-discuss.pytorch.org/t/impact-of-multithreading-and-local-caching-on-torch-compile/2498/3
     os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
     os.environ["TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE"] = "1"
-    os.environ.pop("TORCHINDUCTOR_CACHE_DIR")
+    os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
     # os.environ["TORCHINDUCTOR_CACHE_DIR"] = UNSLOTH_COMPILE_LOCATION
 
     # Torch compile arguments
