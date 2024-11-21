@@ -88,9 +88,9 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         torch._dynamo.config.verbose = False
     pass
     try:
-        print(f"🦥 Unsloth Zoo now patching everything{DEBUGGING}!")
+        print(f"🦥 Unsloth Zoo will now patch everything{DEBUGGING} to make training faster!")
     except:
-        print(f"Unsloth Zoo now patching everything{DEBUGGING}!")
+        print(f"Unsloth Zoo will now patch everything{DEBUGGING} to make training faster!")
     pass
 
     os.environ["UNSLOTH_PATCHED"] = "1"
