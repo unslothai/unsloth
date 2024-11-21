@@ -33,6 +33,7 @@ from .compiler_replacements import compiler_replacements
 
 DISABLED_KEYWORDS = [
     "select_best_resolution", # Llava NeXT errors out
+    "original_aspect_ratio > current_aspect_ratio",  # Llava NeXT errors out
 ]
 
 global COMBINED_UNSLOTH_NAME
