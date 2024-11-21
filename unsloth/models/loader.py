@@ -20,8 +20,8 @@ from .cohere  import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
-from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
-import os
+from .loader_utils import get_model_name
+import os, contextlib, sys
 try:
     from huggingface_hub.utils import get_token
 except:
@@ -60,105 +60,6 @@ def _get_dtype(dtype):
         print(f"Unsloth: {dtype} is not recognized, so we'll default to None")
         return None
     pass
-pass
-
-
-def __get_model_name(
-    model_name,
-    load_in_4bit = True,
-    INT_TO_FLOAT_MAPPER  = None,
-    FLOAT_TO_INT_MAPPER  = None,
-    MAP_TO_UNSLOTH_16bit = None,
-):
-    model_name = str(model_name)
-    lower_model_name = model_name.lower()
-
-    if not SUPPORTS_FOURBIT and lower_model_name in INT_TO_FLOAT_MAPPER:
-
-        model_name = INT_TO_FLOAT_MAPPER[lower_model_name]
-        logger.warning_once(
-            f"Unsloth: Your transformers version of {transformers_version} does not support native "\
-            f"4bit loading.\nThe minimum required version is 4.37.\n"\
-            f'Try `pip install --upgrade "transformers>=4.37"`\n'\
-            f"to obtain the latest transformers build, then restart this session.\n"\
-            f"For now, we shall load `{model_name}` instead (still 4bit, just slower downloading)."
-        )
-        return model_name
-    
-    elif not load_in_4bit and lower_model_name in INT_TO_FLOAT_MAPPER:
-
-        new_model_name = INT_TO_FLOAT_MAPPER[lower_model_name]
-        # logger.warning_once(
-        #     f"Unsloth: You passed in `{model_name}` which is a 4bit model, yet you set\n"\
-        #     f"`load_in_4bit = False`. We shall load `{new_model_name}` instead."
-        # )
-        return new_model_name
-
-    elif not load_in_4bit and lower_model_name in MAP_TO_UNSLOTH_16bit:
-
-        new_model_name = MAP_TO_UNSLOTH_16bit[lower_model_name]
-        return new_model_name
-
-    elif load_in_4bit and SUPPORTS_FOURBIT and lower_model_name in FLOAT_TO_INT_MAPPER:
-
-        new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
-        # logger.warning_once(
-        #     f"Unsloth: You passed in `{model_name}` and `load_in_4bit = True`.\n"\
-        #     f"We shall load `{new_model_name}` for 4x faster loading."
-        # )
-        return new_model_name
-    pass
-
-    return None
-pass
-
-
-def _get_new_mapper():
-    try:
-        import requests
-        new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
-        with requests.get(new_mapper, timeout = 3) as new_mapper: new_mapper = new_mapper.text
-        new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER"):]
-        new_mapper = new_mapper\
-            .replace("INT_TO_FLOAT_MAPPER",  "NEW_INT_TO_FLOAT_MAPPER")\
-            .replace("FLOAT_TO_INT_MAPPER",  "NEW_FLOAT_TO_INT_MAPPER")\
-            .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")
-
-        exec(new_mapper, globals())
-        return NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit
-    except:
-        return {}, {}, {}
-    pass
-pass
-
-
-def get_model_name(model_name, load_in_4bit = True):
-    new_model_name = __get_model_name(
-        model_name = model_name,
-        load_in_4bit = load_in_4bit,
-        INT_TO_FLOAT_MAPPER  = INT_TO_FLOAT_MAPPER,
-        FLOAT_TO_INT_MAPPER  = FLOAT_TO_INT_MAPPER,
-        MAP_TO_UNSLOTH_16bit = MAP_TO_UNSLOTH_16bit,
-    )
-    if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
-        # Try checking if a new Unsloth version allows it!
-        NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = _get_new_mapper()
-        upgraded_model_name = __get_model_name(
-            model_name = model_name,
-            load_in_4bit = load_in_4bit,
-            INT_TO_FLOAT_MAPPER  = NEW_INT_TO_FLOAT_MAPPER,
-            FLOAT_TO_INT_MAPPER  = NEW_FLOAT_TO_INT_MAPPER,
-            MAP_TO_UNSLOTH_16bit = NEW_MAP_TO_UNSLOTH_16bit,
-        )
-        if upgraded_model_name is not None:
-            raise NotImplementedError(
-                f"Unsloth: {model_name} is not supported in your current Unsloth version! Please update Unsloth via:\n\n"\
-                'pip uninstall unsloth -y\n'\
-                'pip install --upgrade --no-cache-dir "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"'
-            )
-        pass
-    pass
-    return new_model_name if new_model_name is not None else model_name
 pass
 
 
@@ -333,7 +234,8 @@ class FastLanguageModel(FastLlamaModel):
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\
-                "Make an issue to https://github.com/unslothai/unsloth!",
+                "Maybe you're doing vision finetuning? Please use FastVisionModel instead!\n"\
+                "Otherwise, make an issue to https://github.com/unslothai/unsloth!",
             )
         pass
 
@@ -408,6 +310,238 @@ class FastLanguageModel(FastLlamaModel):
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
+        pass
+        return model, tokenizer
+    pass
+pass
+
+
+from ._utils import (
+    patch_compiling_bitsandbytes,
+    patch_model_and_tokenizer,
+    prepare_model_for_kbit_training,
+    patch_unsloth_smart_gradient_checkpointing,
+    patch_compiled_autograd,
+    process_vision_info,
+    unsloth_compile_transformers,
+)
+from ..kernels import (
+    patch_loss_functions,
+    post_patch_loss_function,
+)
+from .vision import FastBaseVisionModel
+
+
+class FastVisionModel(FastBaseVisionModel):
+    @staticmethod
+    def from_pretrained(
+        model_name                 = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
+        max_seq_length             = None, # [TODO] No effect
+        dtype                      = None,
+        load_in_4bit               = True,
+        token                      = None,
+        device_map                 = "sequential",
+        rope_scaling               = None, # [TODO] No effect
+        fix_tokenizer              = True, # [TODO] No effect
+        trust_remote_code          = False,
+        use_gradient_checkpointing = "unsloth",
+        resize_model_vocab         = None, # [TODO] No effect
+        revision                   = None,
+        *args, **kwargs,
+    ):
+        if token is None: token = get_token()
+
+        patch_compiled_autograd()
+        patch_compiling_bitsandbytes()
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing()
+        
+        old_model_name = model_name
+        model_name = get_model_name(model_name, load_in_4bit)
+
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            patch_loss_functions(torch_compile = False)
+            model_types = unsloth_compile_transformers(
+                model_name              = model_name,
+                sdpa_dynamic_mask       = True,
+                sdpa_bool_masks         = True,
+                sdpa_gqa_replace        = True,
+                sdpa_dynamic_compile    = True,
+                compile_attention       = True,
+                disable_causal_masks    = True,
+                compile_torch_modules   = True,
+                compile_custom_modules  = True,
+                compile_function_calls  = True,
+                fuse_lm_head            = True,
+                gradient_checkpointing  = True,
+                manual_replacements     = True,
+                epilogue_fusion         = True,
+                max_autotune            = False,
+                shape_padding           = True,
+                cudagraphs              = False,
+                debug                   = False,
+                import_from_cache       = False,
+                disable                 = False,
+            )
+        pass
+
+        # First check if it's a normal model via AutoConfig
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
+        was_disabled = are_progress_bars_disabled()
+        disable_progress_bars()
+
+        autoconfig_error = None
+        peft_error = None
+        try:
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+            )
+            is_model = True
+        except Exception as error:
+            autoconfig_error = str(error)
+            is_model = False
+        try:
+            peft_config = PeftConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+            )
+            is_peft = True
+        except Exception as error:
+            peft_error = str(error)
+            is_peft = False
+        pass
+
+        # Both config.json and adapter_config.json should not exist!
+
+        # Old transformers versions check
+        both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
+        
+        # New transformers need to check manually.
+        if SUPPORTS_LLAMA32:
+            # Check if folder exists locally
+            if os.path.isdir(model_name):
+                exist_adapter_config = os.path.exists(os.path.join(model_name, "adapter_config.json"))
+                exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
+                both_exist = exist_adapter_config and exist_config
+            else:
+                files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+                files = (os.path.split(x)[-1] for x in files)
+                if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
+                    both_exist = True
+                pass
+            pass
+        pass
+
+        # Error out if both LoRA and normal model config exists.
+        if both_exist:
+            raise RuntimeError(
+                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
+                "You have 2 files `config.json` and `adapter_config.json`.\n"\
+                "We must only allow one config file.\n"\
+                "Please separate the LoRA and base models to 2 repos."
+            )
+
+        elif not is_model and not is_peft:
+            error = autoconfig_error or peft_error
+            # Old transformers version
+            if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support new RoPE scaling methods.\n"\
+                    f"This includes Llama 3.1. The minimum required version is 4.43.2\n"\
+                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
+                    f"to obtain the latest transformers build, then restart this session."\
+                ) 
+            raise RuntimeError(autoconfig_error or peft_error)
+        pass
+
+        # Get base model for PEFT:
+        if is_peft:
+            # Check base model again for PEFT
+            model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+            )
+        pass
+
+        if not was_disabled: enable_progress_bars()
+
+        # Check if this is local model since the tokenizer gets overwritten
+        if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
+            os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
+            os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
+
+            tokenizer_name = old_model_name
+        else:
+            tokenizer_name = None
+        pass
+
+        model, tokenizer = FastBaseVisionModel.from_pretrained(
+            model_name        = model_name,
+            max_seq_length    = max_seq_length,
+            dtype             = _get_dtype(dtype),
+            load_in_4bit      = load_in_4bit,
+            token             = token,
+            device_map        = device_map,
+            trust_remote_code = trust_remote_code,
+            revision          = revision if not is_peft else None,
+            model_types       = model_types,
+            tokenizer_name    = tokenizer_name,
+            *args, **kwargs,
+        )
+        
+        if resize_model_vocab is not None:
+            model.resize_token_embeddings(resize_model_vocab)
+        pass
+
+        # In case the model supports tagging, add the unsloth tag.
+        if hasattr(model, "add_model_tags"):
+            model.add_model_tags(["unsloth",])
+        pass
+        if hasattr(tokenizer, "add_model_tags"):
+            tokenizer.add_model_tags(["unsloth",])
+        pass
+
+        if load_in_4bit:
+            # Fix up bitsandbytes config
+            quantization_config = \
+            {
+                # Sometimes torch_dtype is not a string!!
+                "bnb_4bit_compute_dtype"           : model.config.to_dict()["torch_dtype"],
+                "bnb_4bit_quant_type"              : "nf4",
+                "bnb_4bit_use_double_quant"        : True,
+                "llm_int8_enable_fp32_cpu_offload" : False,
+                "llm_int8_has_fp16_weight"         : False,
+                "llm_int8_skip_modules"            : None,
+                "llm_int8_threshold"               : 6.0,
+                "load_in_4bit"                     : True,
+                "load_in_8bit"                     : False,
+                "quant_method"                     : "bitsandbytes",
+            }
+            model.config.update({"quantization_config" : quantization_config})
+        pass
+
+        if is_peft:
+            # From https://github.com/huggingface/peft/issues/184
+            # Now add PEFT adapters
+            model.enable_input_require_grads()
+            model = PeftModel.from_pretrained(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                is_trainable = True,
+                trust_remote_code = trust_remote_code,
+            )
+            # Patch it as well!
+            model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
         pass
         return model, tokenizer
     pass

@@ -409,12 +409,12 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/Qwen2.5-Coder-32B",
     ),
     "unsloth/Qwen2.5-Coder-0.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-Instruct-0.5B",
-        "Qwen/Qwen2.5-Coder-Instruct-0.5B",
+        "unsloth/Qwen2.5-Coder-0.5B-Instruct",
+        "Qwen/Qwen2.5-Coder-0.5B-Instruct",
     ),
     "unsloth/Qwen2.5-Coder-1.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-Instruct-1.5B",
-        "Qwen/Qwen2.5-Coder-Instruct-1.5B",
+        "unsloth/Qwen2.5-Coder-1.5B-Instruct",
+        "Qwen/Qwen2.5-Coder-1.5B-Instruct",
     ),
     "unsloth/Qwen2.5-Coder-3B-Instruct-bnb-4bit" : (
         "unsloth/Qwen2.5-Coder-3B-Instruct",
@@ -451,6 +451,46 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/Llama-3.1-Nemotron-70B-Instruct-bnb-4bit" : (
         "unsloth/Llama-3.1-Nemotron-70B-Instruct",
         "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+    ),
+    "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2-VL-2B-Instruct",
+        "Qwen/Qwen2-VL-2B-Instruct",
+    ),
+    "unsloth/Qwen2-VL-7B-Instruct-bnb-4bit" : (
+        "unsloth/Qwen2-VL-7B-Instruct",
+        "Qwen/Qwen2-VL-7B-Instruct",
+    ),
+    "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit" : (
+        "unsloth/Llama-3.2-11B-Vision-Instruct",
+        "meta-llama/Llama-3.2-11B-Vision-Instruct",
+    ),
+    "unsloth/Llama-3.2-90B-Vision-Instruct-bnb-4bit" : (
+        "unsloth/Llama-3.2-90B-Vision-Instruct",
+        "meta-llama/Llama-3.2-90B-Vision-Instruct",
+    ),
+    "unsloth/Llama-3.2-11B-Vision-bnb-4bit" : (
+        "unsloth/Llama-3.2-11B-Vision",
+        "meta-llama/Llama-3.2-11B-Vision",
+    ),
+    "unsloth/Llama-3.2-90B-Vision-bnb-4bit" : (
+        "unsloth/Llama-3.2-90B-Vision",
+        "meta-llama/Llama-3.2-90B-Vision",
+    ),
+    "unsloth/Pixtral-12B-2409-bnb-4bit" : (
+        "unsloth/Pixtral-12B-2409",
+        "mistralai/Pixtral-12B-2409",
+    ),
+    "unsloth/Pixtral-12B-2409-Base-bnb-4bit" : (
+        "unsloth/Pixtral-12B-Base-2409",
+        "mistralai/Pixtral-12B-Base-2409",
+    ),
+    "unsloth/llava-1.5-7b-hf-bnb-4bit" : (
+        "unsloth/llava-1.5-7b-hf",
+        "llava-hf/llava-1.5-7b-hf",
+    ),
+    "unsloth/llava-v1.6-mistral-7b-hf-bnb-4bit" : (
+        "unsloth/llava-v1.6-mistral-7b-hf",
+        "llava-hf/llava-v1.6-mistral-7b-hf",
     ),
 }
 
