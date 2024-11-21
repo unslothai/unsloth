@@ -2077,7 +2077,7 @@ def unsloth_generic_save(
     maximum_memory_usage : float = 0.9,
 ):
     if token is None and push_to_hub: token = get_token()
-    
+
     merge_and_overwrite_lora(
         get_model_name,
         create_huggingface_repo,
@@ -2085,7 +2085,7 @@ def unsloth_generic_save(
         save_location        = save_directory,
         push_to_hub          = push_to_hub,
         token                = token,
-        upload_location      = save_directory,
+        upload_location      = save_directory if push_to_hub else None,
         low_disk_space_usage = True,
         private              = private,
     )
