@@ -484,6 +484,14 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Pixtral-12B-Base-2409",
         "mistralai/Pixtral-12B-Base-2409",
     ),
+    "unsloth/llava-1.5-7b-hf-bnb-4bit" : (
+        "unsloth/llava-1.5-7b-hf",
+        "llava-hf/llava-1.5-7b-hf",
+    ),
+    "unsloth/llava-v1.6-mistral-7b-hf-bnb-4bit" : (
+        "unsloth/llava-v1.6-mistral-7b-hf",
+        "llava-hf/llava-v1.6-mistral-7b-hf",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
