@@ -29,10 +29,10 @@ def get_peft_regex(
     finetune_attention_modules : bool = True,
     finetune_mlp_modules       : bool = True,
     target_modules             : list[str] = None,
-    vision_tags                : list[str] = ["vision", "image", "visual",],
+    vision_tags                : list[str] = ["vision", "image", "visual", "patch",],
     language_tags              : list[str] = ["language", "text",],
     attention_tags             : list[str] = ["self_attn", "attention", "attn",],
-    mlp_tags                   : list[str] = ["mlp",],
+    mlp_tags                   : list[str] = ["mlp", "feed_forward", "ffn", "dense",],
 ) -> str:
     """
     Create a regex pattern to apply LoRA to only select layers of a model.
