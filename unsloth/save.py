@@ -2041,8 +2041,153 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     print("Unsloth: Done.")
     print(f"Unsloth: Conversion completed! Output file: {output_file}")
     print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
+pass
 
-def patch_saving_functions(model):
+
+from unsloth_zoo.peft_utils import merge_and_overwrite_lora
+from .models.loader_utils import get_model_name
+
+@torch.inference_mode
+def unsloth_generic_save(
+    model,
+    tokenizer,
+    save_directory       : Union[str, os.PathLike] = "unsloth_finetuned_merge",
+    save_method          : str = "lora", # ["lora", "merged_16bit", "merged_4bit"]
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+    is_main_process      : bool = True,
+    state_dict           : Optional[dict] = None,
+    save_function        : Callable = torch.save,
+    max_shard_size       : Union[int, str] = "5GB",
+    safe_serialization   : bool = True,
+    variant              : Optional[str] = None,
+    save_peft_format     : bool = True,
+
+    # Push to hub
+    use_temp_dir         : Optional[bool] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
+    private              : Optional[bool] = None,
+    create_pr            : bool = False,
+    revision             : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
+    tags                 : List[str] = None,
+
+    # Our functions
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.9,
+):
+    if token is None and push_to_hub: token = get_token()
+
+    merge_and_overwrite_lora(
+        get_model_name,
+        create_huggingface_repo,
+        model,
+        save_location        = save_directory,
+        push_to_hub          = push_to_hub,
+        token                = token,
+        upload_location      = save_directory if push_to_hub else None,
+        low_disk_space_usage = True,
+        private              = private,
+    )
+    return
+pass
+
+
+def unsloth_generic_save_pretrained_merged(
+    self,
+    save_directory       : Union[str, os.PathLike],
+    tokenizer            = None,
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+    is_main_process      : bool = True,
+    state_dict           : Optional[dict] = None,
+    save_function        : Callable = torch.save,
+    max_shard_size       : Union[int, str] = "5GB",
+    safe_serialization   : bool = True,
+    variant              : Optional[str] = None,
+    save_peft_format     : bool = True,
+    tags                 : List[str] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.75,
+):   
+    """
+        Same as .push_to_hub(...) except 4bit weights are auto
+        converted to float16 with as few overhead as possible.
+
+        Choose for `save_method` to be either:
+        1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+        2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+        3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    """
+    if tokenizer is None:
+        logger.warning_once(
+            "Unsloth: You're not saving a tokenizer as well?\n"\
+            "You can do it separately via `tokenizer.save_pretrained(...)`"
+        )
+    pass
+
+    arguments = dict(locals())
+    arguments["model"] = self
+    del arguments["self"]
+    unsloth_generic_save(**arguments)
+    for _ in range(3):
+        gc.collect()
+pass
+
+
+def unsloth_generic_push_to_hub_merged(
+    self,
+    repo_id              : str,
+    tokenizer            = None,
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    use_temp_dir         : Optional[bool] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
+    private              : Optional[bool] = None,
+    token                : Union[bool, str, None] = None,
+    max_shard_size       : Union[int, str, None] = "5GB",
+    create_pr            : bool = False,
+    safe_serialization   : bool = True,
+    revision             : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
+    tags                 : Optional[List[str]] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.75,
+):
+    """
+        Same as .push_to_hub(...) except 4bit weights are auto
+        converted to float16 with as few overhead as possible.
+
+        Choose for `save_method` to be either:
+        1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+        2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+        3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    """
+    if tokenizer is None:
+        logger.warning_once(
+            "Unsloth: You're not saving a tokenizer as well?\n"\
+            "You can do it separately via `tokenizer.push_to_hub(...)`"
+        )
+    pass
+
+    arguments = dict(locals())
+    arguments["model"]          = self
+    arguments["save_directory"] = repo_id
+    arguments["push_to_hub"]    = True
+    del arguments["self"]
+    del arguments["repo_id"]
+    unsloth_generic_save(**arguments)
+    for _ in range(3):
+        gc.collect()
+pass
+
+
+def not_implemented_save(*args, **kwargs):
+    raise NotImplementedError("Unsloth: Sorry GGUF is currently not supported for vision models!")
+pass
+
+
+def patch_saving_functions(model, vision = False):
     import inspect
     import types
     from typing import Callable, Optional, Union, List
@@ -2131,14 +2276,22 @@ def patch_saving_functions(model):
     pass
 
     # Add saving methods to top level model
-    if hasattr(model, "config"):
-        # Counteract tokenizers
-        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,                    model)
-        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged,                model)
-        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
-        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
-        model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
-        model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
+    if not vision:
+        if hasattr(model, "config"):
+            # Counteract tokenizers
+            model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,                    model)
+            model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged,                model)
+            model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
+            model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
+            model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
+            model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
+        pass
+    else:
+        # Vision only 1 option
+        model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,     model)
+        model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged, model)
+        model.push_to_hub_gguf       = types.MethodType(not_implemented_save,                   model)
+        model.save_pretrained_gguf   = types.MethodType(not_implemented_save,                   model)
     pass
     return model
 pass
