@@ -155,6 +155,14 @@ try:
 except:
     pass
 
+# Setting `pad_token_id` to `eos_token_id`
+try:
+    from transformers.generation.utils import logger as transformers_generation_utils_logger
+    transformers_generation_utils_logger.addFilter(HideLoggingMessage("Setting `pad_token_id` to `eos_token_id`"))
+    del transformers_generation_utils_logger
+except:
+    pass
+
 # =============================================
 
 # =============================================
