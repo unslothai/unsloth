@@ -290,9 +290,9 @@ class UnslothVisionDataCollator:
             for j, pixel_value_j in enumerate(pixel_values):
                 if type(pixel_value_j) is list:
                     for k, pixel_value_k in enumerate(pixel_value_j):
-                        pixel_value_j[k] = pixel_value_k.to(dtype)
+                        pixel_value_j[k] = pixel_value_k.to(self.dtype)
                 else:
-                    pixel_values[j] = pixel_value_j.to(dtype)
+                    pixel_values[j] = pixel_value_j.to(self.dtype)
             pass
             batch["pixel_values"] = pixel_values
         else:
