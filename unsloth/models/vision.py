@@ -54,7 +54,7 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
         # Autocasted
-        with torch.autocast(device_type = model.device.type, dtype = dtype):
+        with torch.autocast(device_type = device_type, dtype = dtype):
             output = generate(*args, **kwargs)
         pass
         return output
@@ -341,6 +341,7 @@ class FastBaseVisionModel:
             if   dtype ==  "float16": dtype = torch.float16
             elif dtype == "bfloat16": dtype = torch.bfloat16
         pass
+        device_type = model.device.type
 
         # Wrap model.generate
         if model.generate.__name__ != "_fast_generate":
