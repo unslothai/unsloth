@@ -352,7 +352,6 @@ class FastVisionModel(FastBaseVisionModel):
         if token is None: token = get_token()
 
         patch_compiled_autograd()
-        patch_loss_functions(torch_compile = False)
         patch_compiling_bitsandbytes()
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing()
@@ -361,6 +360,7 @@ class FastVisionModel(FastBaseVisionModel):
         model_name = get_model_name(model_name, load_in_4bit)
 
         with contextlib.redirect_stdout(open(os.devnull, "w")):
+            patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
                 sdpa_dynamic_mask       = True,
