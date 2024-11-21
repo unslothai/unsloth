@@ -519,8 +519,11 @@ def unsloth_compile_transformers(
     cudagraphs             : bool = False,
     debug                  : bool = False,
     import_from_cache      : bool = False,
+    disable                : bool = False,
 ):
     # Code licensed under LGPL
+    if disable: return
+    
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
     modeling_file = eval(model_location)
