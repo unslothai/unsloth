@@ -401,7 +401,7 @@ def apply_fused_lm_head(forward):
             "logits = None\n" + \
             (len(spaces)-4)*" " + "loss = None\n" + \
             (len(spaces)-4)*" " + "if labels is not None and self.training:\n" + \
-            replacement + \
+            replacement + "\n" + \
             (len(spaces)-8)*" " + "if not self.training: logits = self.lm_head(hidden_states)\n"
 
         forward = re.sub(
