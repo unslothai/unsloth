@@ -2045,7 +2045,7 @@ pass
 
 
 from unsloth_zoo.peft_utils import merge_and_overwrite_lora
-from .loader_utils import get_model_name
+from .models.loader_utils import get_model_name
 
 @torch.inference_mode
 def unsloth_generic_save(
