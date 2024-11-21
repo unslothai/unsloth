@@ -147,6 +147,14 @@ try:
 except:
     pass
 
+# The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+try:
+    from accelerate.utils.modeling import logger as accelerate_utils_modeling_logger
+    accelerate_utils_modeling_logger.addFilter(HideLoggingMessage("The model weights are not tied"))
+    del accelerate_utils_modeling_logger
+except:
+    pass
+
 # =============================================
 
 # =============================================
