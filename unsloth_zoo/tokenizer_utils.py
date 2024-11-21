@@ -284,7 +284,6 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
         return
 
     # Check the first 250, last 250 input_ids
-    print(train_dataset, type(train_dataset), len(train_dataset))
     size_dataset = len(train_dataset)
     size = min(size_dataset, 250)
     for j in range(size):
