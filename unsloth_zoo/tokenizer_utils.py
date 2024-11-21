@@ -284,7 +284,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
         return
 
     # Check the first 250, last 250 input_ids
-    size_dataset = len(train_dataset)
+    size_dataset = train_dataset.shape[0]
     size = min(size_dataset, 250)
     for j in range(size):
         input_ids = train_dataset[j]
@@ -327,7 +327,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
         final_bad_items = []
 
         # Re-check the first 250, last 250 input_ids
-        size_dataset = len(train_dataset)
+        size_dataset = train_dataset.shape[0]
         size = min(size_dataset, 250)
         for j in range(size):
             input_ids = train_dataset[j]
@@ -352,7 +352,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
         # If no bad tokens, possibly chat template itself has issues?
         if len(final_bad_items) == 0:
             # Recheck 2000 and last 2000 items
-            size_dataset = len(train_dataset)
+            size_dataset = train_dataset.shape[0]
             size = min(size_dataset, 2000)
             for j in range(size):
                 input_ids = train_dataset[j]

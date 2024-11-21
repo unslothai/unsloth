@@ -137,7 +137,7 @@ def unsloth_train(trainer):
     model = trainer.model
     training_args = trainer.args
     data_collator = trainer.data_collator
-    n_training_samples = len(trainer.train_dataset)
+    n_training_samples = trainer.train_dataset.shape[0]
     set_training(model)
     transformers_set_seed(training_args.seed)
 
