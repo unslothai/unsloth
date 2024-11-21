@@ -30,6 +30,20 @@
 
 __all__ = [
     "process_vision_info",
+    "UnslothVisionDataCollator",
+]
+
+image_tokens = [
+    "<|image|>",        # Llama 3.2 Vision, Phi 3.5
+    "<|vision_start|>", # Qwen
+    "<|vision_end|>",   # Qwen
+    "<|vision_pad|>",   # Qwen
+    "<|image_pad|>",    # Qwen
+    "<|video_pad|>",    # Qwen
+    "<image>",          # PaliGemma / Llava
+    "[IMG]",            # Mistral
+    "[IMG_BREAK]",      # Mistral
+    "[IMG_END]",        # Mistral
 ]
 
 import torch
@@ -182,3 +196,105 @@ def process_vision_info(
     return image_inputs, video_inputs
 pass
 
+
+def get_padding_tokens_ids(tokenizer):
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    if hasattr(tokenizer, "image_token"):
+        image_tokens = image_tokens + [tokenizer.image_token]
+    padding_token_ids = tokenizer.convert_tokens_to_ids(image_tokens)
+    if hasattr(tokenizer, "pad_token_id"):
+        padding_token_ids.append(tokenizer.pad_token_id)
+    padding_token_ids = list(filter(None, padding_token_ids))
+    padding_token_ids = list(set(padding_token_ids))
+    padding_token_ids = torch.IntTensor(padding_token_ids)
+    return padding_token_ids
+pass
+
+
+def _get_dtype(dtype):
+    __DTYPE_MAP = {
+        "float32": torch.float32,
+        torch.float32: torch.float32,
+        "float16": torch.float16,
+        torch.float16: torch.float16,
+        "bfloat16": torch.bfloat16,
+        torch.bfloat16: torch.bfloat16,
+    }
+    if   dtype is None or dtype == None: return None
+    elif dtype in __DTYPE_MAP: return __DTYPE_MAP[dtype]
+    else:
+        print(f"Unsloth: {dtype} is not recognized, so we'll default to None")
+        return None
+    pass
+pass
+
+
+class UnslothVisionDataCollator:
+    __slots__ = "padding_token_ids", "dtype", "ignore_index", "processor"
+
+    def __init__(self, model, processor, ignore_index = -100):
+        self.padding_token_ids = get_padding_tokens_ids(processor)
+        self.dtype = _get_dtype(
+            model.config.torch_dtype \
+            if hasattr(model.config, "torch_dtype") else \
+            model.get_input_embeddings().weight.dtype
+        )
+        self.ignore_index = ignore_index
+        self.processor = processor
+        return
+    pass
+
+    def __call__(self, examples):
+        # [TODO] Support non image inputs as well
+        # The issue is batch = self.processor( forces tensors to be returned and not None.
+        texts  = []
+        images = []
+        for example in examples:
+            messages = example["messages"]
+            message = self.processor.apply_chat_template(
+                messages,
+                tokenize = False,
+                add_generation_prompt = False,
+            )
+            # Dataset with 2 columns messages / images
+            if "images" in example:
+                image = example["images"][0]
+            else:
+                image, video = process_vision_info(messages)
+            texts .append(message)
+            images.append(image)
+        pass
+
+        # Tokenize the texts and process the images
+        batch = self.processor(
+            text    = texts,
+            images  = images,
+            padding = True,
+            # [TODO] Truncating to max_seq_length does NOT work for VLMs
+            # truncation = True,
+            return_tensors = "pt",
+        )
+        batch.pop("token_type_ids", None)
+        
+        # Pixtral accepts multiple images, so we have to cast it individually
+        pixel_values = batch["pixel_values"]
+        if type(pixel_values) is list:
+            for j, pixel_value_j in enumerate(pixel_values):
+                if type(pixel_value_j) is list:
+                    for k, pixel_value_k in enumerate(pixel_value_j):
+                        pixel_value_j[k] = pixel_value_k.to(dtype)
+                else:
+                    pixel_values[j] = pixel_value_j.to(dtype)
+            pass
+            batch["pixel_values"] = pixel_values
+        else:
+            batch["pixel_values"] = batch["pixel_values"].to(dtype)
+        pass
+
+        # Mask image tokens and pad tokens
+        labels = batch["input_ids"].clone()
+        labels[torch.isin(labels, self.padding_token_ids)] = self.ignore_index
+        batch["labels"] = labels
+        return batch
+    pass
+pass
