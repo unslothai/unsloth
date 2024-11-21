@@ -49,6 +49,7 @@ class FastBaseVisionModel:
         device_map        = "sequential",
         trust_remote_code = False,
         model_types       = None,
+        tokenizer_name    = None,
         **kwargs,
     ):
         if trust_remote_code:
