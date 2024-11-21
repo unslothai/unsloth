@@ -544,7 +544,7 @@ def unsloth_compile_transformers(
     if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
 
     # Remove `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`
-    exec("modeling_file.logger.addFilter(HideLoggingMessage('Setting `use_cache=False`')", globals(), locals())
+    exec("modeling_file.logger.addFilter(HideLoggingMessage('Setting `use_cache=False`'))", globals(), locals())
 
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
