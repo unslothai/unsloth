@@ -29,6 +29,7 @@ import torch
 import subprocess
 import types
 import time
+from .compiler_replacements import compiler_replacements
 
 global COMBINED_UNSLOTH_NAME
 global UNSLOTH_COMPILE_LOCATION
@@ -511,6 +512,7 @@ def unsloth_compile_transformers(
     compile_function_calls : bool = True,
     fuse_lm_head           : bool = True,
     gradient_checkpointing : bool = True,
+    manual_replacements    : bool = True,
     epilogue_fusion        : bool = True,
     max_autotune           : bool = False,
     shape_padding          : bool = True,
@@ -829,6 +831,15 @@ def unsloth_compile_transformers(
             )
             all_standalone_classes[module] = new_module
             print(f"Unsloth: Patched {module} by adding gradient checkpointing")
+        pass
+    pass
+
+    # Manually replace hand written parts
+    if manual_replacements:
+        for module in compiler_replacements:
+            if module in all_standalone_classes:
+                print(f"Unsloth: Manual replacement for {module}")
+                all_standalone_classes[module] = compiler_replacements[module]
         pass
     pass
 
