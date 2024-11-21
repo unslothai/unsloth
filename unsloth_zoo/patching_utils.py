@@ -88,9 +88,9 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         torch._dynamo.config.verbose = False
     pass
     try:
-        print(f"🦥 Unsloth: Automatic Compiler turned on{DEBUGGING}!")
+        print(f"🦥 Unsloth Zoo now patching everything{DEBUGGING}!")
     except:
-        print(f"Unsloth: Automatic Compiler turned on{DEBUGGING}!")
+        print(f"Unsloth Zoo now patching everything{DEBUGGING}!")
     pass
 
     os.environ["UNSLOTH_PATCHED"] = "1"
