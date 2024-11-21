@@ -338,17 +338,14 @@ loss = loss_fct(shift_logits, shift_labels)
 """
 
 cross_entropy_replacement_1 = """
-if self.training and labels is not None:
-    n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
-    loss = fused_linear_cross_entropy(
-        hidden_states      = hidden_states,
-        lm_weight          = self.lm_head.weight,
-        labels             = labels,
-        num_items_in_batch = n_items,
-        logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
-    )
-else:
-    logits = self.lm_head(hidden_states)
+n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
+loss = fused_linear_cross_entropy(
+    hidden_states      = hidden_states,
+    lm_weight          = self.lm_head.weight,
+    labels             = labels,
+    num_items_in_batch = n_items,
+    logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
+)
 """
 
 cross_entropy_find_2 = """
@@ -403,8 +400,9 @@ def apply_fused_lm_head(forward):
         replacement = \
             "logits = None\n" + \
             (len(spaces)-4)*" " + "loss = None\n" + \
-            (len(spaces)-4)*" " + "if labels is not None:\n" + \
-            replacement
+            (len(spaces)-4)*" " + "if labels is not None and self.training:\n" + \
+            replacement + \
+            (len(spaces)-8)*" " + "if not self.training: logits = self.lm_head(hidden_states)\n"
 
         forward = re.sub(
             cross_entropy_find,
