@@ -493,6 +493,7 @@ class FastVisionModel(FastBaseVisionModel):
             trust_remote_code = trust_remote_code,
             revision          = revision if not is_peft else None,
             model_types       = model_types,
+            tokenizer_name    = tokenizer_name,
             *args, **kwargs,
         )
         
