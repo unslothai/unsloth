@@ -300,33 +300,17 @@ class FastBaseVisionModel:
 
     @staticmethod
     def for_inference(model):
-        # if model.config.model_type == "qwen2":
-        #     FastLlamaModel.for_training(model)
-        #     return
-        # pass
+        model.gradient_checkpointing = False
+        model.training = False
 
-        internal_model = model
-        internal_model.gradient_checkpointing = False
-        internal_model.training = False
-
-        while hasattr(internal_model, "model"):
-            internal_model = internal_model.model
-            internal_model.gradient_checkpointing = False
-            internal_model.training = False
-        pass
-        if hasattr(internal_model, "training"):
-            internal_model.training = False
+        for name, module in model.named_modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = False
+            if hasattr(module, "training"):
+                module.training = False
         pass
 
-        # Also check if lm_head / embeddings are trained
-        internal_model = model
-        while not hasattr(internal_model, "lm_head"):
-            internal_model = internal_model.model
-        pass
-        lm_head = internal_model.lm_head.weight
-        device_type = lm_head.device.type
         dtype = model.config.torch_dtype
-        
         if type(dtype) is str:
             if   dtype ==  "float16": dtype = torch.float16
             elif dtype == "bfloat16": dtype = torch.bfloat16
@@ -366,17 +350,14 @@ class FastBaseVisionModel:
 
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
-        internal_model = model
-        internal_model.gradient_checkpointing = use_gradient_checkpointing
-        internal_model.training = True
+        model.gradient_checkpointing = use_gradient_checkpointing
+        model.training = True
 
-        while hasattr(internal_model, "model"):
-            internal_model = internal_model.model
-            internal_model.gradient_checkpointing = use_gradient_checkpointing
-            internal_model.training = True
-        pass
-        if hasattr(internal_model, "training"):
-            internal_model.training = True
+        for name, module in model.named_modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = use_gradient_checkpointing
+            if hasattr(module, "training"):
+                module.training = True
         pass
 
         # Also revert model.generate
