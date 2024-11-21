@@ -2076,7 +2076,8 @@ def unsloth_generic_save(
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.9,
 ):
-    if token is None: token = get_token()
+    if token is None and push_to_hub: token = get_token()
+    
     merge_and_overwrite_lora(
         get_model_name,
         create_huggingface_repo,
