@@ -523,7 +523,7 @@ def unsloth_compile_transformers(
 ):
     # Code licensed under LGPL
     if disable: return
-    
+
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
     modeling_file = eval(model_location)
@@ -1009,7 +1009,7 @@ def unsloth_compile_transformers(
             if sdpa_bool_masks:
                 source = convert_attention_masks_to_bool(module, source)
 
-            source = f"@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)\n{source}"
+            source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
             all_standalone_classes[module] = source
             print(f"Unsloth: Compiled function {module}.")
         pass
