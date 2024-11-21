@@ -31,6 +31,10 @@ import types
 import time
 from .compiler_replacements import compiler_replacements
 
+DISABLED_KEYWORDS = [
+    "select_best_resolution", # Llava NeXT errors out
+]
+
 global COMBINED_UNSLOTH_NAME
 global UNSLOTH_COMPILE_LOCATION
 global UNSLOTH_CREATED_FUNCTIONS
@@ -880,7 +884,7 @@ def unsloth_compile_transformers(
         f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}\\n'\\
-        f"🦥 Unsloth's automatic compiler will take 1-2 minutes to process - please wait!"
+        f"🦥 Unsloth will need about 1-3 minutes to load everything - please wait!"
         logger.warning(debug_info)
         import subprocess, re, gc, numpy as np
         a = np.array([0,])
@@ -1009,9 +1013,19 @@ def unsloth_compile_transformers(
             if sdpa_bool_masks:
                 source = convert_attention_masks_to_bool(module, source)
 
-            source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
+            # Check erroring out
+            bad = False
+            for keyword in DISABLED_KEYWORDS:
+                if keyword in source:
+                    bad = True
+                    break
+            pass
+            if not bad:
+                source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
+                print(f"Unsloth: Compiled function {module}.")
+            else:
+                print(f"Unsloth: Cannot compile function {module} since disabled keyword is in it.")
             all_standalone_classes[module] = source
-            print(f"Unsloth: Compiled function {module}.")
         pass
     pass
 
