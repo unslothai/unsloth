@@ -1111,7 +1111,9 @@ def unsloth_compile_transformers(
     cudagraphs              = False,
     debug                   = False,
     import_from_cache       = False,
+    disable                 = False,
 ):
+    if disable: return
     model_types = get_transformers_model_type(
         model_name        = model_name,
         token             = token,
@@ -1140,6 +1142,7 @@ def unsloth_compile_transformers(
             cudagraphs             = cudagraphs,
             debug                  = debug,
             import_from_cache      = import_from_cache,
+            disable                = disable,
         )
     pass
     return
