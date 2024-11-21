@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.11.7"
+__version__ = "2024.11.8"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -1120,7 +1120,6 @@ def unsloth_compile_transformers(
         revision          = revision,
         trust_remote_code = trust_remote_code,
     )
-    print(f"Unsloth: Automatic compiler will now patch {model_types}")
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
@@ -1145,5 +1144,5 @@ def unsloth_compile_transformers(
             disable                = disable,
         )
     pass
-    return
+    return model_types
 pass
