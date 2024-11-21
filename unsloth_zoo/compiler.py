@@ -29,6 +29,14 @@ import torch
 import subprocess
 import types
 import time
+import logging
+# Ignore logging messages
+class HideLoggingMessage(logging.Filter):
+    def __init__(self, text): self.text = text
+    def filter(self, x): return not (self.text in x.getMessage())
+pass
+
+
 from .compiler_replacements import compiler_replacements
 
 DISABLED_KEYWORDS = [
@@ -534,6 +542,9 @@ def unsloth_compile_transformers(
     exec(f"import {model_location}", globals())
     modeling_file = eval(model_location)
     if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
+
+    # Remove `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`
+    exec("modeling_file.logger.addFilter(HideLoggingMessage('Setting `use_cache=False`')", globals(), locals())
 
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
