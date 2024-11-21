@@ -33,7 +33,8 @@ __all__ = [
     "UnslothVisionDataCollator",
 ]
 
-image_tokens = [
+global IMAGE_TOKENS
+IMAGE_TOKENS = [
     "<|image|>",        # Llama 3.2 Vision, Phi 3.5
     "<|vision_start|>", # Qwen
     "<|vision_end|>",   # Qwen
@@ -198,12 +199,19 @@ pass
 
 
 def get_padding_tokens_ids(tokenizer):
+    global IMAGE_TOKENS
+
     tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    image_tokens = IMAGE_TOKENS
     if hasattr(tokenizer, "image_token"):
-        image_tokens = image_tokens + [tokenizer.image_token]
+        image_tokens = IMAGE_TOKENS + [tokenizer.image_token]
+    pass
+
     padding_token_ids = tokenizer.convert_tokens_to_ids(image_tokens)
     if hasattr(tokenizer, "pad_token_id"):
         padding_token_ids.append(tokenizer.pad_token_id)
+    pass
+
     padding_token_ids = list(filter(None, padding_token_ids))
     padding_token_ids = list(set(padding_token_ids))
     padding_token_ids = torch.IntTensor(padding_token_ids)
