@@ -424,7 +424,7 @@ def apply_fused_lm_head(forward):
             (len(spaces)-4)*" " + "loss = None\n" + \
             (len(spaces)-4)*" " + "if labels is not None and self.training:\n" + \
             replacement + "\n" + \
-            (len(spaces)-8)*" " + "if not self.training: logits = self.lm_head(hidden_states)\n"
+            (len(spaces)-4)*" " + "if not self.training: logits = self.lm_head(hidden_states)\n"
 
         forward = re.sub(
             cross_entropy_find,
