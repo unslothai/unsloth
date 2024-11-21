@@ -78,8 +78,7 @@ class FastBaseVisionModel:
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-
-        model_patcher.pre_patch()
+        
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
 
         if dtype is None:
