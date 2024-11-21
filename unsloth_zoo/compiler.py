@@ -34,6 +34,7 @@ from .compiler_replacements import compiler_replacements
 DISABLED_KEYWORDS = [
     "select_best_resolution", # Llava NeXT errors out
     "original_aspect_ratio > current_aspect_ratio",  # Llava NeXT errors out
+    "causal_mask[start:end, start:end] = 0", # Pixtral Dynamic slicing on data-dependent value is not supported
 ]
 
 global COMBINED_UNSLOTH_NAME
