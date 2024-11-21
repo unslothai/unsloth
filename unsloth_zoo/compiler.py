@@ -369,9 +369,31 @@ else:
     loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **loss_kwargs)
 """
 
+cross_entropy_find_3 = """
+logits = self.lm_head(hidden_states%
+loss = None
+if labels is not None:$loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
+"""
+
+cross_entropy_replacement_3 = """
+if self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+    n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
+    loss = fused_linear_cross_entropy(
+        hidden_states      = hidden_states,
+        lm_weight          = lm_head.weight,
+        labels             = labels,
+        num_items_in_batch = n_items,
+        logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
+    )
+else:
+    logits = self.lm_head(hidden_states)
+    loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
+"""
+
 ce_finders = [
     (cross_entropy_find_1, cross_entropy_replacement_1,),
     (cross_entropy_find_2, cross_entropy_replacement_2,),
+    (cross_entropy_find_3, cross_entropy_replacement_3,),
 ]
 
 
