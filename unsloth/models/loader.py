@@ -329,8 +329,10 @@ from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
+from .vision import FastBaseVisionModel
 
-class FastVisionModel:
+
+class FastVisionModel(FastBaseVisionModel):
     @staticmethod
     def from_pretrained(
         model_name                 = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
@@ -469,71 +471,6 @@ class FastVisionModel:
 
         if not was_disabled: enable_progress_bars()
 
-        model_type = model_config.model_type
-
-        if   model_type == "llama":
-            scaling_type = None
-            if getattr(model_config, "rope_scaling", None) is not None:
-                scaling_type1 = model_config.rope_scaling.get("type", None)
-                scaling_type2 = model_config.rope_scaling.get("rope_type", None)
-                scaling_type = scaling_type1 if scaling_type1 is not None else scaling_type2
-            pass
-
-            if scaling_type == "llama3" and not SUPPORTS_LLAMA31:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support Llama 3.1.\n"\
-                    f"The minimum required version is 4.43.2\n"\
-                    f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
-                    f"to obtain the latest transformers build, then restart this session."\
-                )
-
-            dispatch_model = FastLlamaModel
-
-        elif model_type == "mistral": dispatch_model = FastMistralModel
-        elif model_type == "gemma":
-            if not SUPPORTS_GEMMA:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support Gemma.\n"\
-                    f"The minimum required version is 4.38.\n"\
-                    f'Try `pip install --upgrade "transformers>=4.38"`\n'\
-                    f"to obtain the latest transformers build, then restart this session."\
-                )
-            dispatch_model = FastGemmaModel
-        elif model_type == "gemma2":
-            if not SUPPORTS_GEMMA2:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support Gemma2.\n"\
-                    f"The minimum required version is 4.42.3.\n"\
-                    f'Try `pip install --upgrade "transformers>=4.42.3"`\n'\
-                    f"to obtain the latest transformers build, then restart this session."\
-                )
-            # Also check for softcapping support in flash-attn which is faster!
-            if is_bfloat16_supported() and not HAS_FLASH_ATTENTION:
-                print(
-                    "Unsloth: If you want to finetune Gemma 2, install flash-attn to make it faster!\n"\
-                    "To install flash-attn, do the below:\n"\
-                    '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
-                )
-            elif HAS_FLASH_ATTENTION and not HAS_FLASH_ATTENTION_SOFTCAPPING:
-                print(
-                    "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
-                    "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
-                    "To update flash-attn, do the below:\n"\
-                    '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
-                )
-            
-            dispatch_model = FastGemma2Model
-        elif model_type == "qwen2":
-            dispatch_model = FastQwen2Model
-        elif model_type == "cohere":
-            dispatch_model = FastCohereModel
-        else:
-            raise NotImplementedError(
-                f"Unsloth: {model_name} not supported yet!\n"\
-                "Make an issue to https://github.com/unslothai/unsloth!",
-            )
-        pass
-
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
             os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
@@ -544,17 +481,13 @@ class FastVisionModel:
             tokenizer_name = None
         pass
 
-        model, tokenizer = dispatch_model.from_pretrained(
+        model, tokenizer = FastBaseVisionModel.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
             dtype             = _get_dtype(dtype),
             load_in_4bit      = load_in_4bit,
             token             = token,
             device_map        = device_map,
-            rope_scaling      = rope_scaling,
-            fix_tokenizer     = fix_tokenizer,
-            model_patcher     = dispatch_model,
-            tokenizer_name    = tokenizer_name,
             trust_remote_code = trust_remote_code,
             revision          = revision if not is_peft else None,
             *args, **kwargs,
@@ -604,7 +537,7 @@ class FastVisionModel:
                 trust_remote_code = trust_remote_code,
             )
             # Patch it as well!
-            model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
+            model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
         pass
         return model, tokenizer
     pass
