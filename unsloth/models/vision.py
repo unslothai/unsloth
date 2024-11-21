@@ -31,6 +31,10 @@ from unsloth_zoo.peft_utils import (
     merge_and_overwrite_lora,
 )
 
+__all__ = [
+    "FastBaseVisionModel",
+]
+
 
 class FastBaseVisionModel:
 
@@ -234,9 +238,35 @@ class FastBaseVisionModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         model = get_peft_model(model, lora_config)
+
+        model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
+
+        # Clear deleted GPU items
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
+        pass
+        patch_saving_functions(model, vision = True)
+
+        return model
+    pass
+    
+
+    @staticmethod
+    def patch_peft_model(
+        model,
+        use_gradient_checkpointing = True,
+    ):
+        if not isinstance(model, PeftModelForCausalLM):
+            raise TypeError(
+                "Unsloth: Your model needs to call `.get_peft_model` first!"
+            )
+        pass
+
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
+            use_reentrant = True,
         )
 
         from transformers.trainer import Trainer 
@@ -248,6 +278,7 @@ class FastBaseVisionModel:
                 'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
+        patch_saving_functions(model, vision = True)
 
         # Patch tokenizer to pad to the right
         internal_model = model
@@ -266,8 +297,6 @@ class FastBaseVisionModel:
             gc.collect()
             torch.cuda.empty_cache()
         pass
-        patch_saving_functions(model, vision = True)
-
         return model
     pass
 
