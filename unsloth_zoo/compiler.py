@@ -30,6 +30,8 @@ import subprocess
 import types
 import time
 import logging
+import sys
+
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
     def __init__(self, text): self.text = text
@@ -224,6 +226,7 @@ def create_new_function(
 
     # Check location
     if not os.path.exists(UNSLOTH_COMPILE_LOCATION): os.makedirs(UNSLOTH_COMPILE_LOCATION)
+    sys.path.insert(0, UNSLOTH_COMPILE_LOCATION)
 
     location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
     if overwrite or not os.path.isfile(location):
