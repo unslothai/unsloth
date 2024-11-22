@@ -33,7 +33,7 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2024.11.1",
+    "unsloth_zoo>=2024.11.7",
     "packaging",
     "tyro",
     "transformers>=4.46.1",
