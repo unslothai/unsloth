@@ -236,6 +236,7 @@ def create_new_function(
             os.fsync(file)
         pass
     pass
+    print(os.path.isfile(location))
 
     new_module = None
     for trial in range(3):
