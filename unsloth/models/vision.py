@@ -41,7 +41,7 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
         # For num_logits_to_keep
-        kwargs["num_logits_to_keep"] = 1
+        # kwargs["num_logits_to_keep"] = 1
 
         # Remove token_type_ids
         kwargs.pop("token_type_ids", None)
