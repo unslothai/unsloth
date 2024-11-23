@@ -228,13 +228,15 @@ def create_new_function(
     if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
         os.makedirs(UNSLOTH_COMPILE_LOCATION)
         location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"__init__.py")
+        files = os.listdir(UNSLOTH_COMPILE_LOCATION)
+        files = [f"import {x}" for x in files if x.endswith(".py")]
+        import_items = "\n".join(files)
         with open(location, "wb", buffering = 0) as file:
-            file.write(_license_header.encode("utf-8"))
+            file.write(f"{_license_header}\n{import_items}".encode("utf-8"))
             file.flush()
             os.fsync(file)
         pass
         sys.path.insert(0, UNSLOTH_COMPILE_LOCATION)
-        print("***")
         __import__(UNSLOTH_COMPILE_LOCATION)
     pass
 
