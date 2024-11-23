@@ -241,7 +241,7 @@ def create_new_function(
     # Edit __init__ to account for new file
     location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"__init__.py")
     files = os.listdir(UNSLOTH_COMPILE_LOCATION)
-    files = [f"import {x}" for x in files if x.endswith(".py")]
+    files = [f"import .{x[:len(x)-3]}" for x in files if x.endswith(".py")]
     import_items = "\n".join(files)
     with open(location, "wb", buffering = 0) as file:
         file.write(f"{_license_header}\n{import_items}".encode("utf-8"))
