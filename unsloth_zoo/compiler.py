@@ -234,8 +234,9 @@ def create_new_function(
             os.fsync(file)
         pass
         sys.path.insert(0, UNSLOTH_COMPILE_LOCATION)
+        __import__(UNSLOTH_COMPILE_LOCATION)
     pass
-    
+
     location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
     if overwrite or not os.path.isfile(location):
         with open(location, "wb", buffering = 0) as file:
