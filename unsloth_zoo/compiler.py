@@ -225,9 +225,17 @@ def create_new_function(
     # new_source = new_source.replace("super()", "super(type(self), self)")
 
     # Check location
-    if not os.path.exists(UNSLOTH_COMPILE_LOCATION): os.makedirs(UNSLOTH_COMPILE_LOCATION)
-    sys.path.insert(0, UNSLOTH_COMPILE_LOCATION)
-
+    if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
+        os.makedirs(UNSLOTH_COMPILE_LOCATION)
+        location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"__init__.py")
+        with open(location, "wb", buffering = 0) as file:
+            file.write(_license_header.encode("utf-8"))
+            file.flush()
+            os.fsync(file)
+        pass
+        sys.path.insert(0, UNSLOTH_COMPILE_LOCATION)
+    pass
+    
     location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
     if overwrite or not os.path.isfile(location):
         with open(location, "wb", buffering = 0) as file:
