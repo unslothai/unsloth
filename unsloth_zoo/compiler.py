@@ -234,6 +234,7 @@ def create_new_function(
             os.fsync(file)
         pass
         sys.path.insert(0, UNSLOTH_COMPILE_LOCATION)
+        print("***")
         __import__(UNSLOTH_COMPILE_LOCATION)
     pass
 
