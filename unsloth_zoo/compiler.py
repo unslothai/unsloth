@@ -230,8 +230,9 @@ def create_new_function(
 
     # Write function
     location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
-    if overwrite or not os.path.isfile(location):
-        with open(location, "wb", buffering = 0) as file:
+    function_location = location
+    if overwrite or not os.path.isfile(function_location):
+        with open(function_location, "wb", buffering = 0) as file:
             file.write(new_source.encode("utf-8"))
             file.flush()
             os.fsync(file.fileno())
@@ -244,6 +245,7 @@ def create_new_function(
     files = [x for x in files if x != "__init__.py"]
     files = [f"from .{x[:len(x)-len('.py')]} import *" for x in files if x.endswith(".py")]
     import_items = "\n".join(files)
+    import_items = ""
     with open(location, "wb", buffering = 0) as file:
         file.write(f"{_license_header}\n{import_items}".encode("utf-8"))
         file.flush()
@@ -258,6 +260,11 @@ def create_new_function(
         try:
             new_module = __import__(UNSLOTH_COMPILE_LOCATION + "." + name)
         except:
+            with open(function_location, "wb", buffering = 0) as file:
+                file.write(new_source.encode("utf-8"))
+                file.flush()
+                os.fsync(file.fileno())
+            pass
             time.sleep(0.2 + trial)
             continue
     pass
