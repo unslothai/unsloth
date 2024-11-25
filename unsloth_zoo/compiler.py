@@ -342,6 +342,27 @@ def create_standalone_class(
 pass
 
 
+_cross_entropy_code = """
+from torch.nn import CrossEntropyLoss
+
+@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+def uncompiled_cross_entropy_loss(self, hidden_states,):
+    logits = self.lm_head(hidden_states)
+    logits = logits.float()
+    # Shift so that tokens < n predict n
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    # Flatten the tokens
+    loss_fct = CrossEntropyLoss()
+    shift_logits = shift_logits.view(-1, self.config.vocab_size)
+    shift_labels = shift_labels.view(-1)
+    # Enable model parallelism
+    shift_labels = shift_labels.to(shift_logits.device)
+    loss = loss_fct(shift_logits, shift_labels)
+    return loss, logits
+pass
+"""
+
 # Replace Cross Entropy cells with fused linear lm heads
 cross_entropy_find_1 = """
 logits = self.lm_head(hidden_states%
@@ -357,14 +378,17 @@ loss = loss_fct(shift_logits, shift_labels)
 """
 
 cross_entropy_replacement_1 = """
-n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
-loss = fused_linear_cross_entropy(
-    hidden_states      = hidden_states,
-    lm_weight          = self.lm_head.weight,
-    labels             = labels,
-    num_items_in_batch = n_items,
-    logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
-)
+if "return_logits" not in loss_kwargs and self.training and labels is not None:
+    n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
+    loss = fused_linear_cross_entropy(
+        hidden_states      = hidden_states,
+        lm_weight          = self.lm_head.weight,
+        labels             = labels,
+        num_items_in_batch = n_items,
+        logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
+    )
+else:
+    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states)
 """
 
 cross_entropy_find_2 = """
@@ -374,7 +398,7 @@ if labels is not None:$loss = self.loss_function(logits=logits, labels=labels, v
 """
 
 cross_entropy_replacement_2 = """
-if self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+if "return_logits" not in loss_kwargs and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
@@ -395,7 +419,7 @@ if labels is not None:$loss = self.loss_function(logits, labels, self.vocab_size
 """
 
 cross_entropy_replacement_3 = """
-if self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+if "return_logits" not in loss_kwargs and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
@@ -1112,7 +1136,8 @@ def unsloth_compile_transformers(
                 functions,
                 prepend = \
                     _disabled_sdpa_code + \
-                    f"\ntorch_compile_options = {torch_compile_options}\n"
+                    f"\ntorch_compile_options = {torch_compile_options}\n" + \
+                    _cross_entropy_code + "\n"
             )
         except:
             combined_module = None
