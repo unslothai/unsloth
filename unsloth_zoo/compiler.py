@@ -259,7 +259,7 @@ def create_new_function(
     new_module = None
     for trial in range(3):
         try:
-            new_module = __import__(UNSLOTH_COMPILE_LOCATION + "." + name)
+            new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
         except:
             # Instead use sys modules for dynamic loading
             module_name = f"unsloth_cache_{name}"
