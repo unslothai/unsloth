@@ -884,6 +884,7 @@ def unsloth_compile_transformers(
                 except:
                     continue
                 new_source = apply_fused_lm_head(source)
+                print(new_source)
                 if new_source != source:
                     new_module = create_standalone_class(
                         module,
