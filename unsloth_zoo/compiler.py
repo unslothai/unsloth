@@ -23,6 +23,7 @@ __all__ = [
 import inspect
 import re
 import importlib
+import importlib.util
 import numpy as np
 import os
 import torch
@@ -260,11 +261,14 @@ def create_new_function(
         try:
             new_module = __import__(UNSLOTH_COMPILE_LOCATION + "." + name)
         except:
-            with open(function_location, "wb", buffering = 0) as file:
-                file.write(new_source.encode("utf-8"))
-                file.flush()
-                os.fsync(file.fileno())
-            pass
+            # Instead use sys modules for dynamic loading
+            module_name = f"unsloth_cache_{name}"
+            file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
+            spec = importlib.util.spec_from_file_location(module_name, file_location)
+            new_module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = new_module
+            spec.loader.exec_module(new_module)
+
             time.sleep(0.2 + trial)
             continue
     pass
