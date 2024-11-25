@@ -240,21 +240,6 @@ def create_new_function(
         pass
     pass
 
-    # Edit __init__ to account for new file
-    location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"__init__.py")
-    files = os.listdir(UNSLOTH_COMPILE_LOCATION)
-    files = [x for x in files if x != "__init__.py"]
-    files = [f"from .{x[:len(x)-len('.py')]} import *" for x in files if x.endswith(".py")]
-    import_items = "\n".join(files)
-    import_items = ""
-    with open(location, "wb", buffering = 0) as file:
-        file.write(f"{_license_header}\n{import_items}".encode("utf-8"))
-        file.flush()
-        os.fsync(file.fileno())
-    pass
-    imported_module = __import__(UNSLOTH_COMPILE_LOCATION)
-    importlib.reload(imported_module)
-
     # Try loading new module
     new_module = None
     for trial in range(3):
@@ -271,6 +256,7 @@ def create_new_function(
 
             time.sleep(0.2 + trial)
             continue
+        pass
     pass
     if new_module is None:
         raise ImportError(f'Unsloth: Cannot import {UNSLOTH_COMPILE_LOCATION + "." + name}')
