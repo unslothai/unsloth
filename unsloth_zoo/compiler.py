@@ -269,7 +269,7 @@ def create_new_function(
             continue
     pass
     if new_module is None:
-        raise ImportError(f"Unsloth: Cannot import {location}")
+        raise ImportError(f"Unsloth: Cannot import {UNSLOTH_COMPILE_LOCATION + "." + name}")
 
     # Must save to global state or else temp file closes
     UNSLOTH_CREATED_FUNCTIONS.append(location)
