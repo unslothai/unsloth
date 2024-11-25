@@ -1,17 +1,24 @@
-# Copyright © 2023-2024 Apple Inc.
-
+import gc
 import glob
+import shutil
 import json
 import logging
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Optional,Type, Callable, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from . import mlx_models as models
+from .models import llama as models
 import transformers
 from huggingface_hub import snapshot_download,create_repo
 from unsloth.save import MODEL_CARD
+from mlx.utils import tree_flatten, tree_unflatten
+from .trainer.utils import  load_adapters
+
+MODEL_REMAPPING = {
+    "mistral": "llama",  # mistral is compatible with llama
+}
+
 
 def fetch_from_hub(hf_path: str):
     model_path = snapshot_download(
@@ -96,7 +103,7 @@ def save_model(save_dir: str, weights, tokenizer, config):
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    shards = make_shards(weights, max_file_size_gibibyte=5)
+    shards = make_shards(weights, max_file_size_gibibyte=1)
     shards_count = len(shards)
     shard_file_format = (
         "model-{:05d}-of-{:05d}.safetensors"
@@ -130,25 +137,27 @@ def save_model(save_dir: str, weights, tokenizer, config):
             indent=4,
         )
 
+def _get_classes(config: dict):
+    model_type = config["model_type"]    
+    if model_type != "llama" and MODEL_REMAPPING.get(model_type,model_type) != "llama":
+        msg = f"Model type {model_type} not supported."
+        logging.error(msg)
+        raise ValueError(msg)
 
-def load(path_or_hf_repo: str, tokenizer_config={}):
-    # If the path exists, it will try to load model form it
-    # otherwise download and cache from the hf_repo and cache
+    return models.Model, models.ModelArgs
+
+def load(model_path: str, tokenizer_config={},    
+         get_model_classes: Callable[[dict], Tuple[Type[nn.Module], Type]] = _get_classes,):
     
-    model_path = Path(path_or_hf_repo)
-    if not model_path.exists():
-        model_path = Path(
-            snapshot_download(
-                repo_id=path_or_hf_repo,
-                allow_patterns=["*.json", "*.safetensors", "tokenizer.model"],
-            )
-        )
-
     with open(model_path / "config.json", "r") as f:
         config = json.loads(f.read())
         quantization = config.get("quantization", None)
 
     weight_files = glob.glob(str(model_path / "*.safetensors"))
+    if not weight_files:
+        # Try weight for back-compat
+        weight_files = glob.glob(str(model_path / "weight*.safetensors"))
+
     if len(weight_files) == 0:
         raise FileNotFoundError("No safetensors found in {}".format(model_path))
 
@@ -156,8 +165,14 @@ def load(path_or_hf_repo: str, tokenizer_config={}):
     for wf in weight_files:
         weights.update(mx.load(wf).items())
 
-    model_args = models.ModelArgs.from_dict(config)
-    model = models.Model(model_args)
+    model_class, model_args_class = get_model_classes(config=config)
+
+    model_args = model_args_class.from_dict(config)
+    model = model_class(model_args)
+    
+    if hasattr(model, "sanitize"):
+        weights = model.sanitize(weights)
+
     if quantization is not None:
         class_predicate = (
             lambda p, m: isinstance(m, (nn.Linear, nn.Embedding))
@@ -171,11 +186,37 @@ def load(path_or_hf_repo: str, tokenizer_config={}):
 
     model.load_weights(list(weights.items()))
 
-    mx.eval(model.parameters())
+    # mx.eval(model.parameters())
+    model.eval()
+
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_path, **tokenizer_config
     )
     return model, tokenizer, config
+
+
+def save_config(
+    config: dict,
+    config_path: Union[str, Path],
+) -> None:
+    """Save the model configuration to the ``config_path``.
+
+    The final configuration will be sorted before saving for better readability.
+
+    Args:
+        config (dict): The model configuration.
+        config_path (Union[str, Path]): Model configuration file path.
+    """
+    # Clean unused keys
+    config.pop("_name_or_path", None)
+
+    # sort the config for better readability
+    config = dict(sorted(config.items()))
+
+    # write the updated config to the config_path (if provided)
+    with open(config_path, "w") as fid:
+        json.dump(config, fid, indent=4)
+
 
 
 def generate(
@@ -208,3 +249,96 @@ def generate(
         y = sample(logits)
         yield y
 
+def save_merged_model(args):
+    model_path = get_model_path(args.model_name)
+    model, tokenizer, config = load(model_path)
+    model.freeze()
+
+    # Load the LoRA adapter weights which we assume should exist by this point
+    if not Path(args.save_path,args.adapter_file).is_file():
+        raise ValueError(
+        f"Adapter file {args.adapter_file} missing. ")
+    
+    model = load_adapters(model, args.save_path,args.adapter_file)
+
+    fused_linears = [
+        (n, m.fuse()) for n, m in model.named_modules() if hasattr(m, "fuse")
+    ]
+
+    if fused_linears:
+        model.update_modules(tree_unflatten(fused_linears))
+
+    weights = dict(tree_flatten(model.parameters()))
+
+    save_model(args.save_path, weights, tokenizer, config)
+   
+    mx.metal.clear_cache()
+    del model
+    gc.collect()
+
+
+def push_to_hub(args,name, model_type):
+        if args.push_model:
+            from huggingface_hub import whoami
+            try: 
+                username = whoami(token = args.hub_token)["name"]
+            except:
+                raise RuntimeError(
+                    "Unsloth: Please supply a token!\n"\
+                    "Go to https://huggingface.co/settings/tokens"
+                )
+            pass
+        pass
+
+        if  args.push_model and args.hub_path is not None:
+            hf_path = args.hub_path
+            if not Path(args.model_name).exists():
+                # If the model path doesn't exist, assume it's an HF repo
+                hf_path = args.model_name
+            elif hf_path is None:
+                raise ValueError(
+                    "Must provide original Hugging Face repo to upload local model."
+                )
+            upload_to_hub(name,model_type,username,args.save_path, args.hub_path,args.hub_token)
+
+
+def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+    model_path = Path(path_or_hf_repo)
+    if not model_path.exists():
+        try:
+            model_path = Path(
+                snapshot_download(
+                    repo_id=path_or_hf_repo,
+                    revision=revision,
+                    allow_patterns=[
+                        "*.json",
+                        "*.safetensors",
+                        "*.py",
+                        "tokenizer.model",
+                        "*.tiktoken",
+                        "*.txt",
+                    ],
+                )
+            )
+        except:
+            raise FileNotFoundError(
+                f"Model not found for path or HF repo: {path_or_hf_repo}.\n"
+                "Please make sure you specified the local path or Hugging Face"
+                " repo id correctly.\nIf you are trying to access a private or"
+                " gated Hugging Face repo, make sure you are authenticated:\n"
+                "https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login"
+            ) from None
+    return model_path
+
+
+
+def load_pretrained(
+    path_or_hf_repo: str,
+    tokenizer_config={},
+    model_config={},
+):
+    model_path = get_model_path(path_or_hf_repo)
+
+    model,tokenizer, config = load(model_path, tokenizer_config)
+
+    return model, tokenizer, config

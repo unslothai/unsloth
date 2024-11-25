@@ -43,14 +43,9 @@ def run(args):
     import logging
     logging.getLogger('hf-to-gguf').setLevel(logging.WARNING)
     if has_mps:
-        import mlx.optimizers as optim
-        import mlx.core as mx
-        from unsloth.models import mlx_utils as lora_utils
-        from unsloth.models import mlx_lora
-        import numpy as np
-        from unsloth.models.mlx_models import LoRALinear
-        from mlx.utils import tree_flatten
-        from pathlib import Path
+        from unsloth.mlx import mlx_utils
+        from unsloth.mlx import lora as mlx_lora
+        import gc
 
     if not has_mps:
     # Load model and tokenizer
@@ -61,26 +56,9 @@ def run(args):
             load_in_4bit=args.load_in_4bit,
         )
     else:
-        np.random.seed(args.seed)
-
-        # Building tokenizer_config
-        tokenizer_config = {}
-
         print("Loading pretrained model")
-        model, tokenizer, config = lora_utils.load(args.model_name, tokenizer_config)
-        # Freeze all layers other than LORA linears
-        model.freeze()
-        for l in model.model.layers[len(model.model.layers) - args.r :]:
-            l.self_attn.q_proj = LoRALinear.from_linear(l.self_attn.q_proj)
-            l.self_attn.v_proj = LoRALinear.from_linear(l.self_attn.v_proj)
-            if hasattr(l, "block_sparse_moe"):
-                l.block_sparse_moe.gate = LoRALinear.from_linear(l.block_sparse_moe.gate)
-
-        p = sum(v.size for _, v in tree_flatten(model.parameters())) / 10**6
-        print(f"Total parameters {p:.3f}M")
-        p = sum(v.size for _, v in tree_flatten(model.trainable_parameters())) / 10**6
-        print(f"Trainable parameters {p:.3f}M")
-
+        model, tokenizer, config = mlx_utils.load_pretrained(args.model_name)
+       
     # Configure PEFT model
     if not has_mps:
         model = FastLanguageModel.get_peft_model(
@@ -159,8 +137,7 @@ def run(args):
         trainer_stats = trainer.train()
     else:
         datasets = dataset.train_test_split(test_size=0.1)
-        opt = optim.Adam(learning_rate=args.learning_rate)
-        mlx_lora.train(model, datasets["train"], datasets["test"], opt, mlx_lora.loss, tokenizer, args)
+        mlx_lora.train_model(args,model,tokenizer, datasets["train"], datasets["test"])
 
 
     # Save model
@@ -192,8 +169,11 @@ def run(args):
                     )
         else:
             if has_mps:
-                mx.savez(Path(args.save_path,args.adapter_file), **dict(tree_flatten(model.trainable_parameters())))
-                model.save_merged_model(args)
+                del model
+                gc.collect()
+                mlx_utils.save_merged_model(args)
+                if args.push_model:
+                    mlx_utils.push_to_hub(args,config["_name_or_path"],config["model_type"])
             else:
                 model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
                 if args.push_model:
