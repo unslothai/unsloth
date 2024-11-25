@@ -234,7 +234,7 @@ def create_new_function(
         with open(location, "wb", buffering = 0) as file:
             file.write(new_source.encode("utf-8"))
             file.flush()
-            os.fsync(file)
+            os.fsync(file.fileno())
         pass
     pass
 
@@ -247,7 +247,7 @@ def create_new_function(
     with open(location, "wb", buffering = 0) as file:
         file.write(f"{_license_header}\n{import_items}".encode("utf-8"))
         file.flush()
-        os.fsync(file)
+        os.fsync(file.fileno())
     pass
     imported_module = __import__(UNSLOTH_COMPILE_LOCATION)
     importlib.reload(imported_module)
