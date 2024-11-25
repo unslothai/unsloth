@@ -375,7 +375,9 @@ loss = loss_fct(shift_logits, shift_labels)
 """
 
 cross_entropy_replacement_1 = """
-if "return_logits" not in loss_kwargs and self.training and labels is not None:
+if not self.training and labels is None:
+    logits = self.lm_head(hidden_states)
+elif "return_logits" not in loss_kwargs and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
@@ -395,7 +397,9 @@ if labels is not None:$loss = self.loss_function(logits=logits, labels=labels, v
 """
 
 cross_entropy_replacement_2 = """
-if "return_logits" not in loss_kwargs and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+if not self.training and labels is None:
+    logits = self.lm_head(hidden_states)
+elif "return_logits" not in loss_kwargs and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
@@ -416,7 +420,9 @@ if labels is not None:$loss = self.loss_function(logits, labels, self.vocab_size
 """
 
 cross_entropy_replacement_3 = """
-if "return_logits" not in loss_kwargs and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+if not self.training and labels is None:
+    logits = self.lm_head(hidden_states)
+elif "return_logits" not in loss_kwargs and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
@@ -472,6 +478,7 @@ def apply_fused_lm_head(forward):
             forward,
             flags = re.DOTALL | re.MULTILINE,
         )
+        print(forward)
     pass
     return forward
 pass
