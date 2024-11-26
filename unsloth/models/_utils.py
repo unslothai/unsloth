@@ -1187,7 +1187,7 @@ pass
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
 for j, function in enumerate(functions):
-    exec(f"def raise_{j}: print({j})", globals(), locals())
+    exec(f"def raise_{j}(*args, **kwargs): print({j})", globals(), locals())
     try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
     except: continue
 pass
