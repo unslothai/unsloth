@@ -548,7 +548,7 @@ class FastVisionModel(FastBaseVisionModel):
 pass
 
 from .causal import FastBaseCausalModel
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoConfig
 try:
     from huggingface_hub.utils import get_token
 except:
@@ -557,45 +557,71 @@ except:
 class FastCausalModel(FastBaseCausalModel):
     @staticmethod
     def create_model(
-        tokenizer,  # Add tokenizer as required parameter
-        hidden_size: int = 4096,
-        num_hidden_layers: int = 32,
-        num_attention_heads: int = 32,
-        max_seq_length: int = 2048,
-        intermediate_size: int = 11008,
+        tokenizer,
+        max_seq_length = None,
+        hidden_size = 768,
+        num_hidden_layers = 12,
+        num_attention_heads = 12,
+        intermediate_size = 3072,
+        num_key_value_heads = None,
         dtype = None,
-        token = None,
+        device_map = "auto",
         trust_remote_code = False,
-        *args, **kwargs,
+        token = None,
+        *args, **kwargs
     ):
-        """Create a new causal language model from configuration.
-        
-        Args:
-            tokenizer: Tokenizer to use for the model
-            hidden_size: Size of hidden layers (default: 4096)
-            num_hidden_layers: Number of transformer layers (default: 32)
-            num_attention_heads: Number of attention heads (default: 32)
-            max_seq_length: Maximum sequence length (default: 2048)
-            intermediate_size: Size of intermediate feed-forward layer (default: 11008)
-            dtype: Model dtype
-            token: HuggingFace token
-            trust_remote_code: Whether to trust remote code
-        """
         if token is None: 
             token = get_token()
 
         # Create model from config
         model, tokenizer, config = FastBaseCausalModel.from_config(
             tokenizer=tokenizer,
+            context_length=max_seq_length,
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
-            context_length=max_seq_length,
             intermediate_size=intermediate_size,
-            dtype=dtype,
+            num_key_value_heads=num_key_value_heads or num_attention_heads,
+            dtype=_get_dtype(dtype),
             token=token,
             trust_remote_code=trust_remote_code,
-            *args, **kwargs,
+            *args, **kwargs
         )
 
+        # Apply FastLlamaModel optimizations
+        model = FastLlamaModel.apply_optimizations(model)
+
+        # Move model to appropriate device
+        model.to(device_map)
+
+        # Add unsloth tags
+        if hasattr(model, "add_model_tags"):
+            model.add_model_tags(["unsloth"])
+        if hasattr(tokenizer, "add_model_tags"):
+            tokenizer.add_model_tags(["unsloth"])
+
         return model, tokenizer, config
+
+    @staticmethod
+    def apply_optimizations(model):
+        # Apply FastLlamaModel optimizations
+        for layer in model.model.layers:
+            # Patch attention with fast Llama implementation
+            layer.self_attn.forward = types.MethodType(LlamaAttention_fast_forward, layer.self_attn)
+            layer.self_attn.apply_qkv = original_apply_qkv
+            layer.self_attn.apply_o = original_apply_o
+            
+            # Patch MLP with fast SwiGLU
+            layer.mlp.forward = types.MethodType(fast_swiglu_inference, layer.mlp)
+            
+            # Patch LayerNorm with fast RMS norm
+            if hasattr(layer, 'input_layernorm'):
+                layer.input_layernorm.forward = types.MethodType(fast_rms_layernorm_inference, layer.input_layernorm)
+            if hasattr(layer, 'post_attention_layernorm'):
+                layer.post_attention_layernorm.forward = types.MethodType(fast_rms_layernorm_inference, layer.post_attention_layernorm)
+
+        # Add training/inference mode switching
+        model.for_inference = types.MethodType(FastLlamaModel.for_inference, model)
+        model.for_training = types.MethodType(FastLlamaModel.for_training, model)
+
+        return model

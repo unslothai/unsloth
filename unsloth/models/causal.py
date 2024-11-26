@@ -1,4 +1,5 @@
 import torch
+import types 
 from transformers import AutoModelForCausalLM, AutoConfig
 from ._utils import (
     __version__, 
@@ -130,6 +131,26 @@ class FastBaseCausalModel:
         model = post_patch_loss_function(model)
         if hasattr(model, "config"):
             model.config.update({"unsloth_version" : __version__})
+        
+        # Add Llama optimizations
+        for layer in model.model.layers:
+            # Patch attention with fast Llama implementation
+            layer.self_attn.forward = types.MethodType(LlamaAttention_fast_forward, layer.self_attn)
+            layer.self_attn.apply_qkv = original_apply_qkv
+            layer.self_attn.apply_o = original_apply_o
+            
+            # Patch MLP with fast SwiGLU
+            layer.mlp.forward = types.MethodType(fast_swiglu_inference, layer.mlp)
+            
+            # Patch LayerNorm with fast RMS norm
+            if hasattr(layer, 'input_layernorm'):
+                layer.input_layernorm.forward = types.MethodType(fast_rms_layernorm_inference, layer.input_layernorm)
+            if hasattr(layer, 'post_attention_layernorm'):
+                layer.post_attention_layernorm.forward = types.MethodType(fast_rms_layernorm_inference, layer.post_attention_layernorm)
+
+        # Add training/inference mode switching
+        model.for_inference = types.MethodType(FastLlamaModel.for_inference, model)
+        model.for_training = types.MethodType(FastLlamaModel.for_training, model)
         
         # TO DO : add patch saving for causal 
         #patch_saving_functions(model, causal=True)
