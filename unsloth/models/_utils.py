@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.11.9"
+__version__ = "2024.11.10"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -1142,7 +1142,7 @@ def unsloth_compile_transformers(
     pass
 
     if disable: return
-    
+
     model_types = get_transformers_model_type(
         model_name        = model_name,
         token             = token,
