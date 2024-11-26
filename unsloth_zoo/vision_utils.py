@@ -51,6 +51,7 @@ import torch
 from PIL import Image
 import math
 import requests
+from typing import Union, Tuple
 IMAGE_FACTOR = 28
 MIN_PIXELS = 4 * 28 * 28
 MAX_PIXELS = 16384 * 28 * 28
@@ -111,7 +112,7 @@ def smart_resize(
 pass
 
 
-def fetch_image(ele: dict[str, str | Image.Image], size_factor: int = IMAGE_FACTOR) -> Image.Image:
+def fetch_image(ele: dict[Union[Tuple[str, str], Image.Image]], size_factor: int = IMAGE_FACTOR) -> Image.Image:
     if "image" in ele:
         image = ele["image"]
     else:
@@ -157,7 +158,7 @@ def fetch_image(ele: dict[str, str | Image.Image], size_factor: int = IMAGE_FACT
 pass
 
 
-def extract_vision_info(conversations: list[dict] | list[list[dict]]) -> list[dict]:
+def extract_vision_info(conversations: Union[list[dict], list[list[dict]]]) -> list[dict]:
     vision_infos = []
     if isinstance(conversations[0], dict):
         conversations = [conversations]
@@ -177,8 +178,8 @@ pass
 
 
 def process_vision_info(
-    conversations: list[dict] | list[list[dict]],
-) -> tuple[list[Image.Image] | None, list[torch.Tensor | list[Image.Image]] | None]:
+    conversations: Union[list[dict], list[list[dict]]],
+) -> tuple[Union[list[Image.Image], None], Union[list[Union[torch.Tensor, list[Image.Image]]], None]]:
     vision_infos = extract_vision_info(conversations)
     ## Read images or videos
     image_inputs = []
