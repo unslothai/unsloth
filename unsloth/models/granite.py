@@ -196,13 +196,13 @@ def GraniteDecoderLayer_fast_forward(
             position_embeddings = position_embeddings,
             _flag_for_generation=self._flag_for_generation,
         )
-        hidden_states = residual + hidden_states * self.residual_multiplier
+        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
-        hidden_states = residual + hidden_states * self.residual_multiplier
+        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
@@ -217,13 +217,13 @@ def GraniteDecoderLayer_fast_forward(
             padding_mask=padding_mask,
             position_embeddings = position_embeddings,
         )
-        hidden_states = residual + hidden_states * self.residual_multiplier
+        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states * self.residual_multiplier
+        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
     pass
 
     outputs = (hidden_states,)
@@ -397,12 +397,13 @@ def GraniteModel_fast_forward_inference(
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             position_embeddings = position_embeddings,
         )
-        hidden_states = residual + hidden_states * self.config.residual_multiplier
+
+        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
-        hidden_states  = residual + hidden_states * self.config.residual_multiplier
+        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
 
         next_decoder_cache.append(present_key_value)
     pass
