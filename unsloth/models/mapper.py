@@ -492,6 +492,14 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/llava-v1.6-mistral-7b-hf",
         "llava-hf/llava-v1.6-mistral-7b-hf",
     ),
+    "unsloth/Llama-3.1-Tulu-3-8B-bnb-4bit" : (
+        "unsloth/Llama-3.1-Tulu-3-8B",
+        "allenai/Llama-3.1-Tulu-3-8B",
+    ),
+    "unsloth/Llama-3.1-Tulu-3-70B-bnb-4bit" : (
+        "unsloth/Llama-3.1-Tulu-3-70B",
+        "allenai/Llama-3.1-Tulu-3-70B",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
