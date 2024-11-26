@@ -1176,7 +1176,7 @@ LOGITS_ERROR_STRING = \
     "... trainer.train() ..."
 
 def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
-class EmptyLogits(torch.Tensor):
+class EmptyLogits:
     def __init__(self): return
     __getitem__ = raise_logits_error
     __getattr__ = raise_logits_error
