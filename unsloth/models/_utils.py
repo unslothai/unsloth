@@ -1186,7 +1186,7 @@ class EmptyLogits:
 pass
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
-for function in functions:
+for j, function in enumerate(functions):
     if function.endswith("_") and len(function) > 2 and function[-2] != "_":
         print()
         try: exec(f"EMPTY_LOGITS.{function} = warn_logits_error",  globals(), locals())
