@@ -1131,6 +1131,16 @@ def unsloth_compile_transformers(
     disable                 = False,
     return_logits           = False,
 ):
+    if Version(torch_version) < Version("2.4.0"):
+        print(
+            "="*30 + \
+            "Unsloth: Unfortunately Unsloth vision and other newer optimized models need Torch 2.4 or later.\n"\
+            f"You have Torch version {torch_version}. Please upgrade your Torch version by visiting https://pytorch.org/\n"\
+            "For now your models will not get optimized, but will still work for now!"
+        )
+        return
+    pass
+
     if disable: return
     model_types = get_transformers_model_type(
         model_name        = model_name,
