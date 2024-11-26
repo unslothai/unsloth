@@ -1002,6 +1002,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     attentions=outputs.attentions,
                 )
                 print(output)
+                print(output)
                 return output
             pass
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
