@@ -455,7 +455,7 @@ elif NOT_RETURN_LOGITS and self.training and self.loss_function.__name__.endswit
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
-        lm_weight          = lm_head.weight,
+        lm_weight          = self.lm_head.weight,
         labels             = labels,
         num_items_in_batch = n_items,
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
