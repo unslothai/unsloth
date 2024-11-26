@@ -1,14 +1,19 @@
 from unsloth.models import FastCausalModel
+from transformers import AutoTokenizer
 import torch
 
 def test_causal_model():
     print("Starting FastCausalModel test...")
     
     try:
+        # First create tokenizer
+        print("\nCreating tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+        
         # Create model with custom config
         print("\nCreating model...")
         model, tokenizer, config = FastCausalModel.create_model(
-            model_name="llama2"
+            tokenizer=tokenizer,  # Pass the tokenizer
             hidden_size=768,  # Smaller for testing
             num_hidden_layers=12,
             num_attention_heads=12,
@@ -28,6 +33,7 @@ def test_causal_model():
         print("\nTesting tokenizer...")
         test_text = "Testing the causal model:"
         tokens = tokenizer(test_text, return_tensors="pt")
+        print("encoded_tokens",tokens)
         print(f"Input text: {test_text}")
         print(f"Token shape: {tokens['input_ids'].shape}")
         

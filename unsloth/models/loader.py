@@ -557,23 +557,29 @@ except:
 class FastCausalModel(FastBaseCausalModel):
     @staticmethod
     def create_model(
-        model_name                 = None,
-        max_seq_length            = None,
-        dtype                     = None,
-        token                     = None,
-        trust_remote_code         = False,
-        revision                  = None,
+        tokenizer,  # Add tokenizer as required parameter
+        hidden_size: int = 4096,
+        num_hidden_layers: int = 32,
+        num_attention_heads: int = 32,
+        max_seq_length: int = 2048,
+        intermediate_size: int = 11008,
+        dtype = None,
+        token = None,
+        trust_remote_code = False,
         *args, **kwargs,
     ):
-        """Load a pretrained causal language model.
+        """Create a new causal language model from configuration.
         
         Args:
-            model_name: Name or path of the model to load
-            max_seq_length: Maximum sequence length
+            tokenizer: Tokenizer to use for the model
+            hidden_size: Size of hidden layers (default: 4096)
+            num_hidden_layers: Number of transformer layers (default: 32)
+            num_attention_heads: Number of attention heads (default: 32)
+            max_seq_length: Maximum sequence length (default: 2048)
+            intermediate_size: Size of intermediate feed-forward layer (default: 11008)
             dtype: Model dtype
             token: HuggingFace token
             trust_remote_code: Whether to trust remote code
-            revision: Git revision to use
         """
         if token is None: 
             token = get_token()
@@ -581,12 +587,14 @@ class FastCausalModel(FastBaseCausalModel):
         # Create model from config
         model, tokenizer, config = FastBaseCausalModel.from_config(
             tokenizer=tokenizer,
-            model_name=model_name,
+            hidden_size=hidden_size,
+            num_hidden_layers=num_hidden_layers,
+            num_attention_heads=num_attention_heads,
             context_length=max_seq_length,
+            intermediate_size=intermediate_size,
             dtype=dtype,
             token=token,
             trust_remote_code=trust_remote_code,
-            revision=revision,
             *args, **kwargs,
         )
 

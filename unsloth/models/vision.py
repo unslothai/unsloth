@@ -423,5 +423,3 @@ class FastBaseVisionModel:
         return model
     pass
 pass
-
-
