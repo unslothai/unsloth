@@ -363,9 +363,9 @@ pass
 # os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
 LOGITS_ERROR_STRING = \
     "Unsloth: Logits are empty from 2024.11 onwards. To get raw logits again, please "\\
-    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\n\n'\\
-    "import os\n"\\
-    "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\\
+    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\\n\\n'\\
+    "import os\\n"\\
+    "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\\n"\\
     "... trainer.train() ..."
 
 def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
