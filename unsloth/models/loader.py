@@ -591,8 +591,7 @@ class FastCausalModel(FastBaseCausalModel):
             *args, **kwargs
         )
 
-        # Apply FastLlamaModel optimizations
-        model = FastLlamaModel.apply_optimizations(model)
+
 
         # Move model to appropriate device
         model.to(device_map)
@@ -604,50 +603,3 @@ class FastCausalModel(FastBaseCausalModel):
             tokenizer.add_model_tags(["unsloth"])
 
         return model, tokenizer, config
-
-    @staticmethod
-    def apply_optimizations(model):
-        optimizations_applied = {
-            "fast_attention": False,
-            "fast_mlp": False,
-            "fast_layernorm": False,
-            "triton_kernels": False
-        }
-
-        for layer in model.model.layers:
-            # Check and apply fast attention
-            if not isinstance(layer.self_attn.forward, types.MethodType) or layer.self_attn.forward.__func__ is not LlamaAttention_fast_forward:
-                layer.self_attn.forward = types.MethodType(LlamaAttention_fast_forward, layer.self_attn)
-                layer.self_attn.apply_qkv = original_apply_qkv
-                layer.self_attn.apply_o = original_apply_o
-                optimizations_applied["fast_attention"] = True
-
-            # Check and apply fast MLP
-            if not isinstance(layer.mlp.forward, types.MethodType) or layer.mlp.forward.__func__ is not fast_swiglu_inference:
-                layer.mlp.forward = types.MethodType(fast_swiglu_inference, layer.mlp)
-                optimizations_applied["fast_mlp"] = True
-
-            # Check and apply fast LayerNorm
-            if hasattr(layer, 'input_layernorm'):
-                if not isinstance(layer.input_layernorm.forward, types.MethodType) or layer.input_layernorm.forward.__func__ is not fast_rms_layernorm_inference:
-                    layer.input_layernorm.forward = types.MethodType(fast_rms_layernorm_inference, layer.input_layernorm)
-                    optimizations_applied["fast_layernorm"] = True
-            if hasattr(layer, 'post_attention_layernorm'):
-                if not isinstance(layer.post_attention_layernorm.forward, types.MethodType) or layer.post_attention_layernorm.forward.__func__ is not fast_rms_layernorm_inference:
-                    layer.post_attention_layernorm.forward = types.MethodType(fast_rms_layernorm_inference, layer.post_attention_layernorm)
-                    optimizations_applied["fast_layernorm"] = True
-
-        # Check for Triton kernels
-        if torch.cuda.is_available() and hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
-            optimizations_applied["triton_kernels"] = True
-
-        # Print optimization status
-        print("Optimizations applied:")
-        for opt, status in optimizations_applied.items():
-            print(f"  {opt}: {'Yes' if status else 'No'}")
-
-        # Add training/inference mode switching
-        model.for_inference = types.MethodType(FastLlamaModel.for_inference, model)
-        model.for_training = types.MethodType(FastLlamaModel.for_training, model)
-
-        return model
