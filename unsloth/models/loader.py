@@ -347,10 +347,11 @@ class FastVisionModel(FastBaseVisionModel):
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab         = None, # [TODO] No effect
         revision                   = None,
+        return_logits              = False, # Return logits
         *args, **kwargs,
     ):
         if token is None: token = get_token()
-        
+
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
         if use_gradient_checkpointing == "unsloth":
@@ -359,30 +360,31 @@ class FastVisionModel(FastBaseVisionModel):
         old_model_name = model_name
         model_name = get_model_name(model_name, load_in_4bit)
 
-        # with contextlib.redirect_stdout(open(os.devnull, "w")):
-        patch_loss_functions(torch_compile = False)
-        model_types = unsloth_compile_transformers(
-            model_name              = model_name,
-            sdpa_dynamic_mask       = True,
-            sdpa_bool_masks         = True,
-            sdpa_gqa_replace        = True,
-            sdpa_dynamic_compile    = True,
-            compile_attention       = True,
-            disable_causal_masks    = True,
-            compile_torch_modules   = True,
-            compile_custom_modules  = True,
-            compile_function_calls  = True,
-            fuse_lm_head            = True,
-            gradient_checkpointing  = True,
-            manual_replacements     = True,
-            epilogue_fusion         = True,
-            max_autotune            = False,
-            shape_padding           = True,
-            cudagraphs              = False,
-            debug                   = False,
-            import_from_cache       = False,
-            disable                 = False,
-        )
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            patch_loss_functions(torch_compile = False)
+            model_types = unsloth_compile_transformers(
+                model_name              = model_name,
+                sdpa_dynamic_mask       = True,
+                sdpa_bool_masks         = True,
+                sdpa_gqa_replace        = True,
+                sdpa_dynamic_compile    = True,
+                compile_attention       = True,
+                disable_causal_masks    = True,
+                compile_torch_modules   = True,
+                compile_custom_modules  = True,
+                compile_function_calls  = True,
+                fuse_lm_head            = True,
+                gradient_checkpointing  = True,
+                manual_replacements     = True,
+                epilogue_fusion         = True,
+                max_autotune            = False,
+                shape_padding           = True,
+                cudagraphs              = False,
+                debug                   = False,
+                import_from_cache       = False,
+                disable                 = False,
+                return_logits           = return_logits,
+            )
         pass
 
         # First check if it's a normal model via AutoConfig
