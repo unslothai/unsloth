@@ -974,13 +974,15 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
 
+        print(kwargs)
+
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
         else:
-            if HAS_CUT_CROSS_ENTROPY and labels is not None:
+            if "return_logits" not in kwargs and HAS_CUT_CROSS_ENTROPY and labels is not None:
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
                 loss = fused_linear_cross_entropy(
                     hidden_states      = hidden_states,
