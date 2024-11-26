@@ -1179,8 +1179,8 @@ def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_
 def  warn_logits_error(*args, **kwargs): warnings.warn(LOGITS_ERROR_STRING)
 class EmptyLogits:
     def __init__(self): return
-    __getitem__ = raise_logits_error
-    __getattr__ = raise_logits_error
+    # __getitem__ = raise_logits_error
+    # __getattr__ = raise_logits_error
     def __repr__(self): return LOGITS_ERROR_STRING
     def __str__ (self): return LOGITS_ERROR_STRING
 pass
