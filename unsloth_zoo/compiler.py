@@ -23,6 +23,7 @@ __all__ = [
 import inspect
 import re
 import importlib
+import importlib.util
 import numpy as np
 import os
 import torch
@@ -30,6 +31,17 @@ import subprocess
 import types
 import time
 import logging
+import sys
+from packaging.version import Version
+import triton
+
+# Disable some compilations if old versions are seen
+OLD_TORCH_VERSION = Version(torch.__version__) < Version("2.5.0")
+major, minor = torch.cuda.get_device_capability()
+OLD_CUDA_ARCH_VERSION = (major <= 7) and (minor < 5)
+OLD_TRITON_VERSION = Version(triton.__version__) < Version("3.0.0")
+
+
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
     def __init__(self, text): self.text = text
@@ -223,27 +235,40 @@ def create_new_function(
     # new_source = new_source.replace("super()", "super(type(self), self)")
 
     # Check location
-    if not os.path.exists(UNSLOTH_COMPILE_LOCATION): os.makedirs(UNSLOTH_COMPILE_LOCATION)
+    if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
+        os.makedirs(UNSLOTH_COMPILE_LOCATION)
 
+    # Write function
     location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
-    if overwrite or not os.path.isfile(location):
-        with open(location, "wb", buffering = 0) as file:
+    function_location = location
+    if overwrite or not os.path.isfile(function_location):
+        with open(function_location, "wb", buffering = 0) as file:
             file.write(new_source.encode("utf-8"))
             file.flush()
-            os.fsync(file)
+            os.fsync(file.fileno())
         pass
     pass
 
+    # Try loading new module
     new_module = None
     for trial in range(3):
         try:
             new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
         except:
+            # Instead use sys modules for dynamic loading
+            module_name = f"unsloth_cache_{name}"
+            file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
+            spec = importlib.util.spec_from_file_location(module_name, file_location)
+            new_module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = new_module
+            spec.loader.exec_module(new_module)
+
             time.sleep(0.2 + trial)
             continue
+        pass
     pass
     if new_module is None:
-        raise ImportError(f"Unsloth: Cannot import {location}")
+        raise ImportError(f'Unsloth: Cannot import {UNSLOTH_COMPILE_LOCATION + "." + name}')
 
     # Must save to global state or else temp file closes
     UNSLOTH_CREATED_FUNCTIONS.append(location)
@@ -268,6 +293,10 @@ def create_standalone_class(
     old_source = inspect.getsource(f.forward)
     old_init   = inspect.getsource(f.__init__)
     if forward_source is None: forward_source = old_source
+
+    # We disable this for nn.Embedding modules if torch is older than 2.5 since
+    if OLD_TORCH_VERSION and "nn.Embedding(" in old_init:
+        disable = True
 
     source = re.sub(
         "def forward",
@@ -323,6 +352,56 @@ def create_standalone_class(
 pass
 
 
+_cross_entropy_code = """
+from torch.nn import CrossEntropyLoss
+
+@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+def uncompiled_cross_entropy_loss(self, hidden_states,):
+    logits = self.lm_head(hidden_states)
+    logits = logits.float()
+    # Shift so that tokens < n predict n
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    # Flatten the tokens
+    loss_fct = CrossEntropyLoss()
+    shift_logits = shift_logits.view(-1, self.config.vocab_size)
+    shift_labels = shift_labels.view(-1)
+    # Enable model parallelism
+    shift_labels = shift_labels.to(shift_logits.device)
+    loss = loss_fct(shift_logits, shift_labels)
+    return loss, logits
+pass
+
+# We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
+# os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
+LOGITS_ERROR_STRING = \\
+    "Unsloth: Logits are empty from 2024.11 onwards. To get raw logits again, please "\\
+    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\\n\\n'\\
+    "import os\\n"\\
+    "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\\n"\\
+    "... trainer.train() ..."
+
+def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
+def return_none(*args, **kwargs): return None
+class EmptyLogits:
+    def __init__(self): return
+    def raise_getattr_error(self, attr): return return_none if attr == "to" else raise_logits_error
+    __getitem__ = raise_logits_error
+    __getattr__ = raise_getattr_error
+    def __repr__(self): return LOGITS_ERROR_STRING
+    def __str__ (self): return LOGITS_ERROR_STRING
+pass
+EMPTY_LOGITS = EmptyLogits()
+functions = dir(torch.Tensor)
+for j, function in enumerate(functions):
+    if function.startswith("__") and function.endswith("__"):
+        exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
+        try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
+        except: continue
+pass
+
+"""
+
 # Replace Cross Entropy cells with fused linear lm heads
 cross_entropy_find_1 = """
 logits = self.lm_head(hidden_states%
@@ -338,14 +417,19 @@ loss = loss_fct(shift_logits, shift_labels)
 """
 
 cross_entropy_replacement_1 = """
-n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
-loss = fused_linear_cross_entropy(
-    hidden_states      = hidden_states,
-    lm_weight          = self.lm_head.weight,
-    labels             = labels,
-    num_items_in_batch = n_items,
-    logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
-)
+if not self.training and labels is None:
+    logits = self.lm_head(hidden_states)
+elif NOT_RETURN_LOGITS and labels is not None:
+    n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
+    loss = fused_linear_cross_entropy(
+        hidden_states      = hidden_states,
+        lm_weight          = self.lm_head.weight,
+        labels             = labels,
+        num_items_in_batch = n_items,
+        logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
+    )
+else:
+    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states)
 """
 
 cross_entropy_find_2 = """
@@ -355,11 +439,13 @@ if labels is not None:$loss = self.loss_function(logits=logits, labels=labels, v
 """
 
 cross_entropy_replacement_2 = """
-if self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+if not self.training and labels is None:
+    logits = self.lm_head(hidden_states)
+elif NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
-        lm_weight          = lm_head.weight,
+        lm_weight          = self.lm_head.weight,
         labels             = labels,
         num_items_in_batch = n_items,
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
@@ -376,11 +462,13 @@ if labels is not None:$loss = self.loss_function(logits, labels, self.vocab_size
 """
 
 cross_entropy_replacement_3 = """
-if self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+if not self.training and labels is None:
+    logits = self.lm_head(hidden_states)
+elif NOT_RETURN_LOGITS and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
-        lm_weight          = lm_head.weight,
+        lm_weight          = self.lm_head.weight,
         labels             = labels,
         num_items_in_batch = n_items,
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
@@ -398,6 +486,10 @@ ce_finders = [
 
 
 def apply_fused_lm_head(forward):
+    # Logit returning?
+    RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+    NOT_RETURN_LOGITS = not RETURN_LOGITS
+
     for cross_entropy_find, cross_entropy_replacement in ce_finders:
         cross_entropy_find = cross_entropy_find.strip()\
             .replace("*", "\*").replace("^", "\^")\
@@ -411,20 +503,20 @@ def apply_fused_lm_head(forward):
         # Find indentation
         cross_entropy_find = cross_entropy_find\
             .replace("$", r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
-            .replace("%", r"(?:\[\:\,[\s]{0,}\-num_logits_to_keep\:\,[\s]{0,}\:\])?\)")
+            .replace("%", 
+                     r"(?:\[\:\,[\s]{0,}\-num_logits_to_keep\:\,[\s]{0,}\:\])?\)"\
+                     r"(?:\.float\(\))?[\n][\s]{0,}")
 
         spaces = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
         if len(spaces) == 0: continue
         spaces = spaces[0]
 
         replacement = cross_entropy_replacement.strip().split("\n")
-        replacement = "\n".join(spaces + x for x in replacement)
+        replacement = "\n".join((len(spaces)-4)*" " + x for x in replacement)
         replacement = \
-            "logits = None\n" + \
+            "logits = EMPTY_LOGITS\n" + \
             (len(spaces)-4)*" " + "loss = None\n" + \
-            (len(spaces)-4)*" " + "if labels is not None and self.training:\n" + \
-            replacement + "\n" + \
-            (len(spaces)-4)*" " + "if not self.training: logits = self.lm_head(hidden_states)\n"
+            replacement + "\n"
 
         forward = re.sub(
             cross_entropy_find,
@@ -432,6 +524,9 @@ def apply_fused_lm_head(forward):
             forward,
             flags = re.DOTALL | re.MULTILINE,
         )
+
+        # Also consider logits
+        forward = forward.replace("NOT_RETURN_LOGITS", str(NOT_RETURN_LOGITS))
     pass
     return forward
 pass
@@ -557,6 +652,7 @@ def unsloth_compile_transformers(
     debug                  : bool = False,
     import_from_cache      : bool = False,
     disable                : bool = False,
+    return_logits          : bool = False,
 ):
     # Code licensed under LGPL
     if disable: return
@@ -580,6 +676,12 @@ def unsloth_compile_transformers(
         "trace.enabled"     : UNSLOTH_COMPILE_DEBUG or debug,
         "triton.cudagraphs" : cudagraphs,
     }
+
+    # Return logits
+    UNSLOTH_RETURN_LOGITS = "0" if not return_logits else "1"
+    if "UNSLOTH_RETURN_LOGITS" not in os.environ:
+        os.environ["UNSLOTH_RETURN_LOGITS"] = UNSLOTH_RETURN_LOGITS
+    pass
 
     modeling_file.__UNSLOTH_PATCHED__ = True
     functions = dir(modeling_file)
@@ -830,6 +932,10 @@ def unsloth_compile_transformers(
         modules = dir(modeling_file)
 
         for module in modules:
+            # Disable if torch < 2.5 or V100s 7.0 (Tesla T4 7.5 works) or old Triton < 3
+            if OLD_CUDA_ARCH_VERSION or OLD_TORCH_VERSION or OLD_TRITON_VERSION:
+                continue
+            
             module_class = eval(f"modeling_file.{module}")
             if hasattr(module_class, "forward") and issubclass(module_class, GenerationMixin):
                 try:
@@ -1093,7 +1199,8 @@ def unsloth_compile_transformers(
                 functions,
                 prepend = \
                     _disabled_sdpa_code + \
-                    f"\ntorch_compile_options = {torch_compile_options}\n"
+                    f"\ntorch_compile_options = {torch_compile_options}\n" + \
+                    _cross_entropy_code + "\n"
             )
         except:
             combined_module = None
