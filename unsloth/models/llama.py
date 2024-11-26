@@ -974,8 +974,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
 
-        print(kwargs)
-
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
@@ -997,7 +995,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 
                 return CausalLMOutputWithPast(
                     loss=loss,
-                    logits=None,
+                    logits=EMPTY_LOGITS,
                     past_key_values=outputs.past_key_values,
                     hidden_states=outputs.hidden_states,
                     attentions=outputs.attentions,
