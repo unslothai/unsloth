@@ -1192,7 +1192,7 @@ for j, function in enumerate(functions):
         try: exec(f"EMPTY_LOGITS.{function} = warn_logits_error",  globals(), locals())
         except: continue
     else:
-        exec(f"def raise_{j}(*args, **kwargs): print('{function}'')", globals(), locals())
+        exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
         try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except: continue
 pass
