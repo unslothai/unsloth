@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.11.9"
+__version__ = "2024.11.10"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -54,6 +54,7 @@ __all__ = [
     "unpatch_gradient_checkpointing",
 
     "HAS_CUT_CROSS_ENTROPY",
+    "EMPTY_LOGITS",
     "fused_linear_cross_entropy",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
@@ -1128,14 +1129,27 @@ def unsloth_compile_transformers(
     debug                   = False,
     import_from_cache       = False,
     disable                 = False,
+    return_logits           = False,
 ):
+    if Version(torch_version) < Version("2.4.0"):
+        print(
+            "="*30 + \
+            "Unsloth: Unfortunately Unsloth vision and other newer optimized models need Torch 2.4 or later.\n"\
+            f"You have Torch version {torch_version}. Please upgrade your Torch version by visiting https://pytorch.org/\n"\
+            "For now your models will not get optimized, but will still work for now!"
+        )
+        return
+    pass
+
     if disable: return
+
     model_types = get_transformers_model_type(
         model_name        = model_name,
         token             = token,
         revision          = revision,
         trust_remote_code = trust_remote_code,
     )
+
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
@@ -1158,7 +1172,36 @@ def unsloth_compile_transformers(
             debug                  = debug,
             import_from_cache      = import_from_cache,
             disable                = disable,
+            return_logits          = return_logits,
         )
     pass
     return model_types
+pass
+
+# We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
+# os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
+LOGITS_ERROR_STRING = \
+    "Unsloth: Logits are empty from 2024.11 onwards. To get raw logits again, please "\
+    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\n\n'\
+    "import os\n"\
+    "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\
+    "... trainer.train() ..."
+
+def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
+def return_none(*args, **kwargs): return None
+class EmptyLogits:
+    def __init__(self): return
+    def raise_getattr_error(self, attr): return return_none if attr == "to" else raise_logits_error
+    __getitem__ = raise_logits_error
+    __getattr__ = raise_getattr_error
+    def __repr__(self): return LOGITS_ERROR_STRING
+    def __str__ (self): return LOGITS_ERROR_STRING
+pass
+EMPTY_LOGITS = EmptyLogits()
+functions = dir(torch.Tensor)
+for j, function in enumerate(functions):
+    if function.startswith("__") and function.endswith("__"):
+        exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
+        try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
+        except: continue
 pass
