@@ -1142,12 +1142,14 @@ def unsloth_compile_transformers(
     pass
 
     if disable: return
+    print(1)
     model_types = get_transformers_model_type(
         model_name        = model_name,
         token             = token,
         revision          = revision,
         trust_remote_code = trust_remote_code,
     )
+    print(model_types)
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
