@@ -64,6 +64,7 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT  = "\nCOLAB_"  in keynames
 IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
+KAGGLE_TMP = "/tmp"
 del keynames
 
 
@@ -470,8 +471,12 @@ def _load_correct_tokenizer(
     cache_dir = "huggingface_tokenizers_cache",
     fix_tokenizer = True,
 ):
-    if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
+    if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
+    elif IS_KAGGLE_ENVIRONMENT:
+        # /tmp of Kaggle seems has a 80GB limit!
+        # Let's utilize them
+        cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
     else:
         cache_dir = None
     pass
@@ -975,7 +980,7 @@ def patch_sft_trainer_tokenizer():
         "        from packaging.version import Version\n"\
         "        if Version(transformers_version) <= Version('4.45.2'):\n"\
         "            print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers, TRL and Unsloth!\\n'\\\n"\
-        "                  '`pip install --upgrade --no-cache-dir unsloth git+https://github.com/huggingface/transformers.git git+https://github.com/huggingface/trl.git`')\n"\
+        "                  '`pip install --upgrade --no-cache-dir --no-deps unsloth transformers git+https://github.com/huggingface/trl.git`')\n"\
         "except:\n"\
         "    pass\n"\
         "\n\n"
