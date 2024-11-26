@@ -392,6 +392,7 @@ class FastVisionModel(FastBaseVisionModel):
         was_disabled = are_progress_bars_disabled()
         disable_progress_bars()
 
+        print(model_name)
         autoconfig_error = None
         peft_error = None
         try:
