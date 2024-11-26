@@ -350,7 +350,7 @@ class FastVisionModel(FastBaseVisionModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
-
+        
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
         if use_gradient_checkpointing == "unsloth":

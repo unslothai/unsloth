@@ -1128,6 +1128,7 @@ def unsloth_compile_transformers(
     debug                   = False,
     import_from_cache       = False,
     disable                 = False,
+    return_logits           = False,
 ):
     if disable: return
     model_types = get_transformers_model_type(
@@ -1158,6 +1159,7 @@ def unsloth_compile_transformers(
             debug                  = debug,
             import_from_cache      = import_from_cache,
             disable                = disable,
+            return_logits          = return_logits,
         )
     pass
     return model_types
