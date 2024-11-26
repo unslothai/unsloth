@@ -546,3 +546,48 @@ class FastVisionModel(FastBaseVisionModel):
         return model, tokenizer
     pass
 pass
+
+from .causal import FastBaseCausalModel
+from transformers import AutoConfig, AutoTokenizer
+try:
+    from huggingface_hub.utils import get_token
+except:
+    from huggingface_hub.utils._token import get_token
+
+class FastCausalModel(FastBaseCausalModel):
+    @staticmethod
+    def create_model(
+        model_name                 = None,
+        max_seq_length            = None,
+        dtype                     = None,
+        token                     = None,
+        trust_remote_code         = False,
+        revision                  = None,
+        *args, **kwargs,
+    ):
+        """Load a pretrained causal language model.
+        
+        Args:
+            model_name: Name or path of the model to load
+            max_seq_length: Maximum sequence length
+            dtype: Model dtype
+            token: HuggingFace token
+            trust_remote_code: Whether to trust remote code
+            revision: Git revision to use
+        """
+        if token is None: 
+            token = get_token()
+
+        # Create model from config
+        model, tokenizer, config = FastBaseCausalModel.from_config(
+            tokenizer=tokenizer,
+            model_name=model_name,
+            context_length=max_seq_length,
+            dtype=dtype,
+            token=token,
+            trust_remote_code=trust_remote_code,
+            revision=revision,
+            *args, **kwargs,
+        )
+
+        return model, tokenizer, config
