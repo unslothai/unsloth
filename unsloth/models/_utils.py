@@ -1175,19 +1175,22 @@ LOGITS_ERROR_STRING = \
     "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\
     "... trainer.train() ..."
 
-def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
 def  warn_logits_error(*args, **kwargs): warnings.warn(LOGITS_ERROR_STRING)
 class EmptyLogits:
     def __init__(self): return
-    # __getitem__ = raise_logits_error
-    # __getattr__ = raise_logits_error
+    def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
+    def return_none(*args, **kwargs): return None
+    def raise_getattr_error(self, attr):
+        if attr == "to": return self.return_none
+        return self.raise_logits_error
+    __getitem__ = self.raise_logits_error
+    __getattr__ = self.raise_getattr_error
     def __repr__(self): return LOGITS_ERROR_STRING
     def __str__ (self): return LOGITS_ERROR_STRING
 pass
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
 for j, function in enumerate(functions):
-    if function == "to": continue
     exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
     try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
     except: continue
