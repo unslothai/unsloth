@@ -377,7 +377,7 @@ loss = loss_fct(shift_logits, shift_labels)
 cross_entropy_replacement_1 = """
 if not self.training and labels is None:
     logits = self.lm_head(hidden_states)
-elif "return_logits" not in loss_kwargs and labels is not None:
+elif NOT_RETURN_LOGITS and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
@@ -399,7 +399,7 @@ if labels is not None:$loss = self.loss_function(logits=logits, labels=labels, v
 cross_entropy_replacement_2 = """
 if not self.training and labels is None:
     logits = self.lm_head(hidden_states)
-elif "return_logits" not in loss_kwargs and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+elif NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
@@ -422,7 +422,7 @@ if labels is not None:$loss = self.loss_function(logits, labels, self.vocab_size
 cross_entropy_replacement_3 = """
 if not self.training and labels is None:
     logits = self.lm_head(hidden_states)
-elif "return_logits" not in loss_kwargs and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+elif NOT_RETURN_LOGITS and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
@@ -437,13 +437,17 @@ else:
 """
 
 ce_finders = [
+    (cross_entropy_find_3, cross_entropy_replacement_3,),
     (cross_entropy_find_1, cross_entropy_replacement_1,),
     (cross_entropy_find_2, cross_entropy_replacement_2,),
-    (cross_entropy_find_3, cross_entropy_replacement_3,),
 ]
 
 
 def apply_fused_lm_head(forward):
+    # Logit returning?
+    RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+    NOT_RETURN_LOGITS = not RETURN_LOGITS
+
     for cross_entropy_find, cross_entropy_replacement in ce_finders:
         cross_entropy_find = cross_entropy_find.strip()\
             .replace("*", "\*").replace("^", "\^")\
@@ -457,20 +461,20 @@ def apply_fused_lm_head(forward):
         # Find indentation
         cross_entropy_find = cross_entropy_find\
             .replace("$", r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
-            .replace("%", r"(?:\[\:\,[\s]{0,}\-num_logits_to_keep\:\,[\s]{0,}\:\])?\)")
+            .replace("%", 
+                     r"(?:\[\:\,[\s]{0,}\-num_logits_to_keep\:\,[\s]{0,}\:\])?\)"\
+                     r"(?:\.float\(\))?[\n][\s]{0,}")
 
         spaces = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
         if len(spaces) == 0: continue
         spaces = spaces[0]
 
         replacement = cross_entropy_replacement.strip().split("\n")
-        replacement = "\n".join(spaces + x for x in replacement)
+        replacement = "\n".join((len(spaces)-4)*" " + x for x in replacement)
         replacement = \
             "logits = None\n" + \
             (len(spaces)-4)*" " + "loss = None\n" + \
-            (len(spaces)-4)*" " + "if labels is not None and self.training:\n" + \
-            replacement + "\n" + \
-            (len(spaces)-4)*" " + "if not self.training: logits = self.lm_head(hidden_states)\n"
+            replacement + "\n"
 
         forward = re.sub(
             cross_entropy_find,
@@ -478,7 +482,9 @@ def apply_fused_lm_head(forward):
             forward,
             flags = re.DOTALL | re.MULTILINE,
         )
-        print(forward)
+
+        # Also consider logits
+        forward = forward.replace("NOT_RETURN_LOGITS", str(NOT_RETURN_LOGITS))
     pass
     return forward
 pass
@@ -604,6 +610,7 @@ def unsloth_compile_transformers(
     debug                  : bool = False,
     import_from_cache      : bool = False,
     disable                : bool = False,
+    return_logits          : bool = False,
 ):
     # Code licensed under LGPL
     if disable: return
@@ -627,6 +634,12 @@ def unsloth_compile_transformers(
         "trace.enabled"     : UNSLOTH_COMPILE_DEBUG or debug,
         "triton.cudagraphs" : cudagraphs,
     }
+
+    # Return logits
+    UNSLOTH_RETURN_LOGITS = "0" if not return_logits else "1"
+    if "UNSLOTH_RETURN_LOGITS" not in os.environ:
+        os.environ["UNSLOTH_RETURN_LOGITS"] = UNSLOTH_RETURN_LOGITS
+    pass
 
     modeling_file.__UNSLOTH_PATCHED__ = True
     functions = dir(modeling_file)
