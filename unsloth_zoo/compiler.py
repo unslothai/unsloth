@@ -479,9 +479,9 @@ else:
 """
 
 ce_finders = [
-    (cross_entropy_find_3, cross_entropy_replacement_3,),
     (cross_entropy_find_1, cross_entropy_replacement_1,),
     (cross_entropy_find_2, cross_entropy_replacement_2,),
+    (cross_entropy_find_3, cross_entropy_replacement_3,),
 ]
 
 
