@@ -406,6 +406,7 @@ class FastVisionModel(FastBaseVisionModel):
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
+            print(autoconfig_error)
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
@@ -418,6 +419,7 @@ class FastVisionModel(FastBaseVisionModel):
             is_peft = True
         except Exception as error:
             peft_error = str(error)
+            print(peft_error)
             is_peft = False
         pass
 
