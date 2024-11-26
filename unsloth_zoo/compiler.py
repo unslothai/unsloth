@@ -358,6 +358,35 @@ def uncompiled_cross_entropy_loss(self, hidden_states,):
     loss = loss_fct(shift_logits, shift_labels)
     return loss, logits
 pass
+
+# We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
+# os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
+LOGITS_ERROR_STRING = \
+    "Unsloth: Logits are empty from 2024.11 onwards. To get raw logits again, please "\
+    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\n\n'\
+    "import os\n"\
+    "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\
+    "... trainer.train() ..."
+
+def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
+def return_none(*args, **kwargs): return None
+class EmptyLogits:
+    def __init__(self): return
+    def raise_getattr_error(self, attr): return return_none if attr == "to" else raise_logits_error
+    __getitem__ = raise_logits_error
+    __getattr__ = raise_getattr_error
+    def __repr__(self): return LOGITS_ERROR_STRING
+    def __str__ (self): return LOGITS_ERROR_STRING
+pass
+EMPTY_LOGITS = EmptyLogits()
+functions = dir(torch.Tensor)
+for j, function in enumerate(functions):
+    if function.startswith("__") and function.endswith("__"):
+        exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
+        try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
+        except: continue
+pass
+
 """
 
 # Replace Cross Entropy cells with fused linear lm heads
@@ -472,7 +501,7 @@ def apply_fused_lm_head(forward):
         replacement = cross_entropy_replacement.strip().split("\n")
         replacement = "\n".join((len(spaces)-4)*" " + x for x in replacement)
         replacement = \
-            "logits = None\n" + \
+            "logits = EMPTY_LOGITS\n" + \
             (len(spaces)-4)*" " + "loss = None\n" + \
             replacement + "\n"
 
