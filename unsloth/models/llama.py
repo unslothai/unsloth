@@ -65,7 +65,7 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 pass
-
+from triton import __version__ as triton_version
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -722,25 +722,33 @@ def LlamaModel_fast_forward(
     pass
 
     # Gemma2 has alternating SWA and global attn
+    use_static_mask  = True
+    dynamic_SWA_mask = None
+    dynamic_GA_mask  = None
     if IS_GEMMA2:
         if HAS_FLASH_ATTENTION_SOFTCAPPING and attention_mask is None:
             self.SWA_mask = True
             self.GA_mask  = False
         elif attention_mask is not None:
-            self.SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+
+            # Fixes https://github.com/unslothai/unsloth/issues/853
+            # Unsloth needs a 2D mask, not a [2, 1, n, n] mask!
+            dynamic_SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
                 sliding_window = self.config.sliding_window,
-            )
-            self.GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+            )[0][0]
+            dynamic_GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
                 sliding_window = None,
-            )
+            )[0][0]
+            use_static_mask = False
+
         elif not hasattr(self, "SWA_mask"):
             if HAS_FLEX_ATTENTION:
                 # Use Flex Attention instead!
@@ -781,7 +789,12 @@ def LlamaModel_fast_forward(
         past_key_value = past_key_values[idx] if past_key_values is not None else None
 
         mask = causal_mask
-        if IS_GEMMA2: mask = self.SWA_mask if (idx % 2 == 0) else self.GA_mask
+        if IS_GEMMA2:
+            if (idx % 2 == 0):
+                mask = self.SWA_mask if use_static_mask else dynamic_SWA_mask
+            else:
+                mask = self. GA_mask if use_static_mask else dynamic_GA_mask
+        pass
 
         if offloaded_gradient_checkpointing:
             hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
@@ -967,14 +980,41 @@ def CausalLM_fast_forward(fast_forward_inference):
             )
         pass
         hidden_states = outputs[0]
+
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
+        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+        logit_scaling     = getattr(self.config, "logit_scale", 0)
+
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
         else:
+            RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+            if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
+                n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
+                loss = fused_linear_cross_entropy(
+                    hidden_states      = hidden_states,
+                    lm_weight          = lm_head,
+                    labels             = labels,
+                    num_items_in_batch = n_items,
+                    logit_softcapping  = logit_softcapping,
+                )
+                if not return_dict:
+                    output = (logits,) + outputs[1:]
+                    return (loss,) + output if loss is not None else output
+
+                output = CausalLMOutputWithPast(
+                    loss=loss,
+                    logits=EMPTY_LOGITS,
+                    past_key_values=outputs.past_key_values,
+                    hidden_states=outputs.hidden_states,
+                    attentions=outputs.attentions,
+                )
+                return output
+            pass
             logits = self.lm_head(hidden_states.to(lm_head.dtype))
         pass
 
@@ -994,6 +1034,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
             # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
             logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
+
         if labels is not None:
             shift_logits = logits
             if not hasattr(self, "extra_ignored_labels"):
@@ -1394,6 +1435,15 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
 
+        if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
+            if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
+                if kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"] > model.config.max_position_embeddings:
+                    raise ValueError(
+                        f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {model.config.max_position_embeddings}!\n'\
+                        'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
+                    )
+        pass
+
         # Set a flag for generation!
         internal_model = model
         while hasattr(internal_model, "model"):
@@ -1520,9 +1570,9 @@ class FastLlamaModel:
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers = {transformers_version}.\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
-           f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers:{transformers_version}.\n"\
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+           f"O^O/ \_/ \\    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
@@ -2327,7 +2377,8 @@ class FastLlamaModel:
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
                 else:
-                    if model_type != "qwen2":
+                    if model_type == "qwen2": n_qkv += 1
+                    else:
                         logger.warning_once(
                             "Not an error, but Unsloth cannot patch Attention layers with our manual autograd engine since either LoRA adapters\n"\
                             "are not enabled or a bias term (like in Qwen) is used."
