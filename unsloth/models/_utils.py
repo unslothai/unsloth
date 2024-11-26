@@ -1175,7 +1175,7 @@ LOGITS_ERROR_STRING = \
     "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\
     "... trainer.train() ..."
 
-def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
+def raise_logits_error(*args, **kwargs): print(LOGITS_ERROR_STRING)
 class EmptyLogits:
     def __init__(self): return
     __getitem__ = raise_logits_error
@@ -1185,7 +1185,7 @@ class EmptyLogits:
 pass
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
-# for function in functions:
-#     try: exec(f"EMPTY_LOGITS.{function} = raise_logits_error", globals(), locals())
-#     except: continue
-# pass
+for function in functions:
+    try: exec(f"EMPTY_LOGITS.{function} = raise_logits_error", globals(), locals())
+    except: continue
+pass
