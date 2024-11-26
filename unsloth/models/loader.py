@@ -465,6 +465,7 @@ class FastVisionModel(FastBaseVisionModel):
         if is_peft:
             # Check base model again for PEFT
             model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            print(model_name)
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
