@@ -121,8 +121,6 @@ def GraniteAttention_fast_forward(
         K_M = V_M = bsz * kv_seq_len
         Q_M = bsz * q_len
 
-        has_swa = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
-
         # Group query attention
         K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
         V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
@@ -131,21 +129,9 @@ def GraniteAttention_fast_forward(
         if hidden_states.requires_grad:
             K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
             V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
-
-            if has_swa:
-                Q = Q.view(1, Q_M, n_heads, head_dim)
-                K = K.view(1, K_M, n_heads, head_dim)
-                V = V.view(1, V_M, n_heads, head_dim)
-            pass
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-
-            if has_swa:
-                Q = Q.view(1, Q_M, n_kv_heads, n_groups, head_dim)
-                K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
-                V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
-            pass
         pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask, scale=self.scaling)
@@ -155,9 +141,7 @@ def GraniteAttention_fast_forward(
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
-        sw = getattr(self.config, "sliding_window", None)
-        sw = kv_seq_len if (sw is None or sw == "null") else sw
-        window = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
+        window = (kv_seq_len, kv_seq_len)
         A = flash_attn_func(Q, K, V, causal = True, window_size = window, softmax_scale=self.scaling)
     else:
         # Grouped query attention
@@ -210,7 +194,7 @@ def GraniteDecoderLayer_fast_forward(
             use_cache=use_cache,
             padding_mask=padding_mask,
             position_embeddings = position_embeddings,
-            _flag_for_generation=True,
+            _flag_for_generation=self._flag_for_generation,
         )
         hidden_states = residual + hidden_states * self.residual_multiplier
 
@@ -341,38 +325,27 @@ def GraniteAttention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Handle sliding windows
-    sliding_window = self.config.sliding_window if hasattr(self.config, "sliding_window") else self.config.max_position_embeddings
-    if use_sliding_window and kv_seq_len > sliding_window:
-        # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
-        slicing_tokens = 1 - sliding_window
-        Knn = Kn[:, :, slicing_tokens:, :]#.contiguous()
-        Vnn = Vn[:, :, slicing_tokens:, :]#.contiguous()
-    else:
-        Knn, Vnn = Kn, Vn
-    pass
-
     # Grouped query attention
-    _, _, cached_len, _ = Knn.shape
+    _, _, cached_len, _ = Kn.shape
     if n_groups != 1:
-        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
-        Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
-        Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
+        Kn = Kn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Vn = Vn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
+        Kn = Kn.reshape(bsz, n_heads, cached_len, head_dim)
+        Vn = Vn.reshape(bsz, n_heads, cached_len, head_dim)
     pass
     # else:
-    #     Knn, Vnn = Knn, Vnn
+    #     Kn, Vn = Kn, Vn
     # pass
 
     Qn *= self.scaling
-    A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
+    A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
     
     # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
 
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
-    A = torch_matmul(A, Vnn, out = Qn)
+    A = torch_matmul(A, Vn, out = Qn)
     # else:
-    #     A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
+    #     A = scaled_dot_product_attention(Qn, Kn, Vn, attn_mask = attention_mask, is_causal = False)
     # pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
@@ -392,8 +365,8 @@ def GraniteModel_fast_forward_inference(
 ):
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
-    hidden_states *= self.model.embedding_multiplier
     hidden_states = hidden_states.to(self.config.torch_dtype)
+    hidden_states *= self.model.embedding_multiplier
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]

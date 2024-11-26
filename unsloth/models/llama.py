@@ -616,9 +616,9 @@ def LlamaModel_fast_forward(
     pass
 
     # Normalized from Gemma
-    IS_GEMMA  = self.config.model_type.startswith("gemma")
-    IS_GEMMA2 = self.config.model_type.startswith("gemma2")
-    IS_COHERE = self.config.model_type.startswith("cohere")
+    IS_GEMMA   = self.config.model_type.startswith("gemma")
+    IS_GEMMA2  = self.config.model_type.startswith("gemma2")
+    IS_COHERE  = self.config.model_type.startswith("cohere")
     IS_GRANITE = self.config.model_type.startswith("granite")
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
@@ -990,6 +990,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_scaling     = getattr(self.config, "logit_scale", 0)
         if self.config.model_type == "granite":
             # granite uses logit_scaling as key and they divide by the scale unlike cohere
+            # notice that for granite, logits_scale is 16 and for cohere it is 0.125 (aka 1/8) in their respective configs
+            # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
+            # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
             logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
         if labels is not None:
             shift_logits = logits
