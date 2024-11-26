@@ -78,12 +78,14 @@ class FastLanguageModel(FastLlamaModel):
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab         = None,
         revision                   = None,
+        use_exact_model_name       = False,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
         
         old_model_name = model_name
-        model_name = get_model_name(model_name, load_in_4bit)
+        if not use_exact_model_name:
+            model_name = get_model_name(model_name, load_in_4bit)
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
@@ -162,7 +164,10 @@ class FastLanguageModel(FastLlamaModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
-            model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            if not use_exact_model_name:
+                model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            else:
+                model_name = peft_config.base_model_name_or_path
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -249,6 +254,8 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name = None
         pass
 
+        original_kwargs = kwargs.copy()
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
@@ -262,7 +269,7 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name    = tokenizer_name,
             trust_remote_code = trust_remote_code,
             revision          = revision if not is_peft else None,
-            *args, **kwargs,
+            *args, **original_kwargs,
         )
         
         if resize_model_vocab is not None:
@@ -347,6 +354,7 @@ class FastVisionModel(FastBaseVisionModel):
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab         = None, # [TODO] No effect
         revision                   = None,
+        use_exact_model_name       = False,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -357,7 +365,8 @@ class FastVisionModel(FastBaseVisionModel):
             patch_unsloth_smart_gradient_checkpointing()
         
         old_model_name = model_name
-        model_name = get_model_name(model_name, load_in_4bit)
+        if not use_exact_model_name:
+            model_name = get_model_name(model_name, load_in_4bit)
 
         with contextlib.redirect_stdout(open(os.devnull, "w")):
             patch_loss_functions(torch_compile = False)
@@ -462,7 +471,10 @@ class FastVisionModel(FastBaseVisionModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
-            model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            if not use_exact_model_name:
+                model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            else:
+                model_name = peft_config.base_model_name_or_path
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -483,6 +495,8 @@ class FastVisionModel(FastBaseVisionModel):
             tokenizer_name = None
         pass
 
+        original_kwargs = kwargs.copy()
+
         model, tokenizer = FastBaseVisionModel.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
@@ -494,7 +508,7 @@ class FastVisionModel(FastBaseVisionModel):
             revision          = revision if not is_peft else None,
             model_types       = model_types,
             tokenizer_name    = tokenizer_name,
-            *args, **kwargs,
+            *args, **original_kwargs,
         )
         
         if resize_model_vocab is not None:
