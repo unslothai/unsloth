@@ -32,6 +32,15 @@ import types
 import time
 import logging
 import sys
+from packaging.version import Version
+import triton
+
+# Disable some compilations if old versions are seen
+OLD_TORCH_VERSION = Version(torch.__version__) < Version("2.5.0")
+major, minor = torch.cuda.get_device_capability()
+OLD_CUDA_ARCH_VERSION = (major <= 7) and (minor < 5)
+OLD_TRITON_VERSION = Version(triton.__version__) < Version("3.0.0")
+
 
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
@@ -284,6 +293,10 @@ def create_standalone_class(
     old_source = inspect.getsource(f.forward)
     old_init   = inspect.getsource(f.__init__)
     if forward_source is None: forward_source = old_source
+
+    # We disable this for nn.Embedding modules if torch is older than 2.5 since
+    if OLD_TORCH_VERSION and "nn.Embedding(" in old_init:
+        disable = True
 
     source = re.sub(
         "def forward",
@@ -919,6 +932,10 @@ def unsloth_compile_transformers(
         modules = dir(modeling_file)
 
         for module in modules:
+            # Disable if torch < 2.5 or V100s 7.0 (Tesla T4 7.5 works) or old Triton < 3
+            if OLD_CUDA_ARCH_VERSION or OLD_TORCH_VERSION or OLD_TRITON_VERSION:
+                continue
+            
             module_class = eval(f"modeling_file.{module}")
             if hasattr(module_class, "forward") and issubclass(module_class, GenerationMixin):
                 try:
