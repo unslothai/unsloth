@@ -401,6 +401,7 @@ class FastVisionModel(FastBaseVisionModel):
                 revision = revision,
                 trust_remote_code = trust_remote_code,
             )
+            print("Model config", model_config)
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
@@ -412,6 +413,7 @@ class FastVisionModel(FastBaseVisionModel):
                 revision = revision,
                 trust_remote_code = trust_remote_code,
             )
+            print("PEFT config", peft_config)
             is_peft = True
         except Exception as error:
             peft_error = str(error)
