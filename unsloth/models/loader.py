@@ -358,43 +358,13 @@ class FastVisionModel(FastBaseVisionModel):
             patch_unsloth_smart_gradient_checkpointing()
         
         old_model_name = model_name
-        print(model_name)
         model_name = get_model_name(model_name, load_in_4bit)
-        print(model_name)
-
-        # with contextlib.redirect_stdout(open(os.devnull, "w")):
-        patch_loss_functions(torch_compile = False)
-        model_types = unsloth_compile_transformers(
-            model_name              = model_name,
-            sdpa_dynamic_mask       = True,
-            sdpa_bool_masks         = True,
-            sdpa_gqa_replace        = True,
-            sdpa_dynamic_compile    = True,
-            compile_attention       = True,
-            disable_causal_masks    = True,
-            compile_torch_modules   = True,
-            compile_custom_modules  = True,
-            compile_function_calls  = True,
-            fuse_lm_head            = True,
-            gradient_checkpointing  = True,
-            manual_replacements     = True,
-            epilogue_fusion         = True,
-            max_autotune            = False,
-            shape_padding           = True,
-            cudagraphs              = False,
-            debug                   = False,
-            import_from_cache       = False,
-            disable                 = False,
-            return_logits           = return_logits,
-        )
-        # pass
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
         was_disabled = are_progress_bars_disabled()
         disable_progress_bars()
-
-        print(model_name)
+        
         autoconfig_error = None
         peft_error = None
         try:
@@ -404,11 +374,9 @@ class FastVisionModel(FastBaseVisionModel):
                 revision = revision,
                 trust_remote_code = trust_remote_code,
             )
-            print("Model config", model_config)
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
-            print(autoconfig_error)
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
@@ -417,11 +385,9 @@ class FastVisionModel(FastBaseVisionModel):
                 revision = revision,
                 trust_remote_code = trust_remote_code,
             )
-            print("PEFT config", peft_config)
             is_peft = True
         except Exception as error:
             peft_error = str(error)
-            print(peft_error)
             is_peft = False
         pass
 
@@ -472,7 +438,6 @@ class FastVisionModel(FastBaseVisionModel):
         if is_peft:
             # Check base model again for PEFT
             model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
-            print(model_name)
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -482,6 +447,33 @@ class FastVisionModel(FastBaseVisionModel):
         pass
 
         if not was_disabled: enable_progress_bars()
+
+        # with contextlib.redirect_stdout(open(os.devnull, "w")):
+        patch_loss_functions(torch_compile = False)
+        model_types = unsloth_compile_transformers(
+            model_name              = model_name,
+            sdpa_dynamic_mask       = True,
+            sdpa_bool_masks         = True,
+            sdpa_gqa_replace        = True,
+            sdpa_dynamic_compile    = True,
+            compile_attention       = True,
+            disable_causal_masks    = True,
+            compile_torch_modules   = True,
+            compile_custom_modules  = True,
+            compile_function_calls  = True,
+            fuse_lm_head            = True,
+            gradient_checkpointing  = True,
+            manual_replacements     = True,
+            epilogue_fusion         = True,
+            max_autotune            = False,
+            shape_padding           = True,
+            cudagraphs              = False,
+            debug                   = False,
+            import_from_cache       = False,
+            disable                 = False,
+            return_logits           = return_logits,
+        )
+        # pass
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
