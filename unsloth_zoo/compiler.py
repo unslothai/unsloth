@@ -361,7 +361,7 @@ pass
 
 # We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
 # os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
-LOGITS_ERROR_STRING = \
+LOGITS_ERROR_STRING = \\
     "Unsloth: Logits are empty from 2024.11 onwards. To get raw logits again, please "\\
     'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\\n\\n'\\
     "import os\\n"\\
