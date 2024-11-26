@@ -54,6 +54,7 @@ __all__ = [
     "unpatch_gradient_checkpointing",
 
     "HAS_CUT_CROSS_ENTROPY",
+    "EMPTY_LOGITS",
     "fused_linear_cross_entropy",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
@@ -1163,4 +1164,28 @@ def unsloth_compile_transformers(
         )
     pass
     return model_types
+pass
+
+# We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
+# os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
+LOGITS_ERROR_STRING = \
+    "Unsloth: Logits are empty from 2024.11 onwards. To get raw logits again, please "\
+    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\n\n'\
+    "import os\n"\
+    "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\
+    "... trainer.train() ..."
+
+def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
+class EmptyLogits(torch.Tensor):
+    def __init__(self): return
+    __getitem__ = raise_logits_error
+    __getattr__ = raise_logits_error
+    def __repr__(self): return LOGITS_ERROR_STRING
+    def __str__ (self): return LOGITS_ERROR_STRING
+pass
+EMPTY_LOGITS = EmptyLogits()
+functions = dir(torch.Tensor)
+for function in functions:
+    try: exec(f"EMPTY_LOGITS.{function} = raise_logits_error", globals(), locals())
+    except: continue
 pass
