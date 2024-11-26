@@ -358,7 +358,9 @@ class FastVisionModel(FastBaseVisionModel):
             patch_unsloth_smart_gradient_checkpointing()
         
         old_model_name = model_name
+        print(model_name)
         model_name = get_model_name(model_name, load_in_4bit)
+        print(model_name)
 
         with contextlib.redirect_stdout(open(os.devnull, "w")):
             patch_loss_functions(torch_compile = False)
