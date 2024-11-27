@@ -607,13 +607,7 @@ class FastCausalModel(FastLlamaModel):
         )
 
         # Load the LLaMA model for causal language modeling
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            config=config,  # Use the custom configuration
-            device_map=device_map,  # Automatically choose the device (GPU/CPU)
-            trust_remote_code=trust_remote_code,
-            *args, **kwargs
-        )
+        model = AutoModelForCausalLM.from_config(config=config)
 
         # Fix tokenizer if necessary (e.g., setting pad_token)
         if fix_tokenizer:
