@@ -564,7 +564,7 @@ class FastCausalModel(FastLlamaModel):
         hidden_size=4096,
         num_hidden_layers=32,
         num_attention_heads=32,
-        num_key_value_heads=None,  # Optional, for models with multi-query attention
+        num_key_value_heads=num_attention_heads,  # Optional, for models with multi-query attention
         intermediate_size=11008,
         hidden_act="silu",  # LLaMA typically uses SiLU (Swish) activation
         attention_dropout=0.1,
