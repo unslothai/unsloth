@@ -558,7 +558,8 @@ class FastCausalModel(FastLlamaModel):
         hidden_size=4096,
         num_hidden_layers=32,
         num_attention_heads=32,
-        num_key_value_heads=num_attention_heads,  
+        # TO DO add better check num_key_value_heads
+        num_key_value_heads=num_attention_heads, # num_key_value_heads and num_attention_heads needs to either match or divisble to not get error 
         intermediate_size=11008,
         hidden_act="silu", 
         attention_dropout=0.1,
@@ -601,9 +602,7 @@ class FastCausalModel(FastLlamaModel):
 
         model = AutoModelForCausalLM.from_config(config=config)
 
-        # Fix tokenizer if necessary (e.g., setting pad_token)
         if fix_tokenizer:
             if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token  # Use eos_token as pad_token if pad_token is missing
-
+                tokenizer.pad_token = tokenizer.eos_token  
         return model, tokenizer
