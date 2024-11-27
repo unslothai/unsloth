@@ -547,59 +547,77 @@ class FastVisionModel(FastBaseVisionModel):
     pass
 pass
 
-import types 
-from .causal import FastBaseCausalModel
-from transformers import AutoConfig
-from .llama import FastLlamaModel, LlamaAttention_fast_forward, original_apply_qkv, original_apply_o, fast_swiglu_inference, fast_rms_layernorm_inference
+from transformers import AutoConfig , AutoModelForCausalLM , AutoTokenizer
 
 try:
     from huggingface_hub.utils import get_token
 except:
     from huggingface_hub.utils._token import get_token
 
-class FastCausalModel(FastBaseCausalModel):
-    @staticmethod
-    def create_model(
-        tokenizer,
-        max_seq_length = None,
-        hidden_size = 768,
-        num_hidden_layers = 12,
-        num_attention_heads = 12,
-        intermediate_size = 3072,
-        num_key_value_heads = None,
-        dtype = None,
-        device_map = "auto",
-        trust_remote_code = False,
-        token = None,
-        *args, **kwargs
-    ):
-        if token is None: 
-            token = get_token()
 
-        # Create model from config
-        model, tokenizer, config = FastBaseCausalModel.from_config(
-            tokenizer=tokenizer,
-            context_length=max_seq_length,
+class FastCausalModel(FastLlamaModel):
+    @staticmethod
+    def from_pretrained(
+        model_name="huggingface/llama",  # Replace with actual LLaMA model name
+        tokenizer_name=None,
+        context_length=1024,
+        hidden_size=4096,
+        num_hidden_layers=32,
+        num_attention_heads=32,
+        num_key_value_heads=None,  # Optional, for models with multi-query attention
+        intermediate_size=11008,
+        hidden_act="silu",  # LLaMA typically uses SiLU (Swish) activation
+        attention_dropout=0.1,
+        attention_bias=False,
+        initializer_range=0.02,
+        pretraining_tp=1,
+        rms_norm_eps=1e-6,
+        rope_theta=10000.0,
+        tie_word_embeddings=False,
+        device_map="auto",
+        trust_remote_code=False,
+        fix_tokenizer=True,
+        *args, **kwargs,
+    ):
+        # Load the tokenizer first
+        if tokenizer_name is None:
+            tokenizer_name = model_name
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=trust_remote_code)
+
+        # Create the configuration for the LLaMA model
+        config = AutoConfig.from_pretrained(
+            model_name,
+            vocab_size=len(tokenizer),
+            max_position_embeddings=context_length,
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
+            num_key_value_heads=num_key_value_heads,  # Optional, used in some LLaMA models
             intermediate_size=intermediate_size,
-            num_key_value_heads=num_key_value_heads or num_attention_heads,
-            dtype=_get_dtype(dtype),
-            token=token,
+            hidden_act=hidden_act,
+            attention_dropout=attention_dropout,
+            attention_bias=attention_bias,
+            initializer_range=initializer_range,
+            pretraining_tp=pretraining_tp,
+            rms_norm_eps=rms_norm_eps,
+            rope_theta=rope_theta,
+            tie_word_embeddings=tie_word_embeddings,
+            trust_remote_code=trust_remote_code,
+            **kwargs  # Pass other configuration parameters if needed
+        )
+
+        # Load the LLaMA model for causal language modeling
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            config=config,  # Use the custom configuration
+            device_map=device_map,  # Automatically choose the device (GPU/CPU)
             trust_remote_code=trust_remote_code,
             *args, **kwargs
         )
 
+        # Fix tokenizer if necessary (e.g., setting pad_token)
+        if fix_tokenizer:
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token  # Use eos_token as pad_token if pad_token is missing
 
-
-        # Move model to appropriate device
-        model.to(device_map)
-
-        # Add unsloth tags
-        if hasattr(model, "add_model_tags"):
-            model.add_model_tags(["unsloth"])
-        if hasattr(tokenizer, "add_model_tags"):
-            tokenizer.add_model_tags(["unsloth"])
-
-        return model, tokenizer, config
+        return model, tokenizer
