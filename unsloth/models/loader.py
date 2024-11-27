@@ -347,7 +347,6 @@ class FastVisionModel(FastBaseVisionModel):
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab         = None, # [TODO] No effect
         revision                   = None,
-        return_logits              = False, # Return logits
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -360,11 +359,37 @@ class FastVisionModel(FastBaseVisionModel):
         old_model_name = model_name
         model_name = get_model_name(model_name, load_in_4bit)
 
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
+            patch_loss_functions(torch_compile = False)
+            model_types = unsloth_compile_transformers(
+                model_name              = model_name,
+                sdpa_dynamic_mask       = True,
+                sdpa_bool_masks         = True,
+                sdpa_gqa_replace        = True,
+                sdpa_dynamic_compile    = True,
+                compile_attention       = True,
+                disable_causal_masks    = True,
+                compile_torch_modules   = True,
+                compile_custom_modules  = True,
+                compile_function_calls  = True,
+                fuse_lm_head            = True,
+                gradient_checkpointing  = True,
+                manual_replacements     = True,
+                epilogue_fusion         = True,
+                max_autotune            = False,
+                shape_padding           = True,
+                cudagraphs              = False,
+                debug                   = False,
+                import_from_cache       = False,
+                disable                 = False,
+            )
+        pass
+
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
         was_disabled = are_progress_bars_disabled()
         disable_progress_bars()
-        
+
         autoconfig_error = None
         peft_error = None
         try:
@@ -447,33 +472,6 @@ class FastVisionModel(FastBaseVisionModel):
         pass
 
         if not was_disabled: enable_progress_bars()
-
-        with contextlib.redirect_stdout(open(os.devnull, "w")):
-            patch_loss_functions(torch_compile = False)
-            model_types = unsloth_compile_transformers(
-                model_name              = model_name,
-                sdpa_dynamic_mask       = True,
-                sdpa_bool_masks         = True,
-                sdpa_gqa_replace        = True,
-                sdpa_dynamic_compile    = True,
-                compile_attention       = True,
-                disable_causal_masks    = True,
-                compile_torch_modules   = True,
-                compile_custom_modules  = True,
-                compile_function_calls  = True,
-                fuse_lm_head            = True,
-                gradient_checkpointing  = True,
-                manual_replacements     = True,
-                epilogue_fusion         = True,
-                max_autotune            = False,
-                shape_padding           = True,
-                cudagraphs              = False,
-                debug                   = False,
-                import_from_cache       = False,
-                disable                 = False,
-                return_logits           = return_logits,
-            )
-        pass
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
@@ -560,7 +558,7 @@ except:
 class FastCausalModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name="huggingface/llama",  # Replace with actual LLaMA model name
+        model_name=None,  # Replace with actual LLaMA model name
         tokenizer_name=None,
         context_length=1024,
         hidden_size=4096,
