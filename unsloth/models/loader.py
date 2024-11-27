@@ -549,24 +549,18 @@ pass
 
 from transformers import AutoConfig , AutoModelForCausalLM , AutoTokenizer
 
-try:
-    from huggingface_hub.utils import get_token
-except:
-    from huggingface_hub.utils._token import get_token
-
-
 class FastCausalModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name=None,  # Replace with actual LLaMA model name
+        model_name=None, 
         tokenizer_name=None,
         context_length=1024,
         hidden_size=4096,
         num_hidden_layers=32,
         num_attention_heads=32,
-        num_key_value_heads=num_attention_heads,  # Optional, for models with multi-query attention
+        num_key_value_heads=num_attention_heads,  
         intermediate_size=11008,
-        hidden_act="silu",  # LLaMA typically uses SiLU (Swish) activation
+        hidden_act="silu", 
         attention_dropout=0.1,
         attention_bias=False,
         initializer_range=0.02,
@@ -584,7 +578,6 @@ class FastCausalModel(FastLlamaModel):
             tokenizer_name = model_name
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=trust_remote_code)
 
-        # Create the configuration for the LLaMA model
         config = AutoConfig.from_pretrained(
             model_name,
             vocab_size=len(tokenizer),
@@ -592,7 +585,7 @@ class FastCausalModel(FastLlamaModel):
             hidden_size=hidden_size,
             num_hidden_layers=num_hidden_layers,
             num_attention_heads=num_attention_heads,
-            num_key_value_heads=num_key_value_heads,  # Optional, used in some LLaMA models
+            num_key_value_heads=num_key_value_heads,  
             intermediate_size=intermediate_size,
             hidden_act=hidden_act,
             attention_dropout=attention_dropout,
@@ -603,10 +596,9 @@ class FastCausalModel(FastLlamaModel):
             rope_theta=rope_theta,
             tie_word_embeddings=tie_word_embeddings,
             trust_remote_code=trust_remote_code,
-            **kwargs  # Pass other configuration parameters if needed
+            **kwargs 
         )
 
-        # Load the LLaMA model for causal language modeling
         model = AutoModelForCausalLM.from_config(config=config)
 
         # Fix tokenizer if necessary (e.g., setting pad_token)
