@@ -8,6 +8,8 @@ from typing import Generator, Optional,Type, Callable, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+
+from unsloth.models.loader import get_model_name
 from .models import llama as models
 import transformers
 from huggingface_hub import snapshot_download,create_repo
@@ -250,7 +252,8 @@ def generate(
         yield y
 
 def save_merged_model(args):
-    model_path = get_model_path(args.model_name)
+    model_name = get_model_name(args.model_name,args.load_in_4bit)
+    model_path = get_model_path(model_name)
     model, tokenizer, config = load(model_path)
     model.freeze()
 
@@ -333,11 +336,14 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
 
 
 def load_pretrained(
-    path_or_hf_repo: str,
+    model_name: str,
     tokenizer_config={},
     model_config={},
+    dtype= None,
+    load_in_4bit=True
 ):
-    model_path = get_model_path(path_or_hf_repo)
+    model_name = get_model_name(model_name,load_in_4bit)
+    model_path = get_model_path(model_name)
 
     model,tokenizer, config = load(model_path, tokenizer_config)
 

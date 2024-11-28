@@ -57,7 +57,7 @@ def run(args):
         )
     else:
         print("Loading pretrained model")
-        model, tokenizer, config = mlx_utils.load_pretrained(args.model_name)
+        model, tokenizer, config = mlx_utils.load_pretrained(args.model_name,dtype=args.dtype,load_in_4bit=args.load_in_4bit)
        
     # Configure PEFT model
     if not has_mps:

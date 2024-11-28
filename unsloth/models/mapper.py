@@ -17,440 +17,539 @@ __all__ = [
     "FLOAT_TO_INT_MAPPER",
 ]
 
-__INT_TO_FLOAT_MAPPER = \
+from unsloth.devices import has_mps
+
+
+if not has_mps:
+    __INT_TO_FLOAT_MAPPER = \
+    {
+        "unsloth/mistral-7b-bnb-4bit" : (
+            "unsloth/mistral-7b",
+            "mistralai/Mistral-7B-v0.1",
+        ),
+        "unsloth/llama-2-7b-bnb-4bit" : (
+            "unsloth/llama-2-7b",
+            "meta-llama/Llama-2-7b-hf",
+        ),
+        "unsloth/llama-2-13b-bnb-4bit" : (
+            "unsloth/llama-2-13b",
+            "meta-llama/Llama-2-13b-hf",
+        ),
+        "unsloth/codellama-34b-bnb-4bit" : (
+            "codellama/CodeLlama-34b-hf",
+        ),
+        "unsloth/zephyr-sft-bnb-4bit" : (
+            "unsloth/zephyr-sft",
+            "HuggingFaceH4/mistral-7b-sft-beta",
+        ),
+        "unsloth/tinyllama-bnb-4bit" : (
+            "unsloth/tinyllama",
+            "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+        ),
+        "unsloth/tinyllama-chat-bnb-4bit" : (
+            "unsloth/tinyllama-chat",
+            "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        ),
+        "unsloth/mistral-7b-instruct-v0.1-bnb-4bit" : (
+            "unsloth/mistral-7b-instruct-v0.1",
+            "mistralai/Mistral-7B-Instruct-v0.1",
+        ),
+        "unsloth/mistral-7b-instruct-v0.2-bnb-4bit" : (
+            "unsloth/mistral-7b-instruct-v0.2",
+            "mistralai/Mistral-7B-Instruct-v0.2",
+        ),
+        "unsloth/llama-2-7b-chat-bnb-4bit" : (
+            "unsloth/llama-2-7b-chat",
+            "meta-llama/Llama-2-7b-chat-hf",
+        ),
+        "unsloth/llama-2-7b-chat-bnb-4bit" : (
+            "unsloth/llama-2-7b-chat",
+            "meta-llama/Llama-2-7b-chat-hf",
+        ),
+        "unsloth/codellama-7b-bnb-4bit" : (
+            "unsloth/codellama-7b",
+            "codellama/CodeLlama-7b-hf",
+        ),
+        "unsloth/codellama-13b-bnb-4bit" : (
+            "codellama/CodeLlama-13b-hf",
+        ),
+        "unsloth/yi-6b-bnb-4bit" : (
+            "unsloth/yi-6b",
+            "01-ai/Yi-6B",
+        ),
+        "unsloth/solar-10.7b-bnb-4bit" : (
+            "upstage/SOLAR-10.7B-v1.0",
+        ),
+        "unsloth/gemma-7b-bnb-4bit" : (
+            "unsloth/gemma-7b",
+            "google/gemma-7b",
+        ),
+        "unsloth/gemma-2b-bnb-4bit" : (
+            "unsloth/gemma-2b",
+            "google/gemma-2b",
+        ),
+        "unsloth/gemma-7b-it-bnb-4bit" : (
+            "unsloth/gemma-7b-it",
+            "google/gemma-7b-it",
+        ),
+        "unsloth/gemma-2b-bnb-4bit" : (
+            "unsloth/gemma-2b-it",
+            "google/gemma-2b-it",
+        ),
+        "unsloth/mistral-7b-v0.2-bnb-4bit" : (
+            "unsloth/mistral-7b-v0.2",
+            "alpindale/Mistral-7B-v0.2-hf",
+        ),
+        "unsloth/gemma-1.1-2b-it-bnb-4bit" : (
+            "unsloth/gemma-1.1-2b-it",
+            "google/gemma-1.1-2b-it",
+        ),
+        "unsloth/gemma-1.1-7b-it-bnb-4bit" : (
+            "unsloth/gemma-1.1-7b-it",
+            "google/gemma-1.1-7b-it",
+        ),
+        "unsloth/Starling-LM-7B-beta-bnb-4bit" : (
+            "unsloth/Starling-LM-7B-beta",
+            "Nexusflow/Starling-LM-7B-beta",
+        ),
+        "unsloth/Hermes-2-Pro-Mistral-7B-bnb-4bit" : (
+            "unsloth/Hermes-2-Pro-Mistral-7B",
+            "NousResearch/Hermes-2-Pro-Mistral-7B",
+        ),
+        "unsloth/OpenHermes-2.5-Mistral-7B-bnb-4bit" : (
+            "unsloth/OpenHermes-2.5-Mistral-7B",
+            "teknium/OpenHermes-2.5-Mistral-7B",
+        ),
+        "unsloth/codegemma-2b-bnb-4bit" : (
+            "unsloth/codegemma-2b",
+            "google/codegemma-2b",
+        ),
+        "unsloth/codegemma-7b-bnb-4bit" : (
+            "unsloth/codegemma-7b",
+            "google/codegemma-7b",
+        ),
+        "unsloth/codegemma-7b-it-bnb-4bit" : (
+            "unsloth/codegemma-7b-it",
+            "google/codegemma-7b-it",
+        ),
+        "unsloth/llama-3-8b-bnb-4bit" : (
+            "unsloth/llama-3-8b",
+            "meta-llama/Meta-Llama-3-8B",
+        ),
+        "unsloth/llama-3-8b-Instruct-bnb-4bit" : (
+            "unsloth/llama-3-8b-Instruct",
+            "meta-llama/Meta-Llama-3-8B-Instruct",
+        ),
+        "unsloth/llama-3-70b-bnb-4bit" : (
+            "meta-llama/Meta-Llama-3-70B",
+        ),
+        "unsloth/llama-3-70b-Instruct-bnb-4bit" : (
+            "meta-llama/Meta-Llama-3-70B-Instruct",
+        ),
+        "unsloth/Phi-3-mini-4k-instruct-bnb-4bit" : (
+            "unsloth/Phi-3-mini-4k-instruct",
+            "microsoft/Phi-3-mini-4k-instruct",
+        ),
+        "unsloth/mistral-7b-v0.3-bnb-4bit" : (
+            "unsloth/mistral-7b-v0.3",
+            "mistralai/Mistral-7B-v0.3",
+        ),
+        "unsloth/mistral-7b-instruct-v0.3-bnb-4bit" : (
+            "unsloth/mistral-7b-instruct-v0.3",
+            "mistralai/Mistral-7B-Instruct-v0.3",
+        ),
+        "unsloth/Phi-3-medium-4k-instruct-bnb-4bit" : (
+            "unsloth/Phi-3-medium-4k-instruct",
+            "microsoft/Phi-3-medium-4k-instruct",
+        ),
+        "unsloth/Qwen2-0.5B-bnb-4bit" : (
+            "unsloth/Qwen2-0.5B",
+            "Qwen/Qwen2-0.5B",
+        ),
+        "unsloth/Qwen2-0.5B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2-0.5B-Instruct",
+            "Qwen/Qwen2-0.5B-Instruct",
+        ),
+        "unsloth/Qwen2-1.5B-bnb-4bit" : (
+            "unsloth/Qwen2-1.5B",
+            "Qwen/Qwen2-1.5B",
+        ),
+        "unsloth/Qwen2-1.5B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2-1.5B-Instruct",
+            "Qwen/Qwen2-1.5B-Instruct",
+        ),
+        "unsloth/Qwen2-7B-bnb-4bit" : (
+            "unsloth/Qwen2-7B",
+            "Qwen/Qwen2-7B",
+        ),
+        "unsloth/Qwen2-7B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2-7B-Instruct",
+            "Qwen/Qwen2-7B-Instruct",
+        ),
+        "unsloth/Qwen2-70B-bnb-4bit" : (
+            "Qwen/Qwen2-70B",
+        ),
+        "unsloth/Qwen2-70B-Instruct-bnb-4bit" : (
+            "Qwen/Qwen2-70B-Instruct",
+        ),
+        "mistralai/Codestral-22B-v0.1" : (
+            "mistral-community/Codestral-22B-v0.1",
+        ),
+        "unsloth/gemma-2-9b-bnb-4bit" : (
+            "unsloth/gemma-2-9b",
+            "google/gemma-2-9b",
+        ),
+        "unsloth/gemma-2-27b-bnb-4bit" : (
+            "unsloth/gemma-2-27b",
+            "google/gemma-2-27b",
+        ),
+        "unsloth/gemma-2-9b-it-bnb-4bit" : (
+            "unsloth/gemma-2-9b-it",
+            "google/gemma-2-9b-it",
+        ),
+        "unsloth/gemma-2-27b-it-bnb-4bit" : (
+            "unsloth/gemma-2-27b-it",
+            "google/gemma-2-27b-it",
+        ),
+        "unsloth/Phi-3-mini-4k-instruct-v0-bnb-4bit" : ( # Old Phi pre July
+            "unsloth/Phi-3-mini-4k-instruct-v0",
+        ),
+        "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit" : ( # New 12b Mistral models
+            "unsloth/Mistral-Nemo-Instruct-2407",
+            "mistralai/Mistral-Nemo-Instruct-2407",
+        ),
+        "unsloth/Mistral-Nemo-Base-2407-bnb-4bit" : ( # New 12b Mistral models
+            "unsloth/Mistral-Nemo-Base-2407",
+            "mistralai/Mistral-Nemo-Base-2407",
+        ),
+        "unsloth/Meta-Llama-3.1-8B-bnb-4bit" : (
+            "unsloth/Meta-Llama-3.1-8B",
+            "meta-llama/Meta-Llama-3.1-8B",
+        ),
+        "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit" : (
+            "unsloth/Meta-Llama-3.1-8B-Instruct",
+            "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        ),
+        "unsloth/Meta-Llama-3.1-70B-bnb-4bit" : (
+            "unsloth/Meta-Llama-3.1-70B",
+            "meta-llama/Meta-Llama-3.1-70B",
+        ),
+        "unsloth/Meta-Llama-3.1-405B-bnb-4bit" : (
+            "meta-llama/Meta-Llama-3.1-405B",
+        ),
+        "unsloth/Meta-Llama-3.1-405B-Instruct-bnb-4bit" : (
+            "meta-llama/Meta-Llama-3.1-405B-Instruct",
+        ),
+        "unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit" : (
+            "unsloth/Meta-Llama-3.1-70B-Instruct",
+            "meta-llama/Meta-Llama-3.1-70B-Instruct",
+        ),
+        "unsloth/Mistral-Large-Instruct-2407-bnb-4bit" : (
+            "mistralai/Mistral-Large-Instruct-2407",
+        ),
+        "unsloth/gemma-2-2b-bnb-4bit" : (
+            "unsloth/gemma-2-2b",
+            "google/gemma-2-2b",
+        ),
+        "unsloth/gemma-2-2b-it-bnb-4bit" : (
+            "unsloth/gemma-2-2b-it",
+            "google/gemma-2-2b-it",
+        ),
+        "unsloth/Phi-3.5-mini-instruct-bnb-4bit" : (
+            "unsloth/Phi-3.5-mini-instruct",
+            "microsoft/Phi-3.5-mini-instruct",
+        ),
+        "unsloth/c4ai-command-r-08-2024-bnb-4bit" : (
+            "CohereForAI/c4ai-command-r-08-2024",
+        ),
+        "unsloth/c4ai-command-r-plus-08-2024-bnb-4bit" : (
+            "CohereForAI/c4ai-command-r-plus-08-2024",
+        ),
+        "unsloth/Llama-3.1-Storm-8B-bnb-4bit" : (
+            "unsloth/Llama-3.1-Storm-8B",
+            "akjindal53244/Llama-3.1-Storm-8B",
+        ),
+        "unsloth/Hermes-3-Llama-3.1-8B-bnb-4bit" : (
+            "unsloth/Hermes-3-Llama-3.1-8B",
+            "NousResearch/Hermes-3-Llama-3.1-8B",
+        ),
+        "unsloth/Hermes-3-Llama-3.1-70B-bnb-4bit" : (
+            "unsloth/Hermes-3-Llama-3.1-70B",
+            "NousResearch/Hermes-3-Llama-3.1-70B",
+        ),
+        "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit" : (
+            "NousResearch/Hermes-3-Llama-3.1-405B",
+        ),
+        "unsloth/SmolLM-135M-bnb-4bit" : (
+            "unsloth/SmolLM-135M",
+            "HuggingFaceTB/SmolLM-135M",
+        ),
+        "unsloth/SmolLM-360M-bnb-4bit" : (
+            "unsloth/SmolLM-360M",
+            "HuggingFaceTB/SmolLM-360M",
+        ),
+        "unsloth/SmolLM-1.7B-bnb-4bit" : (
+            "unsloth/SmolLM-1.7B",
+            "HuggingFaceTB/SmolLM-1.7B",
+        ),
+        "unsloth/SmolLM-135M-Instruct-bnb-4bit" : (
+            "unsloth/SmolLM-135M-Instruct",
+            "HuggingFaceTB/SmolLM-135M-Instruct",
+        ),
+        "unsloth/SmolLM-360M-Instruct-bnb-4bit" : (
+            "unsloth/SmolLM-360M-Instruct",
+            "HuggingFaceTB/SmolLM-360M-Instruct",
+        ),
+        "unsloth/SmolLM-1.7B-Instruct-bnb-4bit" : (
+            "unsloth/SmolLM-1.7B-Instruct",
+            "HuggingFaceTB/SmolLM-1.7B-Instruct",
+        ),
+        "unsloth/Mistral-Small-Instruct-2409-bnb-4bit" : (
+            "unsloth/Mistral-Small-Instruct-2409",
+            "mistralai/Mistral-Small-Instruct-2409",
+        ),
+        "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-0.5B-Instruct",
+            "Qwen/Qwen2.5-0.5B-Instruct",
+        ),
+        "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-1.5B-Instruct",
+            "Qwen/Qwen2.5-1.5B-Instruct",
+        ),
+        "unsloth/Qwen2.5-3B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-3B-Instruct",
+            "Qwen/Qwen2.5-3B-Instruct",
+        ),
+        "unsloth/Qwen2.5-7B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-7B-Instruct",
+            "Qwen/Qwen2.5-7B-Instruct",
+        ),
+        "unsloth/Qwen2.5-14B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-14B-Instruct",
+            "Qwen/Qwen2.5-14B-Instruct",
+        ),
+        "unsloth/Qwen2.5-32B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-32B-Instruct",
+            "Qwen/Qwen2.5-32B-Instruct",
+        ),
+        "unsloth/Qwen2.5-72B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-72B-Instruct",
+            "Qwen/Qwen2.5-72B-Instruct",
+        ),
+        "unsloth/Qwen2.5-0.5B-bnb-4bit" : (
+            "unsloth/Qwen2.5-0.5B",
+            "Qwen/Qwen2.5-0.5B",
+        ),
+        "unsloth/Qwen2.5-1.5B-bnb-4bit" : (
+            "unsloth/Qwen2.5-1.5B",
+            "Qwen/Qwen2.5-1.5B",
+        ),
+        "unsloth/Qwen2.5-3B-bnb-4bit" : (
+            "unsloth/Qwen2.5-3B",
+            "Qwen/Qwen2.5-3B",
+        ),
+        "unsloth/Qwen2.5-7B-bnb-4bit" : (
+            "unsloth/Qwen2.5-7B",
+            "Qwen/Qwen2.5-7B",
+        ),
+        "unsloth/Qwen2.5-14B-bnb-4bit" : (
+            "unsloth/Qwen2.5-14B",
+            "Qwen/Qwen2.5-14B",
+        ),
+        "unsloth/Qwen2.5-32B-bnb-4bit" : (
+            "unsloth/Qwen2.5-32B",
+            "Qwen/Qwen2.5-32B",
+        ),
+        "unsloth/Qwen2.5-72B-bnb-4bit" : (
+            "unsloth/Qwen2.5-72B",
+            "Qwen/Qwen2.5-72B",
+        ),
+        "unsloth/Qwen2.5-Math-1.5B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Math-1.5B",
+            "Qwen/Qwen2.5-Math-1.5B",
+        ),
+        "unsloth/Qwen2.5-Math-7B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Math-7B",
+            "Qwen/Qwen2.5-Math-7B",
+        ),
+        "unsloth/Qwen2.5-Math-72B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Math-72B",
+            "Qwen/Qwen2.5-Math-72B",
+        ),
+        "unsloth/Qwen2.5-Math-1.5B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Math-1.5B-Instruct",
+            "Qwen/Qwen2.5-Math-1.5B-Instruct",
+        ),
+        "unsloth/Qwen2.5-Math-7B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Math-7B-Instruct",
+            "Qwen/Qwen2.5-Math-7B-Instruct",
+        ),
+        "unsloth/Qwen2.5-Math-72B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Math-72B-Instruct",
+            "Qwen/Qwen2.5-Math-72B-Instruct",
+        ),
+        "unsloth/Qwen2.5-Coder-0.5B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-0.5B",
+            "Qwen/Qwen2.5-Coder-0.5B",
+        ),
+        "unsloth/Qwen2.5-Coder-1.5B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-1.5B",
+            "Qwen/Qwen2.5-Coder-1.5B",
+        ),
+        "unsloth/Qwen2.5-Coder-3B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-3B",
+            "Qwen/Qwen2.5-Coder-3B",
+        ),
+        "unsloth/Qwen2.5-Coder-7B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-7B",
+            "Qwen/Qwen2.5-Coder-7B",
+        ),
+        "unsloth/Qwen2.5-Coder-14B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-14B",
+            "Qwen/Qwen2.5-Coder-14B",
+        ),
+        "unsloth/Qwen2.5-Coder-32B-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-32B",
+            "Qwen/Qwen2.5-Coder-32B",
+        ),
+        "unsloth/Qwen2.5-Coder-0.5B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-Instruct-0.5B",
+            "Qwen/Qwen2.5-Coder-Instruct-0.5B",
+        ),
+        "unsloth/Qwen2.5-Coder-1.5B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-Instruct-1.5B",
+            "Qwen/Qwen2.5-Coder-Instruct-1.5B",
+        ),
+        "unsloth/Qwen2.5-Coder-3B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-3B-Instruct",
+            "Qwen/Qwen2.5-Coder-3B-Instruct",
+        ),
+        "unsloth/Qwen2.5-Coder-7B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-7B-Instruct",
+            "Qwen/Qwen2.5-Coder-7B-Instruct",
+        ),
+        "unsloth/Qwen2.5-Coder-14B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-14B-Instruct",
+            "Qwen/Qwen2.5-Coder-14B-Instruct",
+        ),
+        "unsloth/Qwen2.5-Coder-32B-Instruct-bnb-4bit" : (
+            "unsloth/Qwen2.5-Coder-32B-Instruct",
+            "Qwen/Qwen2.5-Coder-32B-Instruct",
+        ),
+        "unsloth/Llama-3.2-1B-bnb-4bit" : (
+            "unsloth/Llama-3.2-1B",
+            "meta-llama/Llama-3.2-1B",
+        ),
+        "unsloth/Llama-3.2-3B-bnb-4bit" : (
+            "unsloth/Llama-3.2-3B",
+            "meta-llama/Llama-3.2-3B",
+        ),
+        "unsloth/Llama-3.2-1B-Instruct-bnb-4bit" : (
+            "unsloth/Llama-3.2-1B-Instruct",
+            "meta-llama/Llama-3.2-1B-Instruct",
+        ),
+        "unsloth/Llama-3.2-3B-Instruct-bnb-4bit" : (
+            "unsloth/Llama-3.2-3B-Instruct",
+            "meta-llama/Llama-3.2-3B-Instruct",
+        ),
+        "unsloth/Llama-3.1-Nemotron-70B-Instruct-bnb-4bit" : (
+            "unsloth/Llama-3.1-Nemotron-70B-Instruct",
+            "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        ),
+    }
+else:
+    __INT_TO_FLOAT_MAPPER = \
 {
-    "unsloth/mistral-7b-bnb-4bit" : (
-        "unsloth/mistral-7b",
-        "mistralai/Mistral-7B-v0.1",
-    ),
-    "unsloth/llama-2-7b-bnb-4bit" : (
+    "shashikanth-a/llama-2-7b-4bit" : (
         "unsloth/llama-2-7b",
         "meta-llama/Llama-2-7b-hf",
     ),
-    "unsloth/llama-2-13b-bnb-4bit" : (
-        "unsloth/llama-2-13b",
-        "meta-llama/Llama-2-13b-hf",
-    ),
-    "unsloth/codellama-34b-bnb-4bit" : (
-        "codellama/CodeLlama-34b-hf",
-    ),
-    "unsloth/zephyr-sft-bnb-4bit" : (
-        "unsloth/zephyr-sft",
-        "HuggingFaceH4/mistral-7b-sft-beta",
-    ),
-    "unsloth/tinyllama-bnb-4bit" : (
+    "shashikanth-a/tinyllama-4bit" : (
         "unsloth/tinyllama",
         "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
     ),
-    "unsloth/tinyllama-chat-bnb-4bit" : (
+    "shashikanth-a/tinyllama-chat-4bit" : (
         "unsloth/tinyllama-chat",
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     ),
-    "unsloth/mistral-7b-instruct-v0.1-bnb-4bit" : (
-        "unsloth/mistral-7b-instruct-v0.1",
-        "mistralai/Mistral-7B-Instruct-v0.1",
-    ),
-    "unsloth/mistral-7b-instruct-v0.2-bnb-4bit" : (
-        "unsloth/mistral-7b-instruct-v0.2",
-        "mistralai/Mistral-7B-Instruct-v0.2",
-    ),
-    "unsloth/llama-2-7b-chat-bnb-4bit" : (
+    "shashikanth-a/llama-2-7b-chat-4bit" : (
         "unsloth/llama-2-7b-chat",
         "meta-llama/Llama-2-7b-chat-hf",
     ),
-    "unsloth/llama-2-7b-chat-bnb-4bit" : (
-        "unsloth/llama-2-7b-chat",
-        "meta-llama/Llama-2-7b-chat-hf",
-    ),
-    "unsloth/codellama-7b-bnb-4bit" : (
+    "shashikanth-a/codellama-7b-4bit" : (
         "unsloth/codellama-7b",
         "codellama/CodeLlama-7b-hf",
     ),
-    "unsloth/codellama-13b-bnb-4bit" : (
-        "codellama/CodeLlama-13b-hf",
-    ),
-    "unsloth/yi-6b-bnb-4bit" : (
+    "shashikanth-a/yi-6b-4bit" : (
         "unsloth/yi-6b",
         "01-ai/Yi-6B",
     ),
-    "unsloth/solar-10.7b-bnb-4bit" : (
+    "shashikanth-a/solar-10.7b-4bit" : (
         "upstage/SOLAR-10.7B-v1.0",
     ),
-    "unsloth/gemma-7b-bnb-4bit" : (
-        "unsloth/gemma-7b",
-        "google/gemma-7b",
-    ),
-    "unsloth/gemma-2b-bnb-4bit" : (
-        "unsloth/gemma-2b",
-        "google/gemma-2b",
-    ),
-    "unsloth/gemma-7b-it-bnb-4bit" : (
-        "unsloth/gemma-7b-it",
-        "google/gemma-7b-it",
-    ),
-    "unsloth/gemma-2b-bnb-4bit" : (
-        "unsloth/gemma-2b-it",
-        "google/gemma-2b-it",
-    ),
-    "unsloth/mistral-7b-v0.2-bnb-4bit" : (
-        "unsloth/mistral-7b-v0.2",
-        "alpindale/Mistral-7B-v0.2-hf",
-    ),
-    "unsloth/gemma-1.1-2b-it-bnb-4bit" : (
-        "unsloth/gemma-1.1-2b-it",
-        "google/gemma-1.1-2b-it",
-    ),
-    "unsloth/gemma-1.1-7b-it-bnb-4bit" : (
-        "unsloth/gemma-1.1-7b-it",
-        "google/gemma-1.1-7b-it",
-    ),
-    "unsloth/Starling-LM-7B-beta-bnb-4bit" : (
-        "unsloth/Starling-LM-7B-beta",
-        "Nexusflow/Starling-LM-7B-beta",
-    ),
-    "unsloth/Hermes-2-Pro-Mistral-7B-bnb-4bit" : (
-        "unsloth/Hermes-2-Pro-Mistral-7B",
-        "NousResearch/Hermes-2-Pro-Mistral-7B",
-    ),
-    "unsloth/OpenHermes-2.5-Mistral-7B-bnb-4bit" : (
-        "unsloth/OpenHermes-2.5-Mistral-7B",
-        "teknium/OpenHermes-2.5-Mistral-7B",
-    ),
-    "unsloth/codegemma-2b-bnb-4bit" : (
-        "unsloth/codegemma-2b",
-        "google/codegemma-2b",
-    ),
-    "unsloth/codegemma-7b-bnb-4bit" : (
-        "unsloth/codegemma-7b",
-        "google/codegemma-7b",
-    ),
-    "unsloth/codegemma-7b-it-bnb-4bit" : (
-        "unsloth/codegemma-7b-it",
-        "google/codegemma-7b-it",
-    ),
-    "unsloth/llama-3-8b-bnb-4bit" : (
+    "shashikanth-a/llama-3-8b-4bit" : (
         "unsloth/llama-3-8b",
         "meta-llama/Meta-Llama-3-8B",
     ),
-    "unsloth/llama-3-8b-Instruct-bnb-4bit" : (
+    "shashikanth-a/llama-3-8b-Instruct-4bit" : (
         "unsloth/llama-3-8b-Instruct",
         "meta-llama/Meta-Llama-3-8B-Instruct",
     ),
-    "unsloth/llama-3-70b-bnb-4bit" : (
-        "meta-llama/Meta-Llama-3-70B",
-    ),
-    "unsloth/llama-3-70b-Instruct-bnb-4bit" : (
-        "meta-llama/Meta-Llama-3-70B-Instruct",
-    ),
-    "unsloth/Phi-3-mini-4k-instruct-bnb-4bit" : (
-        "unsloth/Phi-3-mini-4k-instruct",
-        "microsoft/Phi-3-mini-4k-instruct",
-    ),
-    "unsloth/mistral-7b-v0.3-bnb-4bit" : (
-        "unsloth/mistral-7b-v0.3",
-        "mistralai/Mistral-7B-v0.3",
-    ),
-    "unsloth/mistral-7b-instruct-v0.3-bnb-4bit" : (
-        "unsloth/mistral-7b-instruct-v0.3",
-        "mistralai/Mistral-7B-Instruct-v0.3",
-    ),
-    "unsloth/Phi-3-medium-4k-instruct-bnb-4bit" : (
-        "unsloth/Phi-3-medium-4k-instruct",
-        "microsoft/Phi-3-medium-4k-instruct",
-    ),
-    "unsloth/Qwen2-0.5B-bnb-4bit" : (
-        "unsloth/Qwen2-0.5B",
-        "Qwen/Qwen2-0.5B",
-    ),
-    "unsloth/Qwen2-0.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2-0.5B-Instruct",
-        "Qwen/Qwen2-0.5B-Instruct",
-    ),
-    "unsloth/Qwen2-1.5B-bnb-4bit" : (
-        "unsloth/Qwen2-1.5B",
-        "Qwen/Qwen2-1.5B",
-    ),
-    "unsloth/Qwen2-1.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2-1.5B-Instruct",
-        "Qwen/Qwen2-1.5B-Instruct",
-    ),
-    "unsloth/Qwen2-7B-bnb-4bit" : (
-        "unsloth/Qwen2-7B",
-        "Qwen/Qwen2-7B",
-    ),
-    "unsloth/Qwen2-7B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2-7B-Instruct",
-        "Qwen/Qwen2-7B-Instruct",
-    ),
-    "unsloth/Qwen2-70B-bnb-4bit" : (
-        "Qwen/Qwen2-70B",
-    ),
-    "unsloth/Qwen2-70B-Instruct-bnb-4bit" : (
-        "Qwen/Qwen2-70B-Instruct",
-    ),
-    "mistralai/Codestral-22B-v0.1" : (
-        "mistral-community/Codestral-22B-v0.1",
-    ),
-    "unsloth/gemma-2-9b-bnb-4bit" : (
-        "unsloth/gemma-2-9b",
-        "google/gemma-2-9b",
-    ),
-    "unsloth/gemma-2-27b-bnb-4bit" : (
-        "unsloth/gemma-2-27b",
-        "google/gemma-2-27b",
-    ),
-    "unsloth/gemma-2-9b-it-bnb-4bit" : (
-        "unsloth/gemma-2-9b-it",
-        "google/gemma-2-9b-it",
-    ),
-    "unsloth/gemma-2-27b-it-bnb-4bit" : (
-        "unsloth/gemma-2-27b-it",
-        "google/gemma-2-27b-it",
-    ),
-    "unsloth/Phi-3-mini-4k-instruct-v0-bnb-4bit" : ( # Old Phi pre July
-        "unsloth/Phi-3-mini-4k-instruct-v0",
-    ),
-    "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit" : ( # New 12b Mistral models
-        "unsloth/Mistral-Nemo-Instruct-2407",
-        "mistralai/Mistral-Nemo-Instruct-2407",
-    ),
-    "unsloth/Mistral-Nemo-Base-2407-bnb-4bit" : ( # New 12b Mistral models
-        "unsloth/Mistral-Nemo-Base-2407",
-        "mistralai/Mistral-Nemo-Base-2407",
-    ),
-    "unsloth/Meta-Llama-3.1-8B-bnb-4bit" : (
+    "shashikanth-a/Meta-Llama-3.1-8B-4bit" : (
         "unsloth/Meta-Llama-3.1-8B",
         "meta-llama/Meta-Llama-3.1-8B",
     ),
-    "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit" : (
+    "shashikanth-a/Meta-Llama-3.1-8B-Instruct-4bit" : (
         "unsloth/Meta-Llama-3.1-8B-Instruct",
         "meta-llama/Meta-Llama-3.1-8B-Instruct",
     ),
-    "unsloth/Meta-Llama-3.1-70B-bnb-4bit" : (
-        "unsloth/Meta-Llama-3.1-70B",
-        "meta-llama/Meta-Llama-3.1-70B",
-    ),
-    "unsloth/Meta-Llama-3.1-405B-bnb-4bit" : (
-        "meta-llama/Meta-Llama-3.1-405B",
-    ),
-    "unsloth/Meta-Llama-3.1-405B-Instruct-bnb-4bit" : (
-        "meta-llama/Meta-Llama-3.1-405B-Instruct",
-    ),
-    "unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit" : (
-        "unsloth/Meta-Llama-3.1-70B-Instruct",
-        "meta-llama/Meta-Llama-3.1-70B-Instruct",
-    ),
-    "unsloth/Mistral-Large-Instruct-2407-bnb-4bit" : (
-        "mistralai/Mistral-Large-Instruct-2407",
-    ),
-    "unsloth/gemma-2-2b-bnb-4bit" : (
-        "unsloth/gemma-2-2b",
-        "google/gemma-2-2b",
-    ),
-    "unsloth/gemma-2-2b-it-bnb-4bit" : (
-        "unsloth/gemma-2-2b-it",
-        "google/gemma-2-2b-it",
-    ),
-    "unsloth/Phi-3.5-mini-instruct-bnb-4bit" : (
-        "unsloth/Phi-3.5-mini-instruct",
-        "microsoft/Phi-3.5-mini-instruct",
-    ),
-    "unsloth/c4ai-command-r-08-2024-bnb-4bit" : (
-        "CohereForAI/c4ai-command-r-08-2024",
-    ),
-    "unsloth/c4ai-command-r-plus-08-2024-bnb-4bit" : (
-        "CohereForAI/c4ai-command-r-plus-08-2024",
-    ),
-    "unsloth/Llama-3.1-Storm-8B-bnb-4bit" : (
+    "shashikanth-a/Llama-3.1-Storm-8B-4bit" : (
         "unsloth/Llama-3.1-Storm-8B",
         "akjindal53244/Llama-3.1-Storm-8B",
     ),
-    "unsloth/Hermes-3-Llama-3.1-8B-bnb-4bit" : (
+    "shashikanth-a/Hermes-3-Llama-3.1-8B-4bit" : (
         "unsloth/Hermes-3-Llama-3.1-8B",
         "NousResearch/Hermes-3-Llama-3.1-8B",
     ),
-    "unsloth/Hermes-3-Llama-3.1-70B-bnb-4bit" : (
-        "unsloth/Hermes-3-Llama-3.1-70B",
-        "NousResearch/Hermes-3-Llama-3.1-70B",
-    ),
-    "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit" : (
-        "NousResearch/Hermes-3-Llama-3.1-405B",
-    ),
-    "unsloth/SmolLM-135M-bnb-4bit" : (
+    "shashikanth-a/SmolLM-135M-4bit" : (
         "unsloth/SmolLM-135M",
         "HuggingFaceTB/SmolLM-135M",
     ),
-    "unsloth/SmolLM-360M-bnb-4bit" : (
+    "shashikanth-a/SmolLM-360M-4bit" : (
         "unsloth/SmolLM-360M",
         "HuggingFaceTB/SmolLM-360M",
     ),
-    "unsloth/SmolLM-1.7B-bnb-4bit" : (
+    "shashikanth-a/SmolLM-1.7B-4bit" : (
         "unsloth/SmolLM-1.7B",
         "HuggingFaceTB/SmolLM-1.7B",
     ),
-    "unsloth/SmolLM-135M-Instruct-bnb-4bit" : (
+    "shashikanth-a/SmolLM-135M-Instruct-4bit" : (
         "unsloth/SmolLM-135M-Instruct",
         "HuggingFaceTB/SmolLM-135M-Instruct",
     ),
-    "unsloth/SmolLM-360M-Instruct-bnb-4bit" : (
+    "shashikanth-a/SmolLM-360M-Instruct-4bit" : (
         "unsloth/SmolLM-360M-Instruct",
         "HuggingFaceTB/SmolLM-360M-Instruct",
     ),
-    "unsloth/SmolLM-1.7B-Instruct-bnb-4bit" : (
+    "shashikanth-a/SmolLM-1.7B-Instruct-4bit" : (
         "unsloth/SmolLM-1.7B-Instruct",
         "HuggingFaceTB/SmolLM-1.7B-Instruct",
     ),
-    "unsloth/Mistral-Small-Instruct-2409-bnb-4bit" : (
-        "unsloth/Mistral-Small-Instruct-2409",
-        "mistralai/Mistral-Small-Instruct-2409",
-    ),
-    "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-0.5B-Instruct",
-        "Qwen/Qwen2.5-0.5B-Instruct",
-    ),
-    "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-1.5B-Instruct",
-        "Qwen/Qwen2.5-1.5B-Instruct",
-    ),
-    "unsloth/Qwen2.5-3B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-3B-Instruct",
-        "Qwen/Qwen2.5-3B-Instruct",
-    ),
-    "unsloth/Qwen2.5-7B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-7B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
-    ),
-    "unsloth/Qwen2.5-14B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-14B-Instruct",
-        "Qwen/Qwen2.5-14B-Instruct",
-    ),
-    "unsloth/Qwen2.5-32B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-32B-Instruct",
-        "Qwen/Qwen2.5-32B-Instruct",
-    ),
-    "unsloth/Qwen2.5-72B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-72B-Instruct",
-        "Qwen/Qwen2.5-72B-Instruct",
-    ),
-    "unsloth/Qwen2.5-0.5B-bnb-4bit" : (
-        "unsloth/Qwen2.5-0.5B",
-        "Qwen/Qwen2.5-0.5B",
-    ),
-    "unsloth/Qwen2.5-1.5B-bnb-4bit" : (
-        "unsloth/Qwen2.5-1.5B",
-        "Qwen/Qwen2.5-1.5B",
-    ),
-    "unsloth/Qwen2.5-3B-bnb-4bit" : (
-        "unsloth/Qwen2.5-3B",
-        "Qwen/Qwen2.5-3B",
-    ),
-    "unsloth/Qwen2.5-7B-bnb-4bit" : (
-        "unsloth/Qwen2.5-7B",
-        "Qwen/Qwen2.5-7B",
-    ),
-    "unsloth/Qwen2.5-14B-bnb-4bit" : (
-        "unsloth/Qwen2.5-14B",
-        "Qwen/Qwen2.5-14B",
-    ),
-    "unsloth/Qwen2.5-32B-bnb-4bit" : (
-        "unsloth/Qwen2.5-32B",
-        "Qwen/Qwen2.5-32B",
-    ),
-    "unsloth/Qwen2.5-72B-bnb-4bit" : (
-        "unsloth/Qwen2.5-72B",
-        "Qwen/Qwen2.5-72B",
-    ),
-    "unsloth/Qwen2.5-Math-1.5B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Math-1.5B",
-        "Qwen/Qwen2.5-Math-1.5B",
-    ),
-    "unsloth/Qwen2.5-Math-7B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Math-7B",
-        "Qwen/Qwen2.5-Math-7B",
-    ),
-    "unsloth/Qwen2.5-Math-72B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Math-72B",
-        "Qwen/Qwen2.5-Math-72B",
-    ),
-    "unsloth/Qwen2.5-Math-1.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Math-1.5B-Instruct",
-        "Qwen/Qwen2.5-Math-1.5B-Instruct",
-    ),
-    "unsloth/Qwen2.5-Math-7B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Math-7B-Instruct",
-        "Qwen/Qwen2.5-Math-7B-Instruct",
-    ),
-    "unsloth/Qwen2.5-Math-72B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Math-72B-Instruct",
-        "Qwen/Qwen2.5-Math-72B-Instruct",
-    ),
-    "unsloth/Qwen2.5-Coder-0.5B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-0.5B",
-        "Qwen/Qwen2.5-Coder-0.5B",
-    ),
-    "unsloth/Qwen2.5-Coder-1.5B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-1.5B",
-        "Qwen/Qwen2.5-Coder-1.5B",
-    ),
-    "unsloth/Qwen2.5-Coder-3B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-3B",
-        "Qwen/Qwen2.5-Coder-3B",
-    ),
-    "unsloth/Qwen2.5-Coder-7B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-7B",
-        "Qwen/Qwen2.5-Coder-7B",
-    ),
-    "unsloth/Qwen2.5-Coder-14B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-14B",
-        "Qwen/Qwen2.5-Coder-14B",
-    ),
-    "unsloth/Qwen2.5-Coder-32B-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-32B",
-        "Qwen/Qwen2.5-Coder-32B",
-    ),
-    "unsloth/Qwen2.5-Coder-0.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-Instruct-0.5B",
-        "Qwen/Qwen2.5-Coder-Instruct-0.5B",
-    ),
-    "unsloth/Qwen2.5-Coder-1.5B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-Instruct-1.5B",
-        "Qwen/Qwen2.5-Coder-Instruct-1.5B",
-    ),
-    "unsloth/Qwen2.5-Coder-3B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-3B-Instruct",
-        "Qwen/Qwen2.5-Coder-3B-Instruct",
-    ),
-    "unsloth/Qwen2.5-Coder-7B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-7B-Instruct",
-        "Qwen/Qwen2.5-Coder-7B-Instruct",
-    ),
-    "unsloth/Qwen2.5-Coder-14B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-14B-Instruct",
-        "Qwen/Qwen2.5-Coder-14B-Instruct",
-    ),
-    "unsloth/Qwen2.5-Coder-32B-Instruct-bnb-4bit" : (
-        "unsloth/Qwen2.5-Coder-32B-Instruct",
-        "Qwen/Qwen2.5-Coder-32B-Instruct",
-    ),
-    "unsloth/Llama-3.2-1B-bnb-4bit" : (
+    "shashikanth-a/Llama-3.2-1B-4bit" : (
         "unsloth/Llama-3.2-1B",
         "meta-llama/Llama-3.2-1B",
     ),
-    "unsloth/Llama-3.2-3B-bnb-4bit" : (
+    "shashikanth-a/Llama-3.2-3B-4bit" : (
         "unsloth/Llama-3.2-3B",
         "meta-llama/Llama-3.2-3B",
     ),
-    "unsloth/Llama-3.2-1B-Instruct-bnb-4bit" : (
+    "shashikanth-a/Llama-3.2-1B-Instruct-4bit" : (
         "unsloth/Llama-3.2-1B-Instruct",
         "meta-llama/Llama-3.2-1B-Instruct",
     ),
-    "unsloth/Llama-3.2-3B-Instruct-bnb-4bit" : (
+    "shashikanth-a/Llama-3.2-3B-Instruct-4bit" : (
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
-    ),
-    "unsloth/Llama-3.1-Nemotron-70B-Instruct-bnb-4bit" : (
-        "unsloth/Llama-3.1-Nemotron-70B-Instruct",
-        "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
     ),
 }
 
