@@ -78,7 +78,6 @@ class FastBaseVisionModel:
         max_seq_length    = None,
         dtype             = None,
         load_in_4bit      = True,
-        load_in_8bit
         token             = None,
         device_map        = "sequential",
         trust_remote_code = False,
