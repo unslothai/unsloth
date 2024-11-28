@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.11.7"
+__version__ = "2024.11.10"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -52,6 +52,18 @@ __all__ = [
     "unpatch_unsloth_gradient_checkpointing",
     "patch_gradient_checkpointing",
     "unpatch_gradient_checkpointing",
+
+    "HAS_CUT_CROSS_ENTROPY",
+    "EMPTY_LOGITS",
+    "fused_linear_cross_entropy",
+    "patch_unsloth_smart_gradient_checkpointing",
+    "unpatch_unsloth_smart_gradient_checkpointing",
+    "create_gradient_checkpointing_buffer",
+
+    "patch_compiled_autograd",
+    "process_vision_info",
+    "unsloth_compile_transformers",
+    "patch_fast_lora",
 ]
 
 import torch
@@ -70,6 +82,7 @@ from unsloth_zoo.patching_utils import (
     patch_layernorm,
     patch_torch_compile,
     patch_model_and_tokenizer,
+    patch_compiled_autograd,
 )
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
@@ -81,6 +94,21 @@ from unsloth_zoo.gradient_checkpointing import (
     unsloth_gradient_checkpoint,
     patch_gradient_checkpointing,
     unpatch_gradient_checkpointing,
+
+    patch_unsloth_smart_gradient_checkpointing,
+    unpatch_unsloth_smart_gradient_checkpointing,
+    create_gradient_checkpointing_buffer,
+)
+from unsloth_zoo.loss_utils import (
+    HAS_CUT_CROSS_ENTROPY,
+    fused_linear_cross_entropy,
+)
+from unsloth_zoo.vision_utils import (
+    process_vision_info,
+)
+from unsloth_zoo.compiler import (
+    get_transformers_model_type,
+    unsloth_compile_transformers as _unsloth_compile_transformers,
 )
 
 # =============================================
@@ -117,6 +145,22 @@ try:
     from transformers.modeling_utils import logger as transformers_modeling_utils_logger
     transformers_modeling_utils_logger.addFilter(HideLoggingMessage("ForCausalLMLoss"))
     del transformers_modeling_utils_logger
+except:
+    pass
+
+# The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+try:
+    from accelerate.utils.modeling import logger as accelerate_utils_modeling_logger
+    accelerate_utils_modeling_logger.addFilter(HideLoggingMessage("The model weights are not tied"))
+    del accelerate_utils_modeling_logger
+except:
+    pass
+
+# Setting `pad_token_id` to `eos_token_id`
+try:
+    from transformers.generation.utils import logger as transformers_generation_utils_logger
+    transformers_generation_utils_logger.addFilter(HideLoggingMessage("Setting `pad_token_id` to `eos_token_id`"))
+    del transformers_generation_utils_logger
 except:
     pass
 
@@ -288,54 +332,60 @@ from transformers.models.llama.modeling_llama import logger
 
 # =============================================
 # Get Xformers
-from xformers import __version__ as xformers_version
-# Temporarily disable 0.0.27 and higher - inference issues
-if False: #Version(xformers_version) >= Version("0.0.27"):
-    raise ImportError(
-        "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
-        "then press Disconnect Runtime and then Restart it.\n"\
-        "\n"\
-        "%%capture\n"
-        "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
-        '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-        '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'\
-        '\n'\
-        f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"\
-        'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
-    )
-pass
-
-if   Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
-    raise ImportError(
-        f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
-        f"Please install xformers < 0.0.24 for torch = {torch_version}."
-    )
-elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= Version("0.0.26"):
-    raise ImportError(
-        f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
-        f"Please install xformers < 0.0.26 for torch = {torch_version}."
-    )
-elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) > Version("0.0.27"):
-    raise ImportError(
-        f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
-        f"Please install xformers <= 0.0.27 for torch = {torch_version}."
-    )
-pass
-
-from xformers._cpp_lib import _register_extensions
 try:
-    _register_extensions() # Check if C++ modules are loaded correctly
-except Exception as error:
-    raise ImportError(
-        "Unsloth: Xformers was not installed correctly.\n"\
-        "Please install xformers separately first.\n"\
-        "Then confirm if it's correctly installed by running:\n"\
-        "python -m xformers.info\n\n"
-        "Longer error message:\n" + str(error)
-    )
+    from xformers import __version__ as xformers_version
+    # Temporarily disable 0.0.27 and higher - inference issues
+    if False: #Version(xformers_version) >= Version("0.0.27"):
+        raise ImportError(
+            "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "\
+            "then press Disconnect Runtime and then Restart it.\n"\
+            "\n"\
+            "%%capture\n"
+            "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
+            '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
+            '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'\
+            '\n'\
+            f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"\
+            'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
+        )
+    pass
+
+    if   Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
+        raise ImportError(
+            f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
+            f"Please install xformers < 0.0.24 for torch = {torch_version}."
+        )
+    elif Version(torch_version) < Version("2.3.0") and Version(xformers_version) >= Version("0.0.26"):
+        raise ImportError(
+            f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
+            f"Please install xformers < 0.0.26 for torch = {torch_version}."
+        )
+    elif Version(torch_version) < Version("2.4.0") and Version(xformers_version) > Version("0.0.27"):
+        raise ImportError(
+            f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"\
+            f"Please install xformers <= 0.0.27 for torch = {torch_version}."
+        )
+    pass
+
+    from xformers._cpp_lib import _register_extensions
+    try:
+        _register_extensions() # Check if C++ modules are loaded correctly
+    except Exception as error:
+        raise ImportError(
+            "Unsloth: Xformers was not installed correctly.\n"\
+            "Please install xformers separately first.\n"\
+            "Then confirm if it's correctly installed by running:\n"\
+            "python -m xformers.info\n\n"
+            "Longer error message:\n" + str(error)
+        )
+    pass
+    import xformers.ops.fmha as xformers
+    xformers_attention = xformers.memory_efficient_attention
+except:
+    xformers = None
+    xformers_attention = None
+    xformers_version = None
 pass
-import xformers.ops.fmha as xformers
-xformers_attention = xformers.memory_efficient_attention
 
 # Check TRL version
 from trl import __version__ as trl_version
@@ -664,7 +714,7 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
 )
 
 def _prepare_backend(
-    self, cpu: bool = False, sagemaker_dp = False, backend: str = None,
+    self, cpu = False, sagemaker_dp = False, backend: str = None,
 ) -> tuple[str, DistributedType]:
     return None, DistributedType.NO
 pass
@@ -1052,4 +1102,112 @@ def patch_tokenizer(model, tokenizer):
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
     return model, tokenizer
+pass
+
+
+def patch_fast_lora():
+    import peft.tuners.lora.bnb
+    peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
+pass
+
+
+def unsloth_compile_transformers(
+    model_name,
+    token                   = None,
+    revision                = None,
+    trust_remote_code       = False,
+    sdpa_dynamic_mask       = True,
+    sdpa_bool_masks         = True,
+    sdpa_gqa_replace        = True,
+    sdpa_dynamic_compile    = True,
+    compile_attention       = True,
+    disable_causal_masks    = True,
+    compile_torch_modules   = True,
+    compile_custom_modules  = True,
+    compile_function_calls  = True,
+    fuse_lm_head            = True,
+    gradient_checkpointing  = True,
+    manual_replacements     = True,
+    epilogue_fusion         = True,
+    max_autotune            = False,
+    shape_padding           = True,
+    cudagraphs              = False,
+    debug                   = False,
+    import_from_cache       = False,
+    disable                 = False,
+    return_logits           = False,
+):
+    if Version(torch_version) < Version("2.4.0"):
+        print(
+            "="*30 + \
+            "Unsloth: Unfortunately Unsloth vision and other newer optimized models need Torch 2.4 or later.\n"\
+            f"You have Torch version {torch_version}. Please upgrade your Torch version by visiting https://pytorch.org/\n"\
+            "For now your models will not get optimized, but will still work for now!"
+        )
+        return
+    pass
+
+    if disable: return
+
+    model_types = get_transformers_model_type(
+        model_name        = model_name,
+        token             = token,
+        revision          = revision,
+        trust_remote_code = trust_remote_code,
+    )
+
+    for model_type in model_types:
+        _unsloth_compile_transformers(
+            model_type,
+            sdpa_dynamic_mask      = sdpa_dynamic_mask,
+            sdpa_bool_masks        = sdpa_bool_masks,
+            sdpa_gqa_replace       = sdpa_gqa_replace,
+            sdpa_dynamic_compile   = sdpa_dynamic_compile,
+            compile_attention      = compile_attention,
+            disable_causal_masks   = disable_causal_masks,
+            compile_torch_modules  = compile_torch_modules,
+            compile_custom_modules = compile_custom_modules,
+            compile_function_calls = compile_function_calls,
+            fuse_lm_head           = fuse_lm_head,
+            gradient_checkpointing = gradient_checkpointing,
+            manual_replacements    = manual_replacements,
+            epilogue_fusion        = epilogue_fusion,
+            max_autotune           = max_autotune,
+            shape_padding          = shape_padding,
+            cudagraphs             = cudagraphs,
+            debug                  = debug,
+            import_from_cache      = import_from_cache,
+            disable                = disable,
+            return_logits          = return_logits,
+        )
+    pass
+    return model_types
+pass
+
+# We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
+# os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
+LOGITS_ERROR_STRING = \
+    "Unsloth: Logits are empty from 2024.11 onwards. To get raw logits again, please "\
+    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\n\n'\
+    "import os\n"\
+    "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\
+    "... trainer.train() ..."
+
+def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
+def return_none(*args, **kwargs): return None
+class EmptyLogits:
+    def __init__(self): return
+    def raise_getattr_error(self, attr): return return_none if attr == "to" else raise_logits_error
+    __getitem__ = raise_logits_error
+    __getattr__ = raise_getattr_error
+    def __repr__(self): return LOGITS_ERROR_STRING
+    def __str__ (self): return LOGITS_ERROR_STRING
+pass
+EMPTY_LOGITS = EmptyLogits()
+functions = dir(torch.Tensor)
+for j, function in enumerate(functions):
+    if function.startswith("__") and function.endswith("__"):
+        exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
+        try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
+        except: continue
 pass
