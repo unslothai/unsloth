@@ -18,9 +18,13 @@ import torch
 from packaging.version import Version
 import os
 torch_nn_functional_cross_entropy = torch.nn.functional.cross_entropy
+from triton import __version__ as triton_version
+major, minor = torch.cuda.get_device_capability()
 
 global HAS_CUT_CROSS_ENTROPY
-if Version(torch.__version__) >= Version("2.4.0"):
+if (Version(torch.__version__) >= Version("2.4.0")) and \
+    (not ((major <= 7) and (minor < 5))) and \
+    (not (Version(triton_version) < Version("3.0.0"))):
     try:
         from cut_cross_entropy import linear_cross_entropy
         HAS_CUT_CROSS_ENTROPY = True
