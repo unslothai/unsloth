@@ -104,14 +104,20 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
     os.environ["TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE"] = "1"
     os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
+
+    # Duplicate functions will cause hashing issues
     # os.environ["TORCHINDUCTOR_CACHE_DIR"] = UNSLOTH_COMPILE_LOCATION
+
+    # https://github.com/sayakpaul/diffusers-torchao?tab=readme-ov-file#things-to-keep-in-mind-when-benchmarking
+    os.environ["ENABLE_AOT_AUTOGRAD_CACHE"] = "1"
 
     # Torch compile arguments
     torch_compile_arguments = [
         f"config.debug = {debug}",
         "config.dce = True",
         "config.memory_planning = True",
-        "config.memory_pool = 'combined'",
+        # Using 'combined' memory pool will cause re-compiles for dynamic shapres. We just re-use already allocated memory pools
+        "config.memory_pool = 'none'",
         "config.efficient_conv_bn_eval_fx_passes = True", # Reduces stability a little bit
         "config.dynamic_scale_rblock = True", # Scale down RBLOCK for better occupancy
         # Disable reorder_for_compute_comm_overlap since it errors for non multi GPU systems
@@ -131,7 +137,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         # f"config.triton.multi_kernel = {O3}", # use tuning to pick between different subkernels
         "config.cuda.enable_cuda_lto = True",
         "config.cuda.use_fast_math = True",
-        "config.cuda.compile_opt_level = '-O1'",
+        f"config.cuda.compile_opt_level = {'-O2' if O3 else '-O1'}",
         # Capture torch.arange(...), torch.zeros(...)
         "config.capture_dynamic_output_shape_ops = True",
     ]
