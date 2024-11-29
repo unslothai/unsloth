@@ -9,7 +9,7 @@ from typing import Generator, Optional,Type, Callable, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-from unsloth.models.loader import get_model_name
+from unsloth.models.loader_utils import get_model_name
 from .models import llama as models
 import transformers
 from huggingface_hub import snapshot_download,create_repo
@@ -165,7 +165,7 @@ def load(model_path: str, tokenizer_config={},
 
     weights = {}
     for wf in weight_files:
-        weights.update(mx.load(wf).items())
+        weights.update(mx.load(wf))
 
     model_class, model_args_class = get_model_classes(config=config)
 

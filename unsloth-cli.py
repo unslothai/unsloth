@@ -35,7 +35,6 @@ from unsloth.devices import has_mps
 
 def run(args):
     import torch
-    from unsloth import FastLanguageModel
     from datasets import load_dataset
     from trl import SFTTrainer
     from transformers import TrainingArguments
@@ -48,6 +47,7 @@ def run(args):
         import gc
 
     if not has_mps:
+        from unsloth import FastLanguageModel
     # Load model and tokenizer
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=args.model_name,
@@ -226,7 +226,7 @@ if __name__ == "__main__":
 
     # Saving and pushing arguments
     save_group = parser.add_argument_group('💾 Save Model Options')
-    save_group.add_argument('--adapter_file', type=str, default="adapters.npz", help="Adapters file name")
+    save_group.add_argument('--adapter_file', type=str, default="adapters.safetensors", help="Adapters file name")
     save_group.add_argument('--output_dir', type=str, default="outputs", help="Output directory")
     save_group.add_argument('--save_model', action='store_true', help="Save the model after training")
     save_group.add_argument('--save_method', type=str, default="merged_16bit", choices=["merged_16bit", "merged_4bit", "lora"], help="Save method for the model, default is 'merged_16bit'")

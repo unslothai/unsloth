@@ -96,7 +96,7 @@ def iterate_batches(dataset, tokenizer, batch_size, max_seq_length, train=False)
         indices = np.random.permutation(len(batch_idx))
         for i in indices:
             # Encode batch
-            batch = [tokenizer.encode(str(dataset[np.int32(indices[j]).item()])) for j in batch_idx[i]]
+            batch = [tokenizer.encode(str(dataset[j])) for j in batch_idx[i]]
             for b in batch:
                 if b[-1] != tokenizer.eos_token_id:
                     b.append(tokenizer.eos_token_id)
@@ -312,11 +312,11 @@ def train(
         # Save adapter weights
         if it % args.steps_per_save == 0:
             adapter_weights = dict(tree_flatten(model.trainable_parameters()))
-            mx.savez(str(args.adapter_file), **adapter_weights)
+            mx.save_safetensors(str(args.adapter_file), adapter_weights)
             checkpoint = (
                 Path(args.adapter_file).parent / f"{it:07d}_{Path(args.adapter_file).name}"
             )
-            mx.savez(str(checkpoint), **adapter_weights)
+            mx.save_safetensors(str(checkpoint), adapter_weights)
             print(
                 f"Iter {it}: Saved adapter weights to "
                 f"{args.adapter_file} and {checkpoint}."
@@ -324,5 +324,5 @@ def train(
 
     # Save final weights
     adapter_weights = dict(tree_flatten(model.trainable_parameters()))
-    mx.savez(str(args.adapter_file), **adapter_weights)
+    mx.save_safetensors(str(args.adapter_file), adapter_weights)
     print(f"Saved final weights to {args.adapter_file}.")

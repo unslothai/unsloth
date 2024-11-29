@@ -180,11 +180,14 @@ except:
     raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth-zoo`")
 pass
 
-from .models import *
-from .save import *
-from .chat_templates import *
-from .tokenizer_utils import *
-from .trainer import *
+if not devices.has_mps:
+    from .models import *
+    from .save import *
+    from .chat_templates import *
+    from .tokenizer_utils import *
+    from .trainer import *
 
-# Patch TRL trainers for backwards compatibility
-_patch_trl_trainer()
+    # Patch TRL trainers for backwards compatibility
+    _patch_trl_trainer()
+else:
+    from .models._utils  import is_bfloat16_supported

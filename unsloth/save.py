@@ -18,6 +18,7 @@ if not has_mps():
     from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
     from peft.tuners.lora import Linear4bit as Peft_Linear4bit
     from peft.tuners.lora import Linear as Peft_Linear
+    from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 from typing import Optional, Callable, Union, List
 import torch
 import os
@@ -25,7 +26,6 @@ import shutil
 import pickle
 import gc
 from transformers.models.llama.modeling_llama import logger
-from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import psutil
 import re
