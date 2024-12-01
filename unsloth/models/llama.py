@@ -1736,11 +1736,11 @@ class FastLlamaModel:
 
         print(debug_info)
         debug_info = debug_info\
-            .replace("{unsloth_0}", unsloth_0)\
-            .replace("{unsloth_1}", unsloth_1)\
-            .replace("{unsloth_2}", unsloth_2)\
-            .replace("{unsloth_3}", unsloth_3)\
-            .replace("{unsloth_4}", unsloth_4)
+            .replace("{unsloth_0}", re.escape(unsloth_0))\
+            .replace("{unsloth_1}", re.escape(unsloth_1))\
+            .replace("{unsloth_2}", re.escape(unsloth_2))\
+            .replace("{unsloth_3}", re.escape(unsloth_3))\
+            .replace("{unsloth_4}", re.escape(unsloth_4))
 
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
