@@ -1551,7 +1551,7 @@ class FastLlamaModel:
         statistics = \
            f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers:{transformers_version}.\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
-           f"O^O/ \+/ \\    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
+           f"O^O/ \_/ \\    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
@@ -1706,12 +1706,18 @@ class FastLlamaModel:
         spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
         front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
 
+        unsloth_0 = r'==((====))=='
+        unsloth_1 = r'   \\   /|  '
+        unsloth_2 = r'O^O/ \_/ \  '
+        unsloth_3 = r'\        /  '
+        unsloth_4 = r' "-____-"   '
+
         debug_info = """debug_info = \\
-        f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
-        f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
-        f"O^O/ \\+/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
-        f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
-        f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
+        f"{unsloth_0}  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
+        f"{unsloth_1}  Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
+        f"{unsloth_2}  Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
+        f"{unsloth_3}  Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
+        f'{unsloth_4}  Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
         logger.warning(debug_info)
         import subprocess, re, gc, numpy as np
         a = np.array([0,])
