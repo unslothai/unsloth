@@ -1706,6 +1706,8 @@ class FastLlamaModel:
         spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
         front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
 
+        # Cannot use \\ since it will cause a SyntaxWarning in Python 3.12
+        # Instead use chr(92) == \\
         debug_info = """debug_info = \\
         f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
         f"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
