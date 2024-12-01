@@ -1706,13 +1706,12 @@ class FastLlamaModel:
         spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
         front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
 
+        debug_info = """debug_info = \\
         unsloth_0 = r'==((====))=='
         unsloth_1 = r'   \\   /|  '
         unsloth_2 = r'O^O/ \_/ \  '
         unsloth_3 = r'\        /  '
         unsloth_4 = r' "-____-"   '
-
-        debug_info = """debug_info = \\
         f"{unsloth_0}  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
         f"{unsloth_1}  Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
         f"{unsloth_2}  Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
