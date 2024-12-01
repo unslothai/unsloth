@@ -1706,18 +1706,12 @@ class FastLlamaModel:
         spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
         front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
 
-        unsloth_0 = r'==((====))=='
-        unsloth_1 = r'   \\   /|  '
-        unsloth_2 = r'O^O/ \_/ \  '
-        unsloth_3 = r'\        /  '
-        unsloth_4 = r' "-____-"   '
-
         debug_info = """debug_info = \\
-        f"{unsloth_0}  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
-        f"{unsloth_1}  Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
-        f"{unsloth_2}  Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
-        f"{unsloth_3}  Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
-        f'{unsloth_4}  Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
+        f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
+        f"   \\\\   /|      Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
+        f"O^O/ \\_/ \\      Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
+        f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
+        f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
         logger.warning(debug_info)
         import subprocess, re, gc, numpy as np
         a = np.array([0,])
@@ -1733,14 +1727,6 @@ class FastLlamaModel:
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
-
-        print(debug_info)
-        debug_info = debug_info\
-            .replace("{unsloth_0}", re.unescape(unsloth_0))\
-            .replace("{unsloth_1}", re.unescape(unsloth_1))\
-            .replace("{unsloth_2}", re.unescape(unsloth_2))\
-            .replace("{unsloth_3}", re.unescape(unsloth_3))\
-            .replace("{unsloth_4}", re.unescape(unsloth_4))
 
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
