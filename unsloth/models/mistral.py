@@ -254,8 +254,9 @@ def MistralForCausalLM_fast_forward(
         
         shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
         loss = fast_cross_entropy_loss(
-            logits = shift_logits,
-            labels = shift_labels,
+            logits  = shift_logits,
+            labels  = shift_labels,
+            n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None),
         )
     pass
 

@@ -15,26 +15,33 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh
+from .utils import calculate_settings, MAX_FUSED_SIZE, triton_tanh, triton_cast
 from transformers.models.llama.modeling_llama import logger
+from packaging.version import Version
+
+from unsloth_zoo.loss_utils import (
+    patch_loss_functions as _patch_loss_functions,
+    post_patch_loss_function,
+)
 
 
 @triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
-    "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
+    "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
+    "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
 })
 @triton.jit
 def _cross_entropy_forward(
-    logits_ptr, logits_row_stride,
-    loss_ptr,
-    logsumexp_ptr,
-    labels_ptr,
-    VOCAB_SIZE      : tl.constexpr,
-    BLOCK_SIZE      : tl.constexpr,
-    DO_SOFTCAPPING  : tl.constexpr,
-    SOFTCAP         : tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE     : tl.constexpr,
+    logits_ptr        ,
+    logits_row_stride ,
+    loss_ptr          ,
+    logsumexp_ptr     ,
+    labels_ptr        ,
+    VOCAB_SIZE        ,
+    BLOCK_SIZE        : tl.constexpr,
+    DO_SOFTCAPPING    ,
+    SOFTCAP           ,
+    DO_LOGIT_SCALING  ,
+    LOGIT_SCALE       ,
 ):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
@@ -57,7 +64,7 @@ def _cross_entropy_forward(
         This ensures exp(x - max(x))'s maximum is 1 as exp(0) = 1.
     """
     row_idx = tl.program_id(0)
-    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr    += row_idx * triton_cast(logits_row_stride, tl.int64)
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx
     labels_ptr    += row_idx
@@ -66,24 +73,23 @@ def _cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING: logits = LOGIT_SCALE * logits
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
-
-    logits = logits.to(tl.float32)
+    
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
     if label_idx != -100:
-        x = tl.load(logits_ptr + label_idx)
+        x = tl.load(logits_ptr + label_idx).to(tl.float32)
         # Go logit scaling for Cohere: t * x
         if DO_LOGIT_SCALING: x = LOGIT_SCALE * x
         # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
         if DO_SOFTCAPPING:   x = SOFTCAP * triton_tanh(x / SOFTCAP)
-        loss = logsumexp - x.to(tl.float32)
+        loss = logsumexp - x
     else:
         loss = 0.0
     tl.store(logsumexp_ptr, logsumexp)
@@ -92,22 +98,23 @@ pass
 
 
 @triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
-    "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
+    "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
+    "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
 })
 @triton.jit
 def _chunked_cross_entropy_forward(
-    logits_ptr, logits_row_stride,
-    loss_ptr,
-    logsumexp_ptr,
-    labels_ptr,
-    VOCAB_SIZE      : tl.constexpr,
-    N_CHUNKS        : tl.constexpr,
-    BLOCK_SIZE      : tl.constexpr,
-    DO_SOFTCAPPING  : tl.constexpr,
-    SOFTCAP         : tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE     : tl.constexpr,
+    logits_ptr        ,
+    logits_row_stride ,
+    loss_ptr          ,
+    logsumexp_ptr     ,
+    labels_ptr        ,
+    VOCAB_SIZE        ,
+    N_CHUNKS          ,
+    BLOCK_SIZE        : tl.constexpr,
+    DO_SOFTCAPPING    ,
+    SOFTCAP           ,
+    DO_LOGIT_SCALING  ,
+    LOGIT_SCALE       ,
 ):
     """
         256K vocab divided in 4 chunks
@@ -135,7 +142,7 @@ def _chunked_cross_entropy_forward(
     """
     row_idx   = tl.program_id(0)
     chunk_idx = tl.program_id(1)
-    logits_ptr    += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr    += row_idx * triton_cast(logits_row_stride, tl.int64)
     loss_ptr      += row_idx
     logsumexp_ptr += row_idx * N_CHUNKS + chunk_idx
     labels_ptr    += row_idx
@@ -144,14 +151,13 @@ def _chunked_cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Go logit scaling for Cohere: t * x
     if DO_LOGIT_SCALING: logits = LOGIT_SCALE * logits
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
     if DO_SOFTCAPPING:   logits = SOFTCAP * triton_tanh(logits / SOFTCAP)
 
-    logits = logits.to(tl.float32)
     c = tl.max(logits, 0)
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
@@ -164,7 +170,7 @@ def _chunked_cross_entropy_forward(
             if DO_LOGIT_SCALING: x = LOGIT_SCALE * x
             # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
             if DO_SOFTCAPPING:   x = SOFTCAP * triton_tanh(x / SOFTCAP)
-            loss = -1.0 * x.to(tl.float32)
+            loss = -1.0 * x
         else:
             loss = 0.0
         tl.store(loss_ptr, loss)
@@ -174,21 +180,23 @@ pass
 
 
 @triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: args["DO_SOFTCAPPING"  ],
-    "DO_LOGIT_SCALING": lambda args: args["DO_LOGIT_SCALING"],
+    "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
+    "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
 })
 @triton.jit
 def _cross_entropy_backward(
-    logits_ptr, logits_row_stride,
-    dloss_ptr,   dloss_row_stride,
-    logsumexp_ptr,
-    labels_ptr,
-    VOCAB_SIZE      : tl.constexpr,
-    BLOCK_SIZE      : tl.constexpr,
-    DO_SOFTCAPPING  : tl.constexpr,
-    SOFTCAP         : tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE     : tl.constexpr,
+    logits_ptr        ,
+    logits_row_stride ,
+    dloss_ptr         ,
+    dloss_row_stride  ,
+    logsumexp_ptr     ,
+    labels_ptr        ,
+    VOCAB_SIZE        ,
+    BLOCK_SIZE        : tl.constexpr,
+    DO_SOFTCAPPING    ,
+    SOFTCAP           ,
+    DO_LOGIT_SCALING  ,
+    LOGIT_SCALE       ,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
@@ -208,7 +216,7 @@ def _cross_entropy_backward(
     row_idx   = tl.program_id(0)
     block_idx = tl.program_id(1)
 
-    logits_ptr += row_idx * logits_row_stride.to(tl.int64)
+    logits_ptr += row_idx * triton_cast(logits_row_stride, tl.int64)
     dloss_ptr  += row_idx *  dloss_row_stride
     col_offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
@@ -219,7 +227,7 @@ def _cross_entropy_backward(
     else:
         dloss = 0.0
 
-    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf"))
+    x = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
 
     # Do logit scaling for Cohere
     if DO_LOGIT_SCALING:
@@ -228,6 +236,7 @@ def _cross_entropy_backward(
     pass
 
     # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
+    partial = x
     if DO_SOFTCAPPING:
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
         partial = triton_tanh(x / SOFTCAP)
@@ -235,7 +244,7 @@ def _cross_entropy_backward(
     pass
 
     logsumexp = tl.load(logsumexp_ptr + row_idx)
-    y = tl.exp(x.to(tl.float32) - logsumexp)
+    y = tl.exp(x - logsumexp)
     y = tl.where(
         col_offsets == label_idx,
         y - 1.0, # exp(x - logsumexp) - 1
@@ -261,16 +270,20 @@ MAX_FUSED_SIZE = 65536 # 2**16
 
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, logits, labels, logit_softcapping = 0, logit_scaling = 0):
+    def forward(ctx, logits, labels, logit_softcapping : float = 0, logit_scaling : float = 0):
+        n_rows : int
+        vocab_size : int
         n_rows, vocab_size = logits.shape
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
-        n_chunks = div + (mod != 0)
+        n_chunks : int = div + (mod != 0)
         losses = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
 
-        DO_SOFTCAPPING   = (logit_softcapping != 0)
-        DO_LOGIT_SCALING = (logit_scaling != 0)
+        DO_SOFTCAPPING   : bool = bool(logit_softcapping != 0)
+        DO_LOGIT_SCALING : bool = bool(logit_scaling != 0)
 
+        BLOCK_SIZE : int
+        num_warps  : int
         if n_chunks == 1:
             # For small vocabs <= 65336 like Llama, Mistral
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
@@ -322,14 +335,19 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         return losses
     pass
 
+
     @staticmethod
     def backward(ctx, dlosses):
         logits, logsumexp, labels = ctx.saved_tensors
+        n_rows : int
+        vocab_size : int
         n_rows, vocab_size = logits.shape
 
-        BLOCK_SIZE = 4096
+        BLOCK_SIZE : int = 4096
+        div : int
+        mod : int
         div, mod = divmod(vocab_size, BLOCK_SIZE)
-        n_blocks = div + (mod != 0)
+        n_blocks : int = div + (mod != 0)
 
         _cross_entropy_backward[(n_rows, n_blocks,)](
             logits,   logits.stride(0),
@@ -342,19 +360,19 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             SOFTCAP          = ctx.logit_softcapping,
             DO_LOGIT_SCALING = ctx.DO_LOGIT_SCALING,
             LOGIT_SCALE      = ctx.logit_scaling,
-            num_warps      = 8,
+            num_warps        = 8,
         )
         return logits, None, None, None,
     pass
 pass
 
 
-@torch._disable_dynamo
 def fast_cross_entropy_loss(
     logits,
     labels,
     logit_softcapping = 0,
     logit_scaling = 0,
+    n_items = None,
 ):
     """
     Arguments:
@@ -372,90 +390,16 @@ def fast_cross_entropy_loss(
         logit_softcapping,
         logit_scaling,
     )
-    n_items = torch.count_nonzero(labels != -100)
+    if n_items is None:
+        n_items = torch.count_nonzero(labels != -100)
     return loss.sum() / n_items
 pass
-
-
-from transformers.models.llama.modeling_llama import (
-    LlamaForCausalLM,
-    CausalLMOutputWithPast,
-    Optional,
-    Union,
-    Cache,
-    List,
-    Tuple,
-)
-import inspect, re
-function = inspect.getsource(LlamaForCausalLM.forward)
-function = function.split("\n")
-i = re.match(r"[ ]{1,}", function[0]).span(0)[1]
-function = [x[i:] for x in function]
-function = "\n".join(function)
-function = function[function.find("def forward"):]
-replacement = """    loss = None
-    logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-    logit_scaling     = getattr(self.config, "logit_scale", 0)
-    if labels is not None:
-        shift_logits = logits
-        if not hasattr(self, "extra_ignored_labels"):
-            # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
-        pass
-        
-        shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
-        loss = fast_cross_entropy_loss(
-            logits = shift_logits,
-            labels = shift_labels,
-            logit_softcapping = logit_softcapping,
-            logit_scaling     = logit_scaling,
-        )
-    else:
-        if logit_scaling != 0:
-            if logits.requires_grad:
-                logits = logit_scaling * logits
-            else:
-                logits *= logit_scaling
-            pass
-        pass
-        if logit_softcapping != 0:
-            if logits.requires_grad:
-                logits = (1.0 / logit_softcapping) * logits
-                logits = torch.tanh(logits)
-                logits = logit_softcapping * logits
-            else:
-                logits *= (1.0 / logit_softcapping)
-                torch.tanh(logits, out = logits)
-                logits *= logit_softcapping
-            pass
-        pass
-    pass
-"""
-function = \
-    function[:function.find("    loss = None")] + \
-    replacement + \
-    function[ function.find("    if not return_dict"):]
-function = function.replace("logits = logits.float()", "\n")
-# Missed spaces
-function = function.split("\n")
-# Not the first one though!
-function = [function[0]] + [" "*4 + x for x in function[1:]]
-function = "\n".join(function)
-function = f"class Unsloth_LlamaForCausalLM(LlamaForCausalLM):\n"\
-f"    {function}\n"
-exec(function, globals())
-del function, replacement, inspect, re
-
-
-def patch_llama_for_causal_lm():
-    import transformers.models.llama.modeling_llama
-    transformers.models.llama.modeling_llama.LlamaForCausalLM = Unsloth_LlamaForCausalLM
-    return
+if (Version(torch.__version__) < Version("2.4.0")) and \
+    not hasattr(fast_cross_entropy_loss, "__wrapped__"):
+    fast_cross_entropy_loss = torch._disable_dynamo(fast_cross_entropy_loss)
 pass
 
-
-def unpatch_llama_for_causal_lm():
-    import transformers.models.llama.modeling_llama
-    transformers.models.llama.modeling_llama.LlamaForCausalLM = LlamaForCausalLM
-    return
+# Patch CE Losses in transformers
+def patch_loss_functions(torch_compile = True):
+    _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
 pass

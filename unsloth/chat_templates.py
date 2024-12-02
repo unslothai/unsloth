@@ -35,8 +35,11 @@ import shutil
 from .tokenizer_utils import *
 from .models._utils import patch_tokenizer
 import re
-
+from unsloth_zoo.dataset_utils import (
+    train_on_responses_only,
+)
 CHAT_TEMPLATES = {}
+DEFAULT_SYSTEM_MESSAGE = {}
 
 # =========================================== Unsloth
 # Unsloth efficient template leverages from Zephyr
@@ -46,7 +49,7 @@ unsloth_template = \
         "{{ messages[0]['content'] + '\n' }}"\
         "{% set loop_messages = messages[1:] %}"\
     "{% else %}"\
-        "{{ 'You are a helpful assistant to the user\n' }}"\
+        "{{ '{system_message}' + '\n' }}"\
         "{% set loop_messages = messages %}"\
     "{% endif %}"\
     "{% for message in loop_messages %}"\
@@ -78,6 +81,7 @@ SYSTEM """You are a helpful assistant to the user"""
 
 unsloth_eos_token = "eos_token"
 CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token, False, unsloth_ollama,)
+DEFAULT_SYSTEM_MESSAGE["unsloth"] = "You are a helpful assistant to the user"
 pass
 
 # =========================================== Zephyr
@@ -114,6 +118,7 @@ PARAMETER min_p 0.1
 
 zephyr_eos_token = "eos_token"
 CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False, zephyr_ollama,)
+DEFAULT_SYSTEM_MESSAGE["zephyr"] = None # No system message in Zephyr
 pass
 
 # =========================================== ChatML
@@ -151,6 +156,7 @@ PARAMETER min_p 0.1
 
 chatml_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token, True, chatml_ollama,)
+DEFAULT_SYSTEM_MESSAGE["chatml"] = None # No system message in ChatML
 pass
 
 # =========================================== Mistral-1
@@ -191,6 +197,7 @@ PARAMETER min_p 0.1
 
 mistral_eos_token = "eos_token"
 CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False, mistral_ollama,)
+DEFAULT_SYSTEM_MESSAGE["mistral"] = None # No system message in Mistral
 pass
 
 # =========================================== Llama-2
@@ -232,6 +239,7 @@ PARAMETER min_p 0.1
 
 llama_eos_token = "eos_token"
 CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False, llama_ollama,)
+DEFAULT_SYSTEM_MESSAGE["llama"] = None # No system message in Llama
 pass
 
 # ===========================================  Vicuna
@@ -242,7 +250,7 @@ vicuna_template = \
         "{{ messages[0]['content'] + ' ' }}"\
         "{% set loop_messages = messages[1:] %}"\
     "{% else %}"\
-        "{{ 'A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\\'s questions.' + ' ' }}"\
+        "{{ '{system_message}' + ' ' }}"\
         "{% set loop_messages = messages %}"\
     "{% endif %}"\
     "{% for message in loop_messages %}"\
@@ -271,6 +279,7 @@ PARAMETER min_p 0.1
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
+DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
 pass
 
 # =========================================== Vicuna Old
@@ -281,7 +290,7 @@ vicuna_old_template = \
         "{{ messages[0]['content'] + '\n' }}"\
         "{% set loop_messages = messages[1:] %}"\
     "{% else %}"\
-        "{{ 'A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human\\'s questions.' + '\n' }}"\
+        "{{ '{system_message}' + '\n' }}"\
         "{% set loop_messages = messages %}"\
     "{% endif %}"\
     "{% for message in loop_messages %}"\
@@ -313,6 +322,10 @@ SYSTEM """A chat between a curious human and an artificial intelligence assistan
 
 vicuna_old_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False, vicuna_old_ollama,)
+DEFAULT_SYSTEM_MESSAGE["vicuna_old"] = "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human\\'s questions."
+
+CHAT_TEMPLATES["vicuna old"] = CHAT_TEMPLATES["vicuna_old"]
+DEFAULT_SYSTEM_MESSAGE["vicuna old"] = DEFAULT_SYSTEM_MESSAGE["vicuna_old"]
 pass
 
 # =========================================== Alpaca multi turn
@@ -323,7 +336,7 @@ alpaca_template = \
         "{{ messages[0]['content'] + '\n\n' }}"\
         "{% set loop_messages = messages[1:] %}"\
     "{% else %}"\
-        "{{ 'Below are some instructions that describe some tasks. Write responses that appropriately complete each request.\n\n' }}"\
+        "{{ '{system_message}' + '\n\n' }}"\
         "{% set loop_messages = messages %}"\
     "{% endif %}"\
     "{% for message in loop_messages %}"\
@@ -360,6 +373,7 @@ SYSTEM """Below are some instructions that describe some tasks. Write responses 
 
 alpaca_eos_token = "eos_token"
 CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token, False, alpaca_ollama,)
+DEFAULT_SYSTEM_MESSAGE["alpaca"] = "Below are some instructions that describe some tasks. Write responses that appropriately complete each request."
 pass
 
 # =========================================== Gemma
@@ -370,7 +384,7 @@ gemma_template = \
     "{{ bos_token }}"\
     "{% if messages[0]['role'] == 'system' %}"\
         "{{'<start_of_turn>user\n' + messages[0]['content'] | trim + ' ' + messages[1]['content'] | trim + '<end_of_turn>\n'}}"\
-        "{% set loop_messages = messages[2:] %}"\
+        "{% set messages = messages[2:] %}"\
     "{% endif %}"\
     "{% for message in messages %}"\
         "{% if message['role'] == 'user' %}"\
@@ -405,6 +419,7 @@ PARAMETER min_p 0.1
 
 gemma_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True, gemma_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma"] = None # No system message in Gemma
 pass
 
 # =========================================== Gemma with ChatML instead
@@ -435,6 +450,7 @@ gemma_chatml_eos_token = (
     "<|im_end|>",
 )
 CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token, True, gemma_chatml_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma_chatml"] = None # No system message in Gemma
 pass
 
 # =========================================== Gemma 2
@@ -444,12 +460,14 @@ gemma2_template = gemma_template
 gemma2_ollama = gemma_ollama + "PARAMETER num_ctx 4096\n"
 gemma2_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma2"] = (gemma2_template, gemma2_eos_token, True, gemma2_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma2"] = None # No system message in Gemma 2
 
 # =========================================== Gemma 2 with ChatML instead
 gemma2_chatml_template = gemma_chatml_template
 gemma2_chatml_ollama = gemma_chatml_ollama + "PARAMETER num_ctx 4096\n"
 gemma2_chatml_eos_token = gemma_chatml_eos_token
 CHAT_TEMPLATES["gemma2_chatml"] = (gemma2_chatml_template, gemma2_chatml_eos_token, True, gemma2_chatml_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma2_chatml"] = None # No system message in Gemma 2
 pass
 
 # =========================================== Llama-3
@@ -489,7 +507,12 @@ PARAMETER min_p 0.1
 '''
 
 llama3_template_eos_token = "eos_token"
+
 CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token, False, llama3_ollama,)
+DEFAULT_SYSTEM_MESSAGE["llama-3"] = None # No system message in Llama-3
+
+CHAT_TEMPLATES["llama3"] = (llama3_template, llama3_template_eos_token, False, llama3_ollama,)
+DEFAULT_SYSTEM_MESSAGE["llama3"] = None # No system message in Llama-3
 pass
 
 
@@ -530,8 +553,13 @@ PARAMETER min_p 0.1
 
 phi3_template_eos_token = "<|end|>"
 CHAT_TEMPLATES["phi-3"]   = (phi3_template, phi3_template_eos_token, False, phi3_ollama,)
+DEFAULT_SYSTEM_MESSAGE["phi-3"] = None # No system message in Phi-3
+
 CHAT_TEMPLATES["phi-35"]  = CHAT_TEMPLATES["phi-3"]
+DEFAULT_SYSTEM_MESSAGE["phi-35"] = None # No system message in Phi-3.5
+
 CHAT_TEMPLATES["phi-3.5"] = CHAT_TEMPLATES["phi-3"]
+DEFAULT_SYSTEM_MESSAGE["phi-3.5"] = None # No system message in Phi-3.5
 pass
 
 # =========================================== Llama-3.1
@@ -571,7 +599,7 @@ llama31_template = \
     {%- set system_message = messages[0]['content'] %}
     {%- set messages = messages[1:] %}
 {%- else %}
-    {%- set system_message = "" %}
+    {%- set system_message = "{system_message}" %}
 {%- endif %}
 
 {#- System message + builtin tools #}
@@ -676,7 +704,7 @@ TEMPLATE """{{ if .Messages }}
 {{- end }}
 {{- if .Tools }}
 
-You are a helpful assistant with tool calling capabilities. When you receive a tool call response, use the output to format an answer to the orginal use question.
+You are a helpful assistant with tool calling capabilities. When you receive a tool call response, use the output to format an answer to the original use question.
 {{- end }}
 {{- end }}<|eot_id|>
 {{- range $i, $_ := .Messages }}
@@ -727,7 +755,10 @@ PARAMETER min_p 0.1
 
 llama31_template_eos_token = "eos_token"
 CHAT_TEMPLATES["llama-3.1"] = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
+DEFAULT_SYSTEM_MESSAGE["llama-3.1"] = "" # Llama3.1 default system message is empty + the dates
+
 CHAT_TEMPLATES["llama-31"]  = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
+DEFAULT_SYSTEM_MESSAGE["llama-31"] = "" # Llama3.1 default system message is empty + the dates
 pass
 
 
@@ -749,7 +780,7 @@ qwen25_template = \
     {%- if messages[0][\'role\'] == \'system\' %}
         {{- \'<|im_start|>system\\n\' + messages[0][\'content\'] + \'<|im_end|>\\n\' }}
     {%- else %}
-        {{- \'<|im_start|>system\\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\\n\' }}
+        {{- \'<|im_start|>system\\n{system_message}<|im_end|>\\n\' }}
     {%- endif %}\n{%- endif %}\n{%- for message in messages %}
     {%- if (message.role == "user") or (message.role == "system" and not loop.first) or (message.role == "assistant" and not message.tool_calls) %}
         {{- \'<|im_start|>\' + message.role + \'\\n\' + message.content + \'<|im_end|>\' + \'\\n\' }}
@@ -845,10 +876,53 @@ PARAMETER min_p 0.1
 '''
 
 qwen25_template_eos_token = "eos_token"
+qwen25_default_system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." 
 CHAT_TEMPLATES["qwen-2.5"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
+
 CHAT_TEMPLATES["qwen-25"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-25"] = qwen25_default_system_message # No system message in Qwen 2.5
+
 CHAT_TEMPLATES["qwen25"]   = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message # No system message in Qwen 2.5
+
 CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
+pass
+
+def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
+    system_message_pattern = r"\{system_message\}"
+    
+    # For predefined templates, check if default system message exists
+    default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
+    if default_system_message is None:
+        if system_message is not None:
+            logger.warning_once(
+                f"Unsloth: You tried to change the system message for {type_chat_template}, "
+                "but it doesn't have a default system message. "
+                "You need to manually add the system message in your data."
+            )
+        return template, system_message
+    pass
+    
+    # For custom templates
+    if type_chat_template is None:
+        has_placeholder = re.search(system_message_pattern, template) is not None
+        
+        if has_placeholder:
+            if system_message is None:
+                raise ValueError("Unsloth: You need to provide a system message for custom templates.")
+            new_template = re.sub(system_message_pattern, system_message, template)
+            return new_template, system_message
+        
+        return template, system_message
+    pass
+        
+    # For predefined templates with default system message
+    message_to_use = system_message if system_message is not None else default_system_message
+    new_template = re.sub(system_message_pattern, message_to_use, template)
+    
+    return new_template, message_to_use
 pass
 
 
@@ -884,14 +958,20 @@ def get_chat_template(
     old_padding_side = tokenizer.padding_side
 
     same_padding_token = False
-
+    type_chat_template = None
+    
     if type(chat_template) in (list, tuple,):
+        # For changing system message later
+        # Since it's not supported yet, we will raise an error first!
+        type_chat_template = chat_template[0].lower()
         chat_template, stop_word = chat_template
         assert(type(chat_template) is str)
         assert(type(stop_word) is str)
         ollama_modelfile = None
 
     elif type(chat_template) is str:
+        # For changing system message later
+        type_chat_template = chat_template.lower()
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
@@ -910,7 +990,7 @@ def get_chat_template(
         # Check fast tokenizer
         if not is_fast_tokenizer:
             print(
-                f"Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
+                "Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
                 "Please log a Github issue if you want this as a new feature!\n"\
                 "Your chat template will still work, but it won't add or edit tokens."
             )
@@ -1050,6 +1130,9 @@ def get_chat_template(
     else:
         chat_template = new_chat_template
     pass
+
+    chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
+
     tokenizer.chat_template = chat_template
 
     # Also fix up other tokens
@@ -1236,7 +1319,7 @@ def to_sharegpt(
     n_extensions = max(conversation_extension-1, 0)
     if n_extensions == 0: return dataset
 
-    dataset = dataset.rename_columns({"conversations" : f"conversations0"})
+    dataset = dataset.rename_columns({"conversations" : "conversations0"})
     all_shuffled = [dataset]
     for j in range(1, n_extensions+1):
         shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
@@ -1254,7 +1337,7 @@ def to_sharegpt(
                 f"in zip({', '.join(f'conversations{j}__' for j in range(n_extensions))}):\n"
     function += f"{' '*8}convos.append("\
                 f"{'+'.join(f'conversations{j}' for j in range(n_extensions))})\n"
-    function += f"{' '*4}return " + "{ " + f"'conversations' : convos" + " }"
+    function += f"{' '*4}return " + "{ " + "'conversations' : convos" + " }"
 
     # Map function
     exec(function, globals())
@@ -1809,194 +1892,6 @@ extra_eos_tokens = None,
     tokenizer._unsloth_output_part = output_part
 
     return dataset.map(formatting_prompts_func, batched = True,)
-pass
-
-
-# From https://www.geeksforgeeks.org/longest-common-substring-array-strings/
-# Longest Common Substring in an Array of Strings
-def _longest_common_substring(arr):
-    n = len(arr)
-    s = arr[0]
-    l = len(s)
-    res = ""
-    for i in range(l):
-        for j in range(i + 1, l + 1):
-            stem = s[i:j]
-            k = 1
-            for k in range(1, n):
-                if stem not in arr[k]:
-                    break
-            if (k + 1 == n and len(res) < len(stem)):
-                res = stem
-    return res
-pass
-
-
-def _find_common_token_ids(component, tokenizer):
-    """
-    \n### User:\n\n
-    \n\n### User:\n\n
-    etc
-    we need to find the middle most repeatted part.
-    Tokenizers can tokenize newlines or spaces as 1 token!
-    """
-    right_text = ""
-    if   component.endswith (" "): right_text = " "
-    elif component.endswith("\n"): right_text = "\n"
-    left_text = ""
-    if   component.startswith (" "): left_text = " "
-    elif component.startswith("\n"): left_text = "\n"
-    stripped = component.strip()
-
-    # Add current pieces and also newlines
-    all_input_ids = []
-    for left in range(3):
-        for right in range(3):
-            x = left*left_text + stripped + right*right_text
-            x = tokenizer(x, add_special_tokens = False).input_ids
-            all_input_ids.append(x)
-
-            x = left*"\n" + stripped + right*"\n"
-            x = tokenizer(x, add_special_tokens = False).input_ids
-            all_input_ids.append(x)
-        pass
-    pass
-    substring = _longest_common_substring([str(x + [0]) for x in all_input_ids])
-    substring = substring.split(", ")[:-1]
-    substring = [int(x) for x in substring]
-
-    # Also get rest of tokenized string
-    original = tokenizer(component, add_special_tokens = False).input_ids
-    # Get optional left and right
-    for j in range(len(original)):
-        if original[j : j + len(substring)] == substring: break
-    optional_left  = original[:j]
-    optional_right = original[j+len(substring):]
-    return substring, optional_left, optional_right
-pass
-
-
-def train_on_responses_only(
-    trainer,
-    instruction_part = None,
-    response_part    = None,
-):
-    """
-    Trains only on responses and not on the instruction by masking out
-    the labels with -100 for the instruction part.
-    """
-    tokenizer = trainer.tokenizer
-    
-    if  not hasattr(tokenizer, "_unsloth_input_part") or \
-        not hasattr(tokenizer, "_unsloth_output_part"):
-        
-        if instruction_part is None or response_part is None:
-            raise ValueError("Unsloth: instruction_part and response_part must be given!")
-        pass
-    elif (instruction_part is not None or response_part is not None) and \
-        (hasattr(tokenizer, "_unsloth_input_part") or hasattr(tokenizer, "_unsloth_output_part")):
-
-        raise ValueError("Unsloth: Your tokenizer already has instruction and response parts set - do not give custom ones!")
-    else:
-        instruction_part = tokenizer._unsloth_input_part
-        response_part    = tokenizer._unsloth_output_part
-    pass
-
-    # Get most common tokens since tokenizers can tokenize stuff differently!
-    Q_must, Q_left, Q_right = _find_common_token_ids(instruction_part, tokenizer)
-    A_must, A_left, A_right = _find_common_token_ids(response_part,    tokenizer)
-
-    # Store some temporary stuff
-    A_first = A_must[0]
-    len_A_must = len(A_must)
-    A_left_reversed = A_left[::-1]
-    A_right_forward = A_right
-
-    Q_first = Q_must[0]
-    len_Q_must = len(Q_must)
-    Q_left_reversed = Q_left[::-1]
-    Q_right_forward = Q_right
-
-    def _train_on_responses_only(examples):
-        input_ids_ = examples["input_ids"]
-        all_labels = []
-
-        for input_ids in input_ids_:
-            n = len(input_ids)
-            labels = [-100] * n
-            n_minus_1 = n - 1
-            j = 0
-            while j < n:
-                # Find <assistant>
-                if (input_ids[j] == A_first) and \
-                    (input_ids[j : (k := j + len_A_must)] == A_must):
-
-                    # Now backtrack to get previous optional tokens
-                    for optional_left in A_left_reversed:
-                        if j < 1: break
-                        if optional_left == input_ids[j-1]: j -= 1
-                        else: break
-                    pass
-                    # And forwards look as well
-                    for optional_right in A_right_forward:
-                        if k >= n_minus_1: break
-                        if optional_right == input_ids[k+1]: k += 1
-                        else: break
-                    pass
-                    # assistant_j = j
-                    assistant_k = k
-
-                    j = assistant_k
-                    # Given <assistant>, now find next user
-                    while j < n:
-                        # Find <user>
-                        # Also accept last final item if assistant is the last turn
-                        if (j == n_minus_1) or \
-                            ((input_ids[j] == Q_first) and \
-                             (input_ids[j : (k := j + len_Q_must)] == Q_must)):
-
-                            # Now backtrack to get previous optional tokens
-                            for optional_left in Q_left_reversed:
-                                if j < 1: break
-                                if optional_left == input_ids[j-1]: j -= 1
-                                else: break
-                            pass
-                            # And forwards look as well
-                            for optional_right in Q_right_forward:
-                                if k >= n_minus_1: break
-                                if optional_right == input_ids[k+1]: k += 1
-                                else: break
-                            pass
-                            user_j = j
-                            # Account for last item
-                            if user_j != n_minus_1:
-                                # user_k = k
-                                # j = user_k
-                                j = k
-                            else:
-                                user_j = n
-                                k = n
-                            pass
-                            # Now copy input_ids to labels
-                            labels[assistant_k : user_j] = input_ids[assistant_k : user_j]
-                            # print(assistant_j, assistant_k, user_j, user_k)
-                            break
-                        pass
-                        j += 1
-                    pass
-                pass
-                j += 1
-            pass
-            all_labels.append(labels)
-        pass
-        return { "labels" : all_labels }
-    pass
-
-    if hasattr(trainer, "train_dataset") and trainer.train_dataset is not None:
-        trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batched = True)
-    if hasattr(trainer, "eval_dataset") and trainer.eval_dataset is not None:
-        trainer.eval_dataset = trainer.eval_dataset.map(_train_on_responses_only, batched = True)
-    return trainer
 pass
 
 

@@ -29,7 +29,13 @@ import re
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
-from huggingface_hub.utils._token import get_token
+try:
+    from huggingface_hub.utils import get_token
+except:
+    # Old HF Hub versions <= 0.0.25
+    from huggingface_hub.utils._token import get_token
+pass
+from pathlib import Path
 
 __all__ = [
     "print_quantization_methods",
@@ -43,6 +49,7 @@ __all__ = [
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT  = "\nCOLAB_"  in keynames
 IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
+KAGGLE_TMP = "/tmp"
 del keynames
 
 # Weights
@@ -100,14 +107,17 @@ def check_if_sentencepiece_model(model, temporary_location = "_unsloth_sentencep
     temp_tokenizer = model._saved_temp_tokenizer
     sentencepiece_model = False
     file_location = os.path.join(temporary_location, temp_tokenizer.name_or_path)
+    created_folder = False
     if not os.path.exists(file_location):
+        created_folder = True
         os.makedirs(file_location)
     pass
     temp_tokenizer.save_pretrained(file_location)
     if os.path.isfile(f"{file_location}/tokenizer.model"):
         sentencepiece_model = True
     pass
-    shutil.rmtree(file_location, ignore_errors = True)
+    if created_folder:
+        shutil.rmtree(file_location, ignore_errors = True)
     return sentencepiece_model
 pass
 
@@ -136,7 +146,7 @@ pass
 
 def _merge_lora(layer, name):
 
-    bias = None
+    bias = getattr(layer, "bias", None)
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
         # Is LoRA so we need to merge!
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
@@ -438,13 +448,20 @@ def unsloth_save_model(
     if push_to_hub and "/" in save_directory:
 
         # +1 solves absolute path issues
-        username = save_directory[:save_directory.find("/")]
-        new_save_directory = save_directory[save_directory.find("/")+1:]
-
-        logger.warning_once(
-            f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
-            f"We shall truncate {save_directory} to {new_save_directory}"
-        )
+        new_save_directory = save_directory
+        username = new_save_directory[:new_save_directory.find("/")]
+        new_save_directory = new_save_directory[new_save_directory.find("/")+1:]
+        if IS_KAGGLE_ENVIRONMENT:
+            new_save_directory = os.path.join(KAGGLE_TMP, new_save_directory[new_save_directory.find("/")+1:])
+            logger.warning_once(
+                "Unsloth: You are pushing to hub in Kaggle environment.\n"\
+                f"To save memory, we shall move {save_directory} to {new_save_directory}"
+            )
+        else:
+            logger.warning_once(
+                f"Unsloth: You are pushing to hub, but you passed your HF username = {username}.\n"\
+                f"We shall truncate {save_directory} to {new_save_directory}"
+            )
 
         save_pretrained_settings["save_directory"] = new_save_directory
         tokenizer_save_settings ["save_directory"] = new_save_directory
@@ -497,6 +514,10 @@ def unsloth_save_model(
     print(f"Unsloth: Will use up to "\
           f"{round(max_ram/1024/1024/1024, 2)} out of "\
           f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving.")
+
+    # Move temporary_location to /tmp in Kaggle
+    if IS_KAGGLE_ENVIRONMENT:
+        temporary_location = os.path.join(KAGGLE_TMP, temporary_location)
 
     # Max directory for disk saving
     if not os.path.exists(temporary_location):
@@ -551,7 +572,7 @@ def unsloth_save_model(
             #     max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
-                logger.warning_once(f"We will save to Disk and not RAM now.")
+                logger.warning_once("We will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
                 # weights_only = True weirdly fails?
@@ -699,7 +720,7 @@ def unsloth_save_model(
     print("Done.")
 
     if push_to_hub and hasattr(model, "config"):
-        print(f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/')}")
+        print(f"Saved merged model to https://huggingface.co/{username}/{save_directory.lstrip('/').split('/')[-1]}")
     pass
 
     save_pretrained_settings["state_dict"] = None
@@ -1058,9 +1079,9 @@ def save_to_gguf(
     if n_cpus is None: n_cpus = 1
     n_cpus *= 2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
-    
-    final_location = f"./{model_directory}/unsloth.{first_conversion.upper()}.gguf"
 
+    final_location = str((Path(model_directory) / f"unsloth.{first_conversion.upper()}.gguf").absolute())
+    
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
           "This will take 3 minutes...")
@@ -1099,14 +1120,17 @@ def save_to_gguf(
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
         if IS_KAGGLE_ENVIRONMENT:
-            raise RuntimeError(
-                f"Unsloth: Quantization failed for {final_location}\n"\
-                "You are in a Kaggle environment, which might be the reason this is failing.\n"\
-                "Kaggle only provides 20GB of disk space. Merging to 16bit for 7b models use 16GB of space.\n"\
-                "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
-                "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
-                "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
-            )
+            if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+                raise RuntimeError(
+                    f"Unsloth: Quantization failed for {final_location}\n"\
+                    "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                    "Kaggle only provides 20GB of disk space in the working directory.\n"\
+                    "Merging to 16bit for 7b models use 16GB of space.\n"\
+                    "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                    "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                    "You can try saving it to the `/tmp` directory for larger disk space.\n"\
+                    "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+                )
         else:
             raise RuntimeError(
                 f"Unsloth: Quantization failed for {final_location}\n"\
@@ -1128,7 +1152,7 @@ def save_to_gguf(
     for quant_method in quantization_method:
         if quant_method != first_conversion:
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This will take 20 minutes...")
-            final_location = f"./{model_directory}/unsloth.{quant_method.upper()}.gguf"
+            final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
 
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
@@ -1147,14 +1171,17 @@ def save_to_gguf(
             # Check if quantization succeeded!
             if not os.path.isfile(final_location):
                 if IS_KAGGLE_ENVIRONMENT:
-                    raise RuntimeError(
-                        f"Unsloth: Quantization failed for {final_location}\n"\
-                        "You are in a Kaggle environment, which might be the reason this is failing.\n"\
-                        "Kaggle only provides 20GB of disk space. Merging to 16bit for 7b models use 16GB of space.\n"\
-                        "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
-                        "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
-                        "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
-                    )
+                    if not Path(final_location).resolve().is_relative_to(Path('/tmp').resolve()):
+                        raise RuntimeError(
+                            f"Unsloth: Quantization failed for {final_location}\n"\
+                            "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                            "Kaggle only provides 20GB of disk space in the working directory.\n"\
+                            "Merging to 16bit for 7b models use 16GB of space.\n"\
+                            "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                            "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                            "You can try saving it to the `/tmp` directory for larger disk space.\n"\
+                            "I suggest you to save the 16bit model first, then use manual llama.cpp conversion."
+                        )
                 else:
                     raise RuntimeError(
                         "Unsloth: Quantization failed! You might have to compile llama.cpp yourself, then run this again.\n"\
@@ -1172,7 +1199,10 @@ def save_to_gguf(
         pass
     pass
 
-    return all_saved_locations
+    # Finally check if first_conversion (f16, bf16 etc) was in the list of actual quant methods
+    full_precision_seen = first_conversion in frozenset(quantization_method)
+
+    return all_saved_locations, full_precision_seen
 pass
 
 
@@ -1456,7 +1486,7 @@ def fix_tokenizer_bos_token(tokenizer):
 
             fix_bos_token = True
             logger.warning(
-                f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+                "Unsloth: ##### The current model auto adds a BOS token.\n"\
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
 
@@ -1481,9 +1511,23 @@ def create_ollama_modelfile(tokenizer, gguf_location):
     modelfile = getattr(tokenizer, "_ollama_modelfile", None)
     if modelfile is None: return None
 
+    FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"
+    EOS_TOKEN_REPLACER     = "⚫@✅#🦥__EOS_TOKEN__⚡@🦥#⛵"
+    LEFT_BRACKET_REPLACER  = "⚫@✅#🦥"
+    RIGHT_BRACKET_REPLACER = "⚡@🦥#⛵"
+
+    # Fixes https://github.com/unslothai/unsloth/issues/1087
+    # We must convert all {'s and }'s but keep {__FILE_LOCATION__} intact
     modelfile = modelfile\
-        .replace("{{", "⚫@✅#🦥")\
-        .replace("}}", "⚡@🦥#⛵")
+        .replace("{__FILE_LOCATION__}", FILE_LOCATION_REPLACER)\
+        .replace("{__EOS_TOKEN__}",     EOS_TOKEN_REPLACER)\
+        .replace("{", LEFT_BRACKET_REPLACER)\
+        .replace("}", RIGHT_BRACKET_REPLACER)
+
+    # Revert {__FILE_LOCATION__} back
+    modelfile = modelfile\
+        .replace(FILE_LOCATION_REPLACER, "{__FILE_LOCATION__}")\
+        .replace(EOS_TOKEN_REPLACER,     "{__EOS_TOKEN__}")
     
     if "__EOS_TOKEN__" in modelfile:
         modelfile = modelfile.format(
@@ -1497,8 +1541,8 @@ def create_ollama_modelfile(tokenizer, gguf_location):
     pass
     
     modelfile = modelfile\
-        .replace("⚫@✅#🦥", "{{")\
-        .replace("⚡@🦥#⛵", "}}")\
+        .replace("⚫@✅#🦥", "{")\
+        .replace("⚡@🦥#⛵", "}")\
         .rstrip()
 
     return modelfile
@@ -1636,7 +1680,8 @@ def unsloth_save_pretrained_gguf(
     is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
-    all_file_locations = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
+    all_file_locations, want_full_precision = save_to_gguf(
+        model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
@@ -1653,13 +1698,16 @@ def unsloth_save_pretrained_gguf(
 
     if fix_bos_token:
         logger.warning(
-            f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+            "Unsloth: ##### The current model auto adds a BOS token.\n"\
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
+
+        # If not needing full precision, skip the first
+        if not want_full_precision: all_file_locations = all_file_locations[1:]
 
         for file_location in all_file_locations:
             username = upload_to_huggingface(
@@ -1810,7 +1858,8 @@ def unsloth_push_to_hub_gguf(
     is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
-    all_file_locations = save_to_gguf(model_type, model_dtype, is_sentencepiece_model, 
+    all_file_locations, want_full_precision = save_to_gguf(
+        model_type, model_dtype, is_sentencepiece_model, 
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
@@ -1825,6 +1874,9 @@ def unsloth_push_to_hub_gguf(
         print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
     pass
 
+    # If not needing full precision, skip the first
+    if not want_full_precision: all_file_locations = all_file_locations[1:]
+    
     for file_location in all_file_locations:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
@@ -1849,7 +1901,7 @@ def unsloth_push_to_hub_gguf(
 
     if fix_bos_token:
         logger.warning(
-            f"Unsloth: ##### The current model auto adds a BOS token.\n"\
+            "Unsloth: ##### The current model auto adds a BOS token.\n"\
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
@@ -1989,8 +2041,153 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     print("Unsloth: Done.")
     print(f"Unsloth: Conversion completed! Output file: {output_file}")
     print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
+pass
 
-def patch_saving_functions(model):
+
+from unsloth_zoo.peft_utils import merge_and_overwrite_lora
+from .models.loader_utils import get_model_name
+
+@torch.inference_mode
+def unsloth_generic_save(
+    model,
+    tokenizer,
+    save_directory       : Union[str, os.PathLike] = "unsloth_finetuned_merge",
+    save_method          : str = "lora", # ["lora", "merged_16bit", "merged_4bit"]
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+    is_main_process      : bool = True,
+    state_dict           : Optional[dict] = None,
+    save_function        : Callable = torch.save,
+    max_shard_size       : Union[int, str] = "5GB",
+    safe_serialization   : bool = True,
+    variant              : Optional[str] = None,
+    save_peft_format     : bool = True,
+
+    # Push to hub
+    use_temp_dir         : Optional[bool] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
+    private              : Optional[bool] = None,
+    create_pr            : bool = False,
+    revision             : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
+    tags                 : List[str] = None,
+
+    # Our functions
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.9,
+):
+    if token is None and push_to_hub: token = get_token()
+
+    merge_and_overwrite_lora(
+        get_model_name,
+        create_huggingface_repo,
+        model,
+        save_location        = save_directory,
+        push_to_hub          = push_to_hub,
+        token                = token,
+        upload_location      = save_directory if push_to_hub else None,
+        low_disk_space_usage = True,
+        private              = private,
+    )
+    return
+pass
+
+
+def unsloth_generic_save_pretrained_merged(
+    self,
+    save_directory       : Union[str, os.PathLike],
+    tokenizer            = None,
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+    is_main_process      : bool = True,
+    state_dict           : Optional[dict] = None,
+    save_function        : Callable = torch.save,
+    max_shard_size       : Union[int, str] = "5GB",
+    safe_serialization   : bool = True,
+    variant              : Optional[str] = None,
+    save_peft_format     : bool = True,
+    tags                 : List[str] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.75,
+):   
+    """
+        Same as .push_to_hub(...) except 4bit weights are auto
+        converted to float16 with as few overhead as possible.
+
+        Choose for `save_method` to be either:
+        1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+        2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+        3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    """
+    if tokenizer is None:
+        logger.warning_once(
+            "Unsloth: You're not saving a tokenizer as well?\n"\
+            "You can do it separately via `tokenizer.save_pretrained(...)`"
+        )
+    pass
+
+    arguments = dict(locals())
+    arguments["model"] = self
+    del arguments["self"]
+    unsloth_generic_save(**arguments)
+    for _ in range(3):
+        gc.collect()
+pass
+
+
+def unsloth_generic_push_to_hub_merged(
+    self,
+    repo_id              : str,
+    tokenizer            = None,
+    save_method          : str = "merged_16bit", # ["lora", "merged_16bit", "merged_4bit"]
+    use_temp_dir         : Optional[bool] = None,
+    commit_message       : Optional[str] = "Trained with Unsloth",
+    private              : Optional[bool] = None,
+    token                : Union[bool, str, None] = None,
+    max_shard_size       : Union[int, str, None] = "5GB",
+    create_pr            : bool = False,
+    safe_serialization   : bool = True,
+    revision             : str = None,
+    commit_description   : str = "Upload model trained with Unsloth 2x faster",
+    tags                 : Optional[List[str]] = None,
+    temporary_location   : str = "_unsloth_temporary_saved_buffers",
+    maximum_memory_usage : float = 0.75,
+):
+    """
+        Same as .push_to_hub(...) except 4bit weights are auto
+        converted to float16 with as few overhead as possible.
+
+        Choose for `save_method` to be either:
+        1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+        2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+        3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
+    """
+    if tokenizer is None:
+        logger.warning_once(
+            "Unsloth: You're not saving a tokenizer as well?\n"\
+            "You can do it separately via `tokenizer.push_to_hub(...)`"
+        )
+    pass
+
+    arguments = dict(locals())
+    arguments["model"]          = self
+    arguments["save_directory"] = repo_id
+    arguments["push_to_hub"]    = True
+    del arguments["self"]
+    del arguments["repo_id"]
+    unsloth_generic_save(**arguments)
+    for _ in range(3):
+        gc.collect()
+pass
+
+
+def not_implemented_save(*args, **kwargs):
+    raise NotImplementedError("Unsloth: Sorry GGUF is currently not supported for vision models!")
+pass
+
+
+def patch_saving_functions(model, vision = False):
     import inspect
     import types
     from typing import Callable, Optional, Union, List
@@ -2079,14 +2276,22 @@ def patch_saving_functions(model):
     pass
 
     # Add saving methods to top level model
-    if hasattr(model, "config"):
-        # Counteract tokenizers
-        model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,                    model)
-        model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged,                model)
-        model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
-        model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
-        model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
-        model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
+    if not vision:
+        if hasattr(model, "config"):
+            # Counteract tokenizers
+            model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,                    model)
+            model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged,                model)
+            model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
+            model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
+            model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
+            model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
+        pass
+    else:
+        # Vision only 1 option
+        model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,     model)
+        model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged, model)
+        model.push_to_hub_gguf       = types.MethodType(not_implemented_save,                   model)
+        model.save_pretrained_gguf   = types.MethodType(not_implemented_save,                   model)
     pass
     return model
 pass
