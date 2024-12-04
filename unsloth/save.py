@@ -45,6 +45,9 @@ __all__ = [
     "create_huggingface_repo",
 ]
 
+# llama.cpp specific targets - all takes 90s. Below takes 60s
+LLAMA_CPP_TARGETS = ["llama-quantize", "llama-export-lora", "llama-cli",]
+
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT  = "\nCOLAB_"  in keynames
@@ -761,9 +764,21 @@ def install_llama_cpp_make_non_blocking():
     # env = { **os.environ, "LLAMA_CUDA": "1", }
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
-    os.system("make clean -C llama.cpp")
-    full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
-
+    check = os.system("make clean -C llama.cpp")
+    if check == 0:
+        # Uses old MAKE
+        full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
+    else:
+        # Uses new CMAKE
+        check = os.system("cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON")
+        if check
+        commands = [
+            "",
+            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            "cp llama.cpp/build/bin/llama-* llama.cpp",
+            "rm -rf llama.cpp/build",
+        ]
+    pass
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
@@ -776,6 +791,27 @@ def install_python_non_blocking(packages = []):
     full_command = ["pip", "install"] + packages
     run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
+pass
+
+
+def try_make(commands):
+    for command in commands:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
+            for line in sp.stdout:
+                line = line.decode("utf-8", errors = "replace")
+                if "undefined reference" in line:
+                    raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!")
+                elif "deprecated" in line:
+                    return "CMAKE"
+                elif "Unknown argument" in line:
+                    raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!")
+                elif "***" in line:
+                    raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!")
+                print(line, flush = True, end = "")
+            pass
+        pass
+    pass
+    return None
 pass
 
 
@@ -810,18 +846,25 @@ def install_llama_cpp_old(version = -10):
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df",
+    ]
+    try_make(commands)
+
+    # Try using MAKE
+    commands = [
         "make clean -C llama.cpp",
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
     ]
-    for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
-            for line in sp.stdout:
-                line = line.decode("utf-8", errors = "replace")
-                if "undefined reference" in line:
-                    raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-                print(line, flush = True, end = "")
-        pass
+    if try_make(commands) == "CMAKE":
+        # Instead use CMAKE
+        commands = [
+            "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
+            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            "cp llama.cpp/build/bin/llama-* llama.cpp",
+            "rm -rf llama.cpp/build",
+        ]
+        try_make(commands)
     pass
+
     # Check if successful
     if not os.path.exists("llama.cpp/quantize") and not os.path.exists("llama.cpp/llama-quantize"):
         raise RuntimeError(
@@ -839,23 +882,27 @@ def install_llama_cpp_blocking(use_cuda = False):
 
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
+        "pip install gguf protobuf",
+    ]
+    if os.path.exists("llama.cpp"): return
+    try_make(commands)
+
+    commands = [
         "make clean -C llama.cpp",
         # https://github.com/ggerganov/llama.cpp/issues/7062
         # Weirdly GPU conversion for GGUF breaks??
         # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
-        "pip install gguf protobuf",
     ]
-    if os.path.exists("llama.cpp"): return
-
-    for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
-            for line in sp.stdout:
-                line = line.decode("utf-8", errors = "replace")
-                if "undefined reference" in line:
-                    raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-                print(line, flush = True, end = "")
-        pass
+    if try_make(commands) == "CMAKE":
+        # Instead use CMAKE
+        commands = [
+            "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
+            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            "cp llama.cpp/build/bin/llama-* llama.cpp",
+            "rm -rf llama.cpp/build",
+        ]
+        try_make(commands)
     pass
 pass
 
