@@ -249,6 +249,13 @@ def merge_and_overwrite_lora(
     if total_counted//2 != count:
         raise RuntimeError("Unsloth: The number of LoRA adapaters was not calculated correctly!")
 
+    # Also model. might be repeated - remove them!
+    original_keys = list(lora_weights.keys())
+    for original_key in original_keys:
+        if original_key.startswith("model."):
+            lora_weights[original_key[len("model."):]] = lora_weights[original_key]
+    pass
+
     # Only enable low_disk_space_usage for uploading
     if upload_location is not None and low_disk_space_usage:
         file_list = HfFileSystem().ls(model_name, detail = False)
