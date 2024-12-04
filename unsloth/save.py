@@ -1038,6 +1038,8 @@ def save_to_gguf(
             error = _run_installer.wait()
             if IS_CMAKE:
                 # CMAKE needs to do some extra steps
+                print("Unsloth: CMAKE detected. Finalizing some steps for installation.")
+
                 check = os.system("cp llama.cpp/build/bin/llama-* llama.cpp")
                 if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
                 check = os.system("rm -rf llama.cpp/build")
