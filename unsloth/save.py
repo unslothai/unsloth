@@ -765,25 +765,32 @@ def install_llama_cpp_make_non_blocking():
     n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
     check = os.system("make clean -C llama.cpp")
+    IS_CMAKE = False
     if check == 0:
         # Uses old MAKE
         full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
+        IS_CMAKE = False
     else:
         # Uses new CMAKE
         check = os.system("cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON")
-        if check
-        commands = [
-            "",
-            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
-            "cp llama.cpp/build/bin/llama-* llama.cpp",
-            "rm -rf llama.cpp/build",
+        if check != 0:
+            raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp using os.system(...) with error {check}. Please report this ASAP!")
+        pass
+        # f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+        full_command = [
+            "cmake", "--build", "llama.cpp/build",
+            "--config", "Release",
+            "-j"+str(n_jobs),
+            "--clean-first",
+            "--target", " ".join(LLAMA_CPP_TARGETS),
         ]
+        IS_CMAKE = True
     pass
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
-    return run_installer
+    return run_installer, IS_CMAKE
 pass
 
 
@@ -1023,13 +1030,26 @@ def save_to_gguf(
     else:
         print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
         if _run_installer is not None:
+            _run_installer, IS_CMAKE = _run_installer
+
             error = _run_installer.wait()
+            if IS_CMAKE:
+                # CMAKE needs to do some extra steps
+                check = os.system("cp llama.cpp/build/bin/llama-* llama.cpp")
+                if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
+                check = os.system("rm -rf llama.cpp/build")
+                if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
+            pass
         else:
             error = 0
             install_llama_cpp_blocking()
         pass
 
-        # Check if successful. If not install 10th latest release
+        # Check if successful
+        if error != 0 or quantize_location is None or convert_location is None:
+            print(f"Unsloth: llama.cpp error code = {error}.")
+            install_llama_cpp_old(-10)
+        pass
 
         # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
         # and llama.cpp/main changed to llama.cpp/llama-cli
@@ -1058,11 +1078,6 @@ def save_to_gguf(
                 "Unsloth: The file 'llama.cpp/convert-hf-to-gguf.py' or 'llama.cpp/convert_hf_to_gguf.py' does not exist.\n"\
                 "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
             )
-        pass
-
-        if error != 0 or quantize_location is None or convert_location is None:
-            print(f"Unsloth: llama.cpp error code = {error}.")
-            install_llama_cpp_old(-10)
         pass
     pass
 
@@ -1676,7 +1691,7 @@ def unsloth_save_pretrained_gguf(
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
-            makefile  = install_llama_cpp_make_non_blocking()
+            makefile = install_llama_cpp_make_non_blocking()
             new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
@@ -1697,7 +1712,7 @@ def unsloth_save_pretrained_gguf(
                 git_clone = install_llama_cpp_clone_non_blocking()
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 git_clone.wait()
-                makefile  = install_llama_cpp_make_non_blocking()
+                makefile = install_llama_cpp_make_non_blocking()
                 new_save_directory, old_username = unsloth_save_model(**arguments)
                 python_install.wait()
             pass
@@ -1854,7 +1869,7 @@ def unsloth_push_to_hub_gguf(
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
-            makefile  = install_llama_cpp_make_non_blocking()
+            makefile = install_llama_cpp_make_non_blocking()
             new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
@@ -1875,7 +1890,7 @@ def unsloth_push_to_hub_gguf(
                 git_clone = install_llama_cpp_clone_non_blocking()
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 git_clone.wait()
-                makefile  = install_llama_cpp_make_non_blocking()
+                makefile = install_llama_cpp_make_non_blocking()
                 new_save_directory, old_username = unsloth_save_model(**arguments)
                 python_install.wait()
             pass
