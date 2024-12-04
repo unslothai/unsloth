@@ -497,7 +497,7 @@ def unsloth_save_model(
     elif safe_serialization and (n_cpus <= 2):
         logger.warning_once(
             f"Unsloth: You have {n_cpus} CPUs. Using `safe_serialization` is 10x slower.\n"\
-            f"We shall switch to Pytorch saving, which will take 3 minutes and not 30 minutes.\n"\
+            f"We shall switch to Pytorch saving, which might take 3 minutes and not 30 minutes.\n"\
             f"To force `safe_serialization`, set it to `None` instead.",
         )
         safe_serialization = False
@@ -1007,9 +1007,9 @@ def save_to_gguf(
 
     print_info = \
         f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
-        f"   \\\   /|    [0] Installing llama.cpp will take 3 minutes.\n"\
-        f"O^O/ \_/ \\    [1] Converting HF to GGUF 16bits will take 3 minutes.\n"\
-        f"\        /    [2] Converting GGUF 16bits to {quantization_method} will take 10 minutes each.\n"\
+        f"   \\\   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
+        f"O^O/ \_/ \\    [1] Converting HF to GGUF 16bits might take 3 minutes.\n"\
+        f"\        /    [2] Converting GGUF 16bits to {quantization_method} might take 10 minutes each.\n"\
         f' "-____-"     In total, you will have to wait at least 16 minutes.\n'
     print(print_info)
 
@@ -1032,7 +1032,7 @@ def save_to_gguf(
     if quantize_location is not None and convert_location is not None:
         print("Unsloth: llama.cpp found in the system. We shall skip installation.")
     else:
-        print("Unsloth: Installing llama.cpp. This will take 3 minutes...")
+        print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
         if _run_installer is not None:
             _run_installer, IS_CMAKE = _run_installer
 
@@ -1152,7 +1152,7 @@ def save_to_gguf(
     
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
-          "This will take 3 minutes...")
+          "This might take 3 minutes...")
 
     # We first check if tokenizer.model exists in the model_directory
     if os.path.exists(f"{model_directory}/tokenizer.model"):
@@ -1211,7 +1211,7 @@ def save_to_gguf(
     # Convert each type!
     for quant_method in quantization_method:
         if quant_method != first_conversion:
-            print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This will take 20 minutes...")
+            print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This might take 20 minutes...")
             final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
 
             command = f"./{quantize_location} {full_precision_location} "\
