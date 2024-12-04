@@ -801,7 +801,7 @@ def install_python_non_blocking(packages = []):
 pass
 
 
-def try_make(commands):
+def try_execute(commands, force_complete = False):
     for command in commands:
         with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
@@ -816,6 +816,8 @@ def try_make(commands):
                     raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!")
                 print(line, flush = True, end = "")
             pass
+            if force_complete and sp.returncode is not None and sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, sp.args)
         pass
     pass
     return None
@@ -854,14 +856,14 @@ def install_llama_cpp_old(version = -10):
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df",
     ]
-    try_make(commands)
+    try_execute(commands)
 
     # Try using MAKE
     commands = [
         "make clean -C llama.cpp",
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
     ]
-    if try_make(commands) == "CMAKE":
+    if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
             "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
@@ -869,7 +871,7 @@ def install_llama_cpp_old(version = -10):
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
-        try_make(commands)
+        try_execute(commands)
     pass
 
     # Check if successful
@@ -892,7 +894,7 @@ def install_llama_cpp_blocking(use_cuda = False):
         "pip install gguf protobuf",
     ]
     if os.path.exists("llama.cpp"): return
-    try_make(commands)
+    try_execute(commands)
 
     commands = [
         "make clean -C llama.cpp",
@@ -901,7 +903,7 @@ def install_llama_cpp_blocking(use_cuda = False):
         # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
     ]
-    if try_make(commands) == "CMAKE":
+    if try_execute(commands) == "CMAKE":
         # Instead use CMAKE
         commands = [
             "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
@@ -909,7 +911,7 @@ def install_llama_cpp_blocking(use_cuda = False):
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
-        try_make(commands)
+        try_execute(commands)
     pass
 pass
 
@@ -1169,15 +1171,7 @@ def save_to_gguf(
             f"--outtype {first_conversion}"
     pass
 
-    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
-        for line in sp.stdout:
-            line = line.decode("utf-8", errors = "replace")
-            if "undefined reference" in line:
-                raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-            print(line, flush = True, end = "")
-        if sp.returncode is not None and sp.returncode != 0:
-            raise subprocess.CalledProcessError(sp.returncode, sp.args)
-    pass
+    try_execute([command], force_complete = True)
 
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
@@ -1219,16 +1213,7 @@ def save_to_gguf(
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
             
-            # quantize uses stderr
-            with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
-                for line in sp.stdout:
-                    line = line.decode("utf-8", errors = "replace")
-                    if "undefined reference" in line:
-                        raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-                    print(line, flush = True, end = "")
-                if sp.returncode is not None and sp.returncode != 0:
-                    raise subprocess.CalledProcessError(sp.returncode, sp.args)
-            pass
+            try_execute([command,], force_complete = True)
 
             # Check if quantization succeeded!
             if not os.path.isfile(final_location):
