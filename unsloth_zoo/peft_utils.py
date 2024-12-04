@@ -230,7 +230,7 @@ def merge_and_overwrite_lora(
     import peft.tuners.lora.bnb
     import peft.tuners.lora
     peft_items = dir(peft.tuners.lora.bnb)
-    peft_layers = [eval(f"peft.tuners.lora.bnb.{x}", locals()) for x in peft_items if x.startswith("Linear")]
+    peft_layers = [eval(f"peft.tuners.lora.bnb.{x}", globals()) for x in peft_items if x.startswith("Linear")]
 
     Linear_LoRA_Layers = tuple(peft_layers + [peft.tuners.lora.Linear,])
     count = 0
