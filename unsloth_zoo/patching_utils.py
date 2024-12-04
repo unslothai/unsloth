@@ -366,6 +366,38 @@ def patch_compiled_autograd():
     return
 pass
 
+
+# Patch for dynamic 4bit quantization
+import inspect
+import transformers.integrations.bitsandbytes
+if hasattr(transformers.integrations.bitsandbytes, "_replace_with_bnb_linear") and \
+    (transformers.integrations.bitsandbytes._replace_with_bnb_linear.__name__ != "_unsloth_replace_with_bnb_linear"):
+
+    # Code licensed under LGPL
+    source = inspect.getsource(transformers.integrations.bitsandbytes._replace_with_bnb_linear)
+    functions = dir(transformers.integrations.bitsandbytes)
+    functions = [x for x in functions if f" {x}" in source or f"{x}." in source or f"{x}(" in source]
+    functions = [x for x in functions if x != "_replace_with_bnb_linear"]
+    x = ", ".join(functions)
+    exec(f"from transformers.integrations.bitsandbytes import ({x})", globals())
+    if "current_key_name_str" not in source:
+        raise RuntimeError("Unsloth: Patch for dynamic quantization failed since current_key_name_str does not exist.")
+    
+    source = source.replace(
+        "name in quantization_config.llm_int8_skip_modules\n",
+        "((name in quantization_config.llm_int8_skip_modules) or (current_key_name_str in quantization_config.llm_int8_skip_modules))\n",
+        1,
+    )
+
+    # Need more than 1 replacement since recursion is done
+    source = source.replace(
+        "_replace_with_bnb_linear",
+        "_unsloth_replace_with_bnb_linear",
+    )
+    exec(source, globals())
+    transformers.integrations.bitsandbytes._replace_with_bnb_linear = _unsloth_replace_with_bnb_linear
+pass
+
 # Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
