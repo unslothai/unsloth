@@ -220,8 +220,12 @@ def merge_and_overwrite_lora(
         pass
     pass
 
+    # Get LoRA scalers
     import peft.tuners.lora.bnb, peft.tuners.lora
-    Linear_LoRA_Layers = (peft.tuners.lora.bnb.Linear4bit, peft.tuners.lora.Linear,)
+    peft_items = dir(peft.tuners.lora.bnb)
+    peft_layers = [x for x in peft_items if x.startswith("Linear")]
+
+    Linear_LoRA_Layers = tuple(peft_layers + [peft.tuners.lora.Linear,])
     for name, module in model.named_modules():
         if isinstance(module, Linear_LoRA_Layers):
             assert(name.startswith("base_model."))
