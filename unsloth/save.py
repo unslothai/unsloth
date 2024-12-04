@@ -1171,7 +1171,7 @@ def save_to_gguf(
             f"--outtype {first_conversion}"
     pass
 
-    try_execute([command], force_complete = True)
+    try_execute([command,], force_complete = True)
 
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
