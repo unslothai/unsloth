@@ -782,8 +782,8 @@ def install_llama_cpp_make_non_blocking():
             "--config", "Release",
             "-j"+str(n_jobs),
             "--clean-first",
-            "--target", " ".join(LLAMA_CPP_TARGETS),
-        ]
+            "--target",
+        ] + LLAMA_CPP_TARGETS
         IS_CMAKE = True
     pass
     # https://github.com/ggerganov/llama.cpp/issues/7062
