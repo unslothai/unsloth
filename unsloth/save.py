@@ -762,16 +762,17 @@ def install_llama_cpp_make_non_blocking():
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # env = { **os.environ, "LLAMA_CUDA": "1", }
-    n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
     check = os.system("make clean -C llama.cpp")
     IS_CMAKE = False
     if check == 0:
         # Uses old MAKE
+        n_jobs = max(int(psutil.cpu_count()*1.5), 1)
         full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
         IS_CMAKE = False
     else:
         # Uses new CMAKE
+        n_jobs = max(int(psutil.cpu_count()), 1) # Use less CPUs since 1.5x faster
         check = os.system("cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON")
         if check != 0:
             raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp using os.system(...) with error {check}. Please report this ASAP!")
