@@ -552,6 +552,8 @@ def unsloth_save_model(
 
     max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
 
+    print("Unsloth: Saving model... This might take 5 minutes ...")
+
     from tqdm import tqdm as ProgressBar
     for j, layer in enumerate(ProgressBar(internal_model.model.layers)):
         for item in LLAMA_WEIGHTS:
@@ -667,8 +669,6 @@ def unsloth_save_model(
     else:
         print()
     pass
-
-    print("Unsloth: Saving model... This might take 5 minutes for Llama-7b...")
 
     # Since merged, edit quantization_config
     old_config = model.config
@@ -1028,6 +1028,7 @@ def save_to_gguf(
     quantize_location = get_executable(["llama-quantize", "quantize"])
     convert_location  = get_executable(["convert-hf-to-gguf.py", "convert_hf_to_gguf.py"])
     
+    error = 0
     if quantize_location is not None and convert_location is not None:
         print("Unsloth: llama.cpp found in the system. We shall skip installation.")
     else:
@@ -1036,6 +1037,12 @@ def save_to_gguf(
             _run_installer, IS_CMAKE = _run_installer
 
             error = _run_installer.wait()
+            # Check if successful
+            if error != 0:
+                print(f"Unsloth: llama.cpp error code = {error}.")
+                install_llama_cpp_old(-10)
+            pass
+
             if IS_CMAKE:
                 # CMAKE needs to do some extra steps
                 print("Unsloth: CMAKE detected. Finalizing some steps for installation.")
@@ -1048,12 +1055,6 @@ def save_to_gguf(
         else:
             error = 0
             install_llama_cpp_blocking()
-        pass
-
-        # Check if successful
-        if error != 0 or quantize_location is None or convert_location is None:
-            print(f"Unsloth: llama.cpp error code = {error}.")
-            install_llama_cpp_old(-10)
         pass
 
         # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
