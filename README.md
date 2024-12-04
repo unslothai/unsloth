@@ -468,6 +468,18 @@ Two Tesla T4s on Kaggle
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 <br>
 
+### Citing
+
+You can cite Unsloth repo as follows:
+```bibtex
+@software{unsloth2023github,
+  author = {Han, Daniel and Han, Michael},
+  title = {Finetune {L}lama 3.2, {M}istral, {P}hi, {Q}wen 2.5 \& {G}emma {LLM}s 2-5x faster with 80\% less memory},
+  url = {http://github.com/unslothai/unsloth},
+  year = {2023}
+}
+```
+
 ### Thank You to
 - [HuyNguyen-hust](https://github.com/HuyNguyen-hust) for making [RoPE Embeddings 28% faster](https://github.com/unslothai/unsloth/pull/238)
 - [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
