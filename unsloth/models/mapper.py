@@ -452,33 +452,45 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Llama-3.1-Nemotron-70B-Instruct",
         "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
     ),
-    "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit" : (
+    "unsloth/Qwen2-VL-2B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen2-VL-2B-Instruct",
         "Qwen/Qwen2-VL-2B-Instruct",
+        "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
     ),
-    "unsloth/Qwen2-VL-7B-Instruct-bnb-4bit" : (
+    "unsloth/Qwen2-VL-7B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen2-VL-7B-Instruct",
         "Qwen/Qwen2-VL-7B-Instruct",
+        "unsloth/Qwen2-VL-7B-Instruct-bnb-4bit",
     ),
-    "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit" : (
+    "unsloth/Qwen2-VL-72B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen2-VL-72B-Instruct",
+        "Qwen/Qwen2-VL-72B-Instruct",
+        "unsloth/Qwen2-VL-72B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Llama-3.2-11B-Vision-Instruct",
         "meta-llama/Llama-3.2-11B-Vision-Instruct",
+        "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
     ),
-    "unsloth/Llama-3.2-90B-Vision-Instruct-bnb-4bit" : (
+    "unsloth/Llama-3.2-90B-Vision-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Llama-3.2-90B-Vision-Instruct",
         "meta-llama/Llama-3.2-90B-Vision-Instruct",
+        "unsloth/Llama-3.2-90B-Vision-Instruct-bnb-4bit",
     ),
-    "unsloth/Llama-3.2-11B-Vision-bnb-4bit" : (
+    "unsloth/Llama-3.2-11B-Vision-unsloth-bnb-4bit" : (
         "unsloth/Llama-3.2-11B-Vision",
         "meta-llama/Llama-3.2-11B-Vision",
+        "unsloth/Llama-3.2-11B-Vision-bnb-4bit",
     ),
-    "unsloth/Llama-3.2-90B-Vision-bnb-4bit" : (
+    "unsloth/Llama-3.2-90B-Vision-unsloth-bnb-4bit" : (
         "unsloth/Llama-3.2-90B-Vision",
         "meta-llama/Llama-3.2-90B-Vision",
+        "unsloth/Llama-3.2-90B-Vision-bnb-4bit",
     ),
-    "unsloth/Pixtral-12B-2409-bnb-4bit" : (
+    "unsloth/Pixtral-12B-2409-unsloth-bnb-4bit" : (
         "unsloth/Pixtral-12B-2409",
         "mistralai/Pixtral-12B-2409",
+        "unsloth/Pixtral-12B-2409-bnb-4bit",
     ),
     "unsloth/Pixtral-12B-2409-Base-bnb-4bit" : (
         "unsloth/Pixtral-12B-Base-2409",
@@ -500,6 +512,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Llama-3.1-Tulu-3-70B",
         "allenai/Llama-3.1-Tulu-3-70B",
     ),
+    "unsloth/QwQ-32B-Preview-bnb-4bit" : (
+        "unsloth/QwQ-32B-Preview",
+        "Qwen/QwQ-32B-Preview",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
@@ -518,6 +534,14 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
         if values[0].startswith("unsloth"):
             MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
             MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
+        pass
+    elif len(values) == 3:
+        # Dynamic Unsloth quantization
+        if values[0].startswith("unsloth"):
+            MAP_TO_UNSLOTH_16bit[values[1]] = values[0]
+            MAP_TO_UNSLOTH_16bit[values[1].lower()] = values[0]
+            MAP_TO_UNSLOTH_16bit[values[2]] = values[0]
+            MAP_TO_UNSLOTH_16bit[values[2].lower()] = values[0]
         pass
     pass
 
