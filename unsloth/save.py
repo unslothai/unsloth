@@ -839,13 +839,13 @@ def install_llama_cpp_old(version = -10):
     # Check if the llama.cpp exists
     if os.path.exists("llama.cpp"):
         print(
-            "**[WARNING]** You have a llama.cpp old directory which is broken.\n"\
+            "**[WARNING]** You have a llama.cpp directory which is broken.\n"\
             "Unsloth will DELETE the broken directory and install a new one.\n"\
             "Press CTRL + C / cancel this if this is wrong. We shall wait 10 seconds.\n"
         )
         import time
-        for i in range(10):
-            print(f"**[WARNING]** Deleting llama.cpp directory... {10-i} seconds left.")
+        for i in range(30):
+            print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
             time.sleep(1)
         import shutil
         shutil.rmtree("llama.cpp", ignore_errors = True)
