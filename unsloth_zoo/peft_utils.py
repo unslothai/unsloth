@@ -17,10 +17,18 @@
 __all__ = [
     "get_peft_regex",
     "merge_and_overwrite_lora",
+    "SKIP_QUANTIZATION_MODULES",
 ]
 
 import torch
 
+# Skip some modules sensitive to quantization
+SKIP_QUANTIZATION_MODULES = [
+    "lm_head",
+    "multi_modal_projector", # Llama 3.2 Vision, Pixtral, Llava
+    "merger",                # Qwen2 VL
+    "modality_projection",   # Idefics, SmolVLM
+]
 
 def get_peft_regex(
     model,
@@ -129,6 +137,7 @@ from tqdm import tqdm as ProgressBar
 import os, shutil
 
 
+@torch.inference_mode
 def _merge_and_overwrite_lora(save_location, filename, lora_weights,):
     # Code licensed under LGPL
     # Merges LoRA and overwrites the safetensors file it was merged to
@@ -156,6 +165,7 @@ def _merge_and_overwrite_lora(save_location, filename, lora_weights,):
 pass
 
 
+@torch.inference_mode
 def merge_and_overwrite_lora(
     get_model_name,
     create_huggingface_repo,
@@ -210,16 +220,40 @@ def merge_and_overwrite_lora(
         pass
     pass
 
+    # Confirm count
+    parameters = model.named_parameters()
+    total_counted = sum(".lora_A." in name or ".lora_B." in name for name, x in parameters)
+    if total_counted//2 != len(lora_weights):
+        raise RuntimeError("Unsloth: The number of LoRA adapaters was not calculated correctly!")
+
+    # Get LoRA scalings
     import peft.tuners.lora.bnb
+    import peft.tuners.lora
+    peft_items = dir(peft.tuners.lora.bnb)
+    peft_items = [x for x in peft_items if x.startswith("Linear")]
+    exec(f"from peft.tuners.lora import ({', '.join(peft_items)})", locals(), globals())
+
+    Linear_LoRA_Layers = tuple([peft.tuners.lora.Linear,] + [eval(x) for x in peft_items])
+    count = 0
     for name, module in model.named_modules():
-        if isinstance(module, peft.tuners.lora.bnb.Linear4bit):
+        if isinstance(module, Linear_LoRA_Layers):
             assert(name.startswith("base_model."))
             name = name[len("base_model."):]
             active_adapter = module.active_adapters[0] if \
                 hasattr(module, "active_adapters") else module.active_adapter
             scaling = module.scaling[active_adapter]
             lora_weights[name + ".weight"][2] = scaling
+            count += 1
         pass
+    pass
+    if total_counted//2 != count:
+        raise RuntimeError("Unsloth: The number of LoRA adapaters was not calculated correctly!")
+
+    # Also model. might be repeated - remove them!
+    original_keys = list(lora_weights.keys())
+    for original_key in original_keys:
+        if original_key.startswith("model."):
+            lora_weights[original_key[len("model."):]] = lora_weights[original_key]
     pass
 
     # Only enable low_disk_space_usage for uploading

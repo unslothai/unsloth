@@ -30,16 +30,20 @@ from .compiler import UNSLOTH_COMPILE_LOCATION
 
 # Also disable compiling on bitsandbytes
 def patch_compiling_bitsandbytes():
-    # peft.tuners.lora.bnb.Linear8bitLt.forward = \
-    #     torch._disable_dynamo(peft.tuners.lora.bnb.Linear8bitLt.forward)
-    # return
     os.environ["UNSLOTH_PATCHED"] = "1"
-    import bitsandbytes.nn.modules
-    bitsandbytes.nn.modules.Linear4bit.forward = \
-        torch._disable_dynamo(bitsandbytes.nn.modules.Linear4bit.forward)
-    import peft.tuners.lora.bnb
-    peft.tuners.lora.bnb.Linear4bit.forward = \
-        torch._disable_dynamo(peft.tuners.lora.bnb.Linear4bit.forward)
+
+    # Disable dynamo on Linear4bit, Linear8bit and other future modules
+    for x in ["bitsandbytes.nn.modules", "peft.tuners.lora.bnb",]:
+        exec(f"import {x}", globals(), locals())
+        layers = dir(eval(x))
+        for fx in layers:
+            try: layer = eval(f"{x}.{fx}")
+            except: continue
+            if not hasattr(layer, "forward"): continue
+            if hasattr(eval(f"{x}.{fx}.forward"), "__wrapped__"): continue
+            exec(f"{x}.{fx}.forward = torch._disable_dynamo({x}.{fx}.forward)", globals(), locals())
+        pass
+    pass
 
     # import bitsandbytes.autograd._functions
     # bitsandbytes.autograd._functions.matmul_4bit = torch._disable_dynamo(
@@ -100,14 +104,20 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
     os.environ["TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE"] = "1"
     os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
+
+    # Duplicate functions will cause hashing issues
     # os.environ["TORCHINDUCTOR_CACHE_DIR"] = UNSLOTH_COMPILE_LOCATION
+
+    # https://github.com/sayakpaul/diffusers-torchao?tab=readme-ov-file#things-to-keep-in-mind-when-benchmarking
+    os.environ["ENABLE_AOT_AUTOGRAD_CACHE"] = "1"
 
     # Torch compile arguments
     torch_compile_arguments = [
         f"config.debug = {debug}",
         "config.dce = True",
         "config.memory_planning = True",
-        "config.memory_pool = 'combined'",
+        # Using 'combined' memory pool will cause re-compiles for dynamic shapres. We just re-use already allocated memory pools
+        "config.memory_pool = 'none'",
         "config.efficient_conv_bn_eval_fx_passes = True", # Reduces stability a little bit
         "config.dynamic_scale_rblock = True", # Scale down RBLOCK for better occupancy
         # Disable reorder_for_compute_comm_overlap since it errors for non multi GPU systems
@@ -127,7 +137,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         # f"config.triton.multi_kernel = {O3}", # use tuning to pick between different subkernels
         "config.cuda.enable_cuda_lto = True",
         "config.cuda.use_fast_math = True",
-        "config.cuda.compile_opt_level = '-O1'",
+        f"config.cuda.compile_opt_level = {'-O2' if O3 else '-O1'}",
         # Capture torch.arange(...), torch.zeros(...)
         "config.capture_dynamic_output_shape_ops = True",
     ]
@@ -354,6 +364,38 @@ def patch_compiled_autograd():
     exec(source, globals())
     torch._dynamo.variables.misc.AutogradEngineVariable.call_method = unsloth_call_method
     return
+pass
+
+
+# Patch for dynamic 4bit quantization
+import inspect
+import transformers.integrations.bitsandbytes
+if hasattr(transformers.integrations.bitsandbytes, "_replace_with_bnb_linear") and \
+    (transformers.integrations.bitsandbytes._replace_with_bnb_linear.__name__ != "_unsloth_replace_with_bnb_linear"):
+
+    # Code licensed under LGPL
+    source = inspect.getsource(transformers.integrations.bitsandbytes._replace_with_bnb_linear)
+    functions = dir(transformers.integrations.bitsandbytes)
+    functions = [x for x in functions if f" {x}" in source or f"{x}." in source or f"{x}(" in source]
+    functions = [x for x in functions if x != "_replace_with_bnb_linear"]
+    x = ", ".join(functions)
+    exec(f"from transformers.integrations.bitsandbytes import ({x})", globals())
+    if "current_key_name_str" not in source:
+        raise RuntimeError("Unsloth: Patch for dynamic quantization failed since current_key_name_str does not exist.")
+    
+    source = source.replace(
+        "name in quantization_config.llm_int8_skip_modules\n",
+        "((name in quantization_config.llm_int8_skip_modules) or (current_key_name_str in quantization_config.llm_int8_skip_modules))\n",
+        1,
+    )
+
+    # Need more than 1 replacement since recursion is done
+    source = source.replace(
+        "_replace_with_bnb_linear",
+        "_unsloth_replace_with_bnb_linear",
+    )
+    exec(source, globals())
+    transformers.integrations.bitsandbytes._replace_with_bnb_linear = _unsloth_replace_with_bnb_linear
 pass
 
 # Unsloth Zoo - Utilities for Unsloth

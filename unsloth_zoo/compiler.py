@@ -1022,9 +1022,9 @@ def unsloth_compile_transformers(
 
     debug_info = """debug_info = \\
         f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
-        f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
-        f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
-        f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
+        f"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
+        f"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
+        f"{chr(92)}        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
         f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}\\n'\\
         f"🦥 Unsloth needs about 1-3 minutes to load everything - please wait!"
         logger.warning(debug_info)
