@@ -227,7 +227,8 @@ def merge_and_overwrite_lora(
         raise RuntimeError("Unsloth: The number of LoRA adapaters was not calculated correctly!")
 
     # Get LoRA scalings
-    import peft.tuners.lora.bnb, peft.tuners.lora
+    import peft.tuners.lora.bnb
+    import peft.tuners.lora
     peft_items = dir(peft.tuners.lora.bnb)
     peft_layers = [eval(f"peft.tuners.lora.bnb.{x}") for x in peft_items if x.startswith("Linear")]
 
