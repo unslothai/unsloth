@@ -30,7 +30,7 @@ from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
     merge_and_overwrite_lora,
-    # SKIP_QUANTIZATION_MODULES,
+    SKIP_QUANTIZATION_MODULES,
 )
 from triton import __version__ as triton_version
 
@@ -133,7 +133,7 @@ class FastBaseVisionModel:
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
-                # llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
             )
         pass
 
