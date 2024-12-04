@@ -137,6 +137,7 @@ from tqdm import tqdm as ProgressBar
 import os, shutil
 
 
+@torch.inference_mode
 def _merge_and_overwrite_lora(save_location, filename, lora_weights,):
     # Code licensed under LGPL
     # Merges LoRA and overwrites the safetensors file it was merged to
@@ -164,6 +165,7 @@ def _merge_and_overwrite_lora(save_location, filename, lora_weights,):
 pass
 
 
+@torch.inference_mode
 def merge_and_overwrite_lora(
     get_model_name,
     create_huggingface_repo,
@@ -218,9 +220,10 @@ def merge_and_overwrite_lora(
         pass
     pass
 
-    import peft.tuners.lora.bnb
+    import peft.tuners.lora.bnb, peft.tuners.lora
+    Linear_LoRA_Layers = (peft.tuners.lora.bnb.Linear4bit, peft.tuners.lora.Linear,)
     for name, module in model.named_modules():
-        if isinstance(module, peft.tuners.lora.bnb.Linear4bit):
+        if isinstance(module, Linear_LoRA_Layers):
             assert(name.startswith("base_model."))
             name = name[len("base_model."):]
             active_adapter = module.active_adapters[0] if \
