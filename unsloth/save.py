@@ -1031,7 +1031,7 @@ def save_to_gguf(
     if quantize_location is not None and convert_location is not None:
         print("Unsloth: llama.cpp found in the system. We shall skip installation.")
     else:
-        print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
+        print("Unsloth: Installing llama.cpp. This will take 3 minutes...")
         if _run_installer is not None:
             _run_installer, IS_CMAKE = _run_installer
 
