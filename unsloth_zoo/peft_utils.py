@@ -220,7 +220,7 @@ def merge_and_overwrite_lora(
         pass
     pass
 
-    # Get LoRA scalers
+    # Get LoRA scalings
     import peft.tuners.lora.bnb, peft.tuners.lora
     peft_items = dir(peft.tuners.lora.bnb)
     peft_layers = [x for x in peft_items if x.startswith("Linear")]
