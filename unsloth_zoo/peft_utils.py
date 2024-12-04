@@ -233,7 +233,7 @@ def merge_and_overwrite_lora(
     peft_items = [x for x in peft_items if x.startswith("Linear")]
     exec(f"from peft.tuners.lora import ({', '.join(peft_items)})", locals(), globals())
 
-    linears = tuple([peft.tuners.lora.Linear,] + [eval(x) for x in peft_items])
+    Linear_LoRA_Layers = tuple([peft.tuners.lora.Linear,] + [eval(x) for x in peft_items])
     count = 0
     for name, module in model.named_modules():
         if isinstance(module, Linear_LoRA_Layers):
