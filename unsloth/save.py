@@ -841,7 +841,7 @@ def install_llama_cpp_old(version = -10):
         print(
             "**[WARNING]** You have a llama.cpp directory which is broken.\n"\
             "Unsloth will DELETE the broken directory and install a new one.\n"\
-            "Press CTRL + C / cancel this if this is wrong. We shall wait 10 seconds.\n"
+            "Press CTRL + C / cancel this if this is wrong. We shall wait 30 seconds.\n"
         )
         import time
         for i in range(30):
