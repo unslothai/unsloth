@@ -220,12 +220,19 @@ def merge_and_overwrite_lora(
         pass
     pass
 
+    # Confirm count
+    parameters = model.named_parameters()
+    total_counted = sum(".lora_A." in name or ".lora_B." in name for name, x in parameters)
+    if total_counted//2 != len(lora_weights):
+        raise RuntimeError("Unsloth: The number of LoRA adapaters was not calculated correctly!")
+
     # Get LoRA scalings
     import peft.tuners.lora.bnb, peft.tuners.lora
     peft_items = dir(peft.tuners.lora.bnb)
-    peft_layers = [x for x in peft_items if x.startswith("Linear")]
+    peft_layers = [eval(f"peft.tuners.lora.bnb.{x}") for x in peft_items if x.startswith("Linear")]
 
     Linear_LoRA_Layers = tuple(peft_layers + [peft.tuners.lora.Linear,])
+    count = 0
     for name, module in model.named_modules():
         if isinstance(module, Linear_LoRA_Layers):
             assert(name.startswith("base_model."))
@@ -234,8 +241,11 @@ def merge_and_overwrite_lora(
                 hasattr(module, "active_adapters") else module.active_adapter
             scaling = module.scaling[active_adapter]
             lora_weights[name + ".weight"][2] = scaling
+            count += 1
         pass
     pass
+    if total_counted//2 != count:
+        raise RuntimeError("Unsloth: The number of LoRA adapaters was not calculated correctly!")
 
     # Only enable low_disk_space_usage for uploading
     if upload_location is not None and low_disk_space_usage:
