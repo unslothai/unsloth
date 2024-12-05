@@ -186,7 +186,7 @@ class FastBaseVisionModel:
         patch_saving_functions(tokenizer, vision = True)
 
         # Save tokenizer for inference purposes
-        tokenizer.padding_side = "left" # Force inference
+        tokenizer.tokenizer.padding_side = "left" # Force inference
         internal_model = model
         while hasattr(internal_model, "model"):
             internal_model._saved_temp_tokenizer = tokenizer
