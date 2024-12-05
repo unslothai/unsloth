@@ -164,6 +164,8 @@ class FastBaseVisionModel:
             padding_side = "right",
             token        = token,
         )
+        # Add padding side as well
+        tokenizer.tokenizer.padding_side = "right"
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
@@ -187,6 +189,7 @@ class FastBaseVisionModel:
 
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference
+        tokenizer.tokenizer.padding_side = "left" # Force inference
         internal_model = model
         while hasattr(internal_model, "model"):
             internal_model._saved_temp_tokenizer = tokenizer
@@ -315,12 +318,12 @@ class FastBaseVisionModel:
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "right"
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "right"
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
 
         # Clear deleted GPU items
@@ -361,12 +364,12 @@ class FastBaseVisionModel:
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "left"
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "left"
             pass
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "left"
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "left"
         pass
 
         # Also disable training for embeddings for NEFTune
@@ -405,12 +408,12 @@ class FastBaseVisionModel:
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "right"
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "right"
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
 
         # Also re-enable training for embeddings for NEFTune
