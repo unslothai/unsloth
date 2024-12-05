@@ -967,7 +967,7 @@ def patch_sft_trainer_tokenizer():
         "import subprocess, os, re, gc, numpy as np\n"\
         "index_for_cuda = os.environ.get(\"CUDA_VISIBLE_DEVICES\", -1)\n"\
         "if \",\" in index_for_cuda:\n"\
-        "    raise RuntimeError(\"tokenizer_utils.py:958 Unsloth currently does not support multi GPU setups - but we are working on it!\")\n"\
+        "    raise RuntimeError(\"tokenizer_utils.py:970 Unsloth currently does not support multi GPU setups - but we are working on it!\")\n"\
         "index_for_cuda = int(index_for_cuda)\n"\
         "a = np.array([0,])\n"\
         "try:\n"\
@@ -978,7 +978,7 @@ def patch_sft_trainer_tokenizer():
         "    if not torch.cuda.is_available():\n"\
         "        raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')\n"\
         "if ((a - PRE_CHECK) >= 1).sum() > 1:\n"\
-        "    raise RuntimeError('tokenizer_utils.py:971 Unsloth currently does not support multi GPU setups - but we are working on it!')\n"\
+        "    raise RuntimeError('tokenizer_utils.py:981 Unsloth currently does not support multi GPU setups - but we are working on it!')\n"\
         "for _ in range(3):\n"\
         "    gc.collect()\n"\
         "    torch.cuda.empty_cache()\n"\

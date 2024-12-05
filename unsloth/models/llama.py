@@ -1684,11 +1684,11 @@ class FastLlamaModel:
             else:
                 inner_training_loop = Trainer._original_training_loop
         except:
-            raise RuntimeError('llama.py:1649 Unsloth currently does not support multi GPU setups - but we are working on it!')
+            raise RuntimeError('llama.py:1687 Unsloth currently does not support multi GPU setups - but we are working on it!')
         pass
 
         if ((post_check - pre_check) >= 1).sum() > 1:
-            raise RuntimeError('llama.py:1653 Unsloth currently does not support multi GPU setups - but we are working on it!')
+            raise RuntimeError('llama.py:1691 Unsloth currently does not support multi GPU setups - but we are working on it!')
 
         import transformers.trainer
         items_in_trainer = dir(transformers.trainer)
@@ -1792,7 +1792,7 @@ class FastLlamaModel:
             "False",
         )
         if "n_total_devices >" not in inner_training_loop:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+            raise RuntimeError('llama.py:1795 Unsloth currently does not support multi GPU setups - but we are working on it!')
         pass
         inner_training_loop = inner_training_loop.replace(
             "is_sagemaker_mp_enabled()",
