@@ -42,6 +42,7 @@ from .fast_lora import (
     apply_lora_mlp_geglu_approx,
     apply_lora_qkv,
     apply_lora_o,
+    fast_lora_forward,
 )
 from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora
 
