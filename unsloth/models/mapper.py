@@ -516,6 +516,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/QwQ-32B-Preview",
         "Qwen/QwQ-32B-Preview",
     ),
+    "unsloth/Llama-3.3-70B-Instruct-bnb-4bit" : (
+        "unsloth/Llama-3.3-70B-Instruct",
+        "meta-llama/Llama-3.3-70B-Instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
