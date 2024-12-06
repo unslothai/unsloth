@@ -217,7 +217,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
 
     # Sometimes the sizes can be different like in vision models
     # Ie <image> is in input, but not in output
-    min_size = min(embedding_matrix.shape[1], lm_head_matrix.shape[1])
+    min_size = min(embedding_matrix.shape[0], lm_head_matrix.shape[0])
     embedding_matrix = embedding_matrix[:min_size]
     lm_head_matrix   = lm_head_matrix  [:min_size]
     
