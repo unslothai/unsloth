@@ -616,9 +616,10 @@ def LlamaModel_fast_forward(
     pass
 
     # Normalized from Gemma
-    IS_GEMMA  = self.config.model_type.startswith("gemma")
-    IS_GEMMA2 = self.config.model_type.startswith("gemma2")
-    IS_COHERE = self.config.model_type.startswith("cohere")
+    IS_GEMMA   = self.config.model_type.startswith("gemma")
+    IS_GEMMA2  = self.config.model_type.startswith("gemma2")
+    IS_COHERE  = self.config.model_type.startswith("cohere")
+    IS_GRANITE = self.config.model_type.startswith("granite")
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
     if IS_GEMMA:
@@ -684,6 +685,8 @@ def LlamaModel_fast_forward(
     pass
 
     hidden_states = inputs_embeds
+    if IS_GRANITE: #granite has embedding multiplier
+        hidden_states = self.embedding_multiplier * hidden_states
 
     if past_key_values is None and self.training:
         use_cache = False
@@ -773,6 +776,12 @@ def LlamaModel_fast_forward(
         pass
     pass
 
+    
+    if IS_GRANITE:
+        position_embeddings = self.rotary_emb(hidden_states, position_ids, self.max_position_embeddings)
+    else:
+        position_embeddings = None
+
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
 
@@ -797,12 +806,14 @@ def LlamaModel_fast_forward(
                 past_key_values,
                 output_attentions,
                 use_cache,
+                None,
+                position_embeddings,
             )[0]
 
         elif gradient_checkpointing:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
-                    return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask)
+                    return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
                 return custom_forward
             pass
 
@@ -827,6 +838,7 @@ def LlamaModel_fast_forward(
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 padding_mask=padding_mask,
+                position_embeddings = position_embeddings
             )
             hidden_states = layer_outputs[0]
         pass
@@ -1014,6 +1026,15 @@ def CausalLM_fast_forward(fast_forward_inference):
         pass
 
         loss = None
+        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+        logit_scaling     = getattr(self.config, "logit_scale", 0)
+        if self.config.model_type == "granite":
+            # granite uses logit_scaling as key and they divide by the scale unlike cohere
+            # notice that for granite, logits_scale is 16 and for cohere it is 0.125 (aka 1/8) in their respective configs
+            # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
+            # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
+            logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
+
         if labels is not None:
             shift_logits = logits
             if not hasattr(self, "extra_ignored_labels"):
@@ -2245,6 +2266,7 @@ class FastLlamaModel:
         elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu_approx
         elif model_type == "gemma2":  apply_lora_mlp = apply_lora_mlp_geglu_approx
         elif model_type == "cohere":  apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "granite": apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
         pass
