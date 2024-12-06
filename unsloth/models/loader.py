@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING
+from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
@@ -38,6 +39,7 @@ SUPPORTS_GEMMA   = transformers_version >= Version("4.38")
 SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
 SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
 SUPPORTS_LLAMA32 = transformers_version  > Version("4.45.0")
+SUPPORTS_GRANITE = transformers_version >= Version("4.46.0")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -175,7 +177,7 @@ class FastLanguageModel(FastLlamaModel):
 
         model_type = model_config.model_type
 
-        if   model_type == "llama":
+        if model_type == "llama":
             scaling_type = None
             if getattr(model_config, "rope_scaling", None) is not None:
                 scaling_type1 = model_config.rope_scaling.get("type", None)
@@ -231,6 +233,8 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastQwen2Model
         elif model_type == "cohere":
             dispatch_model = FastCohereModel
+        elif model_type == "granite":
+            dispatch_model = FastGraniteModel
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\
