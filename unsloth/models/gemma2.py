@@ -193,7 +193,7 @@ def Gemma2DecoderLayer_fast_forward(
             output_attentions=output_attentions,
             use_cache=use_cache,
             padding_mask=padding_mask,
-            _flag_for_generation=True,
+            _flag_for_generation=self._flag_for_generation,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(self.post_attention_layernorm, hidden_states, out_weight)
         hidden_states += residual
