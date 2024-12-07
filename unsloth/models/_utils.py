@@ -269,6 +269,39 @@ if is_openai_available():
 pass 
 
 # =============================================
+# git cloning spectrum
+def install_spectrum_clone_non_blocking():
+    import subprocess
+    full_command = ["git", "clone", "--recursive", "https://github.com/cognitivecomputations/spectrum"]
+    run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
+    return run_installer
+pass 
+
+# =============================================
+# run spectrum 
+def run_spectrum_script(model_name,top_percent=0.25):
+    # Ensure the repository has been cloned
+    clone_process = install_spectrum_clone_non_blocking()
+    clone_process.wait()  # Wait for cloning to complete
+    
+    # Navigate to the cloned directory
+    os.chdir("spectrum")
+    
+    # Run `spectrum.py` with the desired arguments
+    full_command = [
+        "python", 
+        "spectrum.py", 
+        "--model-name", str(model_name), 
+        "--top-percent", str(top_percent)
+    ]
+    
+    try:
+        result = subprocess.run(full_command, check=True, text=True, capture_output=True)
+        print("Spectrum output:", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print("Error running spectrum.py:", e.stderr)
+
+# =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
 import bitsandbytes as bnb
 from transformers import AutoTokenizer

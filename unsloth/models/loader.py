@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING
+from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING, install_spectrum_clone_non_blocking
 from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
@@ -159,6 +159,8 @@ class FastLanguageModel(FastLlamaModel):
             raise RuntimeError(autoconfig_error or peft_error)
         pass
 
+        if is_spectrum:
+            
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
