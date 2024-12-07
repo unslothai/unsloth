@@ -151,6 +151,7 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
     def forward(ctx, forward_function, hidden_states, *args):
+        print(hidden_states.shape, hidden_states.dtype, hidden_states.device)
         saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
         with torch.no_grad():
             output = forward_function(hidden_states, *args)
