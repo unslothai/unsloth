@@ -239,9 +239,9 @@ pass
 
 
 class UnslothVisionDataCollator:
-    __slots__ = "padding_token_ids", "dtype", "ignore_index", "processor"
+    __slots__ = "padding_token_ids", "dtype", "ignore_index", "processor", "formatting_func"
 
-    def __init__(self, model, processor, ignore_index = -100):
+    def __init__(self, model, processor, formatting_func = None, ignore_index = -100):
         self.padding_token_ids = get_padding_tokens_ids(processor)
         self.dtype = _get_dtype(
             model.config.torch_dtype \
@@ -250,6 +250,7 @@ class UnslothVisionDataCollator:
         )
         self.ignore_index = ignore_index
         self.processor = processor
+        self.formatting_func = formatting_func
         return
     pass
 
@@ -258,7 +259,11 @@ class UnslothVisionDataCollator:
         # The issue is batch = self.processor( forces tensors to be returned and not None.
         texts  = []
         images = []
-        for example in examples:
+        
+        if self.formatting_func is not None:
+            examples = [self.formatting_func(example) for example in examples]
+        
+        for example in examples:    
             messages = example["messages"]
             message = self.processor.apply_chat_template(
                 messages,
