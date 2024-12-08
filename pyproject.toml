@@ -31,6 +31,9 @@ include-package-data = false
 [tool.setuptools.packages.find]
 exclude = ["images*"]
 
+[project.scripts]
+unsloth-cli = "unsloth.cli:main"
+
 [project.optional-dependencies]
 huggingface = [
     "unsloth_zoo>=2024.11.8",
