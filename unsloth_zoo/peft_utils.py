@@ -601,8 +601,7 @@ def merge_and_dequantize_lora(
         "def unsloth_save_pretrained_dequantized",
         1,
     )
-    exec(save_pretrained, locals(), globals())
-    print(save_pretrained)
+    exec(save_pretrained, globals())
     unsloth_save_pretrained_dequantized = torch.inference_mode(unsloth_save_pretrained_dequantized)
 
     unsloth_save_pretrained_dequantized(
