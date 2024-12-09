@@ -25,7 +25,7 @@ import os
 COMMANDS_NOT_FOUND = ("command not found", "not found", "No such file or directory",)
 
 
-def install_package(package, sudo = False, print_output = False):
+def install_package(package, sudo = False, print_output = False, print_outputs = None):
     # Code licensed under LGPL
     x = f"{'sudo ' if sudo else ''}apt-get install {package} -y"
     print(f"Unsloth: Installing packages: {package}")
@@ -40,6 +40,7 @@ def install_package(package, sudo = False, print_output = False):
             elif "Unable to locate package" in line:
                 raise RuntimeError(f"*** Unsloth: Could not install package {package} since it does not exist.")
             if print_output: print(line, flush = True, end = "")
+            if print_outputs is not None: print_outputs.append(line)
         pass
     pass
 pass
@@ -98,7 +99,7 @@ def check_pip():
 pass
 
 
-def try_execute(command, sudo = False, print_output = False):
+def try_execute(command, sudo = False, print_output = False, print_outputs = None):
     # Code licensed under LGPL
     need_to_install = False
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT) as sp:
@@ -109,6 +110,7 @@ def try_execute(command, sudo = False, print_output = False):
             elif "undefined reference" in line or "Unknown argument" in line or "***" in line:
                 raise RuntimeError(f"*** Unsloth: Failed executing command [{command}] with error [{line}]. Please report this ASAP!")
             if print_output: print(line, flush = True, end = "")
+            if print_outputs is not None: print_outputs.append(line)
         pass
     pass
     if need_to_install:
@@ -122,6 +124,7 @@ def install_llama_cpp(
     llama_cpp_folder = "llama.cpp",
     # llama.cpp specific targets - all takes 90s. Below takes 60s
     llama_cpp_targets = ["llama-quantize", "llama-export-lora", "llama-cli",],
+    print_output = False,
 ):
     if os.path.exists(llama_cpp_folder):
         files = os.listdir()
@@ -130,24 +133,35 @@ def install_llama_cpp(
         pass
     pass
 
+    print_outputs = []
     sudo = do_we_need_sudo()
-    try_execute(
-        f"git clone https://github.com/ggerganov/llama.cpp {llama_cpp_folder}",
-        sudo = sudo,
-        print_output = True,
-    )
-    install_package("build-essential cmake curl libcurl4-openssl-dev", sudo)
-    try_execute(
-        f"cmake {llama_cpp_folder} -B {llama_cpp_folder}/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
-        sudo = sudo,
-        print_output = True,
-    )
-    pip = check_pip()
-    try_execute(
-        f"{pip} install gguf protobuf sentencepiece",
-        sudo = False,
-        print_output = True,
-    )
+    try:
+        try_execute(
+            f"git clone https://github.com/ggerganov/llama.cpp {llama_cpp_folder}",
+            sudo = sudo,
+            print_output  = print_output,
+            print_outputs = print_outputs,
+        )
+        install_package("build-essential cmake curl libcurl4-openssl-dev", sudo)
+        try_execute(
+            f"cmake {llama_cpp_folder} -B {llama_cpp_folder}/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
+            sudo = sudo,
+            print_output  = print_output,
+            print_outputs = print_outputs,
+        )
+        pip = check_pip()
+        try_execute(
+            f"{pip} install gguf protobuf sentencepiece",
+            sudo = False,
+            print_output  = print_output,
+            print_outputs = print_outputs,
+        )
+    except Exception as error:
+        print("="*30)
+        print("=== Unsloth: FAILED installing llama.cpp ===")
+        print(f"=== Main error = {str(error)} ===")
+        print("=== Error log below: ===")
+        print("".join(print_outputs))
 pass
 
 # Unsloth Zoo - Utilities for Unsloth

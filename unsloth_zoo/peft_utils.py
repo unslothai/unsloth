@@ -483,7 +483,6 @@ pass
 def merge_and_dequantize_lora(
     create_huggingface_repo,
     model,
-    output_dtype         = None,
     save_directory       = "unsloth_finetuned_merge",
     push_to_hub          = False,
     upload_location      = None,
@@ -491,6 +490,7 @@ def merge_and_dequantize_lora(
     safe_serialization   = True,
     token                = None,
     private              = False,
+    output_dtype         = None,
     **kwargs,
 ):
     # Code licensed under LGPL
@@ -602,6 +602,7 @@ def merge_and_dequantize_lora(
         1,
     )
     exec(save_pretrained, locals(), globals())
+    print(save_pretrained)
     unsloth_save_pretrained_dequantized = torch.inference_mode(unsloth_save_pretrained_dequantized)
 
     unsloth_save_pretrained_dequantized(
