@@ -141,7 +141,7 @@ def prepare_n_gradient_checkpoints(
     _model._gradient_checkpointing_use_reentrant = use_reentrant
 pass
 
-import psutil
+
 class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     """
     Code licensed under LGPL
@@ -151,11 +151,6 @@ class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
     def forward(ctx, forward_function, hidden_states, *args):
-        mem = psutil.virtual_memory()
-        print(hidden_states.shape, hidden_states.dtype, hidden_states.device)
-        print(f"Available memory: {mem.available / (1024 ** 3):.2f} GB")
-        print(f"Used memory: {mem.used / (1024 ** 3):.2f} GB")
-
         saved_hidden_states = hidden_states.to("cpu", non_blocking = True)
         with torch.no_grad():
             output = forward_function(hidden_states, *args)

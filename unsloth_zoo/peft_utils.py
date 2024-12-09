@@ -205,17 +205,17 @@ def merge_and_overwrite_lora(
     pass
 
     # Find all LoRA A and B matrices
-    lora_weights = {}
+    from collections import defaultdict
+    lora_weights = defaultdict(lambda: [None, None, None,])
+    
     for name, param in model.named_parameters():
         if "lora_A" in name:
             assert(name.startswith("base_model."))
-            name = name[len("base_model."):]
-            name = name.replace(".lora_A.default", "")
+            name = name[len("base_model."):-len(".lora_A.default")]
             lora_weights[name] = [param, None, None,]
         elif "lora_B" in name:
             assert(name.startswith("base_model."))
-            name = name[len("base_model."):]
-            name = name.replace(".lora_B.default", "")
+            name = name[len("base_model."):-len(".lora_B.default")]
             lora_weights[name][1] = param
         pass
     pass
