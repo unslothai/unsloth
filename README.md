@@ -472,7 +472,7 @@ Two Tesla T4s on Kaggle
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 <br>
 
-### Citing
+### Citation
 
 You can cite the Unsloth repo as follows:
 ```bibtex
@@ -481,18 +481,6 @@ You can cite the Unsloth repo as follows:
   title = {Unsloth},
   url = {http://github.com/unslothai/unsloth},
   year = {2023}
-}
-```
-
-### Citation
-If you would like to cite Unsloth, you can use the following format:
-```
-@misc{han2023unsloth,
-  author       = {Daniel Han and Michael Han},
-  title        = {Unsloth AI: Finetune LLMs 2x faster 2-5x faster with 80\% less memory},
-  year         = {2023},
-  url          = {https://github.com/unslothai/unsloth},
-  note         = {GitHub repository}
 }
 ```
 
