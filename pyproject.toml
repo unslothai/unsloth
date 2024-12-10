@@ -33,7 +33,7 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo @ git+https://github.com/arnavgarg1/unsloth-zoo.git@ce097777a31af3a7fdbbe59d1c978b08b3007932",
+    "unsloth_zoo @ git+https://github.com/arnavgarg1/unsloth-zoo.git@706b15f61510b66fc0cbec29a71f3d8f74dda239",
     "packaging",
     "tyro",
     "transformers>=4.46.1",
@@ -244,7 +244,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo @ git+https://github.com/arnavgarg1/unsloth-zoo.git@ce097777a31af3a7fdbbe59d1c978b08b3007932",
+    "unsloth_zoo @ git+https://github.com/arnavgarg1/unsloth-zoo.git@706b15f61510b66fc0cbec29a71f3d8f74dda239",
     "packaging",
     "tyro",
     "transformers>=4.46.1",
