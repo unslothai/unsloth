@@ -14,6 +14,7 @@
 
 __all__ = [
     "PatchDPOTrainer",
+    "PatchKTOTrainer",
 ]
 
 try:
@@ -127,4 +128,4 @@ def PatchDPOTrainer():
         pass
     pass
 pass
-
+PatchKTOTrainer = PatchDPOTrainer

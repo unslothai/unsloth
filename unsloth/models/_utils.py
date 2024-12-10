@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.11.10"
+__version__ = "2024.12.4"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -188,7 +188,7 @@ pass
 
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
-model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2",]
+model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite"]
 
 for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
