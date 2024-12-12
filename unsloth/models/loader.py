@@ -352,6 +352,7 @@ class FastVisionModel(FastBaseVisionModel):
         resize_model_vocab         = None, # [TODO] No effect
         revision                   = None,
         return_logits              = False, # Return logits
+        fullgraph                  = True, # No graph breaks
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -473,6 +474,7 @@ class FastVisionModel(FastBaseVisionModel):
                 shape_padding           = True,
                 cudagraphs              = False,
                 debug                   = False,
+                fullgraph               = fullgraph,
                 import_from_cache       = False,
                 disable                 = False,
                 return_logits           = return_logits,
