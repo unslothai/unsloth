@@ -491,6 +491,7 @@ def merge_and_dequantize_lora(
     token                = None,
     private              = False,
     output_dtype         = None,
+    low_disk_space_usage = False,
     **kwargs,
 ):
     # Code licensed under LGPL
@@ -515,6 +516,9 @@ def merge_and_dequantize_lora(
     assert(output_dtype in (torch.float32, torch.float16, torch.float64, torch.bfloat16))
     assert(type(torch.bfloat16) is torch.dtype)
 
+    # Get state_dict
+    lora_weights, state_dict = create_lora_statistics(model, merge_into_original = False, return_state_dict = True)
+
     import transformers.modeling_utils
     save_pretrained = inspect.getsource(transformers.modeling_utils.PreTrainedModel.save_pretrained)
     spaces = save_pretrained.find("def")
@@ -528,7 +532,7 @@ def merge_and_dequantize_lora(
     element_size = torch.tensor([], dtype = output_dtype).element_size()
 
     replace_state_dict = f"""
-    DEQUANTIZED_KEYS = set()
+    DEQUANTIZED_KEYS = []
     
     def get_torch_storage_size_new(x):
         if isinstance(x, LoraStats):
@@ -540,7 +544,7 @@ def merge_and_dequantize_lora(
 
     def merge_lora_weights(x, name):
         if type(x) is LoraStats:
-            DEQUANTIZED_KEYS.add(name)
+            DEQUANTIZED_KEYS.append(name)
             W = dequantize_module_weight(x.module)
             if x.lora_A is not None and x.lora_B is not None:
                 W = W.to('cuda', dtype = torch.float32, non_blocking = True)
@@ -583,6 +587,18 @@ def merge_and_dequantize_lora(
         1,
     )
 
+    # If disk has low space and we want to upload, we instead push 5GB increments
+    if push_to_hub:
+        import shutil
+        try:
+            os.makedirs(save_directory, exist_ok = True)
+        except Exception as error:
+            raise RuntimeError(f"Unsloth: Error creating directory {save_directory} with error = {str(error)}")
+        total, used, free = shutil.disk_usage(save_directory)
+
+
+
+
     # Stop CPU RAM overuse by resizing to 0
     free_cpu = """
         for tensor in shard:
@@ -601,7 +617,7 @@ def merge_and_dequantize_lora(
         "def unsloth_save_pretrained_dequantized",
         1,
     )
-    exec(save_pretrained, globals())
+    exec(save_pretrained, locals(), globals())
     unsloth_save_pretrained_dequantized = torch.inference_mode(unsloth_save_pretrained_dequantized)
 
     unsloth_save_pretrained_dequantized(
