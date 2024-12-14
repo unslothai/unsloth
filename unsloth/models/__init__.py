@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .loader  import FastLanguageModel
+
+from .granite import FastGraniteModel
+from .loader  import FastLanguageModel, FastVisionModel
 from .llama   import FastLlamaModel
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
-from .dpo     import PatchDPOTrainer
+from .dpo     import PatchDPOTrainer, PatchKTOTrainer
 from ._utils  import is_bfloat16_supported

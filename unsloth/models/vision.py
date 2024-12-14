@@ -1,58 +1,88 @@
+# Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import torch
+from transformers import (
+    BitsAndBytesConfig,
+    AutoModelForVision2Seq,
+    AutoProcessor,
+)
 from .llama import *
-from ..kernels import patch_layernorm, unpatch_layernorm
-from ..kernels import patch_rms_layernorm, unpatch_rms_layernorm
-from ..kernels import patch_llama_for_causal_lm, unpatch_llama_for_causal_lm
-from ._utils import patch_gradient_checkpointing
+from ..kernels import (
+    post_patch_loss_function,
+)
+from ._utils import __version__
+from peft import LoraConfig, TaskType, get_peft_model
+from transformers import set_seed as transformers_set_seed
+from unsloth_zoo.peft_utils import (
+    get_peft_regex,
+    merge_and_overwrite_lora,
+    SKIP_QUANTIZATION_MODULES,
+)
+from triton import __version__ as triton_version
 
-from transformers import AutoProcessor
-try:
-    from transformers import MllamaForConditionalGeneration
-except:
-    raise ImportError(
-        "Unsloth: Please update your transformers version to 4.46.0 for Llama 3.2 support!"
-    )
+__all__ = [
+    "FastBaseVisionModel",
+]
+
+def _wrap_fast_inference(generate, device_type, dtype, model):
+    # Wraps inference with bfloat16 / float16
+    @torch.inference_mode
+    def _fast_generate(*args, **kwargs):
+        # For num_logits_to_keep
+        # kwargs["num_logits_to_keep"] = 1
+
+        # Remove token_type_ids
+        kwargs.pop("token_type_ids", None)
+
+        # Check pad_token
+        model_eos_token_id = getattr(model.config, "eos_token_id", None)
+        if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
+            model_eos_token_id = model_eos_token_id[0]
+
+        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+
+        try:
+            kwargs["pixel_values"] = kwargs["pixel_values"].to(model.dtype)
+        except:
+            pass
+
+        # Autocasted
+        with torch.autocast(device_type = device_type, dtype = dtype):
+            output = generate(*args, **kwargs)
+        pass
+        return output
+    pass
+    return _fast_generate
 pass
 
-class FastVisionModel:
 
-    def pre_patch(self):
-        patch_gradient_checkpointing()
-        patch_layernorm()
-        patch_rms_layernorm()
-        patch_llama_for_causal_lm()
-    pass
-
-    def post_unpatch(self):
-        unpatch_layernorm()
-        unpatch_rms_layernorm()
-        unpatch_llama_for_causal_lm()
-    pass
-
+class FastBaseVisionModel:
 
     @staticmethod
     def from_pretrained(
-        model_name        = "llava-hf/llava-1.5-7b-hf",
+        model_name        = "unsloth/llama-3-8b-bnb-4bit",
         max_seq_length    = None,
         dtype             = None,
         load_in_4bit      = True,
         token             = None,
         device_map        = "sequential",
-        rope_scaling      = None,
         trust_remote_code = False,
+        model_types       = None,
+        tokenizer_name    = None,
         **kwargs,
     ):
         if trust_remote_code:
@@ -67,9 +97,9 @@ class FastVisionModel:
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers = {transformers_version}.\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform = {platform_system}.\n"\
-           f"O^O/ \_/ \\    Pytorch: {torch.__version__}. CUDA = {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit = {torch.version.cuda}.\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_types[0].title()} vision patching. Transformers: {transformers_version}.\n"\
+           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+           f"O^O/ \_/ \\    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
@@ -81,6 +111,7 @@ class FastVisionModel:
         pass
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
 
@@ -102,163 +133,42 @@ class FastVisionModel:
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
             )
         pass
+
+        kwargs.pop("attn_implementation", None); # No need since we auto call it
 
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
         
-        self.pre_patch()
-        model = MllamaForConditionalGeneration.from_pretrained(
+        model = AutoModelForVision2Seq.from_pretrained(
             model_name,
             device_map              = device_map,
             torch_dtype             = dtype,
-            # quantization_config     = bnb_config,
+            # quantization_config   = bnb_config,
             token                   = token,
-            max_position_embeddings = max_position_embeddings,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = "sdpa",
+            # attn_implementation   = "sdpa", [TODO] Pixtral for eg fails
             **kwargs,
         )
-        self.post_unpatch()
-
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
         # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
         post_check = check_nvidia()
 
         # Counteract saved tokenizers
+        tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         tokenizer = AutoProcessor.from_pretrained(
-            model_name,
+            tokenizer_name,
+            padding_side = "right",
+            token        = token,
         )
-        model = FastVisionModel.post_patch(model)
+        # Add padding side as well
+        tokenizer.tokenizer.padding_side = "right"
 
-        # Patch Trainer
-        from transformers.trainer import Trainer
-        try:
-            if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
-                inner_training_loop = inspect.getsource(Trainer._inner_training_loop)
-                Trainer._original_training_loop = inner_training_loop
-            else:
-                inner_training_loop = Trainer._original_training_loop
-        except:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
-        pass
-
-        if ((post_check - pre_check) >= 1).sum() > 1:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
-
-        import transformers.trainer
-        items_in_trainer = dir(transformers.trainer)
-        good_items = []
-        for item in items_in_trainer:
-            # TODO: Support Deepspeed
-            if item.startswith(("deepspeed", "xm", "met", "smp")): continue
-            if item in inner_training_loop: good_items.append(item)
-        pass
-        exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
-
-        start = re.search('logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
-        end = inner_training_loop.find("\n\n", start)
-        original_debug = inner_training_loop[start:end]
-        spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
-        front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
-
-        debug_info = """debug_info = \\
-        f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs = {args.world_size}\\n"\\
-        f"   \\\\\\   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,}\\n"\\
-        f"O^O/ \\_/ \\    Batch size per device = {self._train_batch_size:,} | Gradient Accumulation steps = {args.gradient_accumulation_steps}\\n"\\
-        f"\\        /    Total batch size = {total_train_batch_size:,} | Total steps = {max_steps:,}\\n"\\
-        f' "-____-"     Number of trainable parameters = {get_model_param_count(model, trainable_only=True):,}'
-        logger.warning(debug_info)
-        import subprocess, re, gc, numpy as np
-        a = np.array([0,])
-        try:
-            a = subprocess.check_output('nvidia-smi --query-gpu=memory.used --format=csv', shell = True)
-            a = re.findall(rb'([\\d]{1,})[\\s]{1,}M', a)
-            a = np.array([int(x.decode('utf-8'))/1024 for x in a])
-        except:
-            if not torch.cuda.is_available():
-                raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')
-        if ((a - PRE_CHECK) >= 1).sum() > 1:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
-        for _ in range(3):
-            gc.collect()
-            torch.cuda.empty_cache()"""
-
-        debug_info = debug_info.split('\n')
-        debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
-        inner_training_loop = inner_training_loop.replace(original_debug, debug_info)
-
-        debug_info = """n_total_devices = total_train_batch_size // \\
-            args.gradient_accumulation_steps // self._train_batch_size
-        if n_total_devices > 1:
-            logger.warning_once('Unsloth currently does not support multi GPU setups - but we are working on it!')
-        debug_info ="""
-        debug_info = debug_info.split('\n')
-        debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
-        inner_training_loop = inner_training_loop.replace("debug_info =", debug_info, 1)
-
-        front_spaces = re.match(r"[\t\s]{1,}", inner_training_loop).group(0)
-        inner_training_loop = re.sub(r"^" + front_spaces, "", inner_training_loop, flags = re.MULTILINE)
-        inner_training_loop = inner_training_loop.replace(
-            "train_dataloader = tpu_spmd_dataloader(train_dataloader)",
-            "raise RuntimeError('Unsloth: TPUs are not yet supported!')"
-        )
-        inner_training_loop = inner_training_loop.replace(
-            "self.accelerator.free_memory()",
-            "self.accelerator.free_memory()\n" + \
-            front_spaces + "if self.is_deepspeed_enabled:"\
-            "raise RuntimeError('Unsloth: Deepspeed is not yet supported!')\n", 1,
-        )
-
-        check_batches = """train_dataloader = self.get_train_dataloader()
-        ga  = args.gradient_accumulation_steps
-        bsz = self._train_batch_size
-        total_batches = bsz * ga * args.world_size
-        n_total_devices = total_batches // ga // bsz
-        if n_total_devices > 1:
-            logger.warning_once('Unsloth currently does not support multi GPU setups - but we are working on it!')
-            divisor = n_total_devices / 1
-            bsz = self._train_batch_size = max(int(bsz / divisor), 1)
-            if total_batches // ga // bsz > 1:
-                divisor = n_total_devices / 1
-                ga = args.gradient_accumulation_steps = max(int(ga / divisor), 1)"""
-        check_batches = check_batches.split('\n')
-        check_batches = "\n".join([check_batches[0]] + [front_spaces + x[8:] for x in check_batches[1:]])
-        inner_training_loop = inner_training_loop.replace(
-            "train_dataloader = self.get_train_dataloader()",
-            check_batches, 1,
-        )
-        inner_training_loop = inner_training_loop.replace(
-            "_inner_training_loop",
-            "_fast_inner_training_loop", 1,
-        )
-        exec(inner_training_loop, globals())
-
-        Trainer._inner_training_loop = _fast_inner_training_loop
-        inner_training_loop = inner_training_loop.replace(
-            "is_torch_tpu_available()",
-            "False",
-        )
-        if "n_total_devices >" not in inner_training_loop:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
-        pass
-        inner_training_loop = inner_training_loop.replace(
-            "is_sagemaker_mp_enabled()",
-            "False",
-        )
-        exec(inner_training_loop, globals())
-        Trainer._inner_training_loop = _fast_inner_training_loop
-
-        # Save max_seq_length
-        model.max_seq_length = max_position_embeddings
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_position_embeddings
-            internal_model = internal_model.model
-        pass
-        internal_model.max_seq_length = max_position_embeddings
+        model, tokenizer = patch_tokenizer(model, tokenizer)
+        model = post_patch_loss_function(model)
 
         # Fix up config for transformers uploading PEFT
         # Not necessary anymore since we require transformers>=4.37!
@@ -271,121 +181,106 @@ class FastVisionModel:
         pass
 
         # Log Unsloth version for future fastpaths for inference
-        model.config.update({"unsloth_version" : __version__})
+        if hasattr(model, "config"):
+            model.config.update({"unsloth_version" : __version__})
+        pass
+        patch_saving_functions(model, vision = True)
+        patch_saving_functions(tokenizer, vision = True)
 
-        # Add save modules
-        patch_saving_functions(model)
-        Trainer._inner_training_loop = _fast_inner_training_loop
-
-        # Also fix torch_dtype
+        # Save tokenizer for inference purposes
+        tokenizer.padding_side = "left" # Force inference
+        tokenizer.tokenizer.padding_side = "left" # Force inference
         internal_model = model
         while hasattr(internal_model, "model"):
-            if hasattr(internal_model, "config"):
-                if   internal_model.config.torch_dtype ==  "float32":
-                    internal_model.config.torch_dtype = torch.float32
-                elif internal_model.config.torch_dtype == "bfloat16":
-                    internal_model.config.torch_dtype = torch.bfloat16
-                elif internal_model.config.torch_dtype ==  "float16":
-                    internal_model.config.torch_dtype = torch.float16
-                pass
-            pass
+            internal_model._saved_temp_tokenizer = tokenizer
             internal_model = internal_model.model
         pass
-        if hasattr(internal_model, "config"):
-            if   internal_model.config.torch_dtype ==  "float32":
-                internal_model.config.torch_dtype = torch.float32
-            elif internal_model.config.torch_dtype == "bfloat16":
-                internal_model.config.torch_dtype = torch.bfloat16
-            elif internal_model.config.torch_dtype ==  "float16":
-                internal_model.config.torch_dtype = torch.float16
-            pass
-        pass
+        internal_model._saved_temp_tokenizer = tokenizer
         
         return model, tokenizer
     pass
 
 
     @staticmethod
-    def post_patch(model):
-        # Patch model
-        layers = model.model.layers
-        lm_head = model.get_output_embeddings().weight
-        
-        # Also patch all dtypes - BnB seems to not allocate the correct type?
-        # BnB default dtype seems to be float16!
-        correct_dtype = lm_head.weight.dtype
-
-        for name, module in model.named_modules():
-            if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
-                weight = module.weight
-                quant_state = weight.quant_state
-
-                if type(quant_state) is list:
-                    # BnB seems to have float16 as default!
-                    module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
-                else:
-                    # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-                    quant_state.dtype = correct_dtype
-                pass
-            pass
-        pass
-
-        # Clear deleted GPU items
-        for _ in range(3):
-            gc.collect()
-            torch.cuda.empty_cache()
-        return model
-    pass
-
-
-    @staticmethod
     def get_peft_model(
         model,
-        r                   = 16,
-        target_modules      = "all-linear",
-        lora_alpha          = 16,
-        lora_dropout        = 0,
-        bias                = "none",
-        layers_to_transform = None,
-        layers_pattern      = None,
+        r                          = 16,
+        target_modules             = None,
+        lora_alpha                 = 16,
+        lora_dropout               = 0,
+        bias                       = "none",
+        finetune_vision_layers     = True,
+        finetune_language_layers   = True,
+        finetune_attention_modules = True,
+        finetune_mlp_modules       = True,
+        layers_to_transform        = None,
+        layers_pattern             = None,
         use_gradient_checkpointing = True,
-        random_state        = 3407,
-        max_seq_length      = 2048, # not used anymore
-        use_rslora          = False,
-        modules_to_save     = None,
-        init_lora_weights   = True,
-        loftq_config        = {},
-        temporary_location  = "_unsloth_temporary_saved_buffers",
+        random_state               = 3407,
+        max_seq_length             = 2048, # not used anymore
+        use_rslora                 = False,
+        modules_to_save            = None,
+        init_lora_weights          = True,
+        loftq_config               = {},
+        temporary_location         = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
         transformers_set_seed(random_state)
 
-        # Get LoRA
-        arguments = dict(
-            r                   = r,
-            lora_alpha          = lora_alpha,
-            target_modules      = target_modules,
-            lora_dropout        = lora_dropout,
-            bias                = bias,
-            layers_to_transform = layers_to_transform,
-            init_lora_weights   = init_lora_weights,
-            # loftq_config        = loftq_config,
-            # use_rslora          = use_rslora,
-            modules_to_save     = modules_to_save,
-            **kwargs,
-        )
+        if type(r) is not int:
+            raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
+        if r <= 0:
+            raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        lora_config = LoraConfig(**arguments)
+        if isinstance(model, PeftModelForCausalLM):
+            raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
 
-        model = _get_peft_model(model, lora_config)
-
-        model = FastVisionModel.patch_peft_model(model, use_gradient_checkpointing)
+        if target_modules == "all-linear":
+            finetune_vision_layers     = True
+            finetune_language_layers   = True
+            finetune_attention_modules = True
+            finetune_mlp_modules       = True
+        pass
+        if target_modules is None:
+            target_modules = get_peft_regex(
+                model,
+                finetune_vision_layers     = finetune_vision_layers,
+                finetune_language_layers   = finetune_language_layers,
+                finetune_attention_modules = finetune_attention_modules,
+                finetune_mlp_modules       = finetune_mlp_modules,
+            )
+        else:
+            assert(type(target_modules) in (list, tuple,))
+        pass
 
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
         pass
+
+        lora_config = LoraConfig(
+            r               = r,
+            lora_alpha      = lora_alpha,
+            target_modules  = target_modules,
+            lora_dropout    = lora_dropout,
+            bias            = bias,
+            task_type       = TaskType.CAUSAL_LM,
+        )
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+        )
+        model = get_peft_model(model, lora_config)
+
+        model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
+
+        # Clear deleted GPU items
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
+        pass
+        patch_saving_functions(model, vision = True)
 
         return model
     pass
@@ -396,26 +291,17 @@ class FastVisionModel:
         model,
         use_gradient_checkpointing = True,
     ):
+        if not isinstance(model, PeftModelForCausalLM):
+            raise TypeError(
+                "Unsloth: Your model needs to call `.get_peft_model` first!"
+            )
+        pass
 
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             use_reentrant = True,
         )
-
-        # Fix up config for transformers uploading PEFT
-        for active_adapter in model.peft_config.keys():
-            # Not necessary since we requires transformers >= 4.37
-            if False:
-                name = model.peft_config[active_adapter].base_model_name_or_path
-                if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-                    name = name[:len(name) - len("-bnb-4bit")]
-                    model.peft_config[active_adapter].base_model_name_or_path = name
-                pass
-            # Add revision to enable future fast inference paths
-            # [TODO] Bugs out!see https://github.com/unslothai/unsloth/issues/492
-            # model.peft_config[active_adapter].revision = f"unsloth"
-        pass
 
         from transformers.trainer import Trainer 
         if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
@@ -426,35 +312,18 @@ class FastVisionModel:
                 'Thank you for your understanding and we appreciate it immensely!'
             )
         pass
-
-        logger.warning_once(
-            f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "\
-            f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.",
-        )
-        patch_saving_functions(model)
-
-        # Patch cross entropy loss labels
-        # Fixes https://github.com/unslothai/unsloth/issues/10
-        max_seq_length = model.max_seq_length
-        extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda:0")
-        model.model.extra_ignored_labels = extra_ignored_labels
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model = internal_model.model
-        pass
-        internal_model.max_seq_length = max_seq_length        
+        patch_saving_functions(model, vision = True)
 
         # Patch tokenizer to pad to the right
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "right"
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "right"
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
 
         # Clear deleted GPU items
@@ -468,36 +337,39 @@ class FastVisionModel:
 
     @staticmethod
     def for_inference(model):
-        # if model.config.model_type == "qwen2":
-        #     FastLlamaModel.for_training(model)
-        #     return
-        # pass
+        model.gradient_checkpointing = False
+        model.training = False
 
-        internal_model = model
-        internal_model.gradient_checkpointing = False
-        internal_model.training = False
-
-        while hasattr(internal_model, "model"):
-            internal_model = internal_model.model
-            internal_model.gradient_checkpointing = False
-            internal_model.training = False
-        pass
-        if hasattr(internal_model, "training"):
-            internal_model.training = False
+        for name, module in model.named_modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = False
+            if hasattr(module, "training"):
+                module.training = False
         pass
 
-        # Also check if lm_head / embeddings are trained
-        internal_model = model
-        while not hasattr(internal_model, "lm_head"):
-            internal_model = internal_model.model
-        pass
-        lm_head = internal_model.lm_head.weight
-        device_type = lm_head.device.type
         dtype = model.config.torch_dtype
-        
         if type(dtype) is str:
             if   dtype ==  "float16": dtype = torch.float16
             elif dtype == "bfloat16": dtype = torch.bfloat16
+        pass
+        device_type = model.device.type
+
+        # Wrap model.generate
+        if model.generate.__name__ != "_fast_generate":
+            model._unwrapped_old_generate = model.generate
+            model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
+        pass
+        
+        # Patch tokenizer to pad to the left
+        internal_model = model
+        while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "_saved_temp_tokenizer"):
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "left"
+            pass
+            internal_model = internal_model.model
+        pass
+        if hasattr(internal_model, "_saved_temp_tokenizer"):
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "left"
         pass
 
         # Also disable training for embeddings for NEFTune
@@ -516,23 +388,32 @@ class FastVisionModel:
 
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
+        model.gradient_checkpointing = use_gradient_checkpointing
+        model.training = True
+
+        for name, module in model.named_modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = use_gradient_checkpointing
+            if hasattr(module, "training"):
+                module.training = True
+        pass
+
+        # Also revert model.generate
+        if hasattr(model, "_unwrapped_old_generate"):
+            model.generate = model._unwrapped_old_generate
+            del model._unwrapped_old_generate
+        pass
+
+        # Patch tokenizer to pad to the right
         internal_model = model
-        internal_model.gradient_checkpointing = use_gradient_checkpointing
-        internal_model.training = True
-
-        # Delete all fast inference loras
-        for param in model.parameters():
-            if hasattr(param, "_fast_lora"):
-                del param._fast_lora
-        pass
-
         while hasattr(internal_model, "model"):
+            if hasattr(internal_model, "_saved_temp_tokenizer"):
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
+            pass
             internal_model = internal_model.model
-            internal_model.gradient_checkpointing = use_gradient_checkpointing
-            internal_model.training = True
         pass
-        if hasattr(internal_model, "training"):
-            internal_model.training = True
+        if hasattr(internal_model, "_saved_temp_tokenizer"):
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
 
         # Also re-enable training for embeddings for NEFTune
