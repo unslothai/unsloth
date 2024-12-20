@@ -650,6 +650,7 @@ def unsloth_compile_transformers(
     shape_padding          : bool = True,
     cudagraphs             : bool = False,
     debug                  : bool = False,
+    fullgraph              : bool = True,
     import_from_cache      : bool = False,
     disable                : bool = False,
     return_logits          : bool = False,
@@ -681,6 +682,16 @@ def unsloth_compile_transformers(
     UNSLOTH_RETURN_LOGITS = "0" if not return_logits else "1"
     if "UNSLOTH_RETURN_LOGITS" not in os.environ:
         os.environ["UNSLOTH_RETURN_LOGITS"] = UNSLOTH_RETURN_LOGITS
+    else:
+        UNSLOTH_RETURN_LOGITS = os.environ["UNSLOTH_RETURN_LOGITS"] == "1"
+    pass
+
+    # Fullgraph
+    UNSLOTH_FULLGRAPH = "1" if fullgraph else "0"
+    if "UNSLOTH_FULLGRAPH" not in os.environ:
+        os.environ["UNSLOTH_FULLGRAPH"] = UNSLOTH_FULLGRAPH
+    else:
+        UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"] == "1"
     pass
 
     modeling_file.__UNSLOTH_PATCHED__ = True
@@ -755,7 +766,7 @@ def unsloth_compile_transformers(
             if another_module in source:
                 fullgraph = fullgraph and torch_modules[another_module]
         pass
-        torch_modules[module] = fullgraph
+        torch_modules[module] = fullgraph if UNSLOTH_FULLGRAPH else False
     pass
 
     # Get other classes
@@ -1143,7 +1154,7 @@ def unsloth_compile_transformers(
             print(f"Unsloth: Fixed up function {module}.")
 
             parameters = \
-                f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{parameters}"
+                f"@torch.compile(fullgraph = {UNSLOTH_FULLGRAPH}, dynamic = True, options = torch_compile_options)\n{parameters}"
             all_standalone_classes[module] = parameters
         pass
 
@@ -1163,7 +1174,7 @@ def unsloth_compile_transformers(
                     break
             pass
             if not bad:
-                source = f"@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n{source}"
+                source = f"@torch.compile(fullgraph = {UNSLOTH_FULLGRAPH}, dynamic = True, options = torch_compile_options)\n{source}"
                 print(f"Unsloth: Compiled function {module}.")
             else:
                 print(f"Unsloth: Cannot compile function {module} since disabled keyword is in it.")
