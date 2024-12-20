@@ -131,7 +131,8 @@ class FastLanguageModel(FastLlamaModel):
                 exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+                # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
+                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
                 files = (os.path.split(x)[-1] for x in files)
                 if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
@@ -352,6 +353,7 @@ class FastVisionModel(FastBaseVisionModel):
         resize_model_vocab         = None, # [TODO] No effect
         revision                   = None,
         return_logits              = False, # Return logits
+        fullgraph                  = True, # No graph breaks
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -473,6 +475,7 @@ class FastVisionModel(FastBaseVisionModel):
                 shape_padding           = True,
                 cudagraphs              = False,
                 debug                   = False,
+                fullgraph               = fullgraph,
                 import_from_cache       = False,
                 disable                 = False,
                 return_logits           = return_logits,
