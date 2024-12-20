@@ -337,6 +337,7 @@ def LlamaAttention_fast_forward(
     output_attentions:    bool = False,
     use_cache:            bool = False,
     padding_mask:         Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
@@ -368,20 +369,24 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    # Extend RoPE dynamically to fit in VRAM
-    rotary_emb = self.rotary_emb
-    rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-
-    if position_ids is None:
-        # Useful for LongRoPE
-        cos, sin = rotary_emb.get_cached(kv_seq_len)
-        # cos = self.rotary_emb.cos_cached
-        # sin = self.rotary_emb.sin_cached
-        Q, K = fast_rope_embedding(Q, K, cos, sin)
+    if position_embeddings:
+        cos, sin = position_embeddings
     else:
-        cos, sin = rotary_emb(V, seq_len = kv_seq_len)
-        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    pass
+        # Extend RoPE dynamically to fit in VRA
+        rotary_emb = self.rotary_emb
+        rotary_emb.extend_rope_embedding(V, seq_len=kv_seq_len)
+
+        if position_ids is None:
+            # Useful for LongRoPE
+            cos, sin = rotary_emb.get_cached(kv_seq_len)
+        else:
+            cos, sin = rotary_emb(V, seq_len=kv_seq_len)
+
+    Q, K = (
+        fast_rope_embedding(Q, K, cos, sin) 
+        if position_ids is None 
+        else inplace_rope_embedding(Q, K, cos, sin, position_ids)
+    )
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -452,6 +457,7 @@ def LlamaDecoderLayer_fast_forward(
     output_attentions:    Optional[bool] = False,
     use_cache:            Optional[bool] = False,
     padding_mask:         Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
     """
@@ -479,6 +485,7 @@ def LlamaDecoderLayer_fast_forward(
             output_attentions=output_attentions,
             use_cache=use_cache,
             padding_mask=padding_mask,
+            position_embeddings = position_embeddings,
         )
         hidden_states += residual
 
@@ -499,6 +506,7 @@ def LlamaDecoderLayer_fast_forward(
             output_attentions=output_attentions,
             use_cache=use_cache,
             padding_mask=padding_mask,
+            position_embeddings = position_embeddings,
         )
         hidden_states = residual + hidden_states
 
@@ -777,8 +785,11 @@ def LlamaModel_fast_forward(
     pass
 
     
-    if IS_GRANITE:
-        position_embeddings = self.rotary_emb(hidden_states, position_ids, self.max_position_embeddings)
+    if transformers_version > "4.47.1" and hasattr(self,'rotary_emb'):
+        # Transformers main has made it mandatory to pass position_embeddings
+        # https://github.com/huggingface/transformers/pull/34858
+        position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
+        print(f'position_embeddings: {position_embeddings}')
     else:
         position_embeddings = None
 

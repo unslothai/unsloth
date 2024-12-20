@@ -47,6 +47,7 @@ def MistralAttention_fast_forward(
     output_attentions:    bool = False,
     use_cache:            bool = False,
     padding_mask:         Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
