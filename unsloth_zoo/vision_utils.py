@@ -49,6 +49,8 @@ IMAGE_TOKENS = [
 
 import torch
 from PIL import Image
+import base64
+from io import BytesIO
 import math
 import requests
 from typing import Union, Tuple
