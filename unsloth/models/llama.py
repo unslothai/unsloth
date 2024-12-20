@@ -1054,11 +1054,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Fixes https://github.com/unslothai/unsloth/issues/10
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
             pass
-
-            print(locals())
-            print(args)
-            print(kwargs)
-            raise
             shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
@@ -1119,6 +1114,8 @@ def PeftModelForCausalLM_fast_forward(
     num_logits_to_keep=0,
     **kwargs,
 ):
+    print(kwargs)
+    raise
     return self.base_model(
         input_ids=input_ids,
         causal_mask=causal_mask,
