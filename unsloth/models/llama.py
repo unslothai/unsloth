@@ -1055,6 +1055,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
             pass
 
+            print(kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None))
             shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
