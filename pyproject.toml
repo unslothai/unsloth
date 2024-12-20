@@ -22,14 +22,14 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "unsloth_zoo>=2024.11.8",
+    "unsloth_zoo>=2024.12.3",
     "torch>=2.4.0",
     "xformers>=0.0.27.post2",
     "bitsandbytes",
     "triton>=3.0.0",
     "packaging",
     "tyro",
-    "transformers>=4.46.1",
+    "transformers>=4.46.1,<=4.46.3",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -55,7 +55,7 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2024.11.8",
+    "unsloth_zoo>=2024.12.3",
     "packaging",
     "tyro",
     "transformers>=4.46.1,<=4.46.3",
