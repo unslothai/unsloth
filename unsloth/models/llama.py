@@ -329,14 +329,15 @@ pass
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
 def LlamaAttention_fast_forward(
     self,
-    hidden_states:        torch.Tensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    bool = False,
-    use_cache:            bool = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    hidden_states:       torch.Tensor,
+    causal_mask:         Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    attention_mask:      Optional[torch.Tensor] = None,
+    position_ids:        Optional[torch.LongTensor] = None,
+    past_key_value:      Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:   bool = False,
+    use_cache:           bool = False,
+    padding_mask:        Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
@@ -368,20 +369,24 @@ def LlamaAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
-    # Extend RoPE dynamically to fit in VRAM
-    rotary_emb = self.rotary_emb
-    rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-
-    if position_ids is None:
-        # Useful for LongRoPE
-        cos, sin = rotary_emb.get_cached(kv_seq_len)
-        # cos = self.rotary_emb.cos_cached
-        # sin = self.rotary_emb.sin_cached
-        Q, K = fast_rope_embedding(Q, K, cos, sin)
+    if position_embeddings:
+        cos, sin = position_embeddings
     else:
-        cos, sin = rotary_emb(V, seq_len = kv_seq_len)
-        Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    pass
+        # Extend RoPE dynamically to fit in VRA
+        rotary_emb = self.rotary_emb
+        rotary_emb.extend_rope_embedding(V, seq_len=kv_seq_len)
+
+        if position_ids is None:
+            # Useful for LongRoPE
+            cos, sin = rotary_emb.get_cached(kv_seq_len)
+        else:
+            cos, sin = rotary_emb(V, seq_len=kv_seq_len)
+
+    Q, K = (
+        fast_rope_embedding(Q, K, cos, sin) 
+        if position_ids is None 
+        else inplace_rope_embedding(Q, K, cos, sin, position_ids)
+    )
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -444,14 +449,15 @@ pass
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
 def LlamaDecoderLayer_fast_forward(
     self,
-    hidden_states:        torch.Tensor,
-    causal_mask           = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    Optional[bool] = False,
-    use_cache:            Optional[bool] = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    hidden_states:       torch.Tensor,
+    causal_mask          = None,
+    attention_mask:      Optional[torch.Tensor] = None,
+    position_ids:        Optional[torch.LongTensor] = None,
+    past_key_value:      Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:   Optional[bool] = False,
+    use_cache:           Optional[bool] = False,
+    padding_mask:        Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
     """
@@ -471,14 +477,15 @@ def LlamaDecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states       = hidden_states,
+            causal_mask         = causal_mask,
+            attention_mask      = attention_mask,
+            position_ids        = position_ids,
+            past_key_value      = past_key_value,
+            output_attentions   = output_attentions,
+            use_cache           = use_cache,
+            padding_mask        = padding_mask,
+            position_embeddings = position_embeddings,
         )
         hidden_states += residual
 
@@ -491,14 +498,15 @@ def LlamaDecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states       = hidden_states,
+            causal_mask         = causal_mask,
+            attention_mask      = attention_mask,
+            position_ids        = position_ids,
+            past_key_value      = past_key_value,
+            output_attentions   = output_attentions,
+            use_cache           = use_cache,
+            padding_mask        = padding_mask,
+            position_embeddings = position_embeddings,
         )
         hidden_states = residual + hidden_states
 
@@ -776,9 +784,10 @@ def LlamaModel_fast_forward(
         pass
     pass
 
-    
-    if IS_GRANITE:
-        position_embeddings = self.rotary_emb(hidden_states, position_ids, self.max_position_embeddings)
+    if transformers_version > "4.47.1" and hasattr(self, "rotary_emb"):
+        # Transformers main has made it mandatory to pass position_embeddings
+        # https://github.com/huggingface/transformers/pull/34858
+        position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
     else:
         position_embeddings = None
 
@@ -832,13 +841,13 @@ def LlamaModel_fast_forward(
             layer_outputs = decoder_layer(
                 hidden_states,
                 causal_mask=mask,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                padding_mask=padding_mask,
-                position_embeddings = position_embeddings
+                attention_mask      = attention_mask,
+                position_ids        = position_ids,
+                past_key_value      = past_key_value,
+                output_attentions   = output_attentions,
+                use_cache           = use_cache,
+                padding_mask        = padding_mask,
+                position_embeddings = position_embeddings,
             )
             hidden_states = layer_outputs[0]
         pass
@@ -993,6 +1002,9 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+            # < 1024 Normal Unsloth uses less VRAM!
+            if bsz*q_len <= 1024: RETURN_LOGITS = True
+            
             if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
                 loss = fused_linear_cross_entropy(
@@ -1041,7 +1053,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Fixes https://github.com/unslothai/unsloth/issues/10
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
             pass
-
             shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
@@ -1570,7 +1581,7 @@ class FastLlamaModel:
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers:{transformers_version}.\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.\n"\
            f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
            f"O^O/ \_/ \\    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.12.4"
+__version__ = "2024.12.5"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -1127,6 +1127,7 @@ def unsloth_compile_transformers(
     shape_padding           = True,
     cudagraphs              = False,
     debug                   = False,
+    fullgraph               = True,
     import_from_cache       = False,
     disable                 = False,
     return_logits           = False,
@@ -1170,6 +1171,7 @@ def unsloth_compile_transformers(
             shape_padding          = shape_padding,
             cudagraphs             = cudagraphs,
             debug                  = debug,
+            fullgraph              = fullgraph,
             import_from_cache      = import_from_cache,
             disable                = disable,
             return_logits          = return_logits,
