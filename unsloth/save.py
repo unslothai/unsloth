@@ -577,7 +577,7 @@ def unsloth_save_model(
             #     max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
-                logger.warning_once("We will save to Disk and not RAM now.")
+                logger.warning_once("\nWe will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
                 # weights_only = True weirdly fails?
@@ -2129,17 +2129,31 @@ def unsloth_generic_save(
 ):
     if token is None and push_to_hub: token = get_token()
 
-    merge_and_overwrite_lora(
-        get_model_name,
-        create_huggingface_repo,
-        model,
-        save_location        = save_directory,
-        push_to_hub          = push_to_hub,
-        token                = token,
-        upload_location      = save_directory if push_to_hub else None,
-        low_disk_space_usage = True,
-        private              = private,
-    )
+    import unsloth_zoo
+    if Version(unsloth_zoo.__version__) <= Version("2024.12.1"):
+        merge_and_overwrite_lora(
+            get_model_name,
+            create_huggingface_repo,
+            model,
+            save_location        = save_directory,
+            push_to_hub          = push_to_hub,
+            token                = token,
+            upload_location      = save_directory if push_to_hub else None,
+            low_disk_space_usage = True,
+            private              = private,
+        )
+    else:
+        merge_and_overwrite_lora(
+            get_model_name,
+            model,
+            save_directory       = save_directory,
+            push_to_hub          = push_to_hub,
+            private              = private,
+            token                = token,
+            low_disk_space_usage = False,
+            use_temp_file        = False,
+        )
+    pass
     return
 pass
 
