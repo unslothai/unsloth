@@ -329,14 +329,14 @@ pass
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
 def LlamaAttention_fast_forward(
     self,
-    hidden_states:        torch.Tensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    bool = False,
-    use_cache:            bool = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    hidden_states:       torch.Tensor,
+    causal_mask:         Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    attention_mask:      Optional[torch.Tensor] = None,
+    position_ids:        Optional[torch.LongTensor] = None,
+    past_key_value:      Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:   bool = False,
+    use_cache:           bool = False,
+    padding_mask:        Optional[torch.LongTensor] = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -449,14 +449,14 @@ pass
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
 def LlamaDecoderLayer_fast_forward(
     self,
-    hidden_states:        torch.Tensor,
-    causal_mask           = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    Optional[bool] = False,
-    use_cache:            Optional[bool] = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    hidden_states:       torch.Tensor,
+    causal_mask          = None,
+    attention_mask:      Optional[torch.Tensor] = None,
+    position_ids:        Optional[torch.LongTensor] = None,
+    past_key_value:      Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:   Optional[bool] = False,
+    use_cache:           Optional[bool] = False,
+    padding_mask:        Optional[torch.LongTensor] = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
@@ -477,14 +477,14 @@ def LlamaDecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states       = hidden_states,
+            causal_mask         = causal_mask,
+            attention_mask      = attention_mask,
+            position_ids        = position_ids,
+            past_key_value      = past_key_value,
+            output_attentions   = output_attentions,
+            use_cache           = use_cache,
+            padding_mask        = padding_mask,
             position_embeddings = position_embeddings,
         )
         hidden_states += residual
@@ -498,14 +498,14 @@ def LlamaDecoderLayer_fast_forward(
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states       = hidden_states,
+            causal_mask         = causal_mask,
+            attention_mask      = attention_mask,
+            position_ids        = position_ids,
+            past_key_value      = past_key_value,
+            output_attentions   = output_attentions,
+            use_cache           = use_cache,
+            padding_mask        = padding_mask,
             position_embeddings = position_embeddings,
         )
         hidden_states = residual + hidden_states
@@ -785,11 +785,10 @@ def LlamaModel_fast_forward(
     pass
 
     
-    if transformers_version > "4.47.1" and hasattr(self,'rotary_emb'):
+    if transformers_version > "4.47.1" and hasattr(self, "rotary_emb"):
         # Transformers main has made it mandatory to pass position_embeddings
         # https://github.com/huggingface/transformers/pull/34858
         position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
-        print(f'position_embeddings: {position_embeddings}')
     else:
         position_embeddings = None
 
@@ -843,12 +842,12 @@ def LlamaModel_fast_forward(
             layer_outputs = decoder_layer(
                 hidden_states,
                 causal_mask=mask,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                padding_mask=padding_mask,
+                attention_mask      = attention_mask,
+                position_ids        = position_ids,
+                past_key_value      = past_key_value,
+                output_attentions   = output_attentions,
+                use_cache           = use_cache,
+                padding_mask        = padding_mask,
                 position_embeddings = position_embeddings
             )
             hidden_states = layer_outputs[0]
