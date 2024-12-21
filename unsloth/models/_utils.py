@@ -1086,6 +1086,14 @@ def patch_gradient_accumulation_fix(Trainer):
         "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
     )
     function = function.replace("def training_step", "def _unsloth_training_step", 1)
+
+    # Fix 4.47.0 issue where num_items_in_batch was removed
+    # See https://github.com/huggingface/transformers/pull/35121
+    function = function.replace(
+        "if self.model_accepts_loss_kwargs:",
+        "if False:",
+    )
+    
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
 pass
