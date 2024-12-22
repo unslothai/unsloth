@@ -105,6 +105,20 @@ from tqdm import tqdm as ProgressBar
 import os, shutil, re, functools
 
 
+def _merge_lora(W, lora_stats, name):
+    if lora_stats.lora_A is None or lora_stats.lora_B is None: return W
+    W = W.to('cuda', dtype = torch.float32, non_blocking = True)
+    W = W.addmm_(
+        lora_stats.lora_B.to('cuda', dtype = torch.float32, non_blocking = True),
+        lora_stats.lora_A.to('cuda', dtype = torch.float32, non_blocking = True),
+        alpha = lora_stats.alpha,
+    )
+    if not torch.isfinite(torch.amax(W)).item():
+        raise ValueError('Unsloth: Merge failed as there are infinite elements in ' + name)
+    return W
+pass
+
+
 def get_lora_layer_modules():
     # Code licensed under LGPL
     import peft.tuners.lora
@@ -191,6 +205,7 @@ pass
 
 
 def assert_same_keys(model, new_state_dict):
+    # Code licensed under LGPL
     original_keys = model.base_model.model.state_dict().keys()
     all_original_keys = set()
     for x in original_keys:
@@ -316,23 +331,10 @@ def _merge_and_overwrite_lora(save_directory, filename, lora_weights,):
     with safe_open(filename, framework = "pt", device = "cpu") as file:
         for key in file.keys():
             W = file.get_tensor(key)
-            if key.endswith(".weight") and key[:-len(".weight")] in lora_weights:
+            lora_stats = lora_weights.get(key[:-len(".weight")], None)
+            if lora_stats is not None:
                 count += 1
-                lora_stats = lora_weights[key[:-len(".weight")]]
-                A, B, scaling = lora_stats.lora_A, lora_stats.lora_B, lora_stats.alpha
-                if A is not None and B is not None:
-                    old_dtype = W.dtype
-                    W = W.to("cuda", dtype = torch.float32, non_blocking = True)
-
-                    W = W.addmm_(
-                        B.to('cuda', dtype = torch.float32, non_blocking = True),
-                        A.to('cuda', dtype = torch.float32, non_blocking = True),
-                        alpha = scaling,
-                    )
-
-                    if not torch.isfinite(torch.amax(W)).item():
-                        raise ValueError(f"Unsloth: Merge failed.\n{key} has some elements = infinity.")
-                pass
+                W = _merge_lora(W, lora_stats, key)
                 W = W.to("cpu", dtype = old_dtype, non_blocking = True)
             pass
             tensors[key] = W
@@ -387,6 +389,7 @@ def prepare_saving(
     min_size_in_bytes = 100_000_000, # Must be of this size - 100MB default
     use_temp_file = False,
 ):
+    # Code licensed under LGPL
     # Check size
     from huggingface_hub.serialization._base import parse_size_to_int
     max_shard_size_in_bytes = max_shard_size
@@ -646,6 +649,7 @@ def incremental_save_pretrained(
     repo_id = "",
     revision = None,
 ):
+    # Code licensed under LGPL
     # Move file timestamps out
     makedir = re.search(r"os\.makedirs\(save_directory.+?\n", save_pretrained)
     assert(makedir is not None)
@@ -786,18 +790,8 @@ def merge_and_dequantize_lora(
         if type(x) is LoraStats:
             DEQUANTIZED_KEYS.append(name)
             W = dequantize_module_weight(x.module)
-            if x.lora_A is not None and x.lora_B is not None:
-                W = W.to('cuda', dtype = torch.float32, non_blocking = True)
-                W = W.addmm_(
-                    x.lora_B.to('cuda', dtype = torch.float32, non_blocking = True),
-                    x.lora_A.to('cuda', dtype = torch.float32, non_blocking = True),
-                    alpha = x.alpha,
-                )
-                if not torch.isfinite(torch.amax(W)).item():
-                    raise ValueError('Unsloth: Merge failed as there are infinite elements in ' + name)
-            pass
-            W = W.to(device = 'cpu', dtype = {str(output_dtype)}, non_blocking = True)
-            x = W
+            W = _merge_lora(W, x, name)
+            x = W.to(device = 'cpu', dtype = {str(output_dtype)}, non_blocking = True)
         # Remove memory leak
         state_dict[name] = None
         return x
