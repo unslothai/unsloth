@@ -15,6 +15,7 @@
 __version__ = "2024.12.8"
 
 __all__ = [
+    "load_correct_config",
     "prepare_model_for_kbit_training",
     "xformers",
     "xformers_attention",
@@ -187,7 +188,7 @@ def patch_mistral_nemo_config(config):
 pass
 
 from transformers import __version__ as transformers_version
-from transformers import PretrainedConfig
+from transformers import PretrainedConfig, AutoConfig
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite"]
 
 for model_name in model_architectures:
@@ -493,6 +494,40 @@ pass
 
 # =============================================
 
+def load_correct_config(pretrained_model_name_or_path, **kwargs):
+    # print(pretrained_model_name_or_path, str(kwargs))
+    # quit()
+    model_config = AutoConfig.from_pretrained(pretrained_model_name_or_path, token=kwargs['token'])
+    if 'exaone' == model_config.model_type:
+        model_config = LlamaConfig.from_pretrained(
+                 pretrained_model_name_or_path,
+                 vocab_size              = model_config.vocab_size,
+                 hidden_size             = model_config.hidden_size,
+                 intermediate_size       = model_config.intermediate_size,
+                 num_hidden_layers       = model_config.num_hidden_layers,
+                 num_attention_heads     = model_config.num_attention_heads,
+                 num_key_value_heads     = model_config.num_key_value_heads,
+                 hidden_act              = model_config.activation_function,
+                 max_position_embeddings = model_config.max_position_embeddings,
+                 initializer_range       = model_config.initializer_range,
+                 rms_norm_eps            = model_config.layer_norm_epsilon,
+                 use_cache               = model_config.use_cache,
+                 pad_token_id            = model_config.pad_token_id,
+                 bos_token_id            = model_config.bos_token_id,
+                 eos_token_id            = model_config.eos_token_id,
+                 tie_word_embeddings     = model_config.tie_word_embeddings,
+                 rope_theta              = model_config.rope_theta,
+                 rope_scaling            = model_config.rope_scaling,
+                 attention_bias          = False,
+                 attention_dropout       = model_config.attention_dropout,
+                 mlp_bias                = False,
+                 head_dim                = model_config.head_dim,
+                 architectures           = ['LlamaForCausalLM'],
+                 model_type              = 'llama',
+        )
+    return model_config
+
+# =============================================
 def prepare_model_for_kbit_training(
     model                      : Any,
     use_gradient_checkpointing : Optional = True,
