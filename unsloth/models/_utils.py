@@ -403,8 +403,7 @@ pass
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
 accelerate_old_send_to_device = None
 accelerate_new_send_to_device = None
-print(406, xformers_version)
-if Version(xformers_version) >= Version("0.0.27"):
+if xformers_version is not None and Version(xformers_version) >= Version("0.0.27"):
     import accelerate.utils.operations
     if hasattr(accelerate.utils.operations, "send_to_device") and \
         accelerate.utils.operations.send_to_device.__name__ != "_fixed_send_to_device":
