@@ -72,7 +72,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import warnings, subprocess, re, inspect, psutil, os, math
-from packaging.version import Version
+from unsloth_zoo.utils import Version
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -403,6 +403,7 @@ pass
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
 accelerate_old_send_to_device = None
 accelerate_new_send_to_device = None
+print(406, xformers_version)
 if Version(xformers_version) >= Version("0.0.27"):
     import accelerate.utils.operations
     if hasattr(accelerate.utils.operations, "send_to_device") and \
