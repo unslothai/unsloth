@@ -696,12 +696,11 @@ def patch_lora_forwards(torch_compile_options):
             success += 1
             forward = create_new_function(
                 f"{child}_peft_forward",
-                source,
+                COMPILED_LORA_FORWARD + source,
                 parent,
                 dir(eval(parent)),
                 prepend = \
-                    f"\ntorch_compile_options = {torch_compile_options}\n"\
-                    f"{COMPILED_LORA_FORWARD}\n"
+                    f"\ntorch_compile_options = {torch_compile_options}\n"
             ).unsloth_forward
             exec(f"{parent}.{child}.forward = forward", globals(), locals())
         pass
