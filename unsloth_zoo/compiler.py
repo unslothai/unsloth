@@ -641,7 +641,7 @@ def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     return result + lora_B(lora_A(dropout(x))) * scaling
 """
 
-def patch_lora_forwards():
+def patch_lora_forwards(torch_compile_options):
     # Code licensed under LGPL
     Linear_LoRA_Layers = get_lora_layer_modules()
     success = 0
@@ -739,9 +739,6 @@ def unsloth_compile_transformers(
     # Code licensed under LGPL
     if disable: return
 
-    # Patch PEFT lora forwards
-    patch_lora_forwards()
-
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
     modeling_file = eval(model_location)
@@ -777,6 +774,9 @@ def unsloth_compile_transformers(
     else:
         UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"] == "1"
     pass
+
+    # Patch PEFT lora forwards
+    patch_lora_forwards(torch_compile_options)
 
     modeling_file.__UNSLOTH_PATCHED__ = True
     functions = dir(modeling_file)
