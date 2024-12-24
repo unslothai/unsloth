@@ -34,6 +34,7 @@ import logging
 import sys
 from packaging.version import Version
 import triton
+from .peft_utils import get_lora_layer_modules
 
 # Disable some compilations if old versions are seen
 OLD_TORCH_VERSION = Version(torch.__version__) < Version("2.5.0")
@@ -226,6 +227,7 @@ def create_new_function(
     items = [x for x in functions if ((x in new_source) and (x != name) and not (f"def {x}" in new_source))]
     imports = "from torch import Tensor\n"
     imports += "import torch\n"
+    imports += "import torch.nn as nn\n"
     imports += "from torch.nn import functional as F\n"
     imports += f"from {model_location} import (" + ", ".join(x for x in items) + ")" if len(items) != 0 else ""
     new_source = imports + "\n\n" + new_source
@@ -486,6 +488,7 @@ ce_finders = [
 
 
 def apply_fused_lm_head(forward):
+    # Code licensed under LGPL
     # Logit returning?
     RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
     NOT_RETURN_LOGITS = not RETURN_LOGITS
@@ -590,6 +593,7 @@ $else:
 $    hidden_states = LAYER(ARGS)
 """
 def patch_gradient_checkpointing(module, source):
+    # Code licensed under LGPL
     try: init = inspect.getsource(source.__init__)
     except: return None
     if "nn.ModuleList" not in init: return None
@@ -631,6 +635,71 @@ def patch_gradient_checkpointing(module, source):
 pass
 
 
+def patch_lora_forwards():
+    # Code licensed under LGPL
+    Linear_LoRA_Layers = get_lora_layer_modules()
+    success = 0
+    for function, parent, child in Linear_LoRA_Layers:
+        if not hasattr(function, "forward"): continue
+        if function.forward.__name__ == "unsloth_forward": continue
+
+        exec(f"import {parent}", locals(), globals())
+        source = inspect.getsource(function.forward)
+
+        spaces = source.find("def")
+        source = source.split("\n")
+        source = "\n".join(x[spaces:] for x in source)
+        old_hash = hash(source)
+
+        # Remove cloning
+        source = source.replace("result = result.clone()", "")
+
+        # Use addmm
+        old1 = "output = lora_B(lora_A(dropout(x))) * scaling"
+        old2 = "result = result + lora_B(lora_A(dropout(x))) * scaling"
+        add = "result = result + output"
+
+        if (old1 not in source and add not in source) and \
+            (old2 not in source):
+            pass
+        else:
+            replace = "return torch.addmm(result, lora_A(dropout(x)), "\
+                "lora_B.weight.t(), beta = 1, alpha = scaling)"
+            source = source.replace(old1, replace)
+            source = source.replace(old2, replace)
+        pass
+
+        # Update function name
+        source = source.replace("def forward", "def unsloth_forward")
+
+        # Check failed upcasting
+        if "torch.is_autocast_enabled()" not in source:
+            source = source.replace(
+                "x = x.to(lora_A.weight.dtype)",
+                "if not torch.is_autocast_enabled(): "\
+                "result, x = "\
+                    "result.to(lora_A.weight.dtype), "\
+                    "x.to(lora_A.weight.dtype)"
+            )
+        pass
+
+        if hash(source) != old_hash:
+            success += 1
+            forward = create_new_function(
+                f"{child}_peft_forward",
+                source,
+                parent,
+                dir(eval(parent)),
+            ).forward
+            exec(f"{parent}.{child}.forward = forward", globals(), locals())
+        pass
+    pass
+    if success <= 5:
+        print("Unsloth: Not an error, but could not optimize some PEFT modules.")
+    return
+pass
+
+
 def unsloth_compile_transformers(
     model_type             : str = "llama",
     sdpa_dynamic_mask      : bool = True,
@@ -657,6 +726,9 @@ def unsloth_compile_transformers(
 ):
     # Code licensed under LGPL
     if disable: return
+
+    # Patch PEFT lora forwards
+    patch_lora_forwards()
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())

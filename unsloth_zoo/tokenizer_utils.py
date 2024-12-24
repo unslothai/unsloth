@@ -432,6 +432,20 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
 pass
 
 
+POSSIBLE_RESERVED_TOKENS = (
+    "<|finetune_right_pad_id|>", # Llama-3.1
+    "<pad>",                     # Mistral Nemo
+    "<|vision_pad|>",            # Qwen 2.5
+    "<|image_pad|>",             # Qwen 2.5
+    "<|video_pad|>",             # Qwen 2.5
+    "<|reserved",                # Llama-3
+    "<|placeholder",             # Phi-3
+    "[control",                  # Mistral type models
+    "|<EXTRA_TOKENS_",           # Molmo
+    "<SPECIAL_",                 # Pixtral
+    "<unused",                   # PaliGemma
+)
+
 @torch.inference_mode
 def patch_tokenizer(model, tokenizer):
     """
@@ -442,19 +456,6 @@ def patch_tokenizer(model, tokenizer):
         Fixes https://github.com/unslothai/unsloth/issues/5
     """
     # Code licensed under LGPL
-    possible_reserved_tokens = (
-        "<|finetune_right_pad_id|>", # Llama-3.1
-        "<pad>",                     # Mistral Nemo
-        "<|vision_pad|>",            # Qwen 2.5
-        "<|image_pad|>",             # Qwen 2.5
-        "<|video_pad|>",             # Qwen 2.5
-        "<|reserved",                # Llama-3
-        "<|placeholder",             # Phi-3
-        "[control",                  # Mistral type models
-        "|<EXTRA_TOKENS_",           # Molmo
-        "<SPECIAL_",                 # Pixtral
-        "<unused",                   # PaliGemma
-    )
     joiner = "\1\0=+=\0\1"
     number_repetitions = 3 - 1 # Number of reserved tokens needed
 
@@ -480,7 +481,7 @@ def patch_tokenizer(model, tokenizer):
         final_pad_token  = None
         final_good_match = False
 
-        for possible_reserved_token in possible_reserved_tokens:
+        for possible_reserved_token in POSSIBLE_RESERVED_TOKENS:
             possible_reserved_token = re.escape(possible_reserved_token)
             found = re.finditer(f"{possible_reserved_token}", all_added_tokens)
             first_match = None

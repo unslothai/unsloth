@@ -19,6 +19,7 @@ __all__ = [
     "merge_and_overwrite_lora",
     "merge_and_dequantize_lora",
     "SKIP_QUANTIZATION_MODULES",
+    "get_lora_layer_modules",
 ]
 
 import torch
@@ -124,6 +125,27 @@ def get_peft_regex(
         )
     pass
     return regex_matcher
+pass
+
+
+def get_lora_layer_modules():
+    # Code licensed under LGPL
+    import peft.tuners.lora
+    path = os.path.split(peft.tuners.lora.__file__)[0]
+    files = os.listdir(path)
+
+    Linear_LoRA_Layers = []
+    for file in files:
+        if file == "__init__.py" or not file.endswith(".py"): continue
+        item = f"peft.tuners.lora.{file[:-len('.py')]}"
+        exec(f"import {item}", locals(), globals())
+        modules = dir(eval(item))
+        modules = [x for x in modules if x.startswith("Linear") or x.endswith("Linear")]
+        if len(modules) == 0: continue
+        exec(f"from {item} import ({', '.join(modules)})", locals(), globals())
+        Linear_LoRA_Layers += [(eval(x), item, x,) for x in modules]
+    pass
+    return tuple(Linear_LoRA_Layers)
 pass
 
 # Unsloth Zoo - Utilities for Unsloth

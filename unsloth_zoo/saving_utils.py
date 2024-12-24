@@ -20,6 +20,8 @@ __all__ = [
     "merge_and_overwrite_lora",
 ]
 
+from .peft_utils import get_lora_layer_modules
+
 MODEL_CARD = \
 """---
 base_model: {base_model}
@@ -119,27 +121,6 @@ def _merge_lora(W, lora_stats, name):
 pass
 
 
-def get_lora_layer_modules():
-    # Code licensed under LGPL
-    import peft.tuners.lora
-    path = os.path.split(peft.tuners.lora.__file__)[0]
-    files = os.listdir(path)
-
-    Linear_LoRA_Layers = []
-    for file in files:
-        if file == "__init__.py" or not file.endswith(".py"): continue
-        item = f"peft.tuners.lora.{file[:-len('.py')]}"
-        exec(f"import {item}", locals(), globals())
-        modules = dir(eval(item))
-        modules = [x for x in modules if x.startswith("Linear") or x.endswith("Linear")]
-        if len(modules) == 0: continue
-        exec(f"from {item} import ({', '.join(modules)})", locals(), globals())
-        Linear_LoRA_Layers += [eval(x) for x in modules]
-    pass
-    return tuple(Linear_LoRA_Layers)
-pass
-
-
 def check_if_quantized(module: torch.nn.Module) -> bool:
     # Code licensed under LGPL
     # Adapted from https://github.com/huggingface/peft/blob/main/src/peft/utils/integrations.py
@@ -234,6 +215,7 @@ def create_lora_statistics(model, merge_into_original = False, return_state_dict
     # merge_into_original is merging directly into 16bit downloaded model
     # without dequantizing
     Linear_LoRA_Layers = get_lora_layer_modules()
+    Linear_LoRA_Layers = tuple(x[0] for x in Linear_LoRA_Layers)
 
     lora_weights = collections.defaultdict(lambda: LoraStats(None, None, None, 0))
     module_count, lora_A_count, lora_B_count, scaling_count = 0, 0, 0, 0
