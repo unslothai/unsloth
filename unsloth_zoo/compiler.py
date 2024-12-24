@@ -636,9 +636,11 @@ pass
 
 
 COMPILED_LORA_FORWARD = """
-@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+# @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     return result + lora_B(lora_A(dropout(x))) * scaling
+pass
+
 """
 
 def patch_lora_forwards(torch_compile_options):
