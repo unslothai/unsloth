@@ -635,7 +635,11 @@ def patch_gradient_checkpointing(module, source):
 pass
 
 
-
+COMPILED_LORA_FORWARD = """
+@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
+    return result + lora_B(lora_A(dropout(x))) * scaling
+"""
 
 def patch_lora_forwards():
     # Code licensed under LGPL
@@ -665,22 +669,14 @@ def patch_lora_forwards():
             (old2 not in source):
             pass
         else:
-            replace = \
-                "Ax = lora_A(dropout(x)); "\
-                "return torch.addmm("\
-                    "result.reshape(-1, result.shape[-1]), "\
-                    "Ax.reshape(-1, Ax.shape[-1]), "\
-                    "lora_B.weight.t(), "\
-                    "beta = 1.0, alpha = scaling"\
-                ").reshape(result.shape)"
-            # source = source.replace(old1, replace)
-            # source = source.replace(old2, replace)
+            replace = "return lora_forward(result, lora_A, lora_B, dropout, x, scaling)"
+            source = source.replace(old1, replace)
+            source = source.replace(old2, replace)
         pass
 
         # Update function name
         source = source.replace(
             "def forward",
-            "@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n"\
             "def unsloth_forward",
             1,
         )
@@ -704,7 +700,8 @@ def patch_lora_forwards():
                 parent,
                 dir(eval(parent)),
                 prepend = \
-                    f"\ntorch_compile_options = {torch_compile_options}\n"
+                    f"\ntorch_compile_options = {torch_compile_options}\n"\
+                    f"{COMPILED_LORA_FORWARD}\n"
             ).unsloth_forward
             exec(f"{parent}.{child}.forward = forward", globals(), locals())
         pass
