@@ -777,7 +777,7 @@ def unsloth_compile_transformers(
     pass
 
     # Patch PEFT lora forwards
-    patch_lora_forwards(torch_compile_options)
+    # patch_lora_forwards(torch_compile_options)
 
     modeling_file.__UNSLOTH_PATCHED__ = True
     functions = dir(modeling_file)
