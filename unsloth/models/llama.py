@@ -66,6 +66,8 @@ except:
     from huggingface_hub.utils._token import get_token
 pass
 from triton import __version__ as triton_version
+BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if xformers is not None else None
+
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -330,7 +332,7 @@ pass
 def LlamaAttention_fast_forward(
     self,
     hidden_states:       torch.Tensor,
-    causal_mask:         Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    causal_mask:         Optional[BlockDiagonalCausalMask] = None,
     attention_mask:      Optional[torch.Tensor] = None,
     position_ids:        Optional[torch.LongTensor] = None,
     past_key_value:      Optional[Tuple[torch.Tensor]] = None,
@@ -538,7 +540,7 @@ __DTYPE_MAP = {
 def LlamaModel_fast_forward(
     self,
     input_ids:            torch.LongTensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    causal_mask:          Optional[BlockDiagonalCausalMask] = None,
     attention_mask:       Optional[torch.Tensor] = None,
     position_ids:         Optional[torch.LongTensor] = None,
     past_key_values:      Optional[List[torch.FloatTensor]] = None,
@@ -942,7 +944,7 @@ def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
         input_ids: torch.LongTensor = None,
-        causal_mask: Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+        causal_mask: Optional[BlockDiagonalCausalMask] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
