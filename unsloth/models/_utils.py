@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.12.8"
+__version__ = "2024.12.9"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -72,7 +72,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import warnings, subprocess, re, inspect, psutil, os, math
-from packaging.version import Version
+from unsloth_zoo.utils import Version
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -403,7 +403,7 @@ pass
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
 accelerate_old_send_to_device = None
 accelerate_new_send_to_device = None
-if Version(xformers_version) >= Version("0.0.27"):
+if xformers_version is not None and Version(xformers_version) >= Version("0.0.27"):
     import accelerate.utils.operations
     if hasattr(accelerate.utils.operations, "send_to_device") and \
         accelerate.utils.operations.send_to_device.__name__ != "_fixed_send_to_device":
@@ -1086,6 +1086,14 @@ def patch_gradient_accumulation_fix(Trainer):
         "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
     )
     function = function.replace("def training_step", "def _unsloth_training_step", 1)
+
+    # Fix 4.47.0 issue where num_items_in_batch was removed
+    # See https://github.com/huggingface/transformers/pull/35121
+    function = function.replace(
+        "if self.model_accepts_loss_kwargs:",
+        "if False:",
+    )
+    
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
 pass
