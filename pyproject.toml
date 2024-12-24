@@ -22,14 +22,14 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "unsloth_zoo>=2024.12.3",
+    "unsloth_zoo>=2024.12.4",
     "torch>=2.4.0",
     "xformers>=0.0.27.post2",
     "bitsandbytes",
-    "triton>=3.0.0",
+    "triton>=3.0.0 ; platform_system == 'Linux'",
     "packaging",
     "tyro",
-    "transformers>=4.46.1,<=4.46.3",
+    "transformers>=4.46.1,!=4.47.0",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -55,10 +55,10 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2024.12.3",
+    "unsloth_zoo>=2024.12.4",
     "packaging",
     "tyro",
-    "transformers>=4.46.1,<=4.46.3",
+    "transformers>=4.46.1,!=4.47.0",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -113,6 +113,12 @@ cu121onlytorch250 = [
 ]
 cu124onlytorch250 = [
     "xformers==0.0.28.post2",
+]
+cu121onlytorch251 = [
+    "xformers==0.0.28.post3",
+]
+cu124onlytorch251 = [
+    "xformers==0.0.28.post3",
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -179,6 +185,11 @@ cu121-torch250 = [
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch250]",
 ]
+cu121-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch251]",
+]
 cu124-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
@@ -188,6 +199,11 @@ cu124-torch250 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch250]",
+]
+cu124-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu124onlytorch251]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -204,13 +220,16 @@ colab-torch211 = [
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch211]",
 ]
+flashattention = [
+    "packaging ; platform_system == 'Linux'",
+    "ninja ; platform_system == 'Linux'",
+    "flash-attn>=2.6.3 ; platform_system == 'Linux'",
+]
 colab-ampere-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch211]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 colab-torch220 = [
     "unsloth[huggingface]",
@@ -221,15 +240,13 @@ colab-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch220]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2024.11.8",
+    "unsloth_zoo>=2024.12.4",
     "packaging",
     "tyro",
-    "transformers>=4.46.1,<=4.46.3",
+    "transformers>=4.46.1,!=4.47.0",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -254,113 +271,97 @@ colab = [
 ]
 colab-ampere = [
     "unsloth[colab-ampere-torch220]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu118-ampere = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu118only]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu121-ampere = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121only]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu118-ampere-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu118onlytorch211]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu121-ampere-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch211]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu118-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu118onlytorch220]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu121-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch220]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu118-ampere-torch230 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu118onlytorch230]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu121-ampere-torch230 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch230]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu118-ampere-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu118onlytorch240]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu121-ampere-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch240]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu121-ampere-torch250 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch250]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
+]
+cu121-ampere-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch251]",
+    "unsloth[flashattention]",
 ]
 cu124-ampere-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch240]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
 ]
 cu124-ampere-torch250 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch250]",
-    "packaging",
-    "ninja",
-    "flash-attn>=2.6.3",
+    "unsloth[flashattention]",
+]
+cu124-ampere-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu124onlytorch251]",
+    "unsloth[flashattention]",
 ]
 
 [project.urls]
