@@ -671,8 +671,8 @@ def patch_lora_forwards():
                     "lora_B.weight.t(), "\
                     "beta = 1.0, alpha = scaling"\
                 ").reshape(result.shape)"
-            source = source.replace(old1, replace)
-            source = source.replace(old2, replace)
+            # source = source.replace(old1, replace)
+            # source = source.replace(old2, replace)
         pass
 
         # Update function name
