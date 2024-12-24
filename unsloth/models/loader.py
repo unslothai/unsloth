@@ -32,7 +32,7 @@ pass
 from huggingface_hub import HfFileSystem
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
-from packaging.version import Version
+from unsloth_zoo.utils import Version
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 SUPPORTS_GEMMA   = transformers_version >= Version("4.38")
