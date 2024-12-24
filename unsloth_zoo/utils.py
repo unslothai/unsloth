@@ -22,8 +22,6 @@ from packaging.version import Version as TrueVersion
 
 def Version(version):
     # Code licensed under LGPL
-    if type(version) is not str:
-        raise TypeError(f"Unsloth: `{version}` must be a string, but it is of type `{type(version)}`.")
     try:
         return TrueVersion(version)
     except:
