@@ -1671,13 +1671,17 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
         
+        model_config.torch_dtype = dtype
+        model_config.max_position_embeddings = max_position_embeddings
+
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
+            config = model_config,
             device_map              = device_map,
-            torch_dtype             = dtype,
+            # torch_dtype             = dtype,
             # quantization_config     = bnb_config,
             token                   = token,
-            max_position_embeddings = max_position_embeddings,
+            # max_position_embeddings = max_position_embeddings,
             trust_remote_code       = trust_remote_code,
             attn_implementation     = "eager",
             **kwargs,
