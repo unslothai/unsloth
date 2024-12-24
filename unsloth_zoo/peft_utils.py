@@ -23,6 +23,7 @@ __all__ = [
 ]
 
 import torch
+import os
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, TypeVar, Union
 
 # Skip some modules sensitive to quantization
