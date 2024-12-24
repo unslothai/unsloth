@@ -32,7 +32,7 @@ import types
 import time
 import logging
 import sys
-from packaging.version import Version
+from .utils import Version
 import triton
 from .peft_utils import get_lora_layer_modules
 
