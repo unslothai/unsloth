@@ -664,7 +664,7 @@ def patch_lora_forwards():
             pass
         else:
             replace = \
-                "return torch.addmm(result, lora_A(dropout(x)), "\
+                "print(result.shape, lora_A(dropout(x)).shape, lora_B.weight.t().shape); return torch.addmm(result, lora_A(dropout(x)), "\
                 "lora_B.weight.t(), beta = 1.0, alpha = scaling)"
             source = source.replace(old1, replace)
             source = source.replace(old2, replace)
