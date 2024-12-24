@@ -663,14 +663,15 @@ def patch_lora_forwards():
             (old2 not in source):
             pass
         else:
-            replace = "return torch.addmm(result, lora_A(dropout(x)), "\
-                "lora_B.weight.t(), beta = 1, alpha = scaling)"
+            replace = \
+                "return torch.addmm(result, lora_A(dropout(x)), "\
+                "lora_B.weight.t(), beta = 1.0, alpha = scaling, out = result)"
             source = source.replace(old1, replace)
             source = source.replace(old2, replace)
         pass
 
         # Update function name
-        source = source.replace("def forward", "def unsloth_forward")
+        source = source.replace("def forward", "def unsloth_forward", 1)
 
         # Check failed upcasting
         if "torch.is_autocast_enabled()" not in source:
@@ -690,7 +691,7 @@ def patch_lora_forwards():
                 source,
                 parent,
                 dir(eval(parent)),
-            ).forward
+            ).unsloth_forward
             exec(f"{parent}.{child}.forward = forward", globals(), locals())
         pass
     pass
