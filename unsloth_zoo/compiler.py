@@ -635,6 +635,8 @@ def patch_gradient_checkpointing(module, source):
 pass
 
 
+
+
 def patch_lora_forwards():
     # Code licensed under LGPL
     Linear_LoRA_Layers = get_lora_layer_modules()
@@ -676,7 +678,12 @@ def patch_lora_forwards():
         pass
 
         # Update function name
-        source = source.replace("def forward", "def unsloth_forward", 1)
+        source = source.replace(
+            "def forward",
+            "@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)\n"\
+            "def unsloth_forward",
+            1,
+        )
 
         # Check failed upcasting
         if "torch.is_autocast_enabled()" not in source:
@@ -696,6 +703,8 @@ def patch_lora_forwards():
                 source,
                 parent,
                 dir(eval(parent)),
+                prepend = \
+                    f"\ntorch_compile_options = {torch_compile_options}\n"
             ).unsloth_forward
             exec(f"{parent}.{child}.forward = forward", globals(), locals())
         pass
