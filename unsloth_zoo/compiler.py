@@ -700,6 +700,11 @@ def patch_lora_forwards(torch_compile_options):
             "self.base_layer(x)",
         )
 
+        source = source.replace(
+            "self._check_forward_args(x, *args, **kwargs)",
+            "",
+        )
+
         if hash(source) != old_hash:
             success += 1
             forward = create_new_function(
