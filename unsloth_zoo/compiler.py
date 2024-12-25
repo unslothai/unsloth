@@ -642,8 +642,8 @@ def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     B    = lora_B.weight.t()
     bias = lora_B.bias
     XAB = dropout(x) @ A @ B
-    if bias is not None: XAB += bias
-    result += scaling * XAB
+    if bias is not None: XAB = XAB + bias
+    result = result + scaling * XAB
     return result
 pass
 
