@@ -705,6 +705,15 @@ def patch_lora_forwards(torch_compile_options):
             "",
         )
 
+        source = """
+    active_adapter = self.active_adapters[0]
+    lora_A = self.lora_A[active_adapter]
+    lora_B = self.lora_B[active_adapter]
+    dropout = self.lora_dropout[active_adapter]
+    scaling = self.scaling[active_adapter]
+    return self.base_layer(x) + lora_B(lora_A(dropout(x))) * scaling
+    """
+
         if hash(source) != old_hash:
             success += 1
             forward = create_new_function(
