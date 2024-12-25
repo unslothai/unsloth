@@ -705,7 +705,7 @@ def patch_lora_forwards(torch_compile_options):
             "",
         )
 
-        source = """
+        source = """def unsloth_forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
     active_adapter = self.active_adapters[0]
     lora_A = self.lora_A[active_adapter]
     lora_B = self.lora_B[active_adapter]
