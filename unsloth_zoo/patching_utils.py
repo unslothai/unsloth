@@ -41,7 +41,7 @@ def patch_compiling_bitsandbytes():
             except: continue
             if not hasattr(layer, "forward"): continue
             if hasattr(eval(f"{x}.{fx}.forward"), "__wrapped__"): continue
-            exec(f"{x}.{fx}.forward = torch._disable_dynamo({x}.{fx}.forward)", globals(), locals())
+            # exec(f"{x}.{fx}.forward = torch._disable_dynamo({x}.{fx}.forward)", globals(), locals())
         pass
     pass
 

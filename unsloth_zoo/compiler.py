@@ -638,15 +638,25 @@ pass
 COMPILED_LORA_FORWARD = """
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
-    A    = lora_A.weight.t()
-    B    = lora_B.weight.t()
+    xA = dropout(x) @ lora_A.weight.t()
+    output = torch.addmm(
+        result.reshape(-1, result.shape[-1]),
+        xA.reshape(-1, xA.shape[-1]),
+        lora_B.weight.t().to(result.dtype),
+        alpha = scaling,
+        beta = 1,
+        out = result.reshape(-1, result.shape[-1]),
+    ).reshape(result.shape)
+
     bias = lora_B.bias
-    # XAB = dropout(x) @ A @ B
-    # if bias is not None: XAB = XAB + bias
-    xA = dropout(x) @ A
-    flat_xA = xA.reshape(-1, xA.shape[-1])
-    output = torch.addmm(result.reshape(-1, result.shape[-1]), flat_xA, B, alpha = scaling, beta = 1)
-    return output.reshape(result.shape)
+    if bias is not None:
+        output = torch.add(
+        output,
+        bias.to(output.dtype),
+        alpha = scaling,
+        out = output,
+    )
+    return output
 pass
 
 """
