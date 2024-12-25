@@ -695,10 +695,10 @@ def patch_lora_forwards(torch_compile_options):
         pass
 
         # Remove *args, **kwargs since it fails with torch.compile
-        source = source.replace(
-            "self.base_layer(x, *args, **kwargs)",
-            "self.base_layer(x)",
-        )
+        # source = source.replace(
+        #     "self.base_layer(x, *args, **kwargs)",
+        #     "self.base_layer(x)",
+        # )
 
         source = source.replace(
             "self._check_forward_args(x, *args, **kwargs)",
@@ -707,11 +707,11 @@ def patch_lora_forwards(torch_compile_options):
 
         source = """def unsloth_forward(self, x: torch.Tensor) -> torch.Tensor:
     active_adapter = self.active_adapters[0]
-    lora_A = self.lora_A[active_adapter].weight.t()
-    lora_B = self.lora_B[active_adapter].weight.t()
+    lora_A = self.lora_A[active_adapter]; wA = lora_A.weight.t()
+    lora_B = self.lora_B[active_adapter]; wB = lora_B.weight.t(); bias = lora_B.bias
     dropout = self.lora_dropout[active_adapter]
-    # scaling = self.scaling[active_adapter]
-    return self.base_layer(x) + 1.0 * ((dropout(x) @ lora_A) @ lora_B)
+    scaling = self.scaling[active_adapter]
+    XAB = (dropout(x) @ wA) @ wB; if bias is not None: XAB += bias; return self.base_layer(x) + scaling * XAB
     """
 
         if hash(source) != old_hash:
