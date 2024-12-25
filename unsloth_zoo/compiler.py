@@ -642,19 +642,17 @@ def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     output = torch.addmm(
         result.reshape(-1, result.shape[-1]),
         xA.reshape(-1, xA.shape[-1]),
-        lora_B.weight.t().to(result.dtype),
+        lora_B.weight.t(),
         alpha = scaling,
         beta = 1,
-        out = result.reshape(-1, result.shape[-1]),
     ).reshape(result.shape)
 
     bias = lora_B.bias
     if bias is not None:
         output = torch.add(
         output,
-        bias.to(output.dtype),
+        bias,
         alpha = scaling,
-        out = output,
     )
     return output
 pass
