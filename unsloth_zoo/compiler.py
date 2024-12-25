@@ -694,6 +694,12 @@ def patch_lora_forwards(torch_compile_options):
             )
         pass
 
+        # Remove *args, **kwargs since it fails with torch.compile
+        source = source.replace(
+            "self.base_layer(x, *args, **kwargs)",
+            "self.base_layer(x)",
+        )
+
         if hash(source) != old_hash:
             success += 1
             forward = create_new_function(
