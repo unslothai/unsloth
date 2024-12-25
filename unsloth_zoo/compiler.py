@@ -728,7 +728,6 @@ def patch_lora_forwards(torch_compile_options):
             exec(f"{parent}.{child}.forward = forward", globals(), locals())
         pass
     pass
-    import torch
     import bitsandbytes.functional
     bitsandbytes.functional.dequantize_4bit = \
         torch.compile(
