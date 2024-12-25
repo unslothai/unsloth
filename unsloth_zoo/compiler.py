@@ -710,8 +710,8 @@ def patch_lora_forwards(torch_compile_options):
     lora_A = self.lora_A[active_adapter].weight.t()
     lora_B = self.lora_B[active_adapter].weight.t()
     dropout = self.lora_dropout[active_adapter]
-    scaling = self.scaling[active_adapter]
-    return self.base_layer(x) + scaling * ((dropout(x) @ lora_A) @ lora_B)
+    # scaling = self.scaling[active_adapter]
+    return self.base_layer(x) + 1.0 * ((dropout(x) @ lora_A) @ lora_B)
     """
 
         if hash(source) != old_hash:
