@@ -1443,7 +1443,6 @@ def unsloth_compile_transformers(
 
     # Finally edit dictionary items inside the target file
     replaced_classes = all_standalone_classes.keys()
-    print(replaced_classes)
     check_dicts = dir(eval(f"{model_location}"))
     for check in check_dicts:
         item = eval(f"{model_location}.{check}")
