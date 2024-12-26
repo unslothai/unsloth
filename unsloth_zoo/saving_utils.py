@@ -304,7 +304,7 @@ pass
 
 
 @torch.inference_mode
-def _merge_and_overwrite_lora(save_directory, filename, lora_weights,):
+def _merge_and_overwrite_lora(save_directory, filename, lora_weights, output_dtype,):
     # Code licensed under LGPL
     # Merges LoRA and overwrites the safetensors file it was merged to
     filename = os.path.join(save_directory, filename)
@@ -317,7 +317,7 @@ def _merge_and_overwrite_lora(save_directory, filename, lora_weights,):
             if lora_stats is not None:
                 count += 1
                 W = _merge_lora(W, lora_stats, key)
-                W = W.to("cpu", dtype = old_dtype, non_blocking = True)
+                W = W.to(device = 'cpu', dtype = output_dtype, non_blocking = True)
             pass
             tensors[key] = W
         pass
@@ -582,6 +582,7 @@ def merge_and_overwrite_lora(
             save_directory = save_directory,
             filename = filename,
             lora_weights = lora_weights,
+            output_dtype = output_dtype,
         )
         if low_disk_space_usage and push_to_hub:
             upload_items(filename)
