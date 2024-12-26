@@ -454,7 +454,7 @@ class FastVisionModel(FastBaseVisionModel):
 
         if not was_disabled: enable_progress_bars()
 
-        with contextlib.redirect_stdout(open(os.devnull, "w")):
+        if True: # with contextlib.redirect_stdout(open(os.devnull, "w")):
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
