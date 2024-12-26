@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.12.9"
+__version__ = "2024.12.10"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -1093,6 +1093,22 @@ def patch_gradient_accumulation_fix(Trainer):
         "if self.model_accepts_loss_kwargs:",
         "if False:",
     )
+
+    # Fix when num_items_in_batch is nothing
+    # https://github.com/huggingface/transformers/pull/35207
+    function = re.sub(
+        r"else:\n"\
+        r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"\
+        r"(.+?)if num_items_in_batch is None\:\n"\
+        r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
+
+        "else:\n"\
+        "\2if num_items_in_batch is None:\n"\
+        "\3loss /= self.args.gradient_accumulation_steps\n"\
+        "\1self.accelerator.backward(loss, **kwargs)",
+        
+        function,
+    )
     
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
@@ -1130,6 +1146,8 @@ def unsloth_compile_transformers(
     fuse_lm_head            = True,
     gradient_checkpointing  = True,
     manual_replacements     = True,
+    fast_lora_forwards      = True,
+    fast_residual_stream    = True,
     epilogue_fusion         = True,
     max_autotune            = False,
     shape_padding           = True,
@@ -1174,6 +1192,8 @@ def unsloth_compile_transformers(
             fuse_lm_head           = fuse_lm_head,
             gradient_checkpointing = gradient_checkpointing,
             manual_replacements    = manual_replacements,
+            fast_lora_forwards     = fast_lora_forwards,
+            fast_residual_stream   = fast_residual_stream,
             epilogue_fusion        = epilogue_fusion,
             max_autotune           = max_autotune,
             shape_padding          = shape_padding,
