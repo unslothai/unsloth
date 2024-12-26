@@ -68,7 +68,7 @@ UNSLOTH_CREATED_FUNCTIONS = []
 
 _license_header = """
 # Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
@@ -735,6 +735,51 @@ def patch_lora_forwards(torch_compile_options):
 pass
 
 
+def patch_residual_stream(source):
+    # Code licensed under LGPL
+
+    # if self.is_gated: hidden_state = self.gate_ffn.tanh() * hidden_state
+    # if self.is_gated: hidden_state = self.gate_attn.tanh() * hidden_state
+    source = re.sub(
+        r"if self\.([^\(]{2,})\:\n"\
+        r"[\s]{4,}"\
+        r"(hidden\_state(?:s)?) \= ([^\s]{4,}) \* \2\n"\
+        r"[\s]{4,}"\
+        r"\2 \= residual \+ \2",
+
+        r"\2 = residual + \2 * (\3 if self.\1 else 1.0)",
+
+        source,
+    )
+
+    # hidden_states = residual + self.cross_attn_mlp_gate.tanh() * hidden_states
+    # hidden_states = residual + hidden_states * self.residual_multiplier
+    matches = re.findall(
+        r"[\s]{4,}"\
+        r"((hidden\_state(?:s)?) \= residual \+ "\
+        r"(?:"\
+        r"(?:\2 \* ([^\n]{3,}))"\
+        r"|"\
+        r"(?:([^\n]{3,}) \* \2)"\
+        r"))\n",
+
+        source,
+    )
+    if len(matches) == 0: return source
+
+    for (full_match, h, left, right,) in matches:
+        s = left or right
+        replace = \
+            f"s = {s}; {h} = "\
+            f"torch.add(residual, {h}, alpha = s) "\
+            f"if type(s) is float else "\
+            f"torch.addcmul(residual, {h}, value = s)\n"
+        source = source.replace(full_match, replace)
+    pass
+    return source
+pass
+
+
 def unsloth_compile_transformers(
     model_type             : str = "llama",
     sdpa_dynamic_mask      : bool = True,
@@ -749,6 +794,8 @@ def unsloth_compile_transformers(
     fuse_lm_head           : bool = True,
     gradient_checkpointing : bool = True,
     manual_replacements    : bool = True,
+    fast_lora_forwards     : bool = True,
+    fast_residual_stream   : bool = True,
     epilogue_fusion        : bool = True,
     max_autotune           : bool = False,
     shape_padding          : bool = True,
@@ -799,7 +846,7 @@ def unsloth_compile_transformers(
     pass
 
     # Patch PEFT lora forwards
-    patch_lora_forwards(torch_compile_options)
+    if fast_lora_forwards: patch_lora_forwards(torch_compile_options)
 
     modeling_file.__UNSLOTH_PATCHED__ = True
     functions = dir(modeling_file)
