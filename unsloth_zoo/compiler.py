@@ -782,7 +782,7 @@ def patch_residual_stream(source):
             f"s = {s}; {h} = "\
             f"torch.add(residual, {h}, alpha = s) "\
             f"if type(s) is float else "\
-            f"torch.addcmul(residual, {h}, value = s)\n"
+            f"torch.addcmul(residual, {h}, s)\n"
         source = source.replace(full_match, replace)
     pass
     return source
@@ -986,7 +986,7 @@ def unsloth_compile_transformers(
         pass
         scaled_dot_product_attention_modules[module] = new_source
     pass
-    
+
     all_standalone_classes = {}
 
     # Fix modules with _update_causal_mask if SDPA can be used with causal masks
