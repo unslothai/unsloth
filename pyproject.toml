@@ -243,7 +243,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2024.12.4",
+    "unsloth_zoo>=2024.12.5",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
