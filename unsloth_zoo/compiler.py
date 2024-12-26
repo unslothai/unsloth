@@ -426,6 +426,7 @@ if not self.training and labels is None:
     logits = self.lm_head(hidden_states)
 elif NOT_RETURN_LOGITS and labels is not None:
     n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
+    print("N_items", loss_kwargs)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
         lm_weight          = self.lm_head.weight,
