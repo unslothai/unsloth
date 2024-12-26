@@ -361,7 +361,7 @@ _cross_entropy_code = """
 from torch.nn import CrossEntropyLoss
 
 @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-def uncompiled_cross_entropy_loss(self, hidden_states,):
+def uncompiled_cross_entropy_loss(self, hidden_states, labels,):
     logits = self.lm_head(hidden_states)
     logits = logits.float()
     # Shift so that tokens < n predict n
@@ -434,7 +434,7 @@ elif NOT_RETURN_LOGITS and labels is not None:
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
     )
 else:
-    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states)
+    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states, labels,)
 """
 
 cross_entropy_find_2 = """
