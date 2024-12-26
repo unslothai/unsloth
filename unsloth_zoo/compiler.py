@@ -1366,6 +1366,7 @@ def unsloth_compile_transformers(
     final_all_standalone_classes = []
     for module in ordered_functions:
         if module in all_standalone_classes:
+            print(module)
             final_all_standalone_classes.append(all_standalone_classes[module])
         pass
     pass
@@ -1442,6 +1443,7 @@ def unsloth_compile_transformers(
 
     # Finally edit dictionary items inside the target file
     replaced_classes = all_standalone_classes.keys()
+    print(replaced_classes)
     check_dicts = dir(eval(f"{model_location}"))
     for check in check_dicts:
         item = eval(f"{model_location}.{check}")
