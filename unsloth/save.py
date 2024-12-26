@@ -2136,6 +2136,7 @@ def unsloth_generic_save(
         push_to_hub          = push_to_hub,
         private              = private,
         token                = token,
+        output_dtype         = None,
         low_disk_space_usage = False,
         use_temp_file        = False,
     )
