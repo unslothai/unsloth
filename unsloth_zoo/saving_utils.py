@@ -194,7 +194,7 @@ def assert_same_keys(model, new_state_dict):
         where_bias   = x.rfind(".bias")
         if where_weight != -1: x = x[:where_weight + len(".weight")]
         elif where_bias != -1: x = x[:where_bias   + len(".bias")  ]
-        else: raise RuntimeError("Unsloth: Items must either have .weight or .bias!")
+        else: pass
 
         # Remove LoRA and base_layer
         j = max(x.rfind(".lora_"), x.rfind(".base_layer"))
@@ -262,7 +262,13 @@ def create_lora_statistics(model, merge_into_original = False, return_state_dict
         else:
             new_keys = expand_module_keys(name, module, set())
             for key in new_keys:
-                if not key.endswith((".weight", ".bias")): remove_keys.add(key)
+                if not key.endswith((".weight", ".bias")):
+                    # Check if quantized item exactly which has ".weight"
+                    if ".weight." in key:
+                        remove_keys.add(key)
+                    else:
+                        # Keep gate_tanh, embedding etc
+                        pass
             remove_keys.add(name)
         pass
     pass
