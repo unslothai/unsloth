@@ -595,7 +595,7 @@ def merge_and_overwrite_lora(
             os.remove(os.path.join(save_directory, filename)) # Remove to conserve disk space
         pass
     pass
-    if not low_disk_space_usage: upload_items()
+    if not low_disk_space_usage and push_to_hub: upload_items()
 
     # Check for errors
     if len(lora_weights) != n_saved_modules:
