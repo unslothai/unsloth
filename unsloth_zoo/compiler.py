@@ -986,6 +986,8 @@ def unsloth_compile_transformers(
         pass
         scaled_dot_product_attention_modules[module] = new_source
     pass
+    
+    all_standalone_classes = {}
 
     # Fix modules with _update_causal_mask if SDPA can be used with causal masks
     remove_causal_masks = []
@@ -1055,7 +1057,6 @@ def unsloth_compile_transformers(
     functions += list(bad_torch_modules)
 
     # Now patch modules ie LlamaRMSNorm
-    all_standalone_classes = {}
     if compile_custom_modules:
         for module, fullgraph in torch_modules.items():
             if module in bad_torch_modules: continue
