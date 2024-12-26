@@ -1029,8 +1029,6 @@ def unsloth_compile_transformers(
         if fast_residual_stream and "residual" in source:
             new_source = patch_residual_stream(source)
             if new_source != source:
-                continue
-
                 try:
                     new_module = create_standalone_class(
                         module,
@@ -1038,6 +1036,7 @@ def unsloth_compile_transformers(
                         functions,
                         fullgraph = False,
                         disable = None,
+                        forward_source = new_source,
                     )
                     print(f"Unsloth: Faster residual stream for {module}")
                     all_standalone_classes[module] = new_module
