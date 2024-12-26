@@ -558,7 +558,7 @@ def merge_and_overwrite_lora(
         save_directory = save_directory,
         state_dict = {},
     )
-    upload_items()
+    if push_to_hub: upload_items()
 
     if not low_disk_space_usage:
         # Download all safetensors in 1 go!
