@@ -1093,6 +1093,22 @@ def patch_gradient_accumulation_fix(Trainer):
         "if self.model_accepts_loss_kwargs:",
         "if False:",
     )
+
+    # Fix when num_items_in_batch is nothing
+    # https://github.com/huggingface/transformers/pull/35207
+    function = re.sub(
+        r"else:\n"\
+        r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"\
+        r"(.+?)if num_items_in_batch is None\:\n"\
+        r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
+
+        "else:\n"\
+        "\2if num_items_in_batch is None:\n"\
+        "\3loss /= self.args.gradient_accumulation_steps\n"\
+        "\1self.accelerator.backward(loss, **kwargs)",
+        
+        function,
+    )
     
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
