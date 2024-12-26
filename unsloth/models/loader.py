@@ -455,24 +455,24 @@ class FastVisionModel(FastBaseVisionModel):
         if not was_disabled: enable_progress_bars()
 
         if True: # with contextlib.redirect_stdout(open(os.devnull, "w")):
-            patch_loss_functions(torch_compile = False)
+            # patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
-                sdpa_dynamic_mask       = True,
-                sdpa_bool_masks         = True,
-                sdpa_gqa_replace        = True,
-                sdpa_dynamic_compile    = True,
-                compile_attention       = True,
-                disable_causal_masks    = True,
-                compile_torch_modules   = True,
-                compile_custom_modules  = True,
-                compile_function_calls  = True,
+                sdpa_dynamic_mask       = False,
+                sdpa_bool_masks         = False,
+                sdpa_gqa_replace        = False,
+                sdpa_dynamic_compile    = False,
+                compile_attention       = False,
+                disable_causal_masks    = False,
+                compile_torch_modules   = False,
+                compile_custom_modules  = False,
+                compile_function_calls  = False,
                 fuse_lm_head            = False,
-                gradient_checkpointing  = True,
-                manual_replacements     = True,
-                fast_lora_forwards      = True,
-                fast_residual_stream    = True,
-                epilogue_fusion         = True,
+                gradient_checkpointing  = False,
+                manual_replacements     = False,
+                fast_lora_forwards      = False,
+                fast_residual_stream    = False,
+                epilogue_fusion         = False,
                 max_autotune            = False,
                 shape_padding           = True,
                 cudagraphs              = False,
@@ -480,7 +480,7 @@ class FastVisionModel(FastBaseVisionModel):
                 fullgraph               = fullgraph,
                 import_from_cache       = False,
                 disable                 = False,
-                return_logits           = return_logits,
+                return_logits           = True,
             )
         pass
 
