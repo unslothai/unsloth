@@ -360,6 +360,7 @@ pass
 
 
 def prepare_saving(
+    model,
     save_directory,
     push_to_hub = False,
     max_shard_size = "5GB",
@@ -524,6 +525,7 @@ def merge_and_overwrite_lora(
         temp_file, save_directory, new_use_temp_file,
         low_disk_space_usage, max_shard_size_in_bytes,
     ) = prepare_saving(
+        model = model,
         save_directory = save_directory,
         push_to_hub = push_to_hub,
         max_shard_size = "5GB",
@@ -731,6 +733,7 @@ def merge_and_dequantize_lora(
         temp_file, save_directory, use_temp_file,
         low_disk_space_usage, max_shard_size_in_bytes,
     ) = prepare_saving(
+        model = model,
         save_directory = save_directory,
         push_to_hub = push_to_hub,
         max_shard_size = max_shard_size,
