@@ -309,10 +309,13 @@ def create_standalone_class(
     source = source.split("\n")
     source = "\n".join(x[spaces:] for x in source)
 
-    compile = \
-        f"torch.compile(fullgraph = {fullgraph}, dynamic = True, options = torch_compile_options)" \
-        if not disable else \
-        "torch.compiler.disable(recursive = False)"
+    if disable is not None:
+        compile = \
+            f"@torch.compile(fullgraph = {fullgraph}, dynamic = True, options = torch_compile_options)" \
+            if not disable else \
+            "@torch.compiler.disable(recursive = False)"
+    else:
+        compile = ""
 
     # Create new forward calling optimized function
     parameters = inspect.signature(f.forward).parameters
@@ -337,7 +340,7 @@ def create_standalone_class(
         source = re.sub(r"(\,[\n]\) \-\>)", r",**loss_kwargs\1", source)
     pass
 
-    source = f"@{compile}\n{source}\n"
+    source = f"{compile}\n{source}\n"
 
     left = re.match("[\s\n]{4,}", leftover).span()[1]
     new_forward = definition + leftover[:left] + \
@@ -846,7 +849,10 @@ def unsloth_compile_transformers(
     pass
 
     # Patch PEFT lora forwards
-    if fast_lora_forwards: patch_lora_forwards(torch_compile_options)
+    if fast_lora_forwards:
+        print("Unsloth: Patching LoRA to make it faster")
+        patch_lora_forwards(torch_compile_options)
+    pass
 
     modeling_file.__UNSLOTH_PATCHED__ = True
     functions = dir(modeling_file)
@@ -1017,6 +1023,26 @@ def unsloth_compile_transformers(
         if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
             print(f"Unsloth: Failed compiling function {module} since array creations are done.")
             bad_torch_modules.add(module)
+        pass
+
+        # Check for residual streams optimizations
+        if fast_residual_stream and "residual" in source:
+            new_source = patch_residual_stream(source)
+            if new_source != source:
+
+                try:
+                    new_module = create_standalone_class(
+                        module,
+                        model_location,
+                        functions,
+                        fullgraph = False,
+                        disable = None,
+                    )
+                    print(f"Unsloth: Faster residual stream for {module}")
+                    all_standalone_classes[module] = new_module
+                except:
+                    continue
+            pass
         pass
     pass
     # Add back to functions since failed compiling
