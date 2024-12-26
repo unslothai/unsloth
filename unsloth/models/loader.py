@@ -467,7 +467,7 @@ class FastVisionModel(FastBaseVisionModel):
                 compile_torch_modules   = True,
                 compile_custom_modules  = True,
                 compile_function_calls  = True,
-                fuse_lm_head            = True,
+                fuse_lm_head            = False,
                 gradient_checkpointing  = True,
                 manual_replacements     = True,
                 fast_lora_forwards      = True,
