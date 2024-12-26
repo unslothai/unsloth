@@ -68,7 +68,7 @@ UNSLOTH_CREATED_FUNCTIONS = []
 
 _license_header = """
 # Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
@@ -309,10 +309,13 @@ def create_standalone_class(
     source = source.split("\n")
     source = "\n".join(x[spaces:] for x in source)
 
-    compile = \
-        f"torch.compile(fullgraph = {fullgraph}, dynamic = True, options = torch_compile_options)" \
-        if not disable else \
-        "torch.compiler.disable(recursive = False)"
+    if disable is not None:
+        compile = \
+            f"@torch.compile(fullgraph = {fullgraph}, dynamic = True, options = torch_compile_options)" \
+            if not disable else \
+            "@torch.compiler.disable(recursive = False)"
+    else:
+        compile = ""
 
     # Create new forward calling optimized function
     parameters = inspect.signature(f.forward).parameters
@@ -337,7 +340,7 @@ def create_standalone_class(
         source = re.sub(r"(\,[\n]\) \-\>)", r",**loss_kwargs\1", source)
     pass
 
-    source = f"@{compile}\n{source}\n"
+    source = f"{compile}\n{source}\n"
 
     left = re.match("[\s\n]{4,}", leftover).span()[1]
     new_forward = definition + leftover[:left] + \
@@ -638,7 +641,23 @@ pass
 COMPILED_LORA_FORWARD = """
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
-    return result + lora_B(lora_A(dropout(x))) * scaling
+    xA = dropout(x) @ lora_A.weight.t()
+    output = torch.addmm(
+        result.reshape(-1, result.shape[-1]),
+        xA.reshape(-1, xA.shape[-1]),
+        lora_B.weight.t(),
+        alpha = scaling,
+        beta = 1,
+    ).reshape(result.shape)
+
+    bias = lora_B.bias
+    if bias is not None:
+        output = torch.add(
+        output,
+        bias,
+        alpha = scaling,
+    )
+    return output
 pass
 
 """
@@ -694,6 +713,11 @@ def patch_lora_forwards(torch_compile_options):
             )
         pass
 
+        source = source.replace(
+            "self._check_forward_args(x, *args, **kwargs)",
+            "",
+        )
+
         if hash(source) != old_hash:
             success += 1
             forward = create_new_function(
@@ -707,9 +731,55 @@ def patch_lora_forwards(torch_compile_options):
             exec(f"{parent}.{child}.forward = forward", globals(), locals())
         pass
     pass
+
     if success <= 5:
         print("Unsloth: Not an error, but could not optimize some PEFT modules.")
     return
+pass
+
+
+def patch_residual_stream(source):
+    # Code licensed under LGPL
+
+    # if self.is_gated: hidden_state = self.gate_ffn.tanh() * hidden_state
+    # if self.is_gated: hidden_state = self.gate_attn.tanh() * hidden_state
+    source = re.sub(
+        r"if self\.([^\(]{2,})\:\n"\
+        r"[\s]{4,}"\
+        r"(hidden\_state(?:s)?) \= ([^\s]{4,}) \* \2\n"\
+        r"[\s]{4,}"\
+        r"\2 \= residual \+ \2",
+
+        r"\2 = residual + \2 * (\3 if self.\1 else 1.0)",
+
+        source,
+    )
+
+    # hidden_states = residual + self.cross_attn_mlp_gate.tanh() * hidden_states
+    # hidden_states = residual + hidden_states * self.residual_multiplier
+    matches = re.findall(
+        r"[\s]{4,}"\
+        r"((hidden\_state(?:s)?) \= residual \+ "\
+        r"(?:"\
+        r"(?:\2 \* ([^\n]{3,}))"\
+        r"|"\
+        r"(?:([^\n]{3,}) \* \2)"\
+        r"))\n",
+
+        source,
+    )
+    if len(matches) == 0: return source
+
+    for (full_match, h, left, right,) in matches:
+        s = left or right
+        replace = \
+            f"s = {s}; {h} = "\
+            f"torch.add(residual, {h}, alpha = s) "\
+            f"if type(s) is float else "\
+            f"torch.addcmul(residual, {h}, s)\n"
+        source = source.replace(full_match, replace)
+    pass
+    return source
 pass
 
 
@@ -727,6 +797,8 @@ def unsloth_compile_transformers(
     fuse_lm_head           : bool = True,
     gradient_checkpointing : bool = True,
     manual_replacements    : bool = True,
+    fast_lora_forwards     : bool = True,
+    fast_residual_stream   : bool = True,
     epilogue_fusion        : bool = True,
     max_autotune           : bool = False,
     shape_padding          : bool = True,
@@ -777,7 +849,10 @@ def unsloth_compile_transformers(
     pass
 
     # Patch PEFT lora forwards
-    # patch_lora_forwards(torch_compile_options)
+    if fast_lora_forwards:
+        print("Unsloth: Patching LoRA to make it faster")
+        patch_lora_forwards(torch_compile_options)
+    pass
 
     modeling_file.__UNSLOTH_PATCHED__ = True
     functions = dir(modeling_file)
@@ -906,6 +981,8 @@ def unsloth_compile_transformers(
         scaled_dot_product_attention_modules[module] = new_source
     pass
 
+    all_standalone_classes = {}
+
     # Fix modules with _update_causal_mask if SDPA can be used with causal masks
     remove_causal_masks = []
     if disable_causal_masks:
@@ -949,12 +1026,31 @@ def unsloth_compile_transformers(
             print(f"Unsloth: Failed compiling function {module} since array creations are done.")
             bad_torch_modules.add(module)
         pass
+
+        # Check for residual streams optimizations
+        if fast_residual_stream and "residual" in source:
+            new_source = patch_residual_stream(source)
+            if new_source != source:
+                try:
+                    new_module = create_standalone_class(
+                        module,
+                        model_location,
+                        functions,
+                        fullgraph = False,
+                        disable = None,
+                        forward_source = new_source,
+                    )
+                    print(f"Unsloth: Faster residual stream for {module}")
+                    all_standalone_classes[module] = new_module
+                except:
+                    continue
+            pass
+        pass
     pass
     # Add back to functions since failed compiling
     functions += list(bad_torch_modules)
 
     # Now patch modules ie LlamaRMSNorm
-    all_standalone_classes = {}
     if compile_custom_modules:
         for module, fullgraph in torch_modules.items():
             if module in bad_torch_modules: continue
