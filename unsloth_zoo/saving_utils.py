@@ -492,6 +492,7 @@ def merge_and_overwrite_lora(
     push_to_hub          = False,
     private              = False,
     token                = None,
+    output_dtype         = None,
     low_disk_space_usage = False,
     use_temp_file        = False,
 ):
