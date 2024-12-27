@@ -1051,8 +1051,8 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     if "num_items_in_batch" in kwargs:
         if kwargs["num_items_in_batch"] is None:
             # Remove it since the model does not support it!
-            kwargs.pop("num_items_in_batch", None)
-        if "num_items_in_batch" not in inputs:
+            kwargs.pop("num_items_in_batch")
+        elif "num_items_in_batch" not in inputs:
             inputs["num_items_in_batch"] = kwargs["num_items_in_batch"]
         pass
     pass
