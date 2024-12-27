@@ -1008,15 +1008,38 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
             batch_samples += [next(epoch_iterator)]
         except StopIteration:
             break
+
     if len(batch_samples) > 0 and "labels" in batch_samples[0]:
         try:
-            num_items_in_batch = sum(
-                [torch.count_nonzero(x["labels"][..., 1:] != -100) for x in batch_samples]
-            )
-        except TypeError:
+            num_items_in_batch = sum([(batch["labels"].ne(-100)).sum() for batch in batch_samples])
+        except (TypeError, AttributeError):
             pass
+
+    if self.args.average_tokens_across_devices:
+        num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
+
+    if torch.is_tensor(num_items_in_batch):
+        num_items_in_batch = num_items_in_batch.item()
+
     return batch_samples, num_items_in_batch
-pass
+
+# def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
+#     batch_samples = []
+#     num_items_in_batch = None
+#     for _ in range(num_batches):
+#         try:
+#             batch_samples += [next(epoch_iterator)]
+#         except StopIteration:
+#             break
+#     if len(batch_samples) > 0 and "labels" in batch_samples[0]:
+#         try:
+#             num_items_in_batch = sum(
+#                 [torch.count_nonzero(x["labels"][..., 1:] != -100) for x in batch_samples]
+#             )
+#         except TypeError:
+#             pass
+#     return batch_samples, num_items_in_batch
+# pass
 
 
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
