@@ -1047,6 +1047,13 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
         elif "num_items_in_batch" not in inputs:
             inputs["num_items_in_batch"] = kwargs["num_items_in_batch"]
         pass
+    else:
+        name = (model.base_model.model if hasattr(model, "base_model") else model).__class__.__name__
+        logger.warning_once(
+            f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"\
+            "Using gradient accumulation will be very slightly less accurate.\n"\
+            "Read more on gradient accumulation issues on our blog post: https://unsloth.ai/blog/gradient"
+        )
     pass
     return self._old_compute_loss(model, inputs, *args, **kwargs)
 pass
