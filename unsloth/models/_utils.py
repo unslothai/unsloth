@@ -1009,7 +1009,7 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
         except StopIteration:
             break
 
-    print("NUM_ITMES = ", num_items_in_batch)
+    print("NUM_ITMES = ", num_items_in_batch, type(batch_samples))
     if len(batch_samples) > 0 and "labels" in batch_samples[0]:
         try:
             num_items_in_batch = sum([(batch["labels"].ne(-100)).sum() for batch in batch_samples])
