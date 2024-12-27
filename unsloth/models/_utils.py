@@ -15,7 +15,7 @@
 __version__ = "2024.12.9"
 
 __all__ = [
-    "load_correct_config",
+    "load_correct_model",
     "prepare_model_for_kbit_training",
     "xformers",
     "xformers_attention",
