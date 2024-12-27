@@ -1127,7 +1127,6 @@ def patch_gradient_accumulation_fix(Trainer):
         r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
 
         "else:\n"\
-        "\1print(self.args.gradient_accumulation_steps)\n"
         "\2if num_items_in_batch is None:\n"\
         "\3loss = loss / self.args.gradient_accumulation_steps\n"\
         "\1self.accelerator.backward(loss, **kwargs)",
