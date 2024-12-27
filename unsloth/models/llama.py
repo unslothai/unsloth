@@ -1688,7 +1688,7 @@ class FastLlamaModel:
             model_name,
             **model_kwargs
         )
-        # Load correct same model class for models that have the same architectures 
+        # Load the same model class for models that have the same architectures 
         model = load_correct_model(
             model
             **model_kwargs
