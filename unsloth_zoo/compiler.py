@@ -1397,7 +1397,8 @@ def unsloth_compile_transformers(
                     f"\ntorch_compile_options = {torch_compile_options}\n" + \
                     _cross_entropy_code + "\n"
             )
-        except:
+        except Exception as exception:
+            raise RuntimeError(exception)
             combined_module = None
     pass
 
@@ -1442,7 +1443,6 @@ def unsloth_compile_transformers(
     # Import and replace with new module
     for module in all_standalone_classes.keys():
         exec(f"{model_location}.{module} = combined_module.{module}", globals(), locals())
-        print(f"Unsloth: Replacing {module}")
     pass
 
     # Finally edit dictionary items inside the target file
@@ -1458,7 +1458,7 @@ def unsloth_compile_transformers(
             for replaced_class in replaced_classes:
                 if replaced_class in value:
                     exec(f"{model_location}.{check}['{key}'] = combined_module.{replaced_class}", globals(), locals())
-                    print(f"Unsloth: Replacing {check} with {replaced_class}")
+                    # print(f"Unsloth: Replacing {check} with {replaced_class}")
                     break
                 pass
             pass
