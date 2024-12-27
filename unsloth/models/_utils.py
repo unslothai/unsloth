@@ -1011,7 +1011,8 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
     if len(batch_samples) > 0 and "labels" in batch_samples[0]:
         try:
             num_items_in_batch = sum([(batch["labels"].ne(-100)).sum() for batch in batch_samples])
-        except (TypeError, AttributeError):
+        except Exception as exception:
+            logger.warning_once(exception)
             pass
 
     if self.args.average_tokens_across_devices:
