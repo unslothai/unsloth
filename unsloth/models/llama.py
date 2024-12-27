@@ -1611,7 +1611,7 @@ class FastLlamaModel:
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
         # RoPE Scaling
-        model_config = load_correct_config(model_name, token = token)
+        model_config = AutoConfig.from_pretrained(pretrained_model_name_or_path, token=token)
         model_max_seq_length = model_config.max_position_embeddings
 
         # Check if RoPE Scaling is even allowed
@@ -1676,18 +1676,24 @@ class FastLlamaModel:
         model_config.torch_dtype = dtype
         model_config.max_position_embeddings = max_position_embeddings
 
+        model_kwargs = {
+            "device_map": device_map,
+            "torch_dtype": dtype,
+            "token": token,
+            "trust_remote_code": trust_remote_code,
+            "attn_implementation": "eager",
+            **kwargs,
+        }
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            config = model_config,
-            device_map              = device_map,
-            # torch_dtype             = dtype,
-            # quantization_config     = bnb_config,
-            token                   = token,
-            # max_position_embeddings = max_position_embeddings,
-            trust_remote_code       = trust_remote_code,
-            attn_implementation     = "eager",
-            **kwargs,
+            **model_kwargs
         )
+        # Load correct same model class for models that have the same architectures 
+        model = load_correct_model(
+            model
+            **model_kwargs
+        )
+
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
         # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!

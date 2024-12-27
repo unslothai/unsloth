@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.12.11"
+__version__ = "2024.12.9"
 
 __all__ = [
     "load_correct_config",
@@ -494,42 +494,77 @@ pass
 
 # =============================================
 
-def load_correct_config(pretrained_model_name_or_path, **kwargs):
-    token = kwargs.pop('token', None)
+def load_correct_model(model, **model_kwargs):
+    if model.config.model_type == 'exaone':
+        if Version(transformers_version) <= Version('4.47.1'):
+            raise("To use Exaone you have to compile transformers from scratch using:\
+                pip install git+https://github.com/huggingface/transformers.git")
+        import re
+        new_model = AutoModelForCausalLM
 
-    model_config = AutoConfig.from_pretrained(pretrained_model_name_or_path, token=token)
-    if 'exaone' == model_config.model_type:
-        config_args =  {
-            'vocab_size': model_config.vocab_size,
-            'hidden_size': model_config.hidden_size,
-            'intermediate_size': model_config.intermediate_size,
-            'num_hidden_layers': model_config.num_hidden_layers,
-            'num_attention_heads': model_config.num_attention_heads,
-            'num_key_value_heads': model_config.num_key_value_heads,
-            'hidden_act': model_config.activation_function,
-            'max_position_embeddings': model_config.max_position_embeddings,
-            'initializer_range': model_config.initializer_range,
-            'rms_norm_eps': model_config.layer_norm_epsilon,
-            'use_cache': model_config.use_cache,
-            'pad_token_id': model_config.pad_token_id,
-            'bos_token_id': model_config.bos_token_id,
-            'eos_token_id': model_config.eos_token_id,
-            'tie_word_embeddings': model_config.tie_word_embeddings,
-            'rope_theta': model_config.rope_theta,
-            'rope_scaling': model_config.rope_scaling,
+        # get the correct config
+        new_config_args =  {
+            'vocab_size': model.config.vocab_size,
+            'hidden_size': model.config.hidden_size,
+            'intermediate_size': model.config.intermediate_size,
+            'num_hidden_layers': model.config.num_hidden_layers,
+            'num_attention_heads': model.config.num_attention_heads,
+            'num_key_value_heads': model.config.num_key_value_heads,
+            'hidden_act': model.config.activation_function,
+            'max_position_embeddings': model.config.max_position_embeddings,
+            'initializer_range': model.config.initializer_range,
+            'rms_norm_eps': model.config.layer_norm_epsilon,
+            'use_cache': model.config.use_cache,
+            'pad_token_id': model.config.pad_token_id,
+            'bos_token_id': model.config.bos_token_id,
+            'eos_token_id': model.config.eos_token_id,
+            'tie_word_embeddings': model.config.tie_word_embeddings,
+            'rope_theta': model.config.rope_theta,
+            'rope_scaling': model.config.rope_scaling,
             'attention_bias': False,
-            'attention_dropout': model_config.attention_dropout,
+            'attention_dropout': model.config.attention_dropout,
             'mlp_bias': False,
-            'head_dim': model_config.head_dim,
+            'head_dim': model.config.head_dim,
             'architectures': ['LlamaForCausalLM'],
             'model_type': 'llama',
-            'torch_dtype': model_config.torch_dtype
+            'torch_dtype': model.config.torch_dtype
         }
-        model_config = LlamaConfig.from_dict(config_args)
-    return model_config
+        new_config = LlamaConfig.from_dict(new_config_args)
+        new_config.quantization_config = model_kwargs.pop("quantization_config", None)
+
+        # map the old state_dict keys to new ones
+        mapping = {
+            re.compile(r"^transformer\.wte\.weight$"): "model.embed_tokens.weight",
+            re.compile(r"^transformer\.ln_f\.weight$"): "model.norm.weight",
+            re.compile(r"^lm_head\.weight$"): "lm_head.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.ln_1\.weight$") : "model.layers.{}.input_layernorm.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.ln_2\.weight$") : "model.layers.{}.post_attention_layernorm.weight",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_fc_0.weight$") : "model.layers.{}.mlp.gate_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_fc_0.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)$") : "model.layers.{}.mlp.gate_proj.weight.{}",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_fc_1.weight$") : "model.layers.{}.mlp.up_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_fc_1.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)$") : "model.layers.{}.mlp.up_proj.weight.{}",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_proj.weight$") : "model.layers.{}.mlp.down_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_proj.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)$") : "model.layers.{}.mlp.down_proj.weight.{}",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.(k_proj|v_proj|q_proj)\.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)") : "model.layers.{}.self_attn.{}.weight.{}",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.(k_proj|v_proj|q_proj)\.weight") : "model.layers.{}.self_attn.{}.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.out_proj\.weight") : "model.layers.{}.self_attn.o_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.out_proj\.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)") : "model.layers.{}.self_attn.o_proj.weight.{}"
+        }
+
+        old_state_dict = model.state_dict()
+        new_state_dict = {}
+
+        for key in old_state_dict:
+            for pattern in mapping:
+                match = pattern.match(key)
+                if match:
+                    new_key = mapping[pattern].format(*match.groups())
+                    new_state_dict[new_key] = old_state_dict[key]
+        assert len(old_state_dict) == len(new_state_dict), RuntimeError(f"The mapping of {model.__class__} into {new_model.__class__} should have the same length")
+        model = new_model.from_pretrained(None, config=new_config, state_dict=new_state_dict, **model_kwargs)
+    return model
 
 # =============================================
-
 def prepare_model_for_kbit_training(
     model                      : Any,
     use_gradient_checkpointing : Optional = True,
@@ -1130,22 +1165,6 @@ def patch_gradient_accumulation_fix(Trainer):
         "if self.model_accepts_loss_kwargs:",
         "if False:",
     )
-
-    # Fix when num_items_in_batch is nothing
-    # https://github.com/huggingface/transformers/pull/35207
-    function = re.sub(
-        r"else:\n"\
-        r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"\
-        r"(.+?)if num_items_in_batch is None\:\n"\
-        r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
-
-        "else:\n"\
-        "\2if num_items_in_batch is None:\n"\
-        "\3loss /= self.args.gradient_accumulation_steps\n"\
-        "\1self.accelerator.backward(loss, **kwargs)",
-        
-        function,
-    )
     
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
@@ -1183,8 +1202,6 @@ def unsloth_compile_transformers(
     fuse_lm_head            = True,
     gradient_checkpointing  = True,
     manual_replacements     = True,
-    fast_lora_forwards      = True,
-    fast_residual_stream    = True,
     epilogue_fusion         = True,
     max_autotune            = False,
     shape_padding           = True,
@@ -1229,8 +1246,6 @@ def unsloth_compile_transformers(
             fuse_lm_head           = fuse_lm_head,
             gradient_checkpointing = gradient_checkpointing,
             manual_replacements    = manual_replacements,
-            fast_lora_forwards     = fast_lora_forwards,
-            fast_residual_stream   = fast_residual_stream,
             epilogue_fusion        = epilogue_fusion,
             max_autotune           = max_autotune,
             shape_padding          = shape_padding,
