@@ -188,7 +188,6 @@ def patch_mistral_nemo_config(config):
 pass
 
 from transformers import __version__ as transformers_version
-from transformers import PretrainedConfig, AutoConfig
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite"]
 
 for model_name in model_architectures:
@@ -496,11 +495,12 @@ pass
 
 def load_correct_model(model, **model_kwargs):
     if model.config.model_type == 'exaone':
+        from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaConfig
+
         if Version(transformers_version) <= Version('4.47.1'):
             raise("To use Exaone you have to compile transformers from scratch using:\
                 pip install git+https://github.com/huggingface/transformers.git")
         import re
-        new_model = AutoModelForCausalLM
 
         # get the correct config
         new_config_args =  {
@@ -561,7 +561,7 @@ def load_correct_model(model, **model_kwargs):
                     new_key = mapping[pattern].format(*match.groups())
                     new_state_dict[new_key] = old_state_dict[key]
         assert len(old_state_dict) == len(new_state_dict), RuntimeError(f"The mapping of {model.__class__} into {new_model.__class__} should have the same length")
-        model = new_model.from_pretrained(None, config=new_config, state_dict=new_state_dict, **model_kwargs)
+        model = LlamaModelForCausalLM.from_pretrained(None, config=new_config, state_dict=new_state_dict, **model_kwargs)
     return model
 
 # =============================================
