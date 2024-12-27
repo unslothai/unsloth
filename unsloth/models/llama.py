@@ -1009,7 +1009,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             
             if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
-                print(0, n_items)
                 loss = fused_linear_cross_entropy(
                     hidden_states      = hidden_states,
                     lm_weight          = lm_head,
@@ -1056,7 +1055,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Fixes https://github.com/unslothai/unsloth/issues/10
                 self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
             pass
-            print(1, kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None))
             shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
