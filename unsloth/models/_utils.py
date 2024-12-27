@@ -1021,7 +1021,7 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
     if torch.is_tensor(num_items_in_batch):
         num_items_in_batch = num_items_in_batch.item()
 
-    print("NUM_ITMES = ", num_items_in_batch, type(batch_samples))
+    print("NUM_ITMES = ", num_items_in_batch, type(batch_samples), self.model)
 
     return batch_samples, num_items_in_batch
 
