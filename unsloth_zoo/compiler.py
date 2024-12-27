@@ -1178,9 +1178,7 @@ def unsloth_compile_transformers(
     # Manually replace hand written parts
     if manual_replacements:
         for module in compiler_replacements:
-            if module in all_standalone_classes or \
-                module in bad_torch_modules or \
-                module in remove_causal_masks:
+            if module in all_standalone_classes :
 
                 print(f"Unsloth: Manual replacement for {module}")
                 all_standalone_classes[module] = compiler_replacements[module]
