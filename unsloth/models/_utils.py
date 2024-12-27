@@ -1008,8 +1008,6 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
             batch_samples += [next(epoch_iterator)]
         except StopIteration:
             break
-
-    print("NUM_ITMES = ", num_items_in_batch, type(batch_samples))
     if len(batch_samples) > 0 and "labels" in batch_samples[0]:
         try:
             num_items_in_batch = sum([(batch["labels"].ne(-100)).sum() for batch in batch_samples])
@@ -1021,6 +1019,8 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
 
     if torch.is_tensor(num_items_in_batch):
         num_items_in_batch = num_items_in_batch.item()
+
+    print("NUM_ITMES = ", num_items_in_batch, type(batch_samples))
 
     return batch_samples, num_items_in_batch
 
