@@ -186,6 +186,10 @@ class FastBaseVisionModel:
         patch_saving_functions(model, vision = True)
         patch_saving_functions(tokenizer, vision = True)
 
+        # Fix gradient accumulation
+        from transformers.trainer import Trainer
+        patch_gradient_accumulation_fix(Trainer)
+
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference
         tokenizer.tokenizer.padding_side = "left" # Force inference
