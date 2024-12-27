@@ -1181,7 +1181,7 @@ def unsloth_compile_transformers(
             if module in all_standalone_classes or \
                 module in bad_torch_modules or \
                 module in remove_causal_masks:
-                
+
                 print(f"Unsloth: Manual replacement for {module}")
                 all_standalone_classes[module] = compiler_replacements[module]
         pass
@@ -1442,6 +1442,7 @@ def unsloth_compile_transformers(
     # Import and replace with new module
     for module in all_standalone_classes.keys():
         exec(f"{model_location}.{module} = combined_module.{module}", globals(), locals())
+        print(f"Unsloth: Replacing {module}")
     pass
 
     # Finally edit dictionary items inside the target file
@@ -1457,7 +1458,7 @@ def unsloth_compile_transformers(
             for replaced_class in replaced_classes:
                 if replaced_class in value:
                     exec(f"{model_location}.{check}['{key}'] = combined_module.{replaced_class}", globals(), locals())
-                    # print(f"Unsloth: Replacing {check} with {replaced_class}")
+                    print(f"Unsloth: Replacing {check} with {replaced_class}")
                     break
                 pass
             pass
