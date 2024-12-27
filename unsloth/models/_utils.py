@@ -1003,25 +1003,30 @@ pass
 def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
     batch_samples = []
     num_items_in_batch = None
+
+    # Check if model allows **kwargs
+    model = self.model
+    f = model.base_model.model.forward if hasattr(model, "base_model") else model.forward
+    has_kwargs = tuple(inspect.signature(f).parameters.values())[-1].kind == inspect._VAR_KEYWORD
+
     for _ in range(num_batches):
         try:
             batch_samples += [next(epoch_iterator)]
         except StopIteration:
             break
-    if len(batch_samples) > 0 and "labels" in batch_samples[0]:
+    if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
         try:
             num_items_in_batch = sum([(batch["labels"].ne(-100)).sum() for batch in batch_samples])
+
+            if self.args.average_tokens_across_devices:
+                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
+
+            if torch.is_tensor(num_items_in_batch):
+                num_items_in_batch = num_items_in_batch.item()
         except Exception as exception:
             logger.warning_once(exception)
             pass
-
-    if self.args.average_tokens_across_devices:
-        num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
-
-    if torch.is_tensor(num_items_in_batch):
-        num_items_in_batch = num_items_in_batch.item()
-
-    print("NUM_ITMES = ", num_items_in_batch, type(batch_samples), self.model)
+    pass
 
     return batch_samples, num_items_in_batch
 
