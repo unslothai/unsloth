@@ -1412,13 +1412,13 @@ def unsloth_compile_transformers(
     pass
 
     # Fix gradient accumulation issues if there's no **kwargs
-    for module in other_classes:
-        new_source = fix_gradient_accumulation(modeling_file, module)
-        if new_source is None: continue
-        if module in all_standalone_classes:
-            print(f"Unsloth: Will override already patched {module} with gradient accumulation fix.")
-        all_standalone_classes[module] = new_source
-    pass
+    # for module in other_classes:
+    #     new_source = fix_gradient_accumulation(modeling_file, module)
+    #     if new_source is None: continue
+    #     if module in all_standalone_classes:
+    #         print(f"Unsloth: Will override already patched {module} with gradient accumulation fix.")
+    #     all_standalone_classes[module] = new_source
+    # pass
 
     # Order all components
     final_all_standalone_classes = []
