@@ -28,7 +28,7 @@ To see a full list of configurable options, use:
 
 Happy fine-tuning!
 """
-
+import os
 import argparse
 
 def run(args):
@@ -38,8 +38,14 @@ def run(args):
     from trl import SFTTrainer
     from transformers import TrainingArguments
     from unsloth import is_bfloat16_supported
+    from transformers.utils import strtobool
     import logging
     logging.getLogger('hf-to-gguf').setLevel(logging.WARNING)
+
+    use_modelscope = strtobool(os.environ.get('USE_MODELSCOPE', 'False'))
+    if use_modelscope and not os.path.exists(args.model_name):
+        from modelscope import snapshot_download
+        args.model_name =snapshot_download(args.model_name)
 
     # Load model and tokenizer
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -86,9 +92,13 @@ def run(args):
             texts.append(text)
         return {"text": texts}
 
-    # Load and format dataset
-    dataset = load_dataset(args.dataset, split="train")
-    dataset = dataset.map(formatting_prompts_func, batched=True)
+    if use_modelscope:
+        from modelscope import MsDataset
+        dataset = MsDataset.load(args.dataset, split="train")
+    else:
+        # Load and format dataset
+        dataset = load_dataset(args.dataset, split="train")
+    dataset = dataset.map(formatting_prompts_func, batched=True).select(range(100))
     print("Data is formatted and ready!")
 
     # Configure training arguments
