@@ -1045,15 +1045,6 @@ def unsloth_compile_transformers(
         pass
     pass
 
-    print(other_classes)
-    # Fix gradient accumulation issues if there's no **kwargs
-    gradient_accumulation_fixes = {}
-    for module in other_classes:
-        new_source = fix_gradient_accumulation(modeling_file, module)
-        if new_source is None: continue
-        gradient_accumulation_fixes[module] = new_source
-    pass
-
     # Remove modules which have attention mechanisms
     # since torch.compile will compile too many kernels
     bad_torch_modules = set()
@@ -1415,6 +1406,15 @@ def unsloth_compile_transformers(
                 print(f"Unsloth: Cannot compile function {module} since disabled keyword is in it.")
             all_standalone_classes[module] = source
         pass
+    pass
+
+    # Fix gradient accumulation issues if there's no **kwargs
+    for module in other_classes:
+        new_source = fix_gradient_accumulation(modeling_file, module)
+        if new_source is None: continue
+        if module in all_standalone_classes:
+            print(f"Unsloth: Will override already patched {module} with gradient accumulation fix.")
+        all_standalone_classes[module] = new_source
     pass
 
     # Order all components
