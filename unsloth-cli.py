@@ -42,8 +42,7 @@ def run(args):
     import logging
     logging.getLogger('hf-to-gguf').setLevel(logging.WARNING)
 
-    use_modelscope = strtobool(os.environ.get('USE_MODELSCOPE', 'False'))
-    if use_modelscope and not os.path.exists(args.model_name):
+    if args.download_from == 'modelscope':
         from modelscope import snapshot_download
         args.model_name =snapshot_download(args.model_name)
 
@@ -92,7 +91,7 @@ def run(args):
             texts.append(text)
         return {"text": texts}
 
-    if use_modelscope:
+    if args.download_from == 'modelscope':
         from modelscope import MsDataset
         dataset = MsDataset.load(args.dataset, split="train")
     else:
@@ -180,6 +179,7 @@ if __name__ == "__main__":
     model_group.add_argument('--dtype', type=str, default=None, help="Data type for model (None for auto detection)")
     model_group.add_argument('--load_in_4bit', action='store_true', help="Use 4bit quantization to reduce memory usage")
     model_group.add_argument('--dataset', type=str, default="yahma/alpaca-cleaned", help="Huggingface dataset to use for training")
+    model_group.add_argument('--download_from', type=str, default="hf", help="Which model and data hub you want to download from, supported are huggingface(default) and modelscope")
 
     lora_group = parser.add_argument_group("🧠 LoRA Options", "These options are used to configure the LoRA model.")
     lora_group.add_argument('--r', type=int, default=16, help="Rank for Lora model, default is 16.  (common values: 8, 16, 32, 64, 128)")
