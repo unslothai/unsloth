@@ -28,7 +28,6 @@ To see a full list of configurable options, use:
 
 Happy fine-tuning!
 """
-import os
 import argparse
 
 def run(args):
@@ -38,7 +37,6 @@ def run(args):
     from trl import SFTTrainer
     from transformers import TrainingArguments
     from unsloth import is_bfloat16_supported
-    from transformers.utils import strtobool
     import logging
     logging.getLogger('hf-to-gguf').setLevel(logging.WARNING)
 
