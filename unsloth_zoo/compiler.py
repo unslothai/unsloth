@@ -783,7 +783,7 @@ def patch_residual_stream(source):
 pass
 
 
-def fix_gradient_accumulation(modeling_file, module):
+def patch_gradient_accumulation(modeling_file, module):
     # Code licensed under LGPL
 
     functions = dir(modeling_file)
@@ -843,6 +843,7 @@ def unsloth_compile_transformers(
     manual_replacements    : bool = True,
     fast_lora_forwards     : bool = True,
     fast_residual_stream   : bool = True,
+    accurate_accumulation  : bool = True,
     epilogue_fusion        : bool = True,
     max_autotune           : bool = False,
     shape_padding          : bool = True,
@@ -1412,13 +1413,15 @@ def unsloth_compile_transformers(
     pass
 
     # Fix gradient accumulation issues if there's no **kwargs
-    # for module in other_classes:
-    #     new_source = fix_gradient_accumulation(modeling_file, module)
-    #     if new_source is None: continue
-    #     if module in all_standalone_classes:
-    #         print(f"Unsloth: Will override already patched {module} with gradient accumulation fix.")
-    #     all_standalone_classes[module] = new_source
-    # pass
+    if accurate_accumulation:
+        for module in other_classes:
+            new_source = patch_gradient_accumulation(modeling_file, module)
+            if new_source is None: continue
+            if module in all_standalone_classes:
+                print(f"Unsloth: Will override already patched {module} with gradient accumulation fix.")
+            all_standalone_classes[module] = new_source
+        pass
+    pass
 
     # Order all components
     final_all_standalone_classes = []
