@@ -783,6 +783,47 @@ def patch_residual_stream(source):
 pass
 
 
+def fix_gradient_accumulation(modeling_file, module):
+    # Code licensed under LGPL
+
+    functions = dir(modeling_file)
+    module = eval(f"modeling_file.{module}")
+    forward = module.forward
+    source = inspect.getsource(forward)
+    has_kwargs = tuple(inspect.signature(forward).parameters.values())[-1].kind == inspect._VAR_KEYWORD
+    if has_kwargs: return None
+
+    __init__ = inspect.getsource(module.__init__)
+
+    # Only get ._from_config type objects
+    inner_classes = re.findall(r"(self\.[^ ]{1,}) \= ([^\.]{1,})\._from_config", __init__)
+    if len(inner_classes) == 0: return None
+
+    total_has_kwargs = False
+    for (call_class, inner_class) in inner_classes:
+        inner_class = eval(f"modeling_file.{inner_class}")
+        has_kwargs = tuple(inspect.signature(inner_class.forward).parameters.values())[-1].kind == inspect._VAR_KEYWORD
+        if not has_kwargs: continue
+
+        total_has_kwargs = True
+        print(f"Unsloth: Patching {inner_class} within {module} to fix gradient accumulation.")
+        regex_find = f"{call_class}\(([^\)]{{1,}})\)"
+        source = re.sub(regex_find, rf"{call_class}(\1, **kwargs)", source, flags = re.DOTALL | re.MULTILINE)
+    pass
+
+    if total_has_kwargs:
+        # Fix **kwargs for function def
+        regex_find = "def forward\(([^\)]{1,})\)"
+        source = re.sub(regex_find, r"def forward(\1, **kwargs)", source, flags = re.DOTALL | re.MULTILINE)
+
+        # Remove double commas
+        source = re.sub(r"\,[\s]{0,}\,", ",", source)
+    else:
+        return None
+    return source
+pass
+
+
 def unsloth_compile_transformers(
     model_type             : str = "llama",
     sdpa_dynamic_mask      : bool = True,
@@ -1003,6 +1044,15 @@ def unsloth_compile_transformers(
         pass
     pass
 
+    print(other_classes)
+    # Fix gradient accumulation issues if there's no **kwargs
+    gradient_accumulation_fixes = {}
+    for module in other_classes:
+        new_source = fix_gradient_accumulation(modeling_file, module)
+        if new_source is None: continue
+        gradient_accumulation_fixes[module] = new_source
+    pass
+
     # Remove modules which have attention mechanisms
     # since torch.compile will compile too many kernels
     bad_torch_modules = set()
@@ -1178,7 +1228,9 @@ def unsloth_compile_transformers(
     # Manually replace hand written parts
     if manual_replacements:
         for module in compiler_replacements:
-            if module in all_standalone_classes :
+            if module in all_standalone_classes or \
+                module in bad_torch_modules or \
+                module in remove_causal_masks:
 
                 print(f"Unsloth: Manual replacement for {module}")
                 all_standalone_classes[module] = compiler_replacements[module]
