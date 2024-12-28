@@ -820,6 +820,9 @@ def fix_gradient_accumulation(modeling_file, module):
         source = re.sub(r"\,[\s]{0,}\,", ",", source)
     else:
         return None
+
+    # Now replace old forward with new one
+    source = inspect.getsource(module).replace(inspect.getsource(forward), source)
     return source
 pass
 
