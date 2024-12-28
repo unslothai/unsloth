@@ -454,7 +454,7 @@ class FastVisionModel(FastBaseVisionModel):
 
         if not was_disabled: enable_progress_bars()
 
-        if True: #with contextlib.redirect_stdout(open(os.devnull, "w")):
+        with contextlib.redirect_stdout(open(os.devnull, "w")):
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
@@ -470,8 +470,8 @@ class FastVisionModel(FastBaseVisionModel):
                 fuse_lm_head            = True,
                 gradient_checkpointing  = True,
                 manual_replacements     = True,
-                fast_lora_forwards      = True,
-                fast_residual_stream    = True,
+                fast_lora_forwards      = False,
+                fast_residual_stream    = False,
                 accurate_accumulation   = True,
                 epilogue_fusion         = True,
                 max_autotune            = False,
