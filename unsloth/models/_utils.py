@@ -1023,8 +1023,7 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
             num_items_in_batch = sum(
                 [(x["labels"][..., 1:] != -100).sum() for x in batch_samples]
             )
-            # num_items_in_batch = sum([(batch["labels"].ne(-100)).sum() for batch in batch_samples])
-
+            
             if self.args.average_tokens_across_devices:
                 num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
 
