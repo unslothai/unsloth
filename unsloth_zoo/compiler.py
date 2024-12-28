@@ -806,7 +806,7 @@ def fix_gradient_accumulation(modeling_file, module):
         if not has_kwargs: continue
 
         total_has_kwargs = True
-        print(f"Unsloth: Patching {inner_class} within {module} to fix gradient accumulation.")
+        print(f"Unsloth: Patching {inner_class.__name__} within {module.__name__} to fix gradient accumulation.")
         regex_find = f"{call_class}\(([^\)]{{1,}})\)"
         source = re.sub(regex_find, rf"{call_class}(\1, **kwargs)", source, flags = re.DOTALL | re.MULTILINE)
     pass
