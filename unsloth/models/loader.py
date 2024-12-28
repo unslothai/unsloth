@@ -471,7 +471,7 @@ class FastVisionModel(FastBaseVisionModel):
                 gradient_checkpointing  = True,
                 manual_replacements     = True,
                 fast_lora_forwards      = True,
-                fast_residual_stream    = False,
+                fast_residual_stream    = True,
                 accurate_accumulation   = True,
                 epilogue_fusion         = True,
                 max_autotune            = False,
