@@ -888,6 +888,7 @@ def unsloth_compile_transformers(
     else:
         UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"] == "1"
     pass
+    UNSLOTH_FULLGRAPH = UNSLOTH_FULLGRAPH == "1"
 
     # Patch PEFT lora forwards
     if fast_lora_forwards:
