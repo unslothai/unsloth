@@ -876,6 +876,7 @@ def unsloth_compile_transformers(
         exec(f"{x} = {x} or os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1'", locals(), globals())
     UNSLOTH_RETURN_LOGITS = return_logits
     UNSLOTH_FULLGRAPH     = fullgraph
+    UNSLOTH_COMPILE_IMPORT_FROM_CACHE
 
     torch_compile_options = {
         "epilogue_fusion"   : epilogue_fusion,
