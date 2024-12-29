@@ -872,9 +872,10 @@ def unsloth_compile_transformers(
     UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
     
     # Environment variables for custom toggling
+    import os
     for x, value in arguments.items():
         print(x, value)
-        exec(f"{x} = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')", locals(), globals())
+        exec(f"{x} = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')", locals())
         print(x, eval(x), eval(f"os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1'"))
     UNSLOTH_RETURN_LOGITS = return_logits
     UNSLOTH_FULLGRAPH     = fullgraph
