@@ -872,7 +872,7 @@ def unsloth_compile_transformers(
     
     # Environment variables for custom toggling
     f = lambda x: eval(f"{x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')")
-    exec(f"import_from_cache = f('import_from_cache')", locals(), globals())
+    exec(f"import_from_cache = f('import_from_cache')", locals(), locals())
     print("import_from_cache", import_from_cache)
     raise
 
