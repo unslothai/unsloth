@@ -2131,7 +2131,8 @@ def unsloth_generic_save(
     if token is None and push_to_hub: token = get_token()
     merge_and_overwrite_lora(
         get_model_name,
-        model,
+        model                = model,
+        tokenizer            = tokenizer,
         save_directory       = save_directory,
         push_to_hub          = push_to_hub,
         private              = private,
