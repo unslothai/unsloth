@@ -873,6 +873,7 @@ def unsloth_compile_transformers(
     
     # Environment variables for custom toggling
     locals()["os"] = os
+    exec("import_from_cache = True", locals(), locals())
     for x, value in arguments.items():
         print(x, value)
         exec(f"{x} = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')", locals(), locals())
