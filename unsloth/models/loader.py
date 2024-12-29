@@ -37,9 +37,7 @@ if use_modelscope:
     import importlib
     if importlib.util.find_spec('modelscope') is None:
         print(f'You are using modelscope hub, please install modelscope by `pip install modelscope -U`')
-
-    from modelscope.utils.hf_util import patch_hub
-    patch_hub()
+    os.environ['UNSLOTH_DISABLE_STATISTICS'] = '1'
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version
@@ -96,6 +94,10 @@ class FastLanguageModel(FastLlamaModel):
         
         old_model_name = model_name
         model_name = get_model_name(model_name, load_in_4bit)
+
+        if use_modelscope and not os.path.exists(model_name):
+            from modelscope import snapshot_download
+            model_name = snapshot_download(model_name)
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
@@ -375,6 +377,10 @@ class FastVisionModel(FastBaseVisionModel):
         
         old_model_name = model_name
         model_name = get_model_name(model_name, load_in_4bit)
+
+        if use_modelscope and not os.path.exists(model_name):
+            from modelscope import snapshot_download
+            model_name = snapshot_download(model_name)
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
