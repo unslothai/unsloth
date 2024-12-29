@@ -873,7 +873,7 @@ def unsloth_compile_transformers(
     
     # Environment variables for custom toggling
     for x, value in arguments.items():
-        exec(f"{x} = {x} or os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1'", locals())
+        exec(f"{x} = {x} or os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1'", locals(), globals())
     UNSLOTH_RETURN_LOGITS = return_logits
     UNSLOTH_FULLGRAPH     = fullgraph
 
