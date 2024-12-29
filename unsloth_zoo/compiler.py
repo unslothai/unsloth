@@ -855,7 +855,6 @@ def unsloth_compile_transformers(
     return_logits          : bool = False,
 ):
     # Code licensed under LGPL
-    arguments = locals().copy()
     if disable or os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1": return
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
@@ -872,17 +871,8 @@ def unsloth_compile_transformers(
     UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
     
     # Environment variables for custom toggling
-    locals()["os"] = os
-    exec("import_from_cache = True", locals(), locals())
-    for x, value in arguments.items():
-        print(x, value)
-        exec(f"{x} = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')", locals(), locals())
-        print(x, eval(x), eval(f"os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1'"))
-    UNSLOTH_RETURN_LOGITS = return_logits
-    UNSLOTH_FULLGRAPH     = fullgraph
-    x = "import_from_cache"
-    exec(f"import_from_cache = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')", locals(), locals())
-    print("import_from_cache", import_from_cache, import_from_cache or os.environ.get(f"UNSLOTH_COMPILE_{'import_from_cache'.upper()}", '0') == '1')
+    f = lambda x: eval(f"{x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')")
+    exec(f"import_from_cache = f('import_from_cache')", locals(), globals())
 
     torch_compile_options = {
         "epilogue_fusion"   : epilogue_fusion,
