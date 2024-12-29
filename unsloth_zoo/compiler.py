@@ -783,6 +783,50 @@ def patch_residual_stream(source):
 pass
 
 
+def patch_gradient_accumulation(modeling_file, module):
+    # Code licensed under LGPL
+
+    functions = dir(modeling_file)
+    module = eval(f"modeling_file.{module}")
+    forward = module.forward
+    source = inspect.getsource(forward)
+    has_kwargs = tuple(inspect.signature(forward).parameters.values())[-1].kind == inspect._VAR_KEYWORD
+    if has_kwargs: return None
+
+    __init__ = inspect.getsource(module.__init__)
+
+    # Only get ._from_config type objects
+    inner_classes = re.findall(r"(self\.[^ ]{1,}) \= ([^\.]{1,})\._from_config", __init__)
+    if len(inner_classes) == 0: return None
+
+    total_has_kwargs = False
+    for (call_class, inner_class) in inner_classes:
+        inner_class = eval(f"modeling_file.{inner_class}")
+        has_kwargs = tuple(inspect.signature(inner_class.forward).parameters.values())[-1].kind == inspect._VAR_KEYWORD
+        if not has_kwargs: continue
+
+        total_has_kwargs = True
+        print(f"Unsloth: Patching {inner_class.__name__} within {module.__name__} to fix gradient accumulation.")
+        regex_find = f"{call_class}\(([^\)]{{1,}})\)"
+        source = re.sub(regex_find, rf"{call_class}(\1, **kwargs)", source, flags = re.DOTALL | re.MULTILINE)
+    pass
+
+    if total_has_kwargs:
+        # Fix **kwargs for function def
+        regex_find = "def forward\(([^\)]{1,})\)"
+        source = re.sub(regex_find, r"def forward(\1, **kwargs)", source, flags = re.DOTALL | re.MULTILINE)
+
+        # Remove double commas
+        source = re.sub(r"\,[\s]{0,}\,", ",", source)
+    else:
+        return None
+
+    # Now replace old forward with new one
+    source = inspect.getsource(module).replace(inspect.getsource(forward), source)
+    return source
+pass
+
+
 def unsloth_compile_transformers(
     model_type             : str = "llama",
     sdpa_dynamic_mask      : bool = True,
@@ -799,6 +843,7 @@ def unsloth_compile_transformers(
     manual_replacements    : bool = True,
     fast_lora_forwards     : bool = True,
     fast_residual_stream   : bool = True,
+    accurate_accumulation  : bool = True,
     epilogue_fusion        : bool = True,
     max_autotune           : bool = False,
     shape_padding          : bool = True,
@@ -847,6 +892,7 @@ def unsloth_compile_transformers(
     else:
         UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"] == "1"
     pass
+    UNSLOTH_FULLGRAPH = UNSLOTH_FULLGRAPH == "1"
 
     # Patch PEFT lora forwards
     if fast_lora_forwards:
@@ -1178,7 +1224,10 @@ def unsloth_compile_transformers(
     # Manually replace hand written parts
     if manual_replacements:
         for module in compiler_replacements:
-            if module in all_standalone_classes:
+            if module in all_standalone_classes or \
+                module in bad_torch_modules or \
+                module in remove_causal_masks:
+
                 print(f"Unsloth: Manual replacement for {module}")
                 all_standalone_classes[module] = compiler_replacements[module]
         pass
@@ -1363,6 +1412,17 @@ def unsloth_compile_transformers(
         pass
     pass
 
+    # Fix gradient accumulation issues if there's no **kwargs
+    if accurate_accumulation:
+        for module in other_classes:
+            new_source = patch_gradient_accumulation(modeling_file, module)
+            if new_source is None: continue
+            if module in all_standalone_classes:
+                print(f"Unsloth: Will override already patched {module} with gradient accumulation fix.")
+            all_standalone_classes[module] = new_source
+        pass
+    pass
+
     # Order all components
     final_all_standalone_classes = []
     for module in ordered_functions:
@@ -1394,7 +1454,8 @@ def unsloth_compile_transformers(
                     f"\ntorch_compile_options = {torch_compile_options}\n" + \
                     _cross_entropy_code + "\n"
             )
-        except:
+        except Exception as exception:
+            raise RuntimeError(exception)
             combined_module = None
     pass
 

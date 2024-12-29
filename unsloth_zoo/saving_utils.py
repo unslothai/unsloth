@@ -494,6 +494,7 @@ pass
 def merge_and_overwrite_lora(
     get_model_name,
     model,
+    tokenizer            = None,
     save_directory       = "unsloth_finetuned_merge",
     push_to_hub          = False,
     private              = False,
@@ -560,7 +561,8 @@ def merge_and_overwrite_lora(
         pass
     pass
 
-    # Save config / generation_config via no state_dict!
+    # Save config / generation_config via no state_dict and tokenizer
+    if tokenizer is not None: tokenizer.save_pretrained(save_directory = save_directory,)
     model.base_model.model.save_pretrained(
         save_directory = save_directory,
         state_dict = {},
@@ -720,6 +722,7 @@ pass
 
 def merge_and_dequantize_lora(
     model,
+    tokenizer            = None,
     save_directory       = "unsloth_finetuned_merge",
     push_to_hub          = False,
     max_shard_size       = "5GB",
@@ -838,6 +841,10 @@ def merge_and_dequantize_lora(
         state_dict         = state_dict,
         **kwargs,
     )
+
+    # Save tokenizer
+    if tokenizer is not None: tokenizer.save_pretrained(save_directory = save_directory,)
+
     if push_to_hub:
         commit = PushToHubMixin._upload_modified_files(
             PushToHubMixin,
