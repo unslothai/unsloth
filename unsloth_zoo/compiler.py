@@ -855,7 +855,8 @@ def unsloth_compile_transformers(
     return_logits          : bool = False,
 ):
     # Code licensed under LGPL
-    if disable: return
+    arguments = locals()
+    if disable or os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1": return
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
@@ -869,6 +870,13 @@ def unsloth_compile_transformers(
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
     UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
     UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
+    
+    # Environment variables for custom toggling
+    for x, value in arguments:
+        exec(f"{x} = {x} or os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1'", locals())
+    UNSLOTH_RETURN_LOGITS = return_logits
+    UNSLOTH_FULLGRAPH     = fullgraph
+
     torch_compile_options = {
         "epilogue_fusion"   : epilogue_fusion,
         "max_autotune"      : max_autotune,
@@ -876,23 +884,6 @@ def unsloth_compile_transformers(
         "trace.enabled"     : UNSLOTH_COMPILE_DEBUG or debug,
         "triton.cudagraphs" : cudagraphs,
     }
-
-    # Return logits
-    UNSLOTH_RETURN_LOGITS = "0" if not return_logits else "1"
-    if "UNSLOTH_RETURN_LOGITS" not in os.environ:
-        os.environ["UNSLOTH_RETURN_LOGITS"] = UNSLOTH_RETURN_LOGITS
-    else:
-        UNSLOTH_RETURN_LOGITS = os.environ["UNSLOTH_RETURN_LOGITS"] == "1"
-    pass
-
-    # Fullgraph
-    UNSLOTH_FULLGRAPH = "1" if fullgraph else "0"
-    if "UNSLOTH_FULLGRAPH" not in os.environ:
-        os.environ["UNSLOTH_FULLGRAPH"] = UNSLOTH_FULLGRAPH
-    else:
-        UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"] == "1"
-    pass
-    UNSLOTH_FULLGRAPH = UNSLOTH_FULLGRAPH == "1"
 
     # Patch PEFT lora forwards
     if fast_lora_forwards:
