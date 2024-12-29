@@ -37,6 +37,8 @@ if use_modelscope:
     import importlib
     if importlib.util.find_spec('modelscope') is None:
         print(f'You are using modelscope hub, please install modelscope by `pip install modelscope -U`')
+
+    # Unsloth will use huggingface to do statistics, this is not supported in the modelscope community.
     os.environ['UNSLOTH_DISABLE_STATISTICS'] = '1'
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
