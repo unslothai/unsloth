@@ -96,7 +96,7 @@ def run(args):
     else:
         # Load and format dataset
         dataset = load_dataset(args.dataset, split="train")
-    dataset = dataset.map(formatting_prompts_func, batched=True).select(range(100))
+    dataset = dataset.map(formatting_prompts_func, batched=True)
     print("Data is formatted and ready!")
 
     # Configure training arguments
