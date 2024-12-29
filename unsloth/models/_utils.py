@@ -736,7 +736,8 @@ transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndByt
 import pickle
 
 def offload_to_disk(W, model, name, temporary_location : str = "_unsloth_temporary_saved_buffers"):
-    file_location = os.path.join(temporary_location, model.config._name_or_path)
+    model_name = os.path.basename(model.config._name_or_path) or model.config._name_or_path
+    file_location = os.path.join(temporary_location, model_name)
     if not os.path.exists(file_location):
         os.makedirs(file_location)
     pass
