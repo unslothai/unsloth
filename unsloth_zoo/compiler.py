@@ -855,7 +855,7 @@ def unsloth_compile_transformers(
     return_logits          : bool = False,
 ):
     # Code licensed under LGPL
-    arguments = locals()
+    arguments = locals().copy()
     if disable or os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1": return
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
