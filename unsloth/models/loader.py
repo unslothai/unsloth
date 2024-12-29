@@ -19,6 +19,7 @@ from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
 from .cohere  import FastCohereModel
 from transformers import AutoConfig
+from transformers.utils import strtobool
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import get_model_name
@@ -30,6 +31,15 @@ except:
     from huggingface_hub.utils._token import get_token
 pass
 from huggingface_hub import HfFileSystem
+
+use_modelscope = strtobool(os.environ.get('UNSLOTH_USE_MODELSCOPE', 'False'))
+if use_modelscope:
+    import importlib
+    if importlib.util.find_spec('modelscope') is None:
+        print(f'You are using modelscope hub, please install modelscope by `pip install modelscope -U`')
+
+    from modelscope.utils.hf_util import patch_hub
+    patch_hub()
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version

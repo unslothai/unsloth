@@ -30,20 +30,19 @@ Happy fine-tuning!
 """
 
 import argparse
+import os
+
 
 def run(args):
     import torch
     from unsloth import FastLanguageModel
     from datasets import load_dataset
+    from transformers.utils import strtobool
     from trl import SFTTrainer
     from transformers import TrainingArguments
     from unsloth import is_bfloat16_supported
     import logging
     logging.getLogger('hf-to-gguf').setLevel(logging.WARNING)
-
-    if args.download_from == 'modelscope':
-        from modelscope import snapshot_download
-        args.model_name =snapshot_download(args.model_name)
 
     # Load model and tokenizer
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -90,7 +89,8 @@ def run(args):
             texts.append(text)
         return {"text": texts}
 
-    if args.download_from == 'modelscope':
+    use_modelscope = strtobool(os.environ.get('UNSLOTH_USE_MODELSCOPE', 'False'))
+    if use_modelscope:
         from modelscope import MsDataset
         dataset = MsDataset.load(args.dataset, split="train")
     else:
@@ -178,7 +178,6 @@ if __name__ == "__main__":
     model_group.add_argument('--dtype', type=str, default=None, help="Data type for model (None for auto detection)")
     model_group.add_argument('--load_in_4bit', action='store_true', help="Use 4bit quantization to reduce memory usage")
     model_group.add_argument('--dataset', type=str, default="yahma/alpaca-cleaned", help="Huggingface dataset to use for training")
-    model_group.add_argument('--download_from', type=str, default="huggingface", help="Which model and data hub you want to download from, supported are huggingface(default) and modelscope")
 
     lora_group = parser.add_argument_group("🧠 LoRA Options", "These options are used to configure the LoRA model.")
     lora_group.add_argument('--r', type=int, default=16, help="Rank for Lora model, default is 16.  (common values: 8, 16, 32, 64, 128)")
