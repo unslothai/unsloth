@@ -880,8 +880,7 @@ def unsloth_compile_transformers(
     UNSLOTH_RETURN_LOGITS = return_logits
     UNSLOTH_FULLGRAPH     = fullgraph
     x = "import_from_cache"
-    import_from_cache = eval(f"{x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')")
-    exec(f"locals()['{x}'] = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')", locals())
+    exec(f"import_from_cache = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')", locals())
     print("import_from_cache", import_from_cache, import_from_cache or os.environ.get(f"UNSLOTH_COMPILE_{'import_from_cache'.upper()}", '0') == '1')
 
     torch_compile_options = {
