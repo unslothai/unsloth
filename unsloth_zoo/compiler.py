@@ -872,7 +872,7 @@ def unsloth_compile_transformers(
     UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
     
     # Environment variables for custom toggling
-    import os
+    locals()["os"] = os
     for x, value in arguments.items():
         print(x, value)
         exec(f"{x} = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')")
