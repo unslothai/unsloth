@@ -875,7 +875,7 @@ def unsloth_compile_transformers(
     for x, value in arguments.items():
         print(x, value)
         exec(f"{x} = {x} or (os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')", locals(), globals())
-        print(x, eval(x), eval(f"os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1')"))
+        print(x, eval(x), eval(f"os.environ.get('UNSLOTH_COMPILE_{x.upper()}', '0') == '1'"))
     UNSLOTH_RETURN_LOGITS = return_logits
     UNSLOTH_FULLGRAPH     = fullgraph
     print("import_from_cache", import_from_cache, os.environ.get(f"UNSLOTH_COMPILE_{'import_from_cache'.upper()}", '0') == '1')
