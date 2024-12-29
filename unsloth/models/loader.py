@@ -472,6 +472,7 @@ class FastVisionModel(FastBaseVisionModel):
                 manual_replacements     = True,
                 fast_lora_forwards      = False,
                 fast_residual_stream    = False,
+                accurate_accumulation   = True,
                 epilogue_fusion         = True,
                 max_autotune            = False,
                 shape_padding           = True,
