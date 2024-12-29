@@ -36,7 +36,7 @@ use_modelscope = strtobool(os.environ.get('UNSLOTH_USE_MODELSCOPE', 'False'))
 if use_modelscope:
     import importlib
     if importlib.util.find_spec('modelscope') is None:
-        raise ImportError(f'You are using modelscope hub, please install modelscope by `pip install modelscope -U`')
+        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
 
     # Unsloth will use huggingface to do statistics, this is not supported in the modelscope community.
     os.environ['UNSLOTH_DISABLE_STATISTICS'] = '1'
