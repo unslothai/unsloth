@@ -642,7 +642,6 @@ COMPILED_LORA_FORWARD = """
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     xA = dropout(x) @ lora_A.weight.t()
-    # output = result + xA @ lora_B.weight.t() * scaling
     output = torch.addmm(
         result.reshape(-1, result.shape[-1]),
         xA.reshape(-1, xA.shape[-1]),
