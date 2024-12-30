@@ -89,7 +89,7 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
-# Fix Xformers
+# Fix Xformers performance issues since 0.0.25
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
