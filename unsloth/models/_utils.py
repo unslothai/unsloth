@@ -188,6 +188,7 @@ def patch_mistral_nemo_config(config):
 pass
 
 from transformers import __version__ as transformers_version
+from transformers import PretrainedConfig
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite"]
 
 for model_name in model_architectures:
