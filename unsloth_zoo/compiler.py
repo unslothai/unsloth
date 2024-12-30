@@ -857,6 +857,7 @@ def unsloth_compile_transformers(
 ):
     # Code licensed under LGPL
     if disable: return
+    fast_lora_forwards = True
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
