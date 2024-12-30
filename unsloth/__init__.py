@@ -89,6 +89,36 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
+# Fix Xformers
+import importlib.util
+from pathlib import Path
+from importlib.metadata import version as importlib_version
+from packaging.version import Version
+try:
+    xformers_version = importlib_version("xformers")
+    if Version(xformers_version) < Version("0.0.29"):
+        xformers_location = importlib.util.find_spec("xformers").origin
+        xformers_location = os.path.split(xformers_location)[0]
+        cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
+
+        if cutlass.exists():
+            with open(cutlass, "r+") as f:
+                text = f.read()
+                # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
+                if "num_splits_key=-1," in text:
+                    print("Unsloth: Patching Xformers to fix some performance issues.")
+                    text = text.replace("num_splits_key=-1,", "num_splits_key=None,")
+                pass
+                f.seek(0)
+                f.write(text)
+                f.truncate()
+            pass
+        pass
+    pass
+except:
+    pass
+pass
+
 # Torch 2.4 has including_emulation
 major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = (major_version >= 8)
