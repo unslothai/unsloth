@@ -106,12 +106,12 @@ try:
                 text = f.read()
                 # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
                 if "num_splits_key=-1," in text:
-                    print("Unsloth: Patching Xformers to fix some performance issues.")
                     text = text.replace("num_splits_key=-1,", "num_splits_key=None,")
+                    f.seek(0)
+                    f.write(text)
+                    f.truncate()
+                    print("Unsloth: Patching Xformers to fix some performance issues.")
                 pass
-                f.seek(0)
-                f.write(text)
-                f.truncate()
             pass
         pass
     pass
