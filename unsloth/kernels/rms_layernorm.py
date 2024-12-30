@@ -53,8 +53,6 @@ def _rms_layernorm_forward(
 pass
 
 
-@triton.heuristics({"GEMMA": lambda args: bool(args["GEMMA"]),})
-@triton.jit
 def _rms_layernorm_backward(
     dY, dY_row_stride,
     dX, dX_row_stride,
@@ -97,6 +95,12 @@ def _rms_layernorm_backward(
     output = inv_var/n_cols * (n_cols*dY_W - normed*rowsum_dY_normed)
     tl.store(dX + col_offsets, output, mask = mask)
 pass
+_rms_layernorm_backward = triton.jit(_rms_layernorm_backward)
+_rms_layernorm_backward = triton.heuristics(
+    {
+        "GEMMA": lambda args: bool(args["GEMMA"]),
+    }
+)(_rms_layernorm_backward)
 
 
 @triton.jit
