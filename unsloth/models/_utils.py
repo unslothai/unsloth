@@ -546,8 +546,8 @@ def load_correct_model(model, **model_kwargs):
             re.compile(r"^transformer\.h\.(\d+).mlp.c_proj.weight$") : "model.layers.{}.mlp.down_proj.weight",
             re.compile(r"^transformer\.h\.(\d+).mlp.c_proj.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)$") : "model.layers.{}.mlp.down_proj.weight.{}",
             re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.(k_proj|v_proj|q_proj)\.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)") : "model.layers.{}.self_attn.{}.weight.{}",
-            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.(k_proj|v_proj|q_proj)\.weight") : "model.layers.{}.self_attn.{}.weight",
-            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.out_proj\.weight") : "model.layers.{}.self_attn.o_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.(k_proj|v_proj|q_proj)\.weight$") : "model.layers.{}.self_attn.{}.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.out_proj\.weight$") : "model.layers.{}.self_attn.o_proj.weight",
             re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.out_proj\.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)") : "model.layers.{}.self_attn.o_proj.weight.{}"
         }
 
@@ -560,6 +560,7 @@ def load_correct_model(model, **model_kwargs):
                 if match:
                     new_key = mapping[pattern].format(*match.groups())
                     new_state_dict[new_key] = old_state_dict[key]
+                    
         assert len(old_state_dict) == len(new_state_dict), RuntimeError(f"The mapping of {model.__class__} into {new_model.__class__} should have the same length")
         model = LlamaModelForCausalLM.from_pretrained(None, config=new_config, state_dict=new_state_dict, **model_kwargs)
     return model
