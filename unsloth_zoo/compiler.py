@@ -639,17 +639,16 @@ pass
 
 
 COMPILED_LORA_FORWARD = """
-@torch.compile(fullgraph = False, dynamic = None, options = torch_compile_options)
+@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     xA = dropout(x) @ lora_A.weight.t()
-    # output = result + xA @ lora_B.weight.t() * scaling
     output = torch.addmm(
-        result.contiguous().reshape(-1, result.shape[-1]),
-        xA.contiguous().reshape(-1, xA.shape[-1]),
+        result.reshape(-1, result.shape[-1]),
+        xA.reshape(-1, xA.shape[-1]),
         lora_B.weight.t(),
         alpha = scaling,
         beta = 1,
-    ).contiguous().reshape(result.shape)
+    ).reshape(result.shape)
 
     bias = lora_B.bias
     if bias is not None:
