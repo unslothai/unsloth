@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.12.9"
+__version__ = "2024.12.12"
 
 __all__ = [
     "load_correct_model",
@@ -1076,27 +1076,61 @@ pass
 def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
     batch_samples = []
     num_items_in_batch = None
+
+    # Check if model allows **kwargs
+    model = self.model
+    f = model.base_model.model.forward if hasattr(model, "base_model") else model.forward
+    has_kwargs = tuple(inspect.signature(f).parameters.values())[-1].kind == inspect._VAR_KEYWORD
+
+    # Iterate to find all batches
     for _ in range(num_batches):
         try:
             batch_samples += [next(epoch_iterator)]
         except StopIteration:
             break
-    if len(batch_samples) > 0 and "labels" in batch_samples[0]:
+    pass
+
+    # Get num_items_in_batch
+    if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
         try:
             num_items_in_batch = sum(
-                [torch.count_nonzero(x["labels"][..., 1:] != -100) for x in batch_samples]
+                [(x["labels"][..., 1:] != -100).sum() for x in batch_samples]
             )
-        except TypeError:
-            pass
+            
+            if self.args.average_tokens_across_devices:
+                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
+
+            if torch.is_tensor(num_items_in_batch):
+                num_items_in_batch = num_items_in_batch.item()
+
+        except Exception as exception:
+            logger.warning_once(exception)
+    pass
+
     return batch_samples, num_items_in_batch
 pass
 
 
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
+    num_items_in_batch = None
+
     if "num_items_in_batch" in kwargs:
-        if "num_items_in_batch" not in inputs:
-            inputs["num_items_in_batch"] = kwargs["num_items_in_batch"]
+        num_items_in_batch = kwargs["num_items_in_batch"]
+        if num_items_in_batch is None:
+            # Remove it since the model does not support it!
+            kwargs.pop("num_items_in_batch")
+        elif "num_items_in_batch" not in inputs:
+            inputs["num_items_in_batch"] = num_items_in_batch
         pass
+    pass
+
+    if num_items_in_batch is None:
+        name = (model.base_model.model if hasattr(model, "base_model") else model).__class__.__name__
+        logger.warning_once(
+            f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"\
+            "Using gradient accumulation will be very slightly less accurate.\n"\
+            "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
+        )
     pass
     return self._old_compute_loss(model, inputs, *args, **kwargs)
 pass
@@ -1166,6 +1200,22 @@ def patch_gradient_accumulation_fix(Trainer):
         "if self.model_accepts_loss_kwargs:",
         "if False:",
     )
+
+    # Fix when num_items_in_batch is nothing
+    # https://github.com/huggingface/transformers/pull/35207
+    function = re.sub(
+        r"else:\n"\
+        r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"\
+        r"(.+?)if num_items_in_batch is None\:\n"\
+        r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
+
+        "else:\n"\
+        "\2if num_items_in_batch is None:\n"\
+        "\3loss = loss / self.args.gradient_accumulation_steps\n"\
+        "\1self.accelerator.backward(loss, **kwargs)",
+        
+        function,
+    )
     
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
@@ -1203,6 +1253,9 @@ def unsloth_compile_transformers(
     fuse_lm_head            = True,
     gradient_checkpointing  = True,
     manual_replacements     = True,
+    fast_lora_forwards      = True,
+    fast_residual_stream    = True,
+    accurate_accumulation   = True,
     epilogue_fusion         = True,
     max_autotune            = False,
     shape_padding           = True,
@@ -1247,6 +1300,9 @@ def unsloth_compile_transformers(
             fuse_lm_head           = fuse_lm_head,
             gradient_checkpointing = gradient_checkpointing,
             manual_replacements    = manual_replacements,
+            fast_lora_forwards     = fast_lora_forwards,
+            fast_residual_stream   = fast_residual_stream,
+            accurate_accumulation  = accurate_accumulation,
             epilogue_fusion        = epilogue_fusion,
             max_autotune           = max_autotune,
             shape_padding          = shape_padding,
