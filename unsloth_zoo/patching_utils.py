@@ -79,6 +79,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     if debug:
         DEBUGGING = " with debugging"
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
+        os.environ["TORCHINDUCTOR_FORCE_DISABLE_CACHES"] = "1"
         os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs,compiled_autograd_verbose"
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
         torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
@@ -87,6 +88,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         DEBUGGING = ""
         os.environ.pop("TORCHDYNAMO_VERBOSE", None)
         os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
+        os.environ.pop("TORCHINDUCTOR_FORCE_DISABLE_CACHES", None)
         os.environ.pop("TORCH_LOGS", None)
         torch._logging.set_logs(dynamo = logging.CRITICAL, inductor = logging.CRITICAL)
         torch._dynamo.config.verbose = False
@@ -150,7 +152,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
         "config.numpy_default_float = 'float32'",
         # FAILS for Gemma!
-        "config.compiled_autograd = False", # New Torch 2.4 feature which can compile backwards passes
+        "config.compiled_autograd = True", # New Torch 2.4 feature which can compile backwards passes
         # https://pytorch.org/tutorials/intermediate/compiled_autograd_tutorial.html
     ]
     import torch._inductor.config as config
