@@ -493,39 +493,40 @@ def patch_regional_compilation():
     return
 pass
 
-def load_correct_config(config, **config_kwargs):
-
-    from transformers.models.llama.modeling_llama import LlamaConfig
+def load_correct_config(config):
 
     if config.model_type == 'exaone':
         if Version(transformers_version) <= Version('4.47.1'):
             raise RuntimeError("To use Exaone you have to compile transformers from scratch using:\
                 pip install git+https://github.com/huggingface/transformers.git")
+
+        from transformers.models.llama.modeling_llama import LlamaConfig
+
         new_config_args =  {
-            'vocab_size': model.config.vocab_size,
-            'hidden_size': model.config.hidden_size,
-            'intermediate_size': model.config.intermediate_size,
-            'num_hidden_layers': model.config.num_hidden_layers,
-            'num_attention_heads': model.config.num_attention_heads,
-            'num_key_value_heads': model.config.num_key_value_heads,
-            'hidden_act': model.config.activation_function,
-            'max_position_embeddings': model.config.max_position_embeddings,
-            'initializer_range': model.config.initializer_range,
-            'rms_norm_eps': model.config.layer_norm_epsilon,
-            'use_cache': model.config.use_cache,
-            'pad_token_id': model.config.pad_token_id,
-            'bos_token_id': model.config.bos_token_id,
-            'eos_token_id': model.config.eos_token_id,
-            'tie_word_embeddings': model.config.tie_word_embeddings,
-            'rope_theta': model.config.rope_theta,
-            'rope_scaling': model.config.rope_scaling,
+            'vocab_size': config.vocab_size,
+            'hidden_size': config.hidden_size,
+            'intermediate_size': config.intermediate_size,
+            'num_hidden_layers': config.num_hidden_layers,
+            'num_attention_heads': config.num_attention_heads,
+            'num_key_value_heads': config.num_key_value_heads,
+            'hidden_act': config.activation_function,
+            'max_position_embeddings': config.max_position_embeddings,
+            'initializer_range': config.initializer_range,
+            'rms_norm_eps': config.layer_norm_epsilon,
+            'use_cache': config.use_cache,
+            'pad_token_id': config.pad_token_id,
+            'bos_token_id': config.bos_token_id,
+            'eos_token_id': config.eos_token_id,
+            'tie_word_embeddings': config.tie_word_embeddings,
+            'rope_theta': config.rope_theta,
+            'rope_scaling': config.rope_scaling,
             'attention_bias': False,
-            'attention_dropout': model.config.attention_dropout,
+            'attention_dropout': config.attention_dropout,
             'mlp_bias': False,
-            'head_dim': model.config.head_dim,
+            'head_dim': config.head_dim,
             'architectures': ['LlamaForCausalLM'],
             'model_type': 'llama',
-            'torch_dtype': model.config.torch_dtype
+            'torch_dtype': config.torch_dtype
         }
         config = LlamaConfig.from_dict(new_config_args)
     return config
@@ -533,14 +534,14 @@ def load_correct_config(config, **config_kwargs):
 
 def load_correct_model(model, **model_kwargs):
     if model.config.model_type == 'exaone':
-        from transformers.models.llama.modeling_llama import LlamaForCausalLM
-
         new_config = load_correct_config(model.config)
 
         # We need to provide quantization_config to the config as well
         # https://github.com/huggingface/transformers/issues/35427
         new_config.quantization_config = model_kwargs.pop("quantization_config", None)
 
+        from transformers.models.llama.modeling_llama import LlamaForCausalLM
+        
         # map the old state_dict keys to new ones
         mapping = {
             re.compile(r"^transformer\.wte\.weight$"): "model.embed_tokens.weight",

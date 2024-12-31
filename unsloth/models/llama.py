@@ -1610,10 +1610,11 @@ class FastLlamaModel:
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # RoPE Scaling
         model_config = AutoConfig.from_pretrained(model_name, token=token)
         # Load the same config class for models that have the same architectures 
         model_config = load_correct_config(model_config)
+        
+        # RoPE Scaling
         model_max_seq_length = model_config.max_position_embeddings
 
         # Check if RoPE Scaling is even allowed
