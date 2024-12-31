@@ -499,7 +499,7 @@ def load_correct_config(config, **config_kwargs):
 
     if config.model_type == 'exaone':
         if Version(transformers_version) <= Version('4.47.1'):
-            raise("To use Exaone you have to compile transformers from scratch using:\
+            raise RuntimeError("To use Exaone you have to compile transformers from scratch using:\
                 pip install git+https://github.com/huggingface/transformers.git")
         new_config_args =  {
             'vocab_size': model.config.vocab_size,
