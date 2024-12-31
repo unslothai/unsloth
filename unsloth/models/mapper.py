@@ -520,6 +520,18 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Llama-3.3-70B-Instruct",
         "meta-llama/Llama-3.3-70B-Instruct",
     ),
+    # "unsloth/EXAONE-3.5-2.4B-Instruct-bnb-4bit" : (
+    #     "unsloth/EXAONE-3.5-2.4B-Instruct",
+    #     "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct"
+    # ),
+    # "unsloth/EXAONE-3.5-7.8B-Instruct-bnb-4bit" : (
+    #     "unsloth/EXAONE-3.5-7.8B-Instruct",
+    #     "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct"
+    # ),
+    # "unsloth/EXAONE-3.5-32B-Instruct-bnb-4bit" : (
+    #     "unsloth/EXAONE-3.5-32B-Instruct",
+    #     "LGAI-EXAONE/EXAONE-3.5-32B-Instruct"
+    # )
 }
 
 INT_TO_FLOAT_MAPPER  = {}
