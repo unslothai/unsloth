@@ -280,7 +280,7 @@ def GraniteAttention_fast_forward_inference(
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda:0")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
         # Only for Gemma2
-        self.temp_O  = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = "cuda:0")
+        self.temp_O  = torch.empty((1, bsz, hidden_size), dtype = dtype, device = "cuda:0")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
 
 

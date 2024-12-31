@@ -283,10 +283,10 @@ def CohereAttention_fast_forward_inference(
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
         
         # Mistral Nemo 12b has weird dimensions
-        if attention_size != self.hidden_size:
-            self.temp_O = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = "cuda:0")
+        if attention_size != hidden_size:
+            self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = "cuda:0")
         else:
-            self.temp_O = self.temp_QA[1][:,:,:self.hidden_size]
+            self.temp_O = self.temp_QA[1][:,:,:hidden_size]
         pass
         
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
