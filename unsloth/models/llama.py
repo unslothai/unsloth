@@ -1613,7 +1613,7 @@ class FastLlamaModel:
         model_config = AutoConfig.from_pretrained(model_name, token=token)
         # Load the same config class for models that have the same architectures 
         model_config = load_correct_config(model_config)
-        
+
         # RoPE Scaling
         model_max_seq_length = model_config.max_position_embeddings
 
@@ -1690,7 +1690,7 @@ class FastLlamaModel:
         )
         # Load the same model class for models that have the same architectures 
         model = load_correct_model(
-            model
+            model,
             **model_kwargs
         )
 
