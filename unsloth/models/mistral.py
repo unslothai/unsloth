@@ -64,9 +64,9 @@ def MistralAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads    = self.num_heads
+    n_heads    = self.config.num_attention_heads
     n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
+    n_kv_heads = self.config.num_key_value_heads
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
