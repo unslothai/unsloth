@@ -58,7 +58,9 @@ pass
 # And optimize pinning of memory
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
     "expandable_segments:True,"\
-    "roundup_power2_divisions:[64:128,256:64,>:32]"
+    "roundup_power2_divisions:[32:256,64:128,256:64,>:32],"\
+    "pinned_use_cuda_host_register:True,"\
+    "pinned_num_register_threads:8"
 
 # Hugging Face Hub faster downloads
 if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
