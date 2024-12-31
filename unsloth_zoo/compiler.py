@@ -857,7 +857,7 @@ def unsloth_compile_transformers(
 ):
     # Code licensed under LGPL
     if disable: return
-    fast_lora_forwards = True
+    fast_lora_forwards = False
     # fast_residual_stream = True
     import_from_cache = False
 
