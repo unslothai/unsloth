@@ -41,7 +41,7 @@ def patch_compiling_bitsandbytes():
             except: continue
             if not hasattr(layer, "forward"): continue
             if hasattr(eval(f"{x}.{fx}.forward"), "__wrapped__"): continue
-            exec(f"{x}.{fx}.forward = torch._disable_dynamo({x}.{fx}.forward)", globals(), locals())
+            # exec(f"{x}.{fx}.forward = torch._disable_dynamo({x}.{fx}.forward)", globals(), locals())
         pass
     pass
 
@@ -105,7 +105,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     # https://dev-discuss.pytorch.org/t/impact-of-multithreading-and-local-caching-on-torch-compile/2498/3
     os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
     os.environ["TORCHINDUCTOR_AUTOTUNE_REMOTE_CACHE"] = "1"
-    # os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
+    os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
 
     # Duplicate functions will cause hashing issues
     # os.environ["TORCHINDUCTOR_CACHE_DIR"] = UNSLOTH_COMPILE_LOCATION
