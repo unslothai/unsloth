@@ -541,7 +541,7 @@ def load_correct_model(model, **model_kwargs):
         new_config.quantization_config = model_kwargs.pop("quantization_config", None)
 
         from transformers.models.llama.modeling_llama import LlamaForCausalLM
-        
+
         # map the old state_dict keys to new ones
         mapping = {
             re.compile(r"^transformer\.wte\.weight$"): "model.embed_tokens.weight",
@@ -572,7 +572,7 @@ def load_correct_model(model, **model_kwargs):
                     new_state_dict[new_key] = old_state_dict[key]
                     
         assert len(old_state_dict) == len(new_state_dict), RuntimeError(f"The mapping of {model.__class__} into {new_model.__class__} should have the same length")
-        model = LlamaModelForCausalLM.from_pretrained(None, config=new_config, state_dict=new_state_dict, **model_kwargs)
+        model = LlamaForCausalLM.from_pretrained(None, config=new_config, state_dict=new_state_dict, **model_kwargs)
     return model
 
 # =============================================
