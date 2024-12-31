@@ -15,6 +15,7 @@
 __version__ = "2024.12.12"
 
 __all__ = [
+    "load_correct_config",
     "load_correct_model",
     "prepare_model_for_kbit_training",
     "xformers",
@@ -492,18 +493,14 @@ def patch_regional_compilation():
     return
 pass
 
-# =============================================
+def load_correct_config(config, **config_kwargs):
 
-def load_correct_model(model, **model_kwargs):
-    if model.config.model_type == 'exaone':
-        from transformers.models.llama.modeling_llama import LlamaForCausalLM, LlamaConfig
+    from transformers.models.llama.modeling_llama import LlamaConfig
 
+    if config.model_type == 'exaone':
         if Version(transformers_version) <= Version('4.47.1'):
             raise("To use Exaone you have to compile transformers from scratch using:\
                 pip install git+https://github.com/huggingface/transformers.git")
-        import re
-
-        # get the correct config
         new_config_args =  {
             'vocab_size': model.config.vocab_size,
             'hidden_size': model.config.hidden_size,
@@ -530,7 +527,18 @@ def load_correct_model(model, **model_kwargs):
             'model_type': 'llama',
             'torch_dtype': model.config.torch_dtype
         }
-        new_config = LlamaConfig.from_dict(new_config_args)
+        config = LlamaConfig.from_dict(new_config_args)
+    return config
+# =============================================
+
+def load_correct_model(model, **model_kwargs):
+    if model.config.model_type == 'exaone':
+        from transformers.models.llama.modeling_llama import LlamaForCausalLM
+
+        new_config = load_correct_config(model.config)
+
+        # We need to provide quantization_config to the config as well
+        # https://github.com/huggingface/transformers/issues/35427
         new_config.quantization_config = model_kwargs.pop("quantization_config", None)
 
         # map the old state_dict keys to new ones

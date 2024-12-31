@@ -1612,6 +1612,8 @@ class FastLlamaModel:
 
         # RoPE Scaling
         model_config = AutoConfig.from_pretrained(model_name, token=token)
+        # Load the same config class for models that have the same architectures 
+        model_config = load_correct_config(config)
         model_max_seq_length = model_config.max_position_embeddings
 
         # Check if RoPE Scaling is even allowed
@@ -1672,9 +1674,6 @@ class FastLlamaModel:
 
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
-        
-        model_config.torch_dtype = dtype
-        model_config.max_position_embeddings = max_position_embeddings
 
         model_kwargs = {
             "device_map": device_map,
