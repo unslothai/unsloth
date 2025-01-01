@@ -347,7 +347,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                 ctx.inputs.append(arg)
 
         ctx.save_for_backward(*tensor_inputs)
-        print("backward", [(x.nbytes, x.data_ptr()) for x in tensor_inputs])
+        print("forward", [(x.nbytes, x.data_ptr()) for x in tensor_inputs])
 
         with torch.no_grad():
             outputs = run_function(*args)
