@@ -1442,7 +1442,6 @@ def unsloth_compile_transformers(
     pass
 
     all_code = "\n\n".join(final_all_standalone_classes)
-    print(all_code)
 
     if import_from_cache:
         try:
@@ -1510,7 +1509,6 @@ def unsloth_compile_transformers(
 
     # Import and replace with new module
     for module in all_standalone_classes.keys():
-        print(module)
         exec(f"{model_location}.{module} = combined_module.{module}", globals(), locals())
     pass
 
