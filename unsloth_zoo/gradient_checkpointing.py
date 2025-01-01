@@ -340,7 +340,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         tensor_inputs = []
         for i, arg in enumerate(args):
             if torch.is_tensor(arg):
-                if i == 0: arg = arg.to("cpu", non_blocking = True)
+                if i == 0: arg = arg.to("cpu")
                 tensor_inputs.append(arg)
                 ctx.tensor_indices.append(i)
                 ctx.inputs.append(None)
@@ -370,7 +370,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
 
         # Fill in inputs with appropriate saved tensors.
         for i, idx in enumerate(tensor_indices):
-            inputs[idx] = tensors[i].to("cuda:0", non_blocking = True)
+            inputs[idx] = tensors[i].to("cuda:0")
 
         # Stash the surrounding rng state, and mimic the state that was
         # present at this time during forward.  Restore the surrounding state
