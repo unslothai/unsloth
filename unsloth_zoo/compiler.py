@@ -858,8 +858,8 @@ def unsloth_compile_transformers(
     # Code licensed under LGPL
     if disable: return
     fast_lora_forwards = True
-    fast_residual_stream = False
-    import_from_cache = False
+    fast_residual_stream = True
+    import_from_cache = True
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
