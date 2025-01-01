@@ -86,6 +86,9 @@ _license_header = """
 _disabled_sdpa_code = f"""{_license_header}
 
 import torch
+torch_addmm = torch.addmm
+torch_add   = torch.add
+
 from unsloth_zoo.loss_utils import fused_linear_cross_entropy
 
 scaled_dot_product_attention = torch.nn.functional.scaled_dot_product_attention
@@ -638,22 +641,24 @@ def patch_gradient_checkpointing(module, source):
 pass
 
 
+# Torch.compiling makes things slower - rather just leave it as addmm
 COMPILED_LORA_FORWARD = """
 # @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     xA = dropout(x) @ lora_A.weight.t()
     # output = result + scaling * xA @ lora_B.weight.t()
-    output = torch.addmm(
-        result.reshape(-1, result.shape[-1]),
-        xA.reshape(-1, xA.shape[-1]),
+    shape = result.shape
+    output = torch_addmm(
+        result.view(-1, shape[-1]),
+        xA.view(-1, xA.shape[-1]),
         lora_B.weight.t(),
         alpha = scaling,
         beta = 1,
-    ).reshape(result.shape)
+    ).view(shape)
 
     bias = lora_B.bias
     if bias is not None:
-        output = torch.add(
+        output = torch_add(
         output,
         bias,
         alpha = scaling,
@@ -857,9 +862,10 @@ def unsloth_compile_transformers(
 ):
     # Code licensed under LGPL
     if disable: return
-    fast_lora_forwards = True
-    fast_residual_stream = True
-    import_from_cache = True
+
+    if fast_residual_stream:
+        raise NotImplementedError("Unsloth: Fast residual stream optimization makes things slower!")
+    pass
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
