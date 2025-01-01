@@ -403,6 +403,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                 outputs_with_grad.append(outputs[i])
                 args_with_grad.append(args[i])
         if len(outputs_with_grad) == 0:
+            pass
             # raise RuntimeError(
             #     "none of output has requires_grad=True,"
             #     " this checkpoint() is not necessary"
