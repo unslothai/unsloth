@@ -31,6 +31,9 @@ include-package-data = false
 [tool.setuptools.packages.find]
 exclude = ["images*"]
 
+[project.scripts]
+unsloth-cli = "unsloth.cli:main"
+
 [project.optional-dependencies]
 triton = [
     "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post5/triton-3.1.0-cp39-cp39-win_amd64.whl ; python_version=='3.9' and platform_system == 'Windows'",
