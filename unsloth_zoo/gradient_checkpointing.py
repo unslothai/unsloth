@@ -340,8 +340,8 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         tensor_inputs = []
         for i, arg in enumerate(args):
             if torch.is_tensor(arg):
-                if i == 0: arg = arg.to("cpu")
-                tensor_inputs.append(arg)
+                saved_arg = arg if i == 0 else arg.to("cpu")
+                tensor_inputs.append(saved_arg)
                 ctx.tensor_indices.append(i)
                 ctx.inputs.append(None)
             else:
