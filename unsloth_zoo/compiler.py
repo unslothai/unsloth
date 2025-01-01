@@ -639,7 +639,7 @@ pass
 
 
 COMPILED_LORA_FORWARD = """
-@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
+# @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     xA = dropout(x) @ lora_A.weight.t()
     # output = result + scaling * xA @ lora_B.weight.t()
