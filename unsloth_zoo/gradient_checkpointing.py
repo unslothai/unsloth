@@ -365,6 +365,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         inputs = list(ctx.inputs)
         tensor_indices = ctx.tensor_indices
         tensors = ctx.saved_tensors
+        print([x.shape for x in tensors])
 
         # Fill in inputs with appropriate saved tensors.
         for i, idx in enumerate(tensor_indices):
