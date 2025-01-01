@@ -341,7 +341,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         if len(args) != 0:
             arg = args[0]
             if torch.is_tensor(arg):
-                tensor_inputs.append(arg)
+                tensor_inputs.append(arg.to("cpu", non_blocking = True))
                 ctx.tensor_indices.append(0)
                 ctx.inputs.append(None)
             else:
