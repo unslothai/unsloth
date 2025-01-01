@@ -86,9 +86,6 @@ _license_header = """
 _disabled_sdpa_code = f"""{_license_header}
 
 import torch
-torch_addmm = torch.addmm
-torch_add   = torch.add
-
 from unsloth_zoo.loss_utils import fused_linear_cross_entropy
 
 scaled_dot_product_attention = torch.nn.functional.scaled_dot_product_attention
@@ -643,6 +640,8 @@ pass
 
 # Torch.compiling makes things slower - rather just leave it as addmm
 COMPILED_LORA_FORWARD = """
+torch_addmm = torch.addmm
+torch_add   = torch.add
 # @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     xA = dropout(x) @ lora_A.weight.t()
