@@ -862,10 +862,10 @@ def unsloth_compile_transformers(
     # Code licensed under LGPL
     disable = disable or (os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1")
     
-    sdpa_dynamic_mask       = True
-    sdpa_bool_masks         = True
-    sdpa_gqa_replace        = True
-    sdpa_dynamic_compile    = True
+    sdpa_dynamic_mask       = False
+    sdpa_bool_masks         = False
+    sdpa_gqa_replace        = False
+    sdpa_dynamic_compile    = False
     compile_attention       = False
     disable_causal_masks    = False
     compile_torch_modules   = False
