@@ -20,6 +20,7 @@ __all__ = [
     "merge_and_dequantize_lora",
     "SKIP_QUANTIZATION_MODULES",
     "get_lora_layer_modules",
+    "requires_grad_for_gradient_checkpointing",
 ]
 
 import torch
@@ -147,6 +148,91 @@ def get_lora_layer_modules():
         Linear_LoRA_Layers += [(eval(x), item, x,) for x in modules]
     pass
     return tuple(Linear_LoRA_Layers)
+pass
+
+
+def requires_grad_for_gradient_checkpointing(model):
+    # Code licensed under LGPL
+    # Enables requires_grad to make gradient checkpointing work on
+    # non language models that don't just use .embed_tokens
+    from collections import OrderedDict
+    import re
+
+    def register_other_hooks(name1, name2, module, _hooks):
+        old_hooks = eval(f"module.{_hooks}")
+        other_hooks = []
+        for value in old_hooks.values():
+            qualname = getattr(value, "__qualname__", "")
+            name     = getattr(value, "__name__", "")
+            if name1 in qualname or name2 in qualname: pass
+            elif name2 in name or name2 in name: pass
+            else: other_hooks.append(value)
+        pass
+        # Keep none input requires grad hooks
+        exec(f"module.{_hooks} = OrderedDict()")
+        for hook in other_hooks:
+            exec(f"module.register{_hooks[:-1]}(hook)")
+        pass
+    pass
+
+    # Remove all previous forward hooks for gradient checkpointing
+    for name, module in model.named_modules():
+        if len(module._forward_hooks) != 0:
+            register_other_hooks(
+                "enable_input_require_grads",
+                "make_inputs_require_grad",
+                module,
+                "_forward_hooks",
+            )
+        pass
+    pass
+
+    # Find 1st ever item which requires grad
+    param = None
+    for name, param in model.named_parameters():
+        if param.requires_grad: break
+    if param is None: return
+
+    name = re.sub("\.([\d]{1,})\.", r"[\1].", name)
+    name_components = name.split(".")
+
+    if len(name_components) == 0:
+        raise RuntimeError("Unsloth: Model has 0 layers?")
+
+    # Find whole module just before this 1st element
+    final_where = 0
+    for j in range(len(name_components)):
+        component = "model." + ".".join(name_components[:j+1])
+        if re.search(r"\[[\d]{1,}\]", component):
+            final_where = j
+            break
+        if "Linear" in type(eval(component)).__name__:
+            final_where = j
+            break
+    pass
+    if final_where == 0: final_where = 1
+
+    name = "model." + ".".join(name_components[:final_where])
+    module = eval(name)
+
+    # Add other hooks first
+    register_other_hooks(
+        "requires_grad_pre_hook",
+        "requires_grad_pre_hook",
+        module,
+        "_forward_pre_hooks",
+    )
+    # Add pre forward hook
+    def requires_grad_pre_hook(module, input):
+        type_input = type(input)
+        if type_input is torch.Tensor:
+            input.requires_grad_(True)
+        elif type_input is tuple or type_input is list:
+            input[0].requires_grad_(True)
+    pass
+
+    module.register_forward_pre_hook(requires_grad_pre_hook)
+    return
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
