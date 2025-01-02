@@ -26,6 +26,8 @@ __all__ = [
 import torch
 import os
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, TypeVar, Union
+from collections import OrderedDict
+import re
 
 # Skip some modules sensitive to quantization
 SKIP_QUANTIZATION_MODULES = [
@@ -60,8 +62,7 @@ def get_peft_regex(
             "Unsloth: No modules to finetune - please select to finetune the attention and/or the mlp modules!"
         )
     pass
-
-    import re
+    
     from collections import Counter
     # Get only linear layers
     modules = model.named_modules()
@@ -155,9 +156,6 @@ def requires_grad_for_gradient_checkpointing(model):
     # Code licensed under LGPL
     # Enables requires_grad to make gradient checkpointing work on
     # non language models that don't just use .embed_tokens
-    from collections import OrderedDict
-    import re
-
     def register_other_hooks(name1, name2, module, _hooks):
         old_hooks = eval(f"module.{_hooks}")
         other_hooks = []
