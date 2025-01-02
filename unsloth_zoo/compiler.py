@@ -860,7 +860,7 @@ def unsloth_compile_transformers(
     return_logits          : bool = False,
 ):
     # Code licensed under LGPL
-    if disable: return
+    if disable or os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1": return
 
     if fast_residual_stream:
         raise NotImplementedError("Unsloth: Fast residual stream optimization makes things slower!")
