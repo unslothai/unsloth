@@ -860,7 +860,7 @@ def unsloth_compile_transformers(
     return_logits          : bool = False,
 ):
     # Code licensed under LGPL
-    if disable or os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1": return
+    disable = disable or (os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1")
 
     if fast_residual_stream:
         raise NotImplementedError("Unsloth: Fast residual stream optimization makes things slower!")
@@ -1468,7 +1468,7 @@ def unsloth_compile_transformers(
             combined_module = None
     pass
 
-    if compile_torch_modules:
+    if compile_torch_modules and not disable:
 
         from .patch_torch_functions import patch_torch_functions
         patch_torch_functions()
@@ -1504,7 +1504,7 @@ def unsloth_compile_transformers(
         pass
     pass
     # Quick exit
-    if combined_module is None: return
+    if combined_module is None or disable: return
 
     # Import and replace with new module
     for module in all_standalone_classes.keys():
