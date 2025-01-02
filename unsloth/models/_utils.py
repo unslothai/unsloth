@@ -561,7 +561,7 @@ def prepare_model_for_kbit_training(
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
         # Enable grads on non language models as well
-        requires_grad_for_gradient_checkpointing()
+        requires_grad_for_gradient_checkpointing(model)
     pass
 
     return model
