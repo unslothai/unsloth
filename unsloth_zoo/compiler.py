@@ -862,6 +862,7 @@ def unsloth_compile_transformers(
     # Code licensed under LGPL
     disable = disable or (os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1")
 
+    fast_lora_forwards = False
     if fast_residual_stream:
         raise NotImplementedError("Unsloth: Fast residual stream optimization makes things slower!")
     pass
