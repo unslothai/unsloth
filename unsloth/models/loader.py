@@ -454,35 +454,37 @@ class FastVisionModel(FastBaseVisionModel):
 
         if not was_disabled: enable_progress_bars()
 
-        with contextlib.redirect_stdout(open(os.devnull, "w")):
-            patch_loss_functions(torch_compile = False)
-            model_types = unsloth_compile_transformers(
-                model_name              = model_name,
-                sdpa_dynamic_mask       = True,
-                sdpa_bool_masks         = True,
-                sdpa_gqa_replace        = True,
-                sdpa_dynamic_compile    = True,
-                compile_attention       = True,
-                disable_causal_masks    = True,
-                compile_torch_modules   = True,
-                compile_custom_modules  = True,
-                compile_function_calls  = True,
-                fuse_lm_head            = True,
-                gradient_checkpointing  = True,
-                manual_replacements     = True,
-                fast_lora_forwards      = True,
-                fast_residual_stream    = False,
-                accurate_accumulation   = True,
-                epilogue_fusion         = True,
-                max_autotune            = False,
-                shape_padding           = True,
-                cudagraphs              = False,
-                debug                   = False,
-                fullgraph               = fullgraph,
-                import_from_cache       = False,
-                disable                 = False,
-                return_logits           = return_logits,
-            )
+        if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "0":
+            with contextlib.redirect_stdout(open(os.devnull, "w")):
+                patch_loss_functions(torch_compile = False)
+                model_types = unsloth_compile_transformers(
+                    model_name              = model_name,
+                    sdpa_dynamic_mask       = True,
+                    sdpa_bool_masks         = True,
+                    sdpa_gqa_replace        = True,
+                    sdpa_dynamic_compile    = True,
+                    compile_attention       = True,
+                    disable_causal_masks    = True,
+                    compile_torch_modules   = True,
+                    compile_custom_modules  = True,
+                    compile_function_calls  = True,
+                    fuse_lm_head            = True,
+                    gradient_checkpointing  = True,
+                    manual_replacements     = True,
+                    fast_lora_forwards      = True,
+                    fast_residual_stream    = False,
+                    accurate_accumulation   = True,
+                    epilogue_fusion         = True,
+                    max_autotune            = False,
+                    shape_padding           = True,
+                    cudagraphs              = False,
+                    debug                   = False,
+                    fullgraph               = fullgraph,
+                    import_from_cache       = False,
+                    disable                 = False,
+                    return_logits           = return_logits,
+                )
+            pass
         pass
 
         # Check if this is local model since the tokenizer gets overwritten
