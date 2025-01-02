@@ -868,9 +868,9 @@ def unsloth_compile_transformers(
     sdpa_dynamic_compile    = True
     compile_attention       = True
     disable_causal_masks    = True
-    compile_torch_modules   = True
-    compile_custom_modules  = True
-    compile_function_calls  = True
+    compile_torch_modules   = False
+    compile_custom_modules  = False
+    compile_function_calls  = False
     fuse_lm_head            = False
     gradient_checkpointing  = True
     manual_replacements     = True
