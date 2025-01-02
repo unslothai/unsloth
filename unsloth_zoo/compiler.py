@@ -861,7 +861,7 @@ def unsloth_compile_transformers(
 ):
     # Code licensed under LGPL
     disable = disable or (os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1")
-    
+
     sdpa_dynamic_mask       = True
     sdpa_bool_masks         = True
     sdpa_gqa_replace        = True
@@ -875,12 +875,12 @@ def unsloth_compile_transformers(
     gradient_checkpointing  = True
     manual_replacements     = True
     fast_lora_forwards      = True
-    fast_residual_stream    = False
+    fast_residual_stream    = True
     accurate_accumulation   = True
 
-    if fast_residual_stream:
-        raise NotImplementedError("Unsloth: Fast residual stream optimization makes things slower!")
-    pass
+    # if fast_residual_stream:
+    #     raise NotImplementedError("Unsloth: Fast residual stream optimization makes things slower!")
+    # pass
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
