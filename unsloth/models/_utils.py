@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.12.12"
+__version__ = "2025.1.1"
 
 __all__ = [
     "prepare_model_for_kbit_training",
@@ -109,6 +109,9 @@ from unsloth_zoo.vision_utils import (
 from unsloth_zoo.compiler import (
     get_transformers_model_type,
     unsloth_compile_transformers as _unsloth_compile_transformers,
+)
+from unsloth_zoo.peft_utils import (
+    requires_grad_for_gradient_checkpointing,
 )
 
 # =============================================
@@ -556,6 +559,10 @@ def prepare_model_for_kbit_training(
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
+        # Enable grads on non language models as well
+        requires_grad_for_gradient_checkpointing()
+    pass
 
     return model
 pass
