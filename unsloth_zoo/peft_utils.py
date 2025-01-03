@@ -23,6 +23,7 @@ __all__ = [
     "requires_grad_for_gradient_checkpointing",
 ]
 
+import inspect
 import torch
 import os
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, TypeVar, Union
@@ -62,7 +63,7 @@ def get_peft_regex(
             "Unsloth: No modules to finetune - please select to finetune the attention and/or the mlp modules!"
         )
     pass
-    
+
     from collections import Counter
     # Get only linear layers
     modules = model.named_modules()
@@ -185,6 +186,23 @@ def requires_grad_for_gradient_checkpointing(model):
         pass
     pass
 
+    # Add post forward hook
+    def requires_grad_post_hook(module, input, output):
+        output.requires_grad_(True)
+    pass
+
+    def requires_grad_pre_hook(module, input):
+        type_input = type(input)
+        if type_input is torch.Tensor:
+            input.requires_grad_(True)
+        elif type_input is tuple or type_input is list:
+            if len(type_input) == 0:
+                raise RuntimeError("Unsloth: Failed to make input require gradients!")
+            type_input[0].requires_grad_(True)
+        else:
+            raise RuntimeError("Unsloth: Failed to make input require gradients!")
+    pass
+
     # Find 1st ever item which requires grad
     param = None
     for name, param in model.named_parameters():
@@ -197,40 +215,53 @@ def requires_grad_for_gradient_checkpointing(model):
     if len(name_components) == 0:
         raise RuntimeError("Unsloth: Model has 0 layers?")
 
-    # Find whole module just before this 1st element
-    final_where = 0
-    for j in range(len(name_components)):
-        component = "model." + ".".join(name_components[:j+1])
-        if re.search(r"\[[\d]{1,}\]", component):
-            final_where = j
-            break
-        if "Linear" in type(eval(component)).__name__:
-            final_where = j
-            break
-    pass
-    if final_where == 0: final_where = 1
-
-    name = "model." + ".".join(name_components[:final_where])
-    module = eval(name)
-
-    # Add other hooks first
-    register_other_hooks(
-        "requires_grad_pre_hook",
-        "requires_grad_pre_hook",
-        module,
-        "_forward_pre_hooks",
-    )
-    # Add pre forward hook
-    def requires_grad_pre_hook(module, input):
-        type_input = type(input)
-        if type_input is torch.Tensor:
-            input.requires_grad_(True)
-        elif type_input is tuple or type_input is list:
-            input[0].requires_grad_(True)
+    final_where = None
+    # Try getting previous parent module
+    for j in range(len(name_components)-1, 0, -1):
+        name_curr = name_components[j]
+        name_pre  = "model." + ".".join(name_components[:j])
+        # Disable [\d] since it fails in gradient checkpointing
+        if re.search(r"\[[\d]{1,}\]", name_pre): continue
+        module = eval(name_pre)
+        if hasattr(module, "forward"):
+            try: forward = inspect.getsource(module.forward)
+            except: continue
+            if f"self.{name_curr}(" in forward:
+                final_where = j + 2
+                break
+            pass
+        pass
     pass
 
-    module.register_forward_pre_hook(requires_grad_pre_hook)
-    return
+    if final_where is None:
+        raise RuntimeError("Unsloth: Could not find an embedding module")
+    module_name = "model." + ".".join(name_components[:final_where])
+    print(f"Unsloth: Making `{module_name}` require gradients")
+    module = eval(module_name)
+
+    # Check if input_embeddings exists
+    if hasattr(module, "get_input_embeddings"):
+        # Use forward hook after Embedding() is called
+        module = module.get_input_embeddings()
+
+        # Add other hooks first
+        register_other_hooks(
+            "requires_grad_post_hook",
+            "requires_grad_post_hook",
+            module,
+            "_forward_hooks",
+        )
+        module.register_forward_hook(requires_grad_post_hook)
+    else:
+        # Use forward pre hook before module is called
+        register_other_hooks(
+            "requires_grad_pre_hook",
+            "requires_grad_pre_hook",
+            module,
+            "_forward_pre_hooks",
+        )
+        module.register_forward_pre_hook(requires_grad_pre_hook)
+    pass
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
