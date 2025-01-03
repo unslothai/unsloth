@@ -196,7 +196,7 @@ def requires_grad_for_gradient_checkpointing(model):
         if type_input is torch.Tensor:
             input.requires_grad_(True)
         elif type_input is tuple or type_input is list:
-            if len(intput) == 0:
+            if len(input) == 0:
                 raise RuntimeError("Unsloth: Failed to make input require gradients!")
             input[0].requires_grad_(True)
         else:
