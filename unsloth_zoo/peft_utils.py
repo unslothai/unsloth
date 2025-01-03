@@ -227,7 +227,7 @@ def requires_grad_for_gradient_checkpointing(model):
             try: forward = inspect.getsource(module.forward)
             except: continue
             if f"self.{name_curr}(" in forward:
-                final_where = j + 2
+                final_where = j + 1
                 break
             pass
         pass
