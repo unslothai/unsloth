@@ -17,16 +17,6 @@ from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
 
-# # Define a list of modules to check
-# MODULES_TO_CHECK = ["bitsandbytes"]
-
-# # Check if any of the modules in the list have been imported
-# for module in MODULES_TO_CHECK:
-#     if module in sys.modules:
-#         raise ImportError(f"Unsloth: Please import Unsloth before {module}.")
-#     pass
-# pass
-
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
@@ -201,9 +191,18 @@ pass
 
 # Check for unsloth_zoo
 try:
+    unsloth_zoo_version = importlib_version("unsloth_zoo")
+    if Version(unsloth_zoo_version) < Version("2025.1.1"):
+        try:
+            os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
+        except:
+            try:
+                os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+            except:
+                raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
 except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth-zoo`")
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
 pass
 
 from .models import *
