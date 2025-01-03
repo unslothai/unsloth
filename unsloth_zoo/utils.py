@@ -39,10 +39,10 @@ pass
 
 def _get_dtype(dtype):
     if type(dtype) is str:
-        try: dtype = eval(f"torch.{dtype}")
+        try: dtype = eval(f"torch.{dtype.lower()}")
         except: pass
     if type(dtype) is torch.dtype: return dtype
-    raise TypeError(f"Unsloth: {dtype} is not recognized.")
+    return None
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
