@@ -21,6 +21,7 @@ __all__ = [
 ]
 
 from .peft_utils import get_lora_layer_modules
+from .utils import _get_dtype
 
 MODEL_CARD = \
 """---
@@ -353,15 +354,6 @@ def get_torch_storage_id_new(x):
         return None
     else:
         return get_torch_storage_id(x)
-pass
-
-
-def _get_dtype(dtype):
-    if type(dtype) is str:
-        try: dtype = eval(f"torch.{dtype}")
-        except: pass
-    if type(dtype) is torch.dtype: return dtype
-    raise TypeError(f"Unsloth: {dtype} is not recognized.")
 pass
 
 
