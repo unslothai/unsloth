@@ -65,7 +65,7 @@ def create_huggingface_repo(
     private = False,
     token = None,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     assert(type(repo_id) is str)
     if repo_id.count("/") != 1:
         raise TypeError(f"Unsloth: You are pushing to Hugging Face, but {repo_id} is not a valid repo.")
@@ -123,7 +123,7 @@ pass
 
 
 def check_if_quantized(module: torch.nn.Module) -> bool:
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Adapted from https://github.com/huggingface/peft/blob/main/src/peft/utils/integrations.py
     if not hasattr(module, "weight"): return False
 
@@ -163,7 +163,7 @@ pass
 
 
 def expand_module_keys(name, module, original_keys):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     keys = module.state_dict().keys()
     for key in keys: original_keys.add(name + "." + key)
     return original_keys
@@ -187,7 +187,7 @@ pass
 
 
 def assert_same_keys(model, new_state_dict):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     original_keys = model.base_model.model.state_dict().keys()
     all_original_keys = set()
     for x in original_keys:
@@ -212,7 +212,7 @@ pass
 
 @torch.inference_mode
 def create_lora_statistics(model, merge_into_original = False, return_state_dict = True):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # merge_into_original is merging directly into 16bit downloaded model
     # without dequantizing
     Linear_LoRA_Layers = get_lora_layer_modules()
@@ -312,7 +312,7 @@ pass
 
 @torch.inference_mode
 def _merge_and_overwrite_lora(save_directory, filename, lora_weights, output_dtype,):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Merges LoRA and overwrites the safetensors file it was merged to
     filename = os.path.join(save_directory, filename)
     tensors = OrderedDict()
@@ -370,7 +370,7 @@ def prepare_saving(
     min_size_in_bytes = 100_000_000, # Must be of this size - 100MB default
     use_temp_file = False,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Check size
     from huggingface_hub.serialization._base import parse_size_to_int
     max_shard_size_in_bytes = max_shard_size
@@ -495,7 +495,7 @@ def merge_and_overwrite_lora(
     low_disk_space_usage = False,
     use_temp_file        = False,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Directly downloads 16bit original weights and merges LoRA
     if not hasattr(model, "base_model"):
         raise RuntimeError("Unsloth: This is not a LoRA model - please save normally!")
@@ -635,7 +635,7 @@ def incremental_save_pretrained(
     repo_id = "",
     revision = None,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Move file timestamps out
     makedir = re.search(r"os\.makedirs\(save_directory.+?\n", save_pretrained)
     assert(makedir is not None)
@@ -727,7 +727,7 @@ def merge_and_dequantize_lora(
     use_temp_file        = False,
     **kwargs,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Dequantizes model to 16bit weights and merges LoRA
     (
         username, repo_id, hf_api, token,

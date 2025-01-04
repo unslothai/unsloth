@@ -53,7 +53,7 @@ def get_peft_regex(
     """
     Create a regex pattern to apply LoRA to only select layers of a model.
     """
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     if not finetune_vision_layers and not finetune_language_layers:
         raise RuntimeError(
             "Unsloth: No layers to finetune - please select to finetune the vision and/or the language layers!"
@@ -133,7 +133,7 @@ pass
 
 
 def get_lora_layer_modules():
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     import peft.tuners.lora
     path = os.path.split(peft.tuners.lora.__file__)[0]
     files = os.listdir(path)
@@ -154,7 +154,7 @@ pass
 
 
 def requires_grad_for_gradient_checkpointing(model):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Enables requires_grad to make gradient checkpointing work on
     # non language models that don't just use .embed_tokens
     def register_other_hooks(name1, name2, module, _hooks):

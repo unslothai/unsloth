@@ -23,7 +23,7 @@ from packaging.version import Version as TrueVersion
 import torch
 
 def Version(version):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     try:
         return TrueVersion(version)
     except:

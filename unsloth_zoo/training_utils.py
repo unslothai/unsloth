@@ -37,6 +37,7 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
     Sometimes the labels get masked by all -100s, causing the loss
     to be 0. We check for this!
     """
+    # All Unsloth Zoo code licensed under LGPLv3
     if isinstance(train_dataset, datasets.IterableDataset):
         # Skip the check since the code below assumes
         # an indexable dataset
@@ -128,7 +129,7 @@ def unsloth_train(trainer):
     2. Scaled down version of HF's trainer
     3. Much less feature complete
     """
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     assert(hasattr(trainer, "args"))
     assert(hasattr(trainer, "model"))
     assert(hasattr(trainer, "train_dataset"))

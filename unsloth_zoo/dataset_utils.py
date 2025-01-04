@@ -169,7 +169,7 @@ def train_on_responses_only(
     Trains only on responses and not on the instruction by masking out
     the labels with -100 for the instruction part.
     """
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     tokenizer = trainer.processing_class if hasattr(trainer, "processing_class") else trainer.tokenizer
     
     if  not hasattr(tokenizer, "_unsloth_input_part") or \

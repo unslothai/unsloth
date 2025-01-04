@@ -26,7 +26,7 @@ COMMANDS_NOT_FOUND = ("command not found", "not found", "No such file or directo
 
 
 def install_package(package, sudo = False, print_output = False, print_outputs = None):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     x = f"{'sudo ' if sudo else ''}apt-get install {package} -y"
     print(f"Unsloth: Installing packages: {package}")
     with subprocess.Popen(x, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT) as sp:
@@ -47,7 +47,7 @@ pass
 
 
 def do_we_need_sudo():
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Check apt-get updating
     sudo = False
     x = "apt-get update -y"
@@ -78,7 +78,7 @@ pass
 
 
 def check_pip():
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     pip = "pip"
     with subprocess.Popen(pip, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT) as sp:
         for line in sp.stdout:
@@ -100,7 +100,7 @@ pass
 
 
 def try_execute(command, sudo = False, print_output = False, print_outputs = None):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     need_to_install = False
     with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT) as sp:
         for line in sp.stdout:

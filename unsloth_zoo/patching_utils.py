@@ -30,6 +30,7 @@ from .compiler import UNSLOTH_COMPILE_LOCATION
 
 # Also disable compiling on bitsandbytes
 def patch_compiling_bitsandbytes():
+    # All Unsloth Zoo code licensed under LGPLv3
     os.environ["UNSLOTH_PATCHED"] = "1"
 
     # Disable dynamo on Linear4bit, Linear8bit and other future modules
@@ -54,6 +55,7 @@ pass
 
 
 def patch_layernorm(fast_layernorm):
+    # All Unsloth Zoo code licensed under LGPLv3
     import torch.nn
     if torch.nn.LayerNorm.__name__ != "Unsloth_LayerNorm":
         os.environ["UNSLOTH_PATCHED"] = "1"
@@ -71,7 +73,7 @@ pass
 
 
 def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
     import os, logging
@@ -169,7 +171,7 @@ pass
 
 
 def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     assert(type(downcast_rope) is bool)
     import gc
 
@@ -316,7 +318,7 @@ pass
 def patch_compiled_autograd():
     # Fixes double compilation of functions during gradient checkpointing
     # See https://github.com/pytorch/pytorch/issues/135298
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     import inspect, re
 
     # From https://github.com/pytorch/pytorch/pull/135795/files
@@ -375,7 +377,7 @@ import transformers.integrations.bitsandbytes
 if hasattr(transformers.integrations.bitsandbytes, "_replace_with_bnb_linear") and \
     (transformers.integrations.bitsandbytes._replace_with_bnb_linear.__name__ != "_unsloth_replace_with_bnb_linear"):
 
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     source = inspect.getsource(transformers.integrations.bitsandbytes._replace_with_bnb_linear)
     functions = dir(transformers.integrations.bitsandbytes)
     functions = [x for x in functions if f" {x}" in source or f"{x}." in source or f"{x}(" in source]

@@ -173,6 +173,7 @@ pass
 
 
 def patch_torch_functions():
+    # All Unsloth Zoo code licensed under LGPLv3
     torch.nn.functional.layer_norm    = layer_norm
     torch.nn.functional.cross_entropy = cross_entropy
 pass
