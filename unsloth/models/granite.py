@@ -181,6 +181,7 @@ def GraniteDecoderLayer_fast_forward(
     position_embeddings:  Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ):
+    resid_mul = self.residual_multiplier
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -196,13 +197,13 @@ def GraniteDecoderLayer_fast_forward(
             position_embeddings = position_embeddings,
             _flag_for_generation=self._flag_for_generation,
         )
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = resid_mul)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = resid_mul)
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
@@ -217,13 +218,13 @@ def GraniteDecoderLayer_fast_forward(
             padding_mask=padding_mask,
             position_embeddings = position_embeddings,
         )
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = resid_mul)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = resid_mul)
     pass
 
     outputs = (hidden_states,)
