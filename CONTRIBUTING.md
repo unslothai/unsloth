@@ -5,7 +5,7 @@ Thank you for not only using Unsloth but also for being interested in helping ou
 - **[Support the Community](https://github.com/unslothai/unsloth/issues)**: Answer questions, review pull requests, or assist others in discussions.
 - **Fix Bugs**: Identify and resolve issues with the existing codebase.  
 - **Submit Ideas**: Request new features or share enhancements you'd like to see.  
-- **Develop Features**: Implement new functionality or improve existing tools which can do via PRs.
+- **Develop Features**: Implement new functionality or improve existing tools which can be done via PRs.
 - **[Improve Documentation](https://docs.unsloth.ai/)**: Help by creating guides, FAQs, or enhancing clarity.
 
 One of the best ways to support us is by spreading the word about Unsloth! Share how it’s powering your amazing projects in blog posts or social media, and inspire others to explore its potential. Even a simple star on our repo goes a long way in showing your support and helping the community grow. 🌟
