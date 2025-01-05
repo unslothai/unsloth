@@ -1,0 +1,2 @@
+*.ipynb -diff
+*.ipynb linguist-generated=true
