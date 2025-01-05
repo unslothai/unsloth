@@ -289,7 +289,9 @@ global EXTRA_STREAM
 global MAIN_STREAM
 global MINIMUM_SIZE
 global USE_UNSLOTH_GC
-global LAST_LAYER_INDEX
+global LAST_GC_INDEX
+global FIRST_PASS
+global CURRENT_GC_INDEX
 torch_cuda_stream = torch.cuda.stream
 CPU_BUFFERS = []
 
@@ -303,7 +305,9 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
     global MAIN_STREAM
     global MINIMUM_SIZE
     global USE_UNSLOTH_GC
-    global LAST_LAYER_INDEX
+    global LAST_GC_INDEX
+    global FIRST_PASS
+    global CURRENT_GC_INDEX
     CPU_BUFFERS = []
     CPU_INDEX = 0
 
@@ -330,7 +334,9 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
 
     # Disable offloading on the last layer - uses more VRAM and is slower
     # See https://github.com/pytorch/torchtune/pull/1443
-    LAST_LAYER_INDEX = -1
+    LAST_GC_INDEX = 0
+    FIRST_PASS = True
+    CURRENT_GC_INDEX = 0
 pass
 
 
@@ -372,15 +378,21 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             if torch.is_tensor(arg):
 
                 if i == 0 and arg.requires_grad:
+                    global FIRST_PASS
+                    global LAST_GC_INDEX
+                    if FIRST_PASS:
+                        LAST_GC_INDEX += 1
+                    pass
+                    global CURRENT_GC_INDEX
+                    CURRENT_GC_INDEX += 1
 
                     ctx._requires_gradient = True
                     new_size = arg.numel()
 
                     global MINIMUM_SIZE
                     global CPU_INDEX
-                    global LAST_LAYER_INDEX
-                    print(CPU_INDEX, LAST_LAYER_INDEX)
-                    if new_size > MINIMUM_SIZE and CPU_INDEX != LAST_LAYER_INDEX:
+                    print(CPU_INDEX, LAST_GC_INDEX)
+                    if new_size > MINIMUM_SIZE and CPU_INDEX != LAST_GC_INDEX:
                         use_gpu_buffer = True
                         global CPU_BUFFERS
                         global GPU_BUFFER
@@ -392,7 +404,6 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                         if BACKWARD_PASS:
                             BACKWARD_PASS = False
                             CPU_INDEX = 0
-                            global USE_UNSLOTH_GC
                             if USE_UNSLOTH_GC:
                                 print("Unsloth: Will smartly offloading gradients to save VRAM!")
                                 USE_UNSLOTH_GC = False
@@ -490,6 +501,10 @@ class UnslothCheckpointFunction(torch.autograd.Function):
 
         global BACKWARD_PASS
         BACKWARD_PASS = True
+        global FIRST_PASS
+        FIRST_PASS = False
+        global CURRENT_GC_INDEX
+        CURRENT_GC_INDEX = 0
 
         # Stash the surrounding rng state, and mimic the state that was
         # present at this time during forward.  Restore the surrounding state
