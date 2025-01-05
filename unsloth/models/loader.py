@@ -51,7 +51,7 @@ import torch
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name                 = "unsloth/llama-3-8b-bnb-4bit",
+        model_name                 = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length             = None,
         dtype                      = None,
         load_in_4bit               = True,
@@ -63,12 +63,14 @@ class FastLanguageModel(FastLlamaModel):
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab         = None,
         revision                   = None,
+        use_exact_model_name       = False,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
         
         old_model_name = model_name
-        model_name = get_model_name(model_name, load_in_4bit)
+        if not use_exact_model_name:
+            model_name = get_model_name(model_name, load_in_4bit)
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
@@ -148,7 +150,9 @@ class FastLanguageModel(FastLlamaModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
-            model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            model_name = peft_config.base_model_name_or_path
+            if not use_exact_model_name:
+                model_name = get_model_name(model_name, load_in_4bit)
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -337,6 +341,7 @@ class FastVisionModel(FastBaseVisionModel):
         revision                   = None,
         return_logits              = False, # Return logits
         fullgraph                  = True, # No graph breaks
+        use_exact_model_name       = False,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -344,10 +349,11 @@ class FastVisionModel(FastBaseVisionModel):
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
         if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing()
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
         
         old_model_name = model_name
-        model_name = get_model_name(model_name, load_in_4bit)
+        if not use_exact_model_name:
+            model_name = get_model_name(model_name, load_in_4bit)
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
@@ -393,7 +399,7 @@ class FastVisionModel(FastBaseVisionModel):
                 exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
                 files = (os.path.split(x)[-1] for x in files)
                 if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
@@ -426,7 +432,10 @@ class FastVisionModel(FastBaseVisionModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
-            model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            model_name = peft_config.base_model_name_or_path
+            if not use_exact_model_name:
+                model_name = get_model_name(model_name, load_in_4bit)
+            
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
