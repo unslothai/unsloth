@@ -877,7 +877,8 @@ def install_llama_cpp_old(version = -10):
     pass
 
     # Check if successful
-    if not os.path.exists("llama.cpp/quantize") and not os.path.exists("llama.cpp/llama-quantize"):
+    if not os.path.exists("llama.cpp/quantize") and not os.path.exists("llama.cpp/llama-quantize") \
+        and not os.path.exist("llama.cpp/examples/quantize"):
         raise RuntimeError(
             "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
             "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
@@ -1066,9 +1067,12 @@ def save_to_gguf(
             quantize_location = "llama.cpp/quantize"
         elif os.path.exists("llama.cpp/llama-quantize"):
             quantize_location = "llama.cpp/llama-quantize"
+        elif os.path.exists("llama.cpp/examples/quantize"):
+            quantize_location = "llama.cpp/examples/quantize"
         else:
             raise RuntimeError(
-                "Unsloth: The file 'llama.cpp/llama-quantize' or 'llama.cpp/quantize' does not exist.\n"\
+                "Unsloth: The file 'llama.cpp/llama-quantize' or 'llama.cpp/quantize' or \n"
+                "'llama.cpp/examples/quantize' does not exist.\n"\
                 "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
             )
         pass
