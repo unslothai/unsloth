@@ -394,7 +394,6 @@ class UnslothCheckpointFunction(torch.autograd.Function):
 
                     global MINIMUM_SIZE
                     global CPU_INDEX
-                    print(CPU_INDEX, CURRENT_GC_INDEX, LAST_GC_INDEX)
                     if new_size > MINIMUM_SIZE and CURRENT_GC_INDEX != LAST_GC_INDEX:
                         use_gpu_buffer = True
                         global CPU_BUFFERS
@@ -429,7 +428,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                         ctx._saved_metadata = (new_size, shape, CPU_INDEX,)
                         CPU_INDEX += 1
                         tensor_inputs.append(None)
-                        
+
                         global USE_UNSLOTH_GC
                         if USE_UNSLOTH_GC:
                             print("Unsloth: Will smartly offloading gradients to save VRAM!")
