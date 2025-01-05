@@ -391,8 +391,8 @@ class UnslothCheckpointFunction(torch.autograd.Function):
 
                     global MINIMUM_SIZE
                     global CPU_INDEX
-                    print(CPU_INDEX, LAST_GC_INDEX)
-                    if new_size > MINIMUM_SIZE and CPU_INDEX != LAST_GC_INDEX:
+                    print(CPU_INDEX, CURRENT_GC_INDEX, LAST_GC_INDEX)
+                    if new_size > MINIMUM_SIZE and CURRENT_GC_INDEX != LAST_GC_INDEX:
                         use_gpu_buffer = True
                         global CPU_BUFFERS
                         global GPU_BUFFER
