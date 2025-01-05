@@ -407,10 +407,6 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                         if BACKWARD_PASS:
                             BACKWARD_PASS = False
                             CPU_INDEX = 0
-                            global USE_UNSLOTH_GC
-                            if USE_UNSLOTH_GC:
-                                print("Unsloth: Will smartly offloading gradients to save VRAM!")
-                                USE_UNSLOTH_GC = False
                         pass
 
                         # Extend buffer size
@@ -433,6 +429,11 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                         ctx._saved_metadata = (new_size, shape, CPU_INDEX,)
                         CPU_INDEX += 1
                         tensor_inputs.append(None)
+                        
+                        global USE_UNSLOTH_GC
+                        if USE_UNSLOTH_GC:
+                            print("Unsloth: Will smartly offloading gradients to save VRAM!")
+                            USE_UNSLOTH_GC = False
                     else:
                         ctx._saved_metadata = (None, None, None,)
                         tensor_inputs.append(arg)
