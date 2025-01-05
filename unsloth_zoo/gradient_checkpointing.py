@@ -34,7 +34,6 @@ __all__ = [
     "patch_gradient_checkpointing",
     "unpatch_gradient_checkpointing",
 
-    "create_gradient_checkpointing_buffer",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing"
 ]
@@ -289,6 +288,8 @@ global BACKWARD_PASS
 global EXTRA_STREAM
 global MAIN_STREAM
 global MINIMUM_SIZE
+global USE_UNSLOTH_GC
+global LAST_LAYER_INDEX
 torch_cuda_stream = torch.cuda.stream
 CPU_BUFFERS = []
 
@@ -301,6 +302,8 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
     global EXTRA_STREAM
     global MAIN_STREAM
     global MINIMUM_SIZE
+    global USE_UNSLOTH_GC
+    global LAST_LAYER_INDEX
     CPU_BUFFERS = []
     CPU_INDEX = 0
 
@@ -310,9 +313,8 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
         dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
     pass
 
-    s = 128*1024
-    for i in range(300):
-        x = torch.empty(s, dtype = dtype, device = "cpu", pin_memory = True)
+    for i in range(200):
+        x = torch.empty(128*1024, dtype = dtype, device = "cpu", pin_memory = True)
         CPU_BUFFERS.append(x)
     pass
 
@@ -324,6 +326,11 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
     # Minimum size to enable Unsloth GC is 2MB -> 32 layers = 64MB
     n_bytes = torch.finfo(dtype).bits // 8
     MINIMUM_SIZE = 2 * 1024 * 1024 // n_bytes
+    USE_UNSLOTH_GC = True
+
+    # Disable offloading on the last layer - uses more VRAM and is slower
+    # See https://github.com/pytorch/torchtune/pull/1443
+    LAST_LAYER_INDEX = -1
 pass
 
 
@@ -370,18 +377,31 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                     new_size = arg.numel()
 
                     global MINIMUM_SIZE
-                    if new_size > MINIMUM_SIZE:
+                    global CPU_INDEX
+                    global LAST_LAYER_INDEX
+                    if new_size > MINIMUM_SIZE and CPU_INDEX != LAST_LAYER_INDEX:
                         use_gpu_buffer = True
                         global CPU_BUFFERS
-                        global CPU_INDEX
                         global GPU_BUFFER
                         global BACKWARD_PASS
                         global EXTRA_STREAM
                         global MAIN_STREAM
+
+                        # Handle interrupted training runs
                         if BACKWARD_PASS:
-                            # Handle interrupted training runs
                             BACKWARD_PASS = False
                             CPU_INDEX = 0
+                            if USE_UNSLOTH_GC:
+                                print("Unsloth: Smartly offloading gradients to save VRAM!")
+                                USE_UNSLOTH_GC = False
+                        pass
+
+                        # Extend buffer size
+                        if CPU_INDEX >= len(CPU_BUFFERS):
+                            x = torch.empty(new_size, dtype = arg.dtype, device = "cpu", pin_memory = True)
+                            CPU_BUFFERS.append(x)
+                        pass
+
                         x = CPU_BUFFERS[CPU_INDEX]
                         shape = arg.shape
                         if new_size > x.numel(): x.resize_(new_size)
@@ -449,6 +469,12 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             EXTRA_STREAM.wait_stream(MAIN_STREAM)
             with torch_cuda_stream(EXTRA_STREAM):
                 buffer.copy_(x, non_blocking = True)
+
+            # Save last layer index so next run we do not offload activations
+            # Saves VRAM and saves some time
+            # See https://github.com/pytorch/torchtune/pull/1443
+            global LAST_LAYER_INDEX
+            LAST_LAYER_INDEX = CPU_INDEX - 1 # -1 since we add 1 in forward
         else:
             # No GPU buffer seen
             if len(tensor_indices) != 0:

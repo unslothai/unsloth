@@ -847,7 +847,7 @@ def unsloth_compile_transformers(
     gradient_checkpointing : bool = True,
     manual_replacements    : bool = True,
     fast_lora_forwards     : bool = True,
-    fast_residual_stream   : bool = True,
+    fast_residual_stream   : bool = False,
     accurate_accumulation  : bool = True,
     epilogue_fusion        : bool = True,
     max_autotune           : bool = False,
