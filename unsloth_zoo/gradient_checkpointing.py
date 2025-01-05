@@ -393,6 +393,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                         if BACKWARD_PASS:
                             BACKWARD_PASS = False
                             CPU_INDEX = 0
+                            global USE_UNSLOTH_GC
                             if USE_UNSLOTH_GC:
                                 print("Unsloth: Smartly offloading gradients to save VRAM!")
                                 USE_UNSLOTH_GC = False
