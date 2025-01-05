@@ -381,6 +381,9 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                     global FIRST_PASS
                     global LAST_GC_INDEX
                     if FIRST_PASS:
+                        # Save last layer index so next run we do not offload activations
+                        # Saves VRAM and saves some time
+                        # See https://github.com/pytorch/torchtune/pull/1443
                         LAST_GC_INDEX += 1
                     pass
                     global CURRENT_GC_INDEX
@@ -404,6 +407,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                         if BACKWARD_PASS:
                             BACKWARD_PASS = False
                             CPU_INDEX = 0
+                            global USE_UNSLOTH_GC
                             if USE_UNSLOTH_GC:
                                 print("Unsloth: Will smartly offloading gradients to save VRAM!")
                                 USE_UNSLOTH_GC = False
@@ -482,12 +486,6 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             EXTRA_STREAM.wait_stream(MAIN_STREAM)
             with torch_cuda_stream(EXTRA_STREAM):
                 buffer.copy_(x, non_blocking = True)
-
-            # Save last layer index so next run we do not offload activations
-            # Saves VRAM and saves some time
-            # See https://github.com/pytorch/torchtune/pull/1443
-            global LAST_LAYER_INDEX
-            LAST_LAYER_INDEX = CPU_INDEX - 1 # -1 since we add 1 in forward
         else:
             # No GPU buffer seen
             if len(tensor_indices) != 0:
