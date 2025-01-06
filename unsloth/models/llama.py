@@ -1967,29 +1967,29 @@ class FastLlamaModel:
                 if "embed_tokens" in new_target_modules:
                     print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
-                    dtype = model.model.model.embed_tokens.modules_to_save.default.weight.dtype
-                    model.model.model.embed_tokens.modules_to_save.default\
+                    dtype = model.base_model.model.embed_tokens.modules_to_save.default.weight.dtype
+                    model.base_model.model.embed_tokens.modules_to_save.default\
                         .to(device = "cuda:0", dtype=(dtype if (dtype != torch.float16) else torch.float32), non_blocking = True)
-                    model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
+                    model.base_model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old embed_tokens to CPU - should be disk!
-                    model.model.model.embed_tokens.original_module\
+                    model.base_model.model.embed_tokens.original_module\
                         .to(device = "cpu", non_blocking = True)
-                    model.model.model.embed_tokens.original_module.requires_grad_(False)
+                    model.base_model.model.embed_tokens.original_module.requires_grad_(False)
                 pass
 
                 if "lm_head" in new_target_modules:
                     print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
-                    dtype = model.model.model.lm_head.modules_to_save.default.weight.dtype
-                    model.model.lm_head.modules_to_save.default\
+                    dtype = model.base_model.model.lm_head.modules_to_save.default.weight.dtype
+                    model.base_model.lm_head.modules_to_save.default\
                         .to(device = "cuda:0", dtype=(dtype if (dtype != torch.float16) else torch.float32), non_blocking = True)
-                    model.model.lm_head.modules_to_save.default.requires_grad_(True)
+                    model.base_model.lm_head.modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
-                    model.model.lm_head.original_module\
+                    model.base_model.lm_head.original_module\
                         .to(device = "cpu", non_blocking = True)
-                    model.model.lm_head.original_module.requires_grad_(False)
+                    model.base_model.lm_head.original_module.requires_grad_(False)
                 pass
 
                 return model
