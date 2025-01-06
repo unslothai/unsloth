@@ -66,16 +66,6 @@ BAD_OUTCOMES = {
     "is deprecated"              : "Command is deprecated!",
 }
 
-
-def get_latest_supported_models():
-    converter_latest = requests.get(LLAMA_CPP_CONVERT_FILE).content
-    supported_types = re.findall(rb"@Model\.register\(([^)]{1,})\)", converter_latest)
-    supported_types = b", ".join(supported_types).decode("utf-8")
-    supported_types = re.findall(r"[\'\"]([^\'\"]{1,})[\'\"]", supported_types)
-    return supported_types
-pass
-
-
 def install_package(package, sudo = False, print_output = False, print_outputs = None):
     # All Unsloth Zoo code licensed under LGPLv3
     x = f"{'sudo ' if sudo else ''}apt-get install {package} -y"
@@ -146,7 +136,6 @@ pass
 
 def check_pip():
     # All Unsloth Zoo code licensed under LGPLv3
-
     for pip in PIP_OPTIONS:
         final_pip = pip
         with subprocess.Popen(pip, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT) as sp:
@@ -190,6 +179,8 @@ pass
 
 
 def check_llama_cpp(llama_cpp_folder = "llama.cpp"):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Check PATH and main directory
     system_directories = [os.getcwd()] + list(os.environ.get("PATH").split(os.pathsep))
 
     partial_outputs = []
@@ -203,6 +194,7 @@ def check_llama_cpp(llama_cpp_folder = "llama.cpp"):
         quantizer_location = None
         converter_location = None
         try:
+            # Check llama.cpp/llama-quantize binary file
             for quantizer in ["llama-quantize", "quantize"]:
                 location = os.path.join(llama_cpp_folder, quantizer)
                 if os.path.exists(location) and os.access(location, os.X_OK):
@@ -226,7 +218,7 @@ def check_llama_cpp(llama_cpp_folder = "llama.cpp"):
                 )
             pass
 
-            # Check conversion file
+            # Check convert_hf_to_gguf.py file
             for converter in ["convert-hf-to-gguf.py", "convert_hf_to_gguf.py"]:
                 location = os.path.join(llama_cpp_folder, converter)
                 if os.path.exists(location):
@@ -247,11 +239,39 @@ def check_llama_cpp(llama_cpp_folder = "llama.cpp"):
 pass
 
 
+def get_latest_supported_models(llama_cpp_folder = "llama.cpp"):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Gets all model config names like LlamaForCasualLM that are supported by llama.cpp
+    try:
+        # Try getting llama.cpp folder
+        quantizer, converter = check_llama_cpp(llama_cpp_folder = llama_cpp_folder)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            name = "llama_cpp_module",
+            location = converter,
+        )
+        llama_cpp_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(llama_cpp_module)
+        supported_types = frozenset(llama_cpp_module.Model._model_classes.keys())
+    except:
+        # Instead get it from the latest llama.cpp Github repo
+        converter_latest = requests.get(LLAMA_CPP_CONVERT_FILE).content
+        supported_types = re.findall(rb"@Model\.register\(([^)]{1,})\)", converter_latest)
+        supported_types = b", ".join(supported_types).decode("utf-8")
+        supported_types = re.findall(r"[\'\"]([^\'\"]{1,})[\'\"]", supported_types)
+        supported_types = frozenset(supported_types)
+    pass
+    return supported_types
+pass
+
+
 def install_llama_cpp(
     llama_cpp_folder = "llama.cpp",
     llama_cpp_targets = LLAMA_CPP_TARGETS,
     print_output = False,
 ):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Installs llama.cpp
     quantizer = None
     converter = None
 
