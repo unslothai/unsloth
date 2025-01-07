@@ -14,20 +14,12 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-global CHECKPOINT_BUFFERS
-global CHECKPOINT_INDEX
-global MAX_CHECKPOINT_RANGE
-global CHECKPOINT_LOGGING
-CHECKPOINT_BUFFERS = []
-CHECKPOINT_INDEX = 0
-MAX_CHECKPOINT_RANGE = 1000
-CHECKPOINT_LOGGING = True
-
 import torch
 import numpy as np
 from typing import Union, Optional, List, Any, Callable, Tuple
 from packaging.version import Version
 import os
+from .utils import _get_dtype
 
 __all__ = [
     "calculate_n_gradient_checkpoints",
@@ -42,7 +34,6 @@ __all__ = [
     "patch_gradient_checkpointing",
     "unpatch_gradient_checkpointing",
 
-    "create_gradient_checkpointing_buffer",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing"
 ]
@@ -144,7 +135,7 @@ pass
 
 class Unsloth_Offloaded_Gradient_Checkpointer(torch.autograd.Function):
     """
-    Code licensed under LGPL
+    All Unsloth Zoo code licensed under LGPLv3
     Saves VRAM by smartly offloading to RAM.
     Tiny hit to performance, since we mask the movement via non blocking calls.
     """
@@ -176,7 +167,7 @@ pass
 
 class Unsloth_Gradient_Checkpointer(torch.autograd.Function):
     """
-    Code licensed under LGPL
+    All Unsloth Zoo code licensed under LGPLv3
     Same as normal gradient checkpointing but cleaner
     """
     @staticmethod
@@ -204,10 +195,10 @@ class Unsloth_Gradient_Checkpointer(torch.autograd.Function):
 pass
 
 
-@torch._disable_dynamo
-def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
-    return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
-pass
+# @torch._disable_dynamo
+# def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
+#     return Unsloth_Offloaded_Gradient_Checkpointer.apply(function, *args)
+# pass
 
 
 @torch._disable_dynamo
@@ -258,25 +249,6 @@ def unpatch_gradient_checkpointing():
 pass
 
 
-def create_gradient_checkpointing_buffer(dtype = torch.float16):
-    # Code licensed under LGPL
-    global CHECKPOINT_BUFFERS
-    global CHECKPOINT_INDEX
-    global MAX_CHECKPOINT_RANGE
-    global CHECKPOINT_LOGGING
-    CHECKPOINT_INDEX = 0
-    CHECKPOINT_BUFFERS = []
-    CHECKPOINT_LOGGING = True
-    if len(CHECKPOINT_BUFFERS) != 0: return
-
-    for _ in range(MAX_CHECKPOINT_RANGE):
-        x = torch.empty(0, pin_memory = True, dtype = dtype)
-        x.__UNSLOTH_BUFFER__ = True
-        CHECKPOINT_BUFFERS.append(x)
-    pass
-pass
-
-
 from torch.utils.checkpoint import (
     check_backward_validity,
     _infer_device_type,
@@ -309,11 +281,72 @@ def set_device_states(devices, states, *, device_type=None) -> None:
             device_module.set_rng_state(state)
 pass
 
+global CPU_BUFFERS
+global CPU_INDEX
+global GPU_BUFFER
+global BACKWARD_PASS
+global EXTRA_STREAM
+global MAIN_STREAM
+global MINIMUM_SIZE
+global USE_UNSLOTH_GC
+global LAST_GC_INDEX
+global FIRST_PASS
+global CURRENT_GC_INDEX
+torch_cuda_stream = torch.cuda.stream
+CPU_BUFFERS = []
+
+def initialize_unsloth_gradient_checkpointing(dtype = None):
+    # All Unsloth Zoo code licensed under LGPLv3
+    global CPU_BUFFERS
+    global CPU_INDEX
+    global GPU_BUFFER
+    global BACKWARD_PASS
+    global EXTRA_STREAM
+    global MAIN_STREAM
+    global MINIMUM_SIZE
+    global USE_UNSLOTH_GC
+    global LAST_GC_INDEX
+    global FIRST_PASS
+    global CURRENT_GC_INDEX
+    CPU_BUFFERS = []
+    CPU_INDEX = 0
+
+    if dtype is None:
+        major_version, minor_version = torch.cuda.get_device_capability()
+        SUPPORTS_BFLOAT16 = (major_version >= 8)
+        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+    pass
+
+    for i in range(200):
+        x = torch.empty(128*1024, dtype = dtype, device = "cpu", pin_memory = True)
+        CPU_BUFFERS.append(x)
+    pass
+
+    GPU_BUFFER = torch.empty(2*256*2048, dtype = dtype, device = "cuda:0")
+    BACKWARD_PASS = True
+    EXTRA_STREAM = torch.cuda.Stream()
+    MAIN_STREAM = torch.cuda.default_stream(torch.device("cuda:0"))
+
+    # Minimum size to enable Unsloth GC is 2MB -> 32 layers = 64MB
+    n_bytes = torch.finfo(dtype).bits // 8
+    MINIMUM_SIZE = 2 * 1024 * 1024 // n_bytes
+    USE_UNSLOTH_GC = True
+
+    # Disable offloading on the last layer - uses more VRAM and is slower
+    # See https://github.com/pytorch/torchtune/pull/1443
+    LAST_GC_INDEX = 0
+    FIRST_PASS = True
+    CURRENT_GC_INDEX = 0
+pass
+
 
 class UnslothCheckpointFunction(torch.autograd.Function):
+
     @staticmethod
     def forward(ctx, run_function, preserve_rng_state, *args):
-        check_backward_validity(args)
+        # All Unsloth Zoo code licensed under LGPLv3
+        # check_backward_validity(args)
+        # Check if no requires_grad in inputs
         ctx.run_function = run_function
         ctx.preserve_rng_state = preserve_rng_state
         # Accommodates the (remote) possibility that autocast is enabled for cpu AND gpu.
@@ -338,30 +371,96 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         ctx.inputs = []
         ctx.tensor_indices = []
         tensor_inputs = []
-        if len(args) != 0:
-            arg = args[0]
+        ctx._requires_gradient = False
+        use_gpu_buffer = False
+
+        for i, arg in enumerate(args):
             if torch.is_tensor(arg):
-                tensor_inputs.append(arg)
-                ctx.tensor_indices.append(0)
-                ctx.inputs.append(None)
-            else:
-                ctx.inputs.append(arg)
-        for i, arg in enumerate(args[1:], start = 1):
-            if torch.is_tensor(arg):
-                tensor_inputs.append(arg)
+
+                if i == 0 and arg.requires_grad:
+                    global FIRST_PASS
+                    global LAST_GC_INDEX
+                    if FIRST_PASS:
+                        # Save last layer index so next run we do not offload activations
+                        # Saves VRAM and saves some time
+                        # See https://github.com/pytorch/torchtune/pull/1443
+                        LAST_GC_INDEX += 1
+                    pass
+                    global CURRENT_GC_INDEX
+                    CURRENT_GC_INDEX += 1
+
+                    ctx._requires_gradient = True
+                    new_size = arg.numel()
+
+                    global MINIMUM_SIZE
+                    global CPU_INDEX
+                    if new_size > MINIMUM_SIZE and CURRENT_GC_INDEX != LAST_GC_INDEX:
+                        use_gpu_buffer = True
+                        global CPU_BUFFERS
+                        global GPU_BUFFER
+                        global BACKWARD_PASS
+                        global EXTRA_STREAM
+                        global MAIN_STREAM
+
+                        # Handle interrupted training runs
+                        if BACKWARD_PASS:
+                            BACKWARD_PASS = False
+                            CPU_INDEX = 0
+                        pass
+
+                        # Extend buffer size
+                        if CPU_INDEX >= len(CPU_BUFFERS):
+                            x = torch.empty(new_size, dtype = arg.dtype, device = "cpu", pin_memory = True)
+                            CPU_BUFFERS.append(x)
+                        pass
+
+                        x = CPU_BUFFERS[CPU_INDEX]
+                        shape = arg.shape
+                        if new_size > x.numel(): x.resize_(new_size)
+                        if new_size > GPU_BUFFER.numel(): GPU_BUFFER.resize_(new_size)
+                        x = x[:new_size].view(shape)
+
+                        # See https://pytorch.org/docs/stable/notes/cuda.html#cuda-streams
+                        EXTRA_STREAM.wait_stream(MAIN_STREAM)
+                        with torch_cuda_stream(EXTRA_STREAM):
+                            x.copy_(arg, non_blocking = True)
+
+                        ctx._saved_metadata = (new_size, shape, CPU_INDEX,)
+                        CPU_INDEX += 1
+                        tensor_inputs.append(None)
+
+                        global USE_UNSLOTH_GC
+                        if USE_UNSLOTH_GC:
+                            print("Unsloth: Will smartly offloading gradients to save VRAM!")
+                            USE_UNSLOTH_GC = False
+                    else:
+                        ctx._saved_metadata = (None, None, None,)
+                        tensor_inputs.append(arg)
+                    pass
+                else:
+                    tensor_inputs.append(arg)
+                pass
                 ctx.tensor_indices.append(i)
                 ctx.inputs.append(None)
             else:
                 ctx.inputs.append(arg)
-
-        ctx.save_for_backward(*tensor_inputs)
+            pass
+        pass
+        if ctx._requires_gradient: ctx.save_for_backward(*tensor_inputs)
 
         with torch.no_grad():
             outputs = run_function(*args)
+
+        if use_gpu_buffer: MAIN_STREAM.wait_stream(EXTRA_STREAM)
         return outputs
+    pass
+
 
     @staticmethod
     def backward(ctx, *args):
+        # All Unsloth Zoo code licensed under LGPLv3
+        if not ctx._requires_gradient: return None
+
         if not torch.autograd._is_checkpoint_valid():
             raise RuntimeError(
                 "When use_reentrant=True, torch.utils.checkpoint is incompatible"
@@ -369,17 +468,41 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                 " To resolve this error, you can either set use_reentrant=False,"
                 " or call .backward() without passing the `inputs` argument."
             )
+
         # Copy the list to avoid modifying original list.
         inputs = list(ctx.inputs)
         tensor_indices = ctx.tensor_indices
         tensors = ctx.saved_tensors
 
-        # Fill in inputs with appropriate saved tensors.
-        if len(tensor_indices) != 0:
-            inputs[tensor_indices[0]] = tensors[0].to("cuda:0", non_blocking = True)
+        new_size, shape, CPU_INDEX = ctx._saved_metadata
+        if CPU_INDEX is not None:
+            global GPU_BUFFER
+            global MAIN_STREAM
+            global EXTRA_STREAM
+            buffer = GPU_BUFFER[:new_size].view(shape)
+            x = CPU_BUFFERS[CPU_INDEX][:new_size].view(shape)
 
+            # See https://pytorch.org/docs/stable/notes/cuda.html#cuda-streams
+            EXTRA_STREAM.wait_stream(MAIN_STREAM)
+            with torch_cuda_stream(EXTRA_STREAM):
+                buffer.copy_(x, non_blocking = True)
+        else:
+            # No GPU buffer seen
+            if len(tensor_indices) != 0:
+                inputs[tensor_indices[0]] = tensors[0]
+        pass
+
+        # Fill in inputs with appropriate saved tensors.
         for i, idx in enumerate(tensor_indices[1:], start = 1):
-            inputs[idx] = tensors[i].to("cuda:0", non_blocking = True)
+            inputs[idx] = tensors[i]
+        pass
+
+        global BACKWARD_PASS
+        BACKWARD_PASS = True
+        global FIRST_PASS
+        FIRST_PASS = False
+        global CURRENT_GC_INDEX
+        CURRENT_GC_INDEX = 0
 
         # Stash the surrounding rng state, and mimic the state that was
         # present at this time during forward.  Restore the surrounding state
@@ -394,13 +517,34 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                 torch.set_rng_state(ctx.fwd_cpu_state)
                 if ctx.had_device_in_fwd:
                     set_device_states(ctx.fwd_devices, ctx.fwd_device_states, device_type=ctx.device_type)
-            detached_inputs = detach_variable(tuple(inputs))
 
             device_autocast_ctx = torch.amp.autocast(
                 device_type=ctx.device_type, **ctx.device_autocast_kwargs
             ) if torch.amp.is_autocast_available(ctx.device_type) else contextlib.nullcontext()
+
+            # detached_inputs = detach_variable(tuple(inputs))
+            detached_inputs = []
+            for inp in inputs:
+                if not isinstance(inp, torch.Tensor):
+                    detached_inputs.append(inp)
+                    continue
+                x = inp.detach()
+                x.requires_grad = inp.requires_grad
+                detached_inputs.append(x)
+            pass
+
+            # Wait for GPU buffer to finish
+            if CPU_INDEX is not None:
+                MAIN_STREAM.wait_stream(EXTRA_STREAM)
+                x = buffer.detach()
+                x.requires_grad_(True)
+                detached_inputs[0] = x
+            pass
+
             with torch.enable_grad(), device_autocast_ctx, torch.amp.autocast("cpu", **ctx.cpu_autocast_kwargs):  # type: ignore[attr-defined]
                 outputs = ctx.run_function(*detached_inputs)
+            pass
+        pass
 
         if isinstance(outputs, torch.Tensor):
             outputs = (outputs,)
@@ -412,25 +556,37 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             if torch.is_tensor(outputs[i]) and outputs[i].requires_grad:
                 outputs_with_grad.append(outputs[i])
                 args_with_grad.append(args[i])
+        pass
+
         if len(outputs_with_grad) == 0:
+            pass
             # raise RuntimeError(
             #     "none of output has requires_grad=True,"
             #     " this checkpoint() is not necessary"
             # )
-            pass
         else:
             torch.autograd.backward(outputs_with_grad, args_with_grad)
+        pass
+
         grads = tuple(
             inp.grad if isinstance(inp, torch.Tensor) else None
             for inp in detached_inputs
         )
+        # Clear all memory
+        for i in range(len(detached_inputs)):
+            detached_inputs[i] = None
+            inputs[i] = None
+        pass
 
         return (None, None) + grads
+    pass
 pass
 
 
-def patch_unsloth_smart_gradient_checkpointing():
+def patch_unsloth_smart_gradient_checkpointing(dtype = None):
+    # All Unsloth Zoo code licensed under LGPLv3
     if torch.utils.checkpoint.CheckpointFunction.__name__ == "UnslothCheckpointFunction": return
+    initialize_unsloth_gradient_checkpointing(dtype)
     torch.utils.checkpoint._old_CheckpointFunction = torch.utils.checkpoint.CheckpointFunction
     torch.utils.checkpoint.CheckpointFunction = UnslothCheckpointFunction
 pass
@@ -440,6 +596,19 @@ def unpatch_unsloth_smart_gradient_checkpointing():
     if torch.utils.checkpoint.CheckpointFunction.__name__ != "UnslothCheckpointFunction": return
     if not hasattr(torch.utils.checkpoint.CheckpointFunction, "_old_CheckpointFunction"): return
     torch.utils.checkpoint.CheckpointFunction = torch.utils.checkpoint._old_CheckpointFunction
+    global CPU_BUFFERS
+    global GPU_BUFFER
+    for i in range(len(CPU_BUFFERS)): CPU_BUFFERS[i] = None
+    GPU_BUFFER = None
+pass
+
+
+@torch._disable_dynamo
+def unsloth_offloaded_gradient_checkpoint(function, *args, use_reentrant = None, **kwargs):
+    global CPU_BUFFERS
+    if len(CPU_BUFFERS) == 0:
+        initialize_unsloth_gradient_checkpointing(args[0].dtype)
+    return UnslothCheckpointFunction.apply(function, *args)
 pass
 
 # Unsloth Zoo - Utilities for Unsloth

@@ -112,7 +112,7 @@ def get_transformers_model_type(
     revision = None,
     trust_remote_code = False,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     from transformers import AutoConfig
     from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
     was_disabled = are_progress_bars_disabled()
@@ -151,7 +151,7 @@ def no_update_causal_mask(*args, **kwargs): return None
 
 # Patch SDPA
 def replace_with_grouped_query_attention(module, source):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     if "enable_gqa" not in torch.nn.functional.scaled_dot_product_attention.__doc__: return source
 
     grouped_query_attention_finder = \
@@ -208,7 +208,7 @@ def create_new_function(
     overwrite = True,
     add_torch_compile = False,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     global UNSLOTH_CREATED_FUNCTIONS
     global UNSLOTH_COMPILE_LOCATION
     if new_source[0] == " ":
@@ -288,7 +288,7 @@ def create_standalone_class(
     add_loss_kwargs = False,
     new_init = None,
 ) -> str:
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Create optimized standalone forward function
     f = eval(f"{model_location}.{module}")
     full_class = inspect.getsource(f)
@@ -491,7 +491,7 @@ ce_finders = [
 
 
 def apply_fused_lm_head(forward):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Logit returning?
     RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
     NOT_RETURN_LOGITS = not RETURN_LOGITS
@@ -555,7 +555,7 @@ PRE_CHECK = check_nvidia()
 
 # Patch remaining functions
 def convert_attention_masks_to_bool(module, old_source):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Convert attention mask creation functions to boolean
     source = re.sub(r"\([\s]{0,}", "(", old_source)
     source = re.sub(r"[\s]{0,}\)", ")", source)
@@ -596,7 +596,7 @@ $else:
 $    hidden_states = LAYER(ARGS)
 """
 def patch_gradient_checkpointing(module, source):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     try: init = inspect.getsource(source.__init__)
     except: return None
     if "nn.ModuleList" not in init: return None
@@ -638,21 +638,26 @@ def patch_gradient_checkpointing(module, source):
 pass
 
 
+# Torch.compiling makes things slower - rather just leave it as addmm
 COMPILED_LORA_FORWARD = """
-@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
+torch_addmm = torch.addmm
+torch_add   = torch.add
+# @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     xA = dropout(x) @ lora_A.weight.t()
-    output = torch.addmm(
-        result.reshape(-1, result.shape[-1]),
-        xA.reshape(-1, xA.shape[-1]),
+    # output = result + scaling * xA @ lora_B.weight.t()
+    shape = result.shape
+    output = torch_addmm(
+        result.view(-1, shape[-1]),
+        xA.view(-1, xA.shape[-1]),
         lora_B.weight.t(),
         alpha = scaling,
         beta = 1,
-    ).reshape(result.shape)
+    ).view(shape)
 
     bias = lora_B.bias
     if bias is not None:
-        output = torch.add(
+        output = torch_add(
         output,
         bias,
         alpha = scaling,
@@ -663,7 +668,7 @@ pass
 """
 
 def patch_lora_forwards(torch_compile_options):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     Linear_LoRA_Layers = get_lora_layer_modules()
     success = 0
     for function, parent, child in Linear_LoRA_Layers:
@@ -739,7 +744,7 @@ pass
 
 
 def patch_residual_stream(source):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
 
     # if self.is_gated: hidden_state = self.gate_ffn.tanh() * hidden_state
     # if self.is_gated: hidden_state = self.gate_attn.tanh() * hidden_state
@@ -784,12 +789,15 @@ pass
 
 
 def patch_gradient_accumulation(modeling_file, module):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
 
     functions = dir(modeling_file)
     module = eval(f"modeling_file.{module}")
-    forward = module.forward
-    source = inspect.getsource(forward)
+    try: 
+        forward = module.forward
+        source = inspect.getsource(forward)
+    except: 
+        return None
     has_kwargs = tuple(inspect.signature(forward).parameters.values())[-1].kind == inspect._VAR_KEYWORD
     if has_kwargs: return None
 
@@ -842,7 +850,7 @@ def unsloth_compile_transformers(
     gradient_checkpointing : bool = True,
     manual_replacements    : bool = True,
     fast_lora_forwards     : bool = True,
-    fast_residual_stream   : bool = True,
+    fast_residual_stream   : bool = False,
     accurate_accumulation  : bool = True,
     epilogue_fusion        : bool = True,
     max_autotune           : bool = False,
@@ -854,8 +862,12 @@ def unsloth_compile_transformers(
     disable                : bool = False,
     return_logits          : bool = False,
 ):
-    # Code licensed under LGPL
-    if disable: return
+    # All Unsloth Zoo code licensed under LGPLv3
+    disable = disable or (os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1")
+
+    if fast_residual_stream:
+        raise NotImplementedError("Unsloth: Fast residual stream optimization makes things slower!")
+    pass
 
     model_location = f"transformers.models.{model_type}.modeling_{model_type}"
     exec(f"import {model_location}", globals())
@@ -1459,7 +1471,7 @@ def unsloth_compile_transformers(
             combined_module = None
     pass
 
-    if compile_torch_modules:
+    if compile_torch_modules and not disable:
 
         from .patch_torch_functions import patch_torch_functions
         patch_torch_functions()
@@ -1495,7 +1507,7 @@ def unsloth_compile_transformers(
         pass
     pass
     # Quick exit
-    if combined_module is None: return
+    if combined_module is None or disable: return
 
     # Import and replace with new module
     for module in all_standalone_classes.keys():

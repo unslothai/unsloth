@@ -241,6 +241,7 @@ pass
 
 
 class UnslothVisionDataCollator:
+    # All Unsloth Zoo code licensed under LGPLv3
     __slots__ = "padding_token_ids", "dtype", "ignore_index", "processor", "formatting_func"
 
     def __init__(self, model, processor, formatting_func = None, ignore_index = -100):

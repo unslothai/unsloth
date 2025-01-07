@@ -21,6 +21,7 @@ __all__ = [
 ]
 
 from .peft_utils import get_lora_layer_modules
+from .utils import _get_dtype
 
 MODEL_CARD = \
 """---
@@ -64,7 +65,7 @@ def create_huggingface_repo(
     private = False,
     token = None,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     assert(type(repo_id) is str)
     if repo_id.count("/") != 1:
         raise TypeError(f"Unsloth: You are pushing to Hugging Face, but {repo_id} is not a valid repo.")
@@ -122,7 +123,7 @@ pass
 
 
 def check_if_quantized(module: torch.nn.Module) -> bool:
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Adapted from https://github.com/huggingface/peft/blob/main/src/peft/utils/integrations.py
     if not hasattr(module, "weight"): return False
 
@@ -162,7 +163,7 @@ pass
 
 
 def expand_module_keys(name, module, original_keys):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     keys = module.state_dict().keys()
     for key in keys: original_keys.add(name + "." + key)
     return original_keys
@@ -186,8 +187,9 @@ pass
 
 
 def assert_same_keys(model, new_state_dict):
-    # Code licensed under LGPL
-    original_keys = model.base_model.model.state_dict().keys()
+    # All Unsloth Zoo code licensed under LGPLv3
+    inner_model = model.base_model.model if hasattr(model, "base_model") else model
+    original_keys = inner_model.state_dict().keys()
     all_original_keys = set()
     for x in original_keys:
         where_weight = x.rfind(".weight")
@@ -211,7 +213,7 @@ pass
 
 @torch.inference_mode
 def create_lora_statistics(model, merge_into_original = False, return_state_dict = True):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # merge_into_original is merging directly into 16bit downloaded model
     # without dequantizing
     Linear_LoRA_Layers = get_lora_layer_modules()
@@ -222,9 +224,9 @@ def create_lora_statistics(model, merge_into_original = False, return_state_dict
 
     remove_keys = set()
     keep_keys   = set()
-    assert(hasattr(model, "base_model"))
-    assert(hasattr(model.base_model, "model"))
-    for name, module in model.base_model.model.named_modules():
+
+    inner_model = model.base_model.model if hasattr(model, "base_model") else model
+    for name, module in inner_model.named_modules():
         if name == "": continue
 
         elif name.endswith(".lora_A.default"):
@@ -276,7 +278,7 @@ def create_lora_statistics(model, merge_into_original = False, return_state_dict
 
     # Also return state_dict if needed
     if return_state_dict:
-        old_state_dict = model.base_model.model.state_dict()
+        old_state_dict = inner_model.state_dict()
         state_dict     = collections.OrderedDict()
         for name, param in old_state_dict.items():
 
@@ -311,7 +313,7 @@ pass
 
 @torch.inference_mode
 def _merge_and_overwrite_lora(save_directory, filename, lora_weights, output_dtype,):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Merges LoRA and overwrites the safetensors file it was merged to
     filename = os.path.join(save_directory, filename)
     tensors = OrderedDict()
@@ -356,15 +358,6 @@ def get_torch_storage_id_new(x):
 pass
 
 
-def _get_dtype(dtype):
-    if type(dtype) is str:
-        try: dtype = eval(f"torch.{dtype}")
-        except: pass
-    if type(dtype) is torch.dtype: return dtype
-    raise TypeError(f"Unsloth: {dtype} is not recognized.")
-pass
-
-
 def prepare_saving(
     model,
     save_directory,
@@ -378,7 +371,7 @@ def prepare_saving(
     min_size_in_bytes = 100_000_000, # Must be of this size - 100MB default
     use_temp_file = False,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Check size
     from huggingface_hub.serialization._base import parse_size_to_int
     max_shard_size_in_bytes = max_shard_size
@@ -503,10 +496,9 @@ def merge_and_overwrite_lora(
     low_disk_space_usage = False,
     use_temp_file        = False,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Directly downloads 16bit original weights and merges LoRA
-    if not hasattr(model, "base_model"):
-        raise RuntimeError("Unsloth: This is not a LoRA model - please save normally!")
+    inner_model = model.base_model.model if hasattr(model, "base_model") else model
 
     try:
         model_name = get_model_name(model.config._name_or_path, load_in_4bit = False)
@@ -563,7 +555,7 @@ def merge_and_overwrite_lora(
 
     # Save config / generation_config via no state_dict and tokenizer
     if tokenizer is not None: tokenizer.save_pretrained(save_directory = save_directory,)
-    model.base_model.model.save_pretrained(
+    inner_model.save_pretrained(
         save_directory = save_directory,
         state_dict = {},
     )
@@ -643,7 +635,7 @@ def incremental_save_pretrained(
     repo_id = "",
     revision = None,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Move file timestamps out
     makedir = re.search(r"os\.makedirs\(save_directory.+?\n", save_pretrained)
     assert(makedir is not None)
@@ -735,8 +727,10 @@ def merge_and_dequantize_lora(
     use_temp_file        = False,
     **kwargs,
 ):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     # Dequantizes model to 16bit weights and merges LoRA
+    inner_model = model.base_model.model if hasattr(model, "base_model") else model
+
     (
         username, repo_id, hf_api, token,
         output_dtype, element_size,
@@ -831,7 +825,7 @@ def merge_and_dequantize_lora(
         save_directory,
     )
     save_pretrained_dequantized(
-        model.base_model.model,
+        inner_model,
         save_directory     = save_directory,
         push_to_hub        = False,
         max_shard_size     = max_shard_size_in_bytes,

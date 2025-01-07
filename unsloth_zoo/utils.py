@@ -16,12 +16,14 @@
 
 __all__ = [
     "Version",
+    "_get_dtype",
 ]
 
 from packaging.version import Version as TrueVersion
+import torch
 
 def Version(version):
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     try:
         return TrueVersion(version)
     except:
@@ -32,6 +34,15 @@ def Version(version):
             f"File name = [{caller.filename}] Line number = [{caller.lineno}]"
         )
     pass
+pass
+
+
+def _get_dtype(dtype):
+    if type(dtype) is str:
+        try: dtype = eval(f"torch.{dtype.lower()}")
+        except: pass
+    if type(dtype) is torch.dtype: return dtype
+    return None
 pass
 
 # Unsloth Zoo - Utilities for Unsloth

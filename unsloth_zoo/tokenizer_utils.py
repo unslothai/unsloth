@@ -36,7 +36,7 @@ def mean_of_trained_tokens(model, eps = 1e-16):
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     embedding_matrix = model.get_input_embeddings ().weight.clone()
     lm_head_matrix   = model.get_output_embeddings().weight.clone()
 
@@ -80,7 +80,7 @@ def add_new_tokens(
     Smartly resizes the tokenizer and adds new tokens to the model.
     We also disregard untrained tokens by removing them from the mean calculation.
     """
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     assert(isinstance(new_tokens, (list, tuple)))
     assert(len(new_tokens) > 0)
     assert(method == "mean" or method == "interpolation")
@@ -204,7 +204,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     These include <|eot_id|>, <|start_header_id|>, <|end_header_id|>
     We reset them to the mean of the rest of the tokens
     """
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     embedding_matrix = model.get_input_embeddings ().weight
     lm_head_matrix   = model.get_output_embeddings().weight
     chat_template = getattr(tokenizer, "chat_template", None)
@@ -455,7 +455,7 @@ def patch_tokenizer(model, tokenizer):
         Check if pad_token is not the same as eos_token otherwise the loss will ignore it!!
         Fixes https://github.com/unslothai/unsloth/issues/5
     """
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     joiner = "\1\0=+=\0\1"
     number_repetitions = 3 - 1 # Number of reserved tokens needed
 

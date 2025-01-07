@@ -43,6 +43,7 @@ __all__ = [
 
 
 def patch_loss_functions(_fast_cross_entropy_loss, torch_compile = True):
+    # All Unsloth Zoo code licensed under LGPLv3
     try:
         import transformers.loss.loss_utils
     except:
@@ -147,6 +148,7 @@ def fused_linear_cross_entropy(
     logit_softcapping  : float = 0,
     accuracy_threshold : str = "auto",
 ):
+    # All Unsloth Zoo code licensed under LGPLv3
     reduction = "sum" if num_items_in_batch is not None else "mean"
     if logit_softcapping == 0: logit_softcapping = None
     loss = linear_cross_entropy(

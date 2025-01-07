@@ -20,11 +20,15 @@ __all__ = [
     "merge_and_dequantize_lora",
     "SKIP_QUANTIZATION_MODULES",
     "get_lora_layer_modules",
+    "requires_grad_for_gradient_checkpointing",
 ]
 
+import inspect
 import torch
 import os
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, TypeVar, Union
+from collections import OrderedDict
+import re
 
 # Skip some modules sensitive to quantization
 SKIP_QUANTIZATION_MODULES = [
@@ -49,7 +53,7 @@ def get_peft_regex(
     """
     Create a regex pattern to apply LoRA to only select layers of a model.
     """
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     if not finetune_vision_layers and not finetune_language_layers:
         raise RuntimeError(
             "Unsloth: No layers to finetune - please select to finetune the vision and/or the language layers!"
@@ -60,7 +64,6 @@ def get_peft_regex(
         )
     pass
 
-    import re
     from collections import Counter
     # Get only linear layers
     modules = model.named_modules()
@@ -130,7 +133,7 @@ pass
 
 
 def get_lora_layer_modules():
-    # Code licensed under LGPL
+    # All Unsloth Zoo code licensed under LGPLv3
     import peft.tuners.lora
     path = os.path.split(peft.tuners.lora.__file__)[0]
     files = os.listdir(path)
@@ -147,6 +150,118 @@ def get_lora_layer_modules():
         Linear_LoRA_Layers += [(eval(x), item, x,) for x in modules]
     pass
     return tuple(Linear_LoRA_Layers)
+pass
+
+
+def requires_grad_for_gradient_checkpointing(model):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Enables requires_grad to make gradient checkpointing work on
+    # non language models that don't just use .embed_tokens
+    def register_other_hooks(name1, name2, module, _hooks):
+        old_hooks = eval(f"module.{_hooks}")
+        other_hooks = []
+        for value in old_hooks.values():
+            qualname = getattr(value, "__qualname__", "")
+            name     = getattr(value, "__name__", "")
+            if name1 in qualname or name2 in qualname: pass
+            elif name2 in name or name2 in name: pass
+            else: other_hooks.append(value)
+        pass
+        # Keep none input requires grad hooks
+        exec(f"module.{_hooks} = OrderedDict()")
+        for hook in other_hooks:
+            exec(f"module.register{_hooks[:-1]}(hook)")
+        pass
+    pass
+
+    # Remove all previous forward hooks for gradient checkpointing
+    for name, module in model.named_modules():
+        if len(module._forward_hooks) != 0:
+            register_other_hooks(
+                "enable_input_require_grads",
+                "make_inputs_require_grad",
+                module,
+                "_forward_hooks",
+            )
+        pass
+    pass
+
+    # Add post forward hook
+    def requires_grad_post_hook(module, input, output):
+        output.requires_grad_(True)
+    pass
+
+    def requires_grad_pre_hook(module, input):
+        type_input = type(input)
+        if type_input is torch.Tensor:
+            input.requires_grad_(True)
+        elif type_input is tuple or type_input is list:
+            if len(input) == 0:
+                raise RuntimeError("Unsloth: Failed to make input require gradients!")
+            input[0].requires_grad_(True)
+        else:
+            raise RuntimeError("Unsloth: Failed to make input require gradients!")
+    pass
+
+    # Find 1st ever item which requires grad
+    param = None
+    for name, param in model.named_parameters():
+        if param.requires_grad: break
+    if param is None: return
+
+    name = re.sub("\.([\d]{1,})\.", r"[\1].", name)
+    name_components = name.split(".")
+
+    if len(name_components) == 0:
+        raise RuntimeError("Unsloth: Model has 0 layers?")
+
+    final_where = None
+    # Try getting previous parent module
+    for j in range(len(name_components)-1, 0, -1):
+        name_curr = name_components[j]
+        name_pre  = "model." + ".".join(name_components[:j])
+        # Disable [\d] since it fails in gradient checkpointing
+        if re.search(r"\[[\d]{1,}\]", name_pre): continue
+        module = eval(name_pre)
+        if hasattr(module, "forward"):
+            try: forward = inspect.getsource(module.forward)
+            except: continue
+            if f"self.{name_curr}(" in forward:
+                final_where = j + 1
+                break
+            pass
+        pass
+    pass
+
+    if final_where is None:
+        raise RuntimeError("Unsloth: Could not find an embedding module")
+    module_name = "model." + ".".join(name_components[:final_where])
+    print(f"Unsloth: Making `{module_name}` require gradients")
+    module = eval(module_name)
+
+    # Check if input_embeddings exists
+    if hasattr(module, "get_input_embeddings"):
+        # Use forward hook after Embedding() is called
+        module = module.get_input_embeddings()
+
+        # Add other hooks first
+        register_other_hooks(
+            "requires_grad_post_hook",
+            "requires_grad_post_hook",
+            module,
+            "_forward_hooks",
+        )
+        module.register_forward_hook(requires_grad_post_hook)
+    else:
+        # Use forward pre hook before module is called
+        register_other_hooks(
+            "requires_grad_pre_hook",
+            "requires_grad_pre_hook",
+            module,
+            "_forward_pre_hooks",
+        )
+        module.register_forward_pre_hook(requires_grad_pre_hook)
+    pass
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
