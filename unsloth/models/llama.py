@@ -384,6 +384,7 @@ def LlamaAttention_fast_forward(
         else:
             cos, sin = rotary_emb(V, seq_len=kv_seq_len)
 
+    print(387, Q.dtype, K.dtype, position_ids)
     Q, K = (
         fast_rope_embedding(Q, K, cos, sin) 
         if position_ids is None 
