@@ -18,8 +18,6 @@ import torch
 from .utils import calculate_settings
 ROPE_GROUP_SIZE : int = 4
 
-@triton.heuristics({"BACKWARD_PASS": lambda args: bool(args["BACKWARD_PASS"]),})
-@triton.jit
 def _rope_embedding(
     Q,     Q_row_stride,
     cos, cos_row_stride,
@@ -69,6 +67,12 @@ def _rope_embedding(
         tl.store(Q + offs_q2, Q2*cos1 + Q1*sin1, mask = mask)
     pass
 pass
+_rope_embedding = triton.jit(_rope_embedding)
+_rope_embedding = triton.heuristics(
+    {
+        "BACKWARD_PASS": lambda args: bool(args["BACKWARD_PASS"]),
+    }
+)(_rope_embedding)
 
 
 class Fast_RoPE_Embedding(torch.autograd.Function):
