@@ -384,13 +384,11 @@ def LlamaAttention_fast_forward(
         else:
             cos, sin = rotary_emb(V, seq_len=kv_seq_len)
 
-    print(387, Q.dtype, K.dtype, position_ids)
     Q, K = (
         fast_rope_embedding(Q, K, cos, sin) 
         if position_ids is None 
         else inplace_rope_embedding(Q, K, cos, sin, position_ids)
     )
-    print(392, Q.dtype, K.dtype, position_ids)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -443,7 +441,6 @@ def LlamaAttention_fast_forward(
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
-    print(445, A.dtype)
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
@@ -501,9 +498,7 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        print(501, hidden_states.dtype)
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
-        print(503, hidden_states.dtype)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states       = hidden_states,
             causal_mask         = causal_mask,
@@ -515,16 +510,12 @@ def LlamaDecoderLayer_fast_forward(
             padding_mask        = padding_mask,
             position_embeddings = position_embeddings,
         )
-        print(515, hidden_states.dtype)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
-        print(520, hidden_states.dtype)
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        print(522, hidden_states.dtype)
         hidden_states = self.mlp(hidden_states)
-        print(524, hidden_states.dtype)
         hidden_states = residual + hidden_states
     pass
 
@@ -798,13 +789,11 @@ def LlamaModel_fast_forward(
     if transformers_version > "4.47.1" and hasattr(self, "rotary_emb"):
         # Transformers main has made it mandatory to pass position_embeddings
         # https://github.com/huggingface/transformers/pull/34858
-        print("***")
         position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
     else:
         position_embeddings = None
 
     # Go through every layer!
-    print("START", hidden_states.dtype)
     for idx, decoder_layer in enumerate(self.layers):
 
         if output_hidden_states: all_hidden_states += (hidden_states,)
@@ -864,7 +853,6 @@ def LlamaModel_fast_forward(
             )
             hidden_states = layer_outputs[0]
         pass
-        print(idx, hidden_states.dtype, end = " ")
 
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
         if output_attentions: all_self_attns += (layer_outputs[1],)
@@ -878,9 +866,7 @@ def LlamaModel_fast_forward(
     elif IS_COHERE:
         hidden_states = self.norm(hidden_states)
     else:
-        print(0, hidden_states.dtype)
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
-        print(1, hidden_states.dtype)
     pass
 
     if output_hidden_states: all_hidden_states += (hidden_states,)
