@@ -30,6 +30,7 @@ from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
     SKIP_QUANTIZATION_MODULES,
+    requires_grad_for_gradient_checkpointing,
 )
 from triton import __version__ as triton_version
 
@@ -275,6 +276,8 @@ class FastBaseVisionModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         model = get_peft_model(model, lora_config)
+        # Enable gradients on modules which are trainable
+        requires_grad_for_gradient_checkpointing(model)
 
         model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
 

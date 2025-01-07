@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.12.12"
+__version__ = "2025.1.1"
 
 __all__ = [
+    "SUPPORTS_BFLOAT16",
+    "is_bfloat16_supported",
+
     "prepare_model_for_kbit_training",
     "xformers",
     "xformers_attention",
@@ -30,7 +33,6 @@ __all__ = [
     "offload_to_disk",
     "offload_input_embeddings",
     "offload_output_embeddings",
-    "is_bfloat16_supported",
     "unsloth_offloaded_gradient_checkpoint",
     "torch_compile_options",
     "patch_linear_scaling",
@@ -58,7 +60,6 @@ __all__ = [
     "fused_linear_cross_entropy",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
-    "create_gradient_checkpointing_buffer",
 
     "patch_compiled_autograd",
     "process_vision_info",
@@ -97,7 +98,6 @@ from unsloth_zoo.gradient_checkpointing import (
 
     patch_unsloth_smart_gradient_checkpointing,
     unpatch_unsloth_smart_gradient_checkpointing,
-    create_gradient_checkpointing_buffer,
 )
 from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
@@ -556,6 +556,7 @@ def prepare_model_for_kbit_training(
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    pass
 
     return model
 pass
@@ -1203,14 +1204,14 @@ def unsloth_compile_transformers(
         return
     pass
 
-    if disable: return
-
     model_types = get_transformers_model_type(
         model_name        = model_name,
         token             = token,
         revision          = revision,
         trust_remote_code = trust_remote_code,
     )
+
+    if disable: return
 
     for model_type in model_types:
         _unsloth_compile_transformers(
