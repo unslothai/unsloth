@@ -498,7 +498,9 @@ def LlamaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
+        print(501, hidden_states.dtype)
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+        print(503, hidden_states.dtype)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states       = hidden_states,
             causal_mask         = causal_mask,
@@ -510,12 +512,16 @@ def LlamaDecoderLayer_fast_forward(
             padding_mask        = padding_mask,
             position_embeddings = position_embeddings,
         )
+        print(515, hidden_states.dtype)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
+        print(520, hidden_states.dtype)
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
+        print(522, hidden_states.dtype)
         hidden_states = self.mlp(hidden_states)
+        print(524, hidden_states.dtype)
         hidden_states = residual + hidden_states
     pass
 
