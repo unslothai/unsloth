@@ -41,6 +41,7 @@ LLAMA_CPP_TARGETS = [
     "llama-export-lora",
     "llama-cli",
     "llama-llava-cli",
+    "llama-gguf-split",
 ]
 
 PIP_OPTIONS = [
