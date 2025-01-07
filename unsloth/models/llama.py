@@ -866,7 +866,9 @@ def LlamaModel_fast_forward(
     elif IS_COHERE:
         hidden_states = self.norm(hidden_states)
     else:
+        print(0, hidden_states.dtype)
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
+        print(1, hidden_states.dtype)
     pass
 
     if output_hidden_states: all_hidden_states += (hidden_states,)
