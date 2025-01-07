@@ -789,11 +789,13 @@ def LlamaModel_fast_forward(
     if transformers_version > "4.47.1" and hasattr(self, "rotary_emb"):
         # Transformers main has made it mandatory to pass position_embeddings
         # https://github.com/huggingface/transformers/pull/34858
+        print("***")
         position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
     else:
         position_embeddings = None
 
     # Go through every layer!
+    print("START", hidden_states.dtype)
     for idx, decoder_layer in enumerate(self.layers):
 
         if output_hidden_states: all_hidden_states += (hidden_states,)
