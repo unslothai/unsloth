@@ -48,7 +48,8 @@ pass
 # And optimize pinning of memory
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
     "expandable_segments:True,"\
-    "roundup_power2_divisions:[32:256,64:128,256:64,>:32],"
+    "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
+
 # [TODO] Check why some GPUs don't work
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
