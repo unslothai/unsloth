@@ -20,7 +20,8 @@ from .llama import (
     LlamaLinearScalingRotaryEmbedding,
 )
 from .mistral import *
-
+from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 try:
     from transformers.models.granite.modeling_granite import (
         GraniteAttention,
@@ -84,9 +85,9 @@ def GraniteAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads    = self.num_heads
+    n_heads    = self.config.num_attention_heads
     n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
+    n_kv_heads = self.config.num_key_value_heads
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
@@ -181,6 +182,11 @@ def GraniteDecoderLayer_fast_forward(
     position_embeddings:  Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ):
+    residual_multiplier = \
+        self.residual_multiplier \
+        if hasattr(self, "residual_multiplier") else \
+        self.config.residual_multiplier
+
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -196,13 +202,13 @@ def GraniteDecoderLayer_fast_forward(
             position_embeddings = position_embeddings,
             _flag_for_generation=self._flag_for_generation,
         )
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
@@ -217,13 +223,13 @@ def GraniteDecoderLayer_fast_forward(
             padding_mask=padding_mask,
             position_embeddings = position_embeddings,
         )
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
     pass
 
     outputs = (hidden_states,)
@@ -257,12 +263,14 @@ def GraniteAttention_fast_forward_inference(
     K1, V1 = past_key_value
     dtype = Xn.dtype
 
-    n_heads    = self.num_heads
+    n_heads    = self.config.num_attention_heads
     n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
+    n_kv_heads = self.config.num_key_value_heads
     head_dim   = self.head_dim
-    attention_size = n_heads*head_dim
     # assert(n_kv_heads * n_groups == n_heads)
+
+    hidden_size = self.config.hidden_size
+    attention_size = n_heads*head_dim
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
@@ -278,7 +286,7 @@ def GraniteAttention_fast_forward_inference(
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda:0")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
         # Only for Gemma2
-        self.temp_O  = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = "cuda:0")
+        self.temp_O  = torch.empty((1, bsz, hidden_size), dtype = dtype, device = "cuda:0")
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
 
 
@@ -367,6 +375,10 @@ def GraniteModel_fast_forward_inference(
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
     hidden_states *= self.model.embedding_multiplier
+    residual_multiplier = \
+        self.residual_multiplier \
+        if hasattr(self, "residual_multiplier") else \
+        self.config.residual_multiplier
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
@@ -398,12 +410,12 @@ def GraniteModel_fast_forward_inference(
             position_embeddings = position_embeddings,
         )
 
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         next_decoder_cache.append(present_key_value)
     pass
@@ -421,6 +433,18 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(self, config):
         super().__init__(config = config)
 
+def patched_init(original_init):
+    def new_init(self, *args, **kwargs):
+        # we can use self.residual_multiplier arg in GraniteDecoderLayer_fast_forward as mentioned here
+        # https://github.com/huggingface/transformers/blob/e5fd865ebae062b7cf03a81b8c6affeb39f30bec/src/transformers/models/granite/modeling_granite.py#L243
+        # The problem is, we don't have access to either the value or config in GraniteModel_fast_forward_inference
+        # So we need a way to pass this value around. It is probably better to pass on entire config just in case we need it later
+        config = kwargs.get("config", args[0] if args else None)
+        if config is not None:
+            self.config = config
+        original_init(self, *args, **kwargs)
+    return new_init
+
 class FastGraniteModel(FastLlamaModel):
 
     @staticmethod
@@ -435,12 +459,13 @@ class FastGraniteModel(FastLlamaModel):
             exec(function, globals())
             GraniteAttention.__init__  = eval(init_name)
         pass
-        GraniteAttention      .forward = GraniteAttention_fast_forward
-        GraniteSdpaAttention  .forward = GraniteAttention_fast_forward
-        GraniteFlashAttention2.forward = GraniteAttention_fast_forward
-        GraniteDecoderLayer   .forward = GraniteDecoderLayer_fast_forward
-        GraniteModel          .forward = LlamaModel_fast_forward
-        GraniteForCausalLM    .forward = CausalLM_fast_forward(GraniteModel_fast_forward_inference)
+        GraniteAttention      .forward  = GraniteAttention_fast_forward
+        GraniteSdpaAttention  .forward  = GraniteAttention_fast_forward
+        GraniteFlashAttention2.forward  = GraniteAttention_fast_forward
+        GraniteDecoderLayer   .forward  = GraniteDecoderLayer_fast_forward
+        GraniteModel          .forward  = LlamaModel_fast_forward
+        GraniteForCausalLM    .forward  = CausalLM_fast_forward(GraniteModel_fast_forward_inference)
+        GraniteForCausalLM    .__init__ = patched_init(GraniteForCausalLM.__init__)
         PeftModelForCausalLM .forward = PeftModelForCausalLM_fast_forward
         fix_prepare_inputs_for_generation(GraniteForCausalLM)
 
@@ -452,7 +477,7 @@ class FastGraniteModel(FastLlamaModel):
 
 
     @staticmethod
-    def post_patch(model):
+    def post_patch(model, tokenizer):
 
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2
@@ -517,7 +542,7 @@ class FastGraniteModel(FastLlamaModel):
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
-        return model
+        return model, tokenizer
     pass
 pass
 
