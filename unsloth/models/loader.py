@@ -31,6 +31,15 @@ except:
 pass
 from huggingface_hub import HfFileSystem
 
+# [TODO] Move USE_MODELSCOPE to utils
+USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+if USE_MODELSCOPE:
+    import importlib
+    if importlib.util.find_spec("modelscope") is None:
+        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
+    pass
+pass
+
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
 transformers_version = Version(transformers_version)
@@ -71,6 +80,11 @@ class FastLanguageModel(FastLlamaModel):
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+
+        if USE_MODELSCOPE and not os.path.exists(model_name):
+            from modelscope import snapshot_download
+            model_name = snapshot_download(model_name)
+        pass
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
@@ -354,6 +368,11 @@ class FastVisionModel(FastBaseVisionModel):
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+
+        if USE_MODELSCOPE and not os.path.exists(model_name):
+            from modelscope import snapshot_download
+            model_name = snapshot_download(model_name)
+        pass
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
