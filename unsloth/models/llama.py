@@ -1617,7 +1617,8 @@ class FastLlamaModel:
         # Log global device type used
         global USE_BFLOAT16
         USE_BFLOAT16 = True if dtype == torch.bfloat16 else False
-
+        print(USE_BFLOAT16)
+        
         # RoPE Scaling
         model_config = AutoConfig.from_pretrained(model_name, token = token)
         model_max_seq_length = model_config.max_position_embeddings
