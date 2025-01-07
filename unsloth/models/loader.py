@@ -446,7 +446,9 @@ class FastVisionModel(FastBaseVisionModel):
 
         if not was_disabled: enable_progress_bars()
 
-        with contextlib.redirect_stdout(open(os.devnull, "w")):
+        with contextlib.redirect_stdout(
+            open(os.devnull, "w") if os.environ.get("UNSLOTH_DISABLE_LOGGER", "0") != "1" else sys.stdout
+        ):
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
