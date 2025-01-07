@@ -17,7 +17,6 @@ __version__ = "2025.1.1"
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
-    "USE_BFLOAT16",
 
     "prepare_model_for_kbit_training",
     "xformers",
@@ -776,13 +775,9 @@ def offload_output_embeddings(model, temporary_location : str = "_unsloth_tempor
 pass
 
 
-# Log dtype used - sometimes people use float16 on bfloat16 platforms
-global USE_BFLOAT16
-USE_BFLOAT16 = SUPPORTS_BFLOAT16
 # Fixes a weird Torch 2.3 bug which says T4s have bfloat16
 def is_bfloat16_supported():
-    global USE_BFLOAT16
-    return SUPPORTS_BFLOAT16 and USE_BFLOAT16
+    return SUPPORTS_BFLOAT16
 pass
 
 
