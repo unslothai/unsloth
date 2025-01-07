@@ -624,6 +624,7 @@ def LlamaModel_fast_forward(
     else:
         raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
     pass
+    print(inputs_embeds, inputs_embeds.dtype)
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
