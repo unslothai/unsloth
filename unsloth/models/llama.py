@@ -853,7 +853,7 @@ def LlamaModel_fast_forward(
             )
             hidden_states = layer_outputs[0]
         pass
-        print(idx, hidden_states.dtype)
+        print(idx, hidden_states.dtype, end = " ")
 
         if use_cache: next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
         if output_attentions: all_self_attns += (layer_outputs[1],)
