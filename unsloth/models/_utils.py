@@ -496,7 +496,7 @@ def load_correct_config(config):
 
     if config.model_type == 'exaone':
         if Version(transformers_version) <= Version('4.47.1'):
-            raise RuntimeError("To use Exaone you have to compile transformers from scratch using:\
+            raise RuntimeError("To use Exaone you have to compile transformers from scratch using:\n\
                 pip install git+https://github.com/huggingface/transformers.git")
 
         from transformers.models.llama.modeling_llama import LlamaConfig
