@@ -793,8 +793,11 @@ def patch_gradient_accumulation(modeling_file, module):
 
     functions = dir(modeling_file)
     module = eval(f"modeling_file.{module}")
-    forward = module.forward
-    source = inspect.getsource(forward)
+    try: 
+        forward = module.forward
+        source = inspect.getsource(forward)
+    except: 
+        return None
     has_kwargs = tuple(inspect.signature(forward).parameters.values())[-1].kind == inspect._VAR_KEYWORD
     if has_kwargs: return None
 
