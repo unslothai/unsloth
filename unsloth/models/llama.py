@@ -68,8 +68,6 @@ pass
 from triton import __version__ as triton_version
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if xformers is not None else None
 
-from ._utils import SUPPORTS_BFLOAT16, USE_BFLOAT16
-
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -1389,8 +1387,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         # self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
 
         # Short sequences
-        global USE_BFLOAT16
-        dtype = torch.bfloat16 if USE_BFLOAT16 else torch.float16
+        dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
         t = torch.arange(original_max_position_embeddings, device=self.short_inv_freq.device, dtype=torch.int64).float()
         freqs = torch.outer(t, self.short_inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
@@ -1583,6 +1580,7 @@ class FastLlamaModel:
         pass
         if token is None: token = get_token()
         if model_patcher is None: model_patcher = FastLlamaModel
+        SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
@@ -1611,14 +1609,12 @@ class FastLlamaModel:
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
+        elif dtype == torch.float16 and SUPPORTS_BFLOAT16:
+            logger.warning_once("Device supports bfloat16 but you selected float16. Will change to bfloat16.")
+            dtype = torch.float16
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # Log global device type used
-        global USE_BFLOAT16
-        USE_BFLOAT16 = True if dtype == torch.bfloat16 else False
-        print(USE_BFLOAT16)
-        
         # RoPE Scaling
         model_config = AutoConfig.from_pretrained(model_name, token = token)
         model_max_seq_length = model_config.max_position_embeddings
