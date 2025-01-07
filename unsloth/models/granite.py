@@ -20,7 +20,8 @@ from .llama import (
     LlamaLinearScalingRotaryEmbedding,
 )
 from .mistral import *
-
+from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 try:
     from transformers.models.granite.modeling_granite import (
         GraniteAttention,
@@ -423,6 +424,18 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(self, config):
         super().__init__(config = config)
 
+def patched_init(original_init):
+    def new_init(self, *args, **kwargs):
+        # we can use self.residual_multiplier arg in GraniteDecoderLayer_fast_forward as mentioned here
+        # https://github.com/huggingface/transformers/blob/e5fd865ebae062b7cf03a81b8c6affeb39f30bec/src/transformers/models/granite/modeling_granite.py#L243
+        # The problem is, we don't have access to either the value or config in GraniteModel_fast_forward_inference
+        # So we need a way to pass this value around. It is probably better to pass on entire config just in case we need it later
+        config = kwargs.get("config", args[0] if args else None)
+        if config is not None:
+            self.config = config
+        original_init(self, *args, **kwargs)
+    return new_init
+
 class FastGraniteModel(FastLlamaModel):
 
     @staticmethod
@@ -437,12 +450,13 @@ class FastGraniteModel(FastLlamaModel):
             exec(function, globals())
             GraniteAttention.__init__  = eval(init_name)
         pass
-        GraniteAttention      .forward = GraniteAttention_fast_forward
-        GraniteSdpaAttention  .forward = GraniteAttention_fast_forward
-        GraniteFlashAttention2.forward = GraniteAttention_fast_forward
-        GraniteDecoderLayer   .forward = GraniteDecoderLayer_fast_forward
-        GraniteModel          .forward = LlamaModel_fast_forward
-        GraniteForCausalLM    .forward = CausalLM_fast_forward(GraniteModel_fast_forward_inference)
+        GraniteAttention      .forward  = GraniteAttention_fast_forward
+        GraniteSdpaAttention  .forward  = GraniteAttention_fast_forward
+        GraniteFlashAttention2.forward  = GraniteAttention_fast_forward
+        GraniteDecoderLayer   .forward  = GraniteDecoderLayer_fast_forward
+        GraniteModel          .forward  = LlamaModel_fast_forward
+        GraniteForCausalLM    .forward  = CausalLM_fast_forward(GraniteModel_fast_forward_inference)
+        GraniteForCausalLM    .__init__ = patched_init(GraniteForCausalLM.__init__)
         PeftModelForCausalLM .forward = PeftModelForCausalLM_fast_forward
         fix_prepare_inputs_for_generation(GraniteForCausalLM)
 
@@ -454,7 +468,7 @@ class FastGraniteModel(FastLlamaModel):
 
 
     @staticmethod
-    def post_patch(model):
+    def post_patch(model, tokenizer):
 
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2
@@ -519,7 +533,7 @@ class FastGraniteModel(FastLlamaModel):
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
-        return model
+        return model, tokenizer
     pass
 pass
 
