@@ -1511,6 +1511,10 @@ original_llama_decoder_layer_forward  = LlamaDecoderLayer.forward
 original_llama_model_forward          = LlamaModel.forward
 original_llama_for_causal_lm_forward  = LlamaForCausalLM.forward
 original_peft_model_for_causal_lm_forward = PeftModelForCausalLM.forward
+import transformers.models.llama.modeling_llama
+original_LLamaRotaryEmbedding =  transformers.models.llama.modeling_llama.LlamaRotaryEmbedding 
+original_LLamaLinearScalingRotaryEmbedding = transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding
+
 class FastLlamaModel:
     def set_functions():
         LlamaAttention      .forward = LlamaAttention_fast_forward
