@@ -20,6 +20,10 @@ from ._utils import *
 from ._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
+from unsloth_zoo.utils import Version
+transformers_version = Version(transformers_version)
+# Transformers moved rotary embeddings out of all attention layers
+IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
@@ -788,12 +792,7 @@ def LlamaModel_fast_forward(
         pass
     pass
 
-    if transformers_version > "4.47.1" and hasattr(self, "rotary_emb"):
-        # Transformers main has made it mandatory to pass position_embeddings
-        # https://github.com/huggingface/transformers/pull/34858
-        position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
-    else:
-        position_embeddings = None
+    position_embeddings = None
 
     # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
@@ -1886,6 +1885,13 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model._saved_temp_tokenizer = tokenizer
+
+        # For transformers > 4.47.1, we need to add rotary_emb to all attention layers
+        if IS_ATTENTION_REFACTOR or hasattr(model.model, "rotary_emb"):
+            rotary_emb = model.model.rotary_emb
+            for layer in model.model.layers:
+                layer.self_attn.rotary_emb = rotary_emb
+        pass
         
         return model, tokenizer
     pass
