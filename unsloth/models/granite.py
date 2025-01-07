@@ -182,6 +182,11 @@ def GraniteDecoderLayer_fast_forward(
     position_embeddings:  Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ):
+    residual_multiplier = \
+        self.residual_multiplier \
+        if hasattr(self, "residual_multiplier") else \
+        self.config.residual_multiplier
+
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -197,13 +202,13 @@ def GraniteDecoderLayer_fast_forward(
             position_embeddings = position_embeddings,
             _flag_for_generation=self._flag_for_generation,
         )
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
@@ -218,13 +223,13 @@ def GraniteDecoderLayer_fast_forward(
             padding_mask=padding_mask,
             position_embeddings = position_embeddings,
         )
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
     pass
 
     outputs = (hidden_states,)
@@ -370,6 +375,10 @@ def GraniteModel_fast_forward_inference(
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
     hidden_states *= self.model.embedding_multiplier
+    residual_multiplier = \
+        self.residual_multiplier \
+        if hasattr(self, "residual_multiplier") else \
+        self.config.residual_multiplier
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
@@ -401,12 +410,12 @@ def GraniteModel_fast_forward_inference(
             position_embeddings = position_embeddings,
         )
 
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
-        hidden_states = torch.add(residual, hidden_states, alpha = self.config.residual_multiplier)
+        hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
 
         next_decoder_cache.append(present_key_value)
     pass
