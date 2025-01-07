@@ -20,6 +20,10 @@ from ._utils import *
 from ._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
+from unsloth_zoo.utils import Version
+transformers_version = Version(transformers_version)
+# Transformers moved rotary embeddings out of all attention layers
+IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
@@ -146,12 +150,14 @@ def LlamaAttention_fast_forward_inference(
     K1, V1 = past_key_value
     dtype = Xn.dtype
 
-    n_heads    = self.num_heads
+    n_heads    = self.config.num_attention_heads
     n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
+    n_kv_heads = self.config.num_key_value_heads
     head_dim   = self.head_dim
-    attention_size = n_heads*head_dim
     # assert(n_kv_heads * n_groups == n_heads)
+
+    hidden_size = self.config.hidden_size
+    attention_size = n_heads*head_dim
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
@@ -168,10 +174,10 @@ def LlamaAttention_fast_forward_inference(
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
         
         # Mistral Nemo 12b has weird dimensions
-        if attention_size != self.hidden_size:
-            self.temp_O = torch.empty((1, bsz, self.hidden_size), dtype = dtype, device = "cuda:0")
+        if attention_size != hidden_size:
+            self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = "cuda:0")
         else:
-            self.temp_O = self.temp_QA[1][:,:,:self.hidden_size]
+            self.temp_O = self.temp_QA[1][:,:,:hidden_size]
         pass
         
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
@@ -356,9 +362,9 @@ def LlamaAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads    = self.num_heads
+    n_heads    = self.config.num_attention_heads
     n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
+    n_kv_heads = self.config.num_key_value_heads
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
@@ -786,7 +792,7 @@ def LlamaModel_fast_forward(
         pass
     pass
 
-    if transformers_version > "4.47.1" and hasattr(self, "rotary_emb"):
+    if IS_ATTENTION_REFACTOR and not hasattr(self.layers[0].self_attn, "rotary_emb"):
         # Transformers main has made it mandatory to pass position_embeddings
         # https://github.com/huggingface/transformers/pull/34858
         position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
@@ -996,18 +1002,20 @@ def CausalLM_fast_forward(fast_forward_inference):
         lm_head = self.lm_head.weight
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
+        dtype = lm_head.dtype
 
         if bsz == 1 and q_len == 1:
-            logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
+            logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
         elif num_logits_to_keep != 0:
-            logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
+            logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(dtype))
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             # < 1024 Normal Unsloth uses less VRAM!
             if bsz*q_len <= 1024: RETURN_LOGITS = True
             
             if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
+
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
                 loss = fused_linear_cross_entropy(
                     hidden_states      = hidden_states,
@@ -1029,7 +1037,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 )
                 return output
             pass
-            logits = self.lm_head(hidden_states.to(lm_head.dtype))
+            logits = self.lm_head(hidden_states.to(dtype))
         pass
 
         torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
@@ -1607,6 +1615,9 @@ class FastLlamaModel:
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
+        elif dtype == torch.float16 and SUPPORTS_BFLOAT16:
+            logger.warning_once("Device supports bfloat16 but you selected float16. Will change to bfloat16.")
+            dtype = torch.bfloat16
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
@@ -1879,6 +1890,13 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model._saved_temp_tokenizer = tokenizer
+
+        # For transformers > 4.47.1, we need to add rotary_emb to all attention layers
+        if IS_ATTENTION_REFACTOR or hasattr(model.model, "rotary_emb"):
+            rotary_emb = model.model.rotary_emb
+            for layer in model.model.layers:
+                layer.self_attn.rotary_emb = rotary_emb
+        pass
         
         return model, tokenizer
     pass
@@ -1967,29 +1985,41 @@ class FastLlamaModel:
                 if "embed_tokens" in new_target_modules:
                     print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
-                    dtype = model.model.model.embed_tokens.modules_to_save.default.weight.dtype
-                    model.model.model.embed_tokens.modules_to_save.default\
-                        .to(device = "cuda:0", dtype=(dtype if (dtype != torch.float16) else torch.float32), non_blocking = True)
-                    model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
+                    new_dtype = model.get_input_embeddings().modules_to_save.default.weight.dtype
+                    if new_dtype == torch.float16:
+                        # See https://github.com/unslothai/unsloth/pull/1200
+                        # Tesla T4 must use float32 and not float16
+                        new_dtype = torch.float32
+                    pass
+
+                    model.get_input_embeddings().modules_to_save.default\
+                        .to(device = "cuda:0", dtype = new_dtype, non_blocking = True)
+                    model.get_input_embeddings().modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old embed_tokens to CPU - should be disk!
-                    model.model.model.embed_tokens.original_module\
+                    model.get_input_embeddings().original_module\
                         .to(device = "cpu", non_blocking = True)
-                    model.model.model.embed_tokens.original_module.requires_grad_(False)
+                    model.get_input_embeddings().original_module.requires_grad_(False)
                 pass
 
                 if "lm_head" in new_target_modules:
                     print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
-                    dtype = model.model.model.lm_head.modules_to_save.default.weight.dtype
-                    model.model.lm_head.modules_to_save.default\
-                        .to(device = "cuda:0", dtype=(dtype if (dtype != torch.float16) else torch.float32), non_blocking = True)
-                    model.model.lm_head.modules_to_save.default.requires_grad_(True)
+                    new_dtype = model.get_output_embeddings().modules_to_save.default.weight.dtype
+                    if new_dtype == torch.float16:
+                        # See https://github.com/unslothai/unsloth/pull/1200
+                        # Tesla T4 must use float32 and not float16
+                        new_dtype = torch.float32
+                    pass
+
+                    model.get_output_embeddings().modules_to_save.default\
+                        .to(device = "cuda:0", dtype = new_dtype, non_blocking = True)
+                    model.get_output_embeddings().modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
-                    model.model.lm_head.original_module\
+                    model.get_output_embeddings().original_module\
                         .to(device = "cpu", non_blocking = True)
-                    model.model.lm_head.original_module.requires_grad_(False)
+                    model.get_output_embeddings().original_module.requires_grad_(False)
                 pass
 
                 return model
@@ -2216,25 +2246,36 @@ class FastLlamaModel:
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
 
-        # Now patch lm_head and embed_tokens
         if train_embed_tokens:
             print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
-            assert(hasattr(model.model.model.embed_tokens, "modules_to_save"))
+            assert(hasattr(model.get_input_embeddings(), "modules_to_save"))
 
-            dtype = model.model.model.embed_tokens.modules_to_save.default.weight.dtype
-            model.model.model.embed_tokens.modules_to_save.default\
-                .to(device = "cuda:0", dtype=(dtype if (dtype != torch.float16) else torch.float32), non_blocking = True)
-            model.model.model.embed_tokens.modules_to_save.default.requires_grad_(True)
+            new_dtype = model.get_input_embeddings().modules_to_save.default.weight.dtype
+            if new_dtype == torch.float16:
+                # See https://github.com/unslothai/unsloth/pull/1200
+                # Tesla T4 must use float32 and not float16
+                new_dtype = torch.float32
+            pass
+
+            model.get_input_embeddings().modules_to_save.default\
+                .to(device = "cuda:0", dtype = new_dtype, non_blocking = True)
+            model.get_input_embeddings().modules_to_save.default.requires_grad_(True)
         pass
 
         if train_lm_head:
             print("Unsloth: Training lm_head in mixed precision to save VRAM")
-            assert(hasattr(model.model.lm_head, "modules_to_save"))
+            assert(hasattr(model.get_output_embeddings(), "modules_to_save"))
 
-            dtype = model.model.lm_head.modules_to_save.default.weight.dtype
-            model.model.lm_head.modules_to_save.default\
-                .to(device = "cuda:0", dtype=(dtype if (dtype != torch.float16) else torch.float32), non_blocking = True)
-            model.model.lm_head.modules_to_save.default.requires_grad_(True)
+            new_dtype = model.get_output_embeddings().modules_to_save.default.weight.dtype
+            if new_dtype == torch.float16:
+                # See https://github.com/unslothai/unsloth/pull/1200
+                # Tesla T4 must use float32 and not float16
+                new_dtype = torch.float32
+            pass
+
+            model.get_output_embeddings().modules_to_save.default\
+                .to(device = "cuda:0", dtype = new_dtype, non_blocking = True)
+            model.get_output_embeddings().modules_to_save.default.requires_grad_(True)
         pass
 
         # Patch tokenizer to pad to the right

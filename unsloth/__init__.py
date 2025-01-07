@@ -17,16 +17,6 @@ from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
 
-# # Define a list of modules to check
-# MODULES_TO_CHECK = ["bitsandbytes"]
-
-# # Check if any of the modules in the list have been imported
-# for module in MODULES_TO_CHECK:
-#     if module in sys.modules:
-#         raise ImportError(f"Unsloth: Please import Unsloth before {module}.")
-#     pass
-# pass
-
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
@@ -55,7 +45,12 @@ else:
 pass
 
 # Reduce VRAM usage by reducing fragmentation
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,roundup_power2_divisions:[64:128,256:64,>:32]"
+# And optimize pinning of memory
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
+    "expandable_segments:True,"\
+    "roundup_power2_divisions:[32:256,64:128,256:64,>:32],"\
+    "pinned_use_cuda_host_register:True,"\
+    "pinned_num_register_threads:8"
 
 # Hugging Face Hub faster downloads
 if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
@@ -87,6 +82,36 @@ if (major_torch < 2):
 elif (major_torch == 2) and (minor_torch < 2):
     # Disable expandable_segments
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+pass
+
+# Fix Xformers performance issues since 0.0.25
+import importlib.util
+from pathlib import Path
+from importlib.metadata import version as importlib_version
+from packaging.version import Version
+try:
+    xformers_version = importlib_version("xformers")
+    if Version(xformers_version) < Version("0.0.29"):
+        xformers_location = importlib.util.find_spec("xformers").origin
+        xformers_location = os.path.split(xformers_location)[0]
+        cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
+
+        if cutlass.exists():
+            with open(cutlass, "r+") as f:
+                text = f.read()
+                # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
+                if "num_splits_key=-1," in text:
+                    text = text.replace("num_splits_key=-1,", "num_splits_key=None,")
+                    f.seek(0)
+                    f.write(text)
+                    f.truncate()
+                    print("Unsloth: Patching Xformers to fix some performance issues.")
+                pass
+            pass
+        pass
+    pass
+except:
+    pass
 pass
 
 # Torch 2.4 has including_emulation
@@ -166,9 +191,18 @@ pass
 
 # Check for unsloth_zoo
 try:
+    unsloth_zoo_version = importlib_version("unsloth_zoo")
+    if Version(unsloth_zoo_version) < Version("2025.1.1"):
+        try:
+            os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
+        except:
+            try:
+                os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+            except:
+                raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
 except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth-zoo`")
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
 pass
 
 from .models import *
