@@ -624,7 +624,6 @@ def LlamaModel_fast_forward(
     else:
         raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
     pass
-    print(inputs_embeds, inputs_embeds.dtype)
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
@@ -1011,7 +1010,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             
             if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
 
-                print(hidden_states, lm_head)
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
                 loss = fused_linear_cross_entropy(
                     hidden_states      = hidden_states,
