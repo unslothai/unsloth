@@ -64,9 +64,9 @@ def MistralAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads    = self.num_heads
+    n_heads    = self.config.num_attention_heads
     n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
+    n_kv_heads = self.config.num_key_value_heads
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
@@ -278,16 +278,16 @@ pass
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
 def patch_mistral_nemo_attention(function):
     function = function.replace(
-        "(self.head_dim * self.num_heads) != self.hidden_size",
+        "(self.head_dim * self.config.num_attention_heads) != self.config.hidden_size",
         "False",
     )
     function = function.replace(
-        "self.head_dim = self.hidden_size // self.num_heads",
+        "self.head_dim = self.config.hidden_size // self.config.num_attention_heads",
         "self.head_dim = config.head_dim",
     )
     function = function.replace(
-        "self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)",
-        "self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)",
+        "self.o_proj = nn.Linear(self.config.hidden_size, self.config.hidden_size, bias=False)",
+        "self.o_proj = nn.Linear(self.config.num_attention_heads * self.head_dim, self.config.hidden_size, bias=False)",
     )
     return function
 pass
