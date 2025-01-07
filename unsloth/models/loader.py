@@ -446,9 +446,10 @@ class FastVisionModel(FastBaseVisionModel):
 
         if not was_disabled: enable_progress_bars()
 
-        with contextlib.redirect_stdout(
-            open(os.devnull, "w") if os.environ.get("UNSLOTH_DISABLE_LOGGER", "0") != "1" else sys.stdout
-        ):
+        do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+        redirector = sys.stdout if do_logging else open(os.devnull, "w")
+
+        with contextlib.redirect_stdout(redirector):
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
@@ -478,6 +479,7 @@ class FastVisionModel(FastBaseVisionModel):
                 return_logits           = return_logits,
             )
         pass
+        if do_logging: redirector.close()
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
