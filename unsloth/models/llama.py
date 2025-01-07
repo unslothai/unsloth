@@ -389,6 +389,7 @@ def LlamaAttention_fast_forward(
         if position_ids is None 
         else inplace_rope_embedding(Q, K, cos, sin, position_ids)
     )
+    print(392, Q.dtype, K.dtype)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -441,6 +442,7 @@ def LlamaAttention_fast_forward(
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
+    print(445, A.dtype)
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
