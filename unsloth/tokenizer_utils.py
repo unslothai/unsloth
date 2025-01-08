@@ -523,6 +523,9 @@ def _load_correct_tokenizer(
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
         return fast_tokenizer
+    # Ignore Phi-4 ones as well
+    elif "phi-4" in tokenizer_name.lower():
+        return fast_tokenizer
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
