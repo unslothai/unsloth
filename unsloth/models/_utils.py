@@ -17,7 +17,8 @@ __version__ = "2025.1.1"
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
-
+    "load_correct_config",
+    "load_correct_model",
     "prepare_model_for_kbit_training",
     "xformers",
     "xformers_attention",
@@ -491,8 +492,89 @@ def patch_regional_compilation():
     return
 pass
 
+def load_correct_config(config):
+
+    if config.model_type == 'exaone':
+        if Version(transformers_version) <= Version('4.47.1'):
+            raise RuntimeError("To use Exaone you have to compile transformers from scratch using:\n\
+                pip install git+https://github.com/huggingface/transformers.git")
+
+        from transformers.models.llama.modeling_llama import LlamaConfig
+
+        new_config_args =  {
+            'vocab_size': config.vocab_size,
+            'hidden_size': config.hidden_size,
+            'intermediate_size': config.intermediate_size,
+            'num_hidden_layers': config.num_hidden_layers,
+            'num_attention_heads': config.num_attention_heads,
+            'num_key_value_heads': config.num_key_value_heads,
+            'hidden_act': config.activation_function,
+            'max_position_embeddings': config.max_position_embeddings,
+            'initializer_range': config.initializer_range,
+            'rms_norm_eps': config.layer_norm_epsilon,
+            'use_cache': config.use_cache,
+            'pad_token_id': config.pad_token_id,
+            'bos_token_id': config.bos_token_id,
+            'eos_token_id': config.eos_token_id,
+            'tie_word_embeddings': config.tie_word_embeddings,
+            'rope_theta': config.rope_theta,
+            'rope_scaling': config.rope_scaling,
+            'attention_bias': False,
+            'attention_dropout': config.attention_dropout,
+            'mlp_bias': False,
+            'head_dim': config.head_dim,
+            'architectures': ['LlamaForCausalLM'],
+            'model_type': 'llama',
+            'torch_dtype': config.torch_dtype
+        }
+        config = LlamaConfig.from_dict(new_config_args)
+    return config
 # =============================================
 
+def load_correct_model(model, **model_kwargs):
+    if model.config.model_type == 'exaone':
+        new_config = load_correct_config(model.config)
+
+        # We need to provide quantization_config to the config as well
+        # https://github.com/huggingface/transformers/issues/35427
+        new_config.quantization_config = model_kwargs.pop("quantization_config", None)
+
+        from transformers.models.llama.modeling_llama import LlamaForCausalLM
+
+        # map the old state_dict keys to new ones
+        mapping = {
+            re.compile(r"^transformer\.wte\.weight$"): "model.embed_tokens.weight",
+            re.compile(r"^transformer\.ln_f\.weight$"): "model.norm.weight",
+            re.compile(r"^lm_head\.weight$"): "lm_head.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.ln_1\.weight$") : "model.layers.{}.input_layernorm.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.ln_2\.weight$") : "model.layers.{}.post_attention_layernorm.weight",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_fc_0.weight$") : "model.layers.{}.mlp.gate_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_fc_0.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)$") : "model.layers.{}.mlp.gate_proj.weight.{}",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_fc_1.weight$") : "model.layers.{}.mlp.up_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_fc_1.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)$") : "model.layers.{}.mlp.up_proj.weight.{}",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_proj.weight$") : "model.layers.{}.mlp.down_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+).mlp.c_proj.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)$") : "model.layers.{}.mlp.down_proj.weight.{}",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.(k_proj|v_proj|q_proj)\.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)") : "model.layers.{}.self_attn.{}.weight.{}",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.(k_proj|v_proj|q_proj)\.weight$") : "model.layers.{}.self_attn.{}.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.out_proj\.weight$") : "model.layers.{}.self_attn.o_proj.weight",
+            re.compile(r"^transformer\.h\.(\d+)\.attn\.attention\.out_proj\.weight\.(absmax|quant_map|nested_absmax|nested_quant_map|quant_state\.\w+)") : "model.layers.{}.self_attn.o_proj.weight.{}"
+        }
+
+        old_state_dict = model.state_dict()
+        new_state_dict = {}
+
+        for key in old_state_dict:
+            for pattern in mapping:
+                match = pattern.match(key)
+                if match:
+                    new_key = mapping[pattern].format(*match.groups())
+                    new_state_dict[new_key] = old_state_dict[key]
+                    
+        assert len(old_state_dict) == len(new_state_dict), RuntimeError(f"The mapping of {model.__class__} into {new_model.__class__} should have the same length")
+        model = LlamaForCausalLM.from_pretrained(None, config=new_config, state_dict=new_state_dict, **model_kwargs)
+    return model
+
+# =============================================
 def prepare_model_for_kbit_training(
     model                      : Any,
     use_gradient_checkpointing : Optional = True,

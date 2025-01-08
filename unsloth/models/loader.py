@@ -179,7 +179,7 @@ class FastLanguageModel(FastLlamaModel):
 
         model_type = model_config.model_type
 
-        if model_type == "llama":
+        if model_type == "llama" or model_type == "exaone":
             scaling_type = None
             if getattr(model_config, "rope_scaling", None) is not None:
                 scaling_type1 = model_config.rope_scaling.get("type", None)
