@@ -520,6 +520,11 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Llama-3.3-70B-Instruct",
         "meta-llama/Llama-3.3-70B-Instruct",
     ),
+    "unsloth/phi-4-unsloth-bnb-4bit" : (
+        "unsloth/phi-4",
+        "microsoft/phi-4",
+        "unsloth/phi-4-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
