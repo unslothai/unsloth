@@ -270,11 +270,14 @@ def install_llama_cpp(
     llama_cpp_folder = "llama.cpp",
     llama_cpp_targets = LLAMA_CPP_TARGETS,
     print_output = False,
+    gpu_support = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Installs llama.cpp
     quantizer = None
     converter = None
+
+    gpu_support = "ON" if gpu_support else "OFF"
 
     if os.path.exists(llama_cpp_folder):
         try:
@@ -301,6 +304,8 @@ def install_llama_cpp(
         try_execute(f"{pip} install gguf protobuf sentencepiece", **kwargs)
 
         print("Unsloth: Install llama.cpp and building - please wait 1 to 3 minutes")
+        if gpu_support == "ON":
+            print("Unsloth: Building llama.cpp with GPU support")
         try:
             # Try using make first
             try_execute(f"make clean -C llama.cpp", **kwargs)
@@ -309,7 +314,7 @@ def install_llama_cpp(
             # Use cmake instead
             try_execute(
                 f"cmake {llama_cpp_folder} -B {llama_cpp_folder}/build "\
-                "-DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
+                f"-DBUILD_SHARED_LIBS=OFF -DGGML_CUDA={gpu_support} -DLLAMA_CURL=ON",
                 **kwargs
             )
             try_execute(

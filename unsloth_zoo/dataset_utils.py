@@ -148,6 +148,17 @@ def _find_common_token_ids(component, tokenizer):
         if all(single_token in x for x in all_input_ids):
             substring = [single_token]
     pass
+
+    # Also if substring is original input_ids + [0], then leave it as the original one
+    # This happens when no newlines / spaces are used in chat template
+    # Eg Phi-4 does not use newlines or spaces
+    if (len(set(str(x) for x in all_input_ids)) == 1) and \
+        (len(all_input_ids[0]) + 1 == len(substring)) and \
+        (all_input_ids[0] == substring[:-1]):
+
+        # Use original un-changed substring
+        substring = all_input_ids[0]
+    pass
     
     # Also get rest of tokenized string
     original = tokenizer(component, add_special_tokens = False).input_ids
