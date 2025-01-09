@@ -265,6 +265,10 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     )))
     all_special_tokens = list(set(special_tokens + slow_tokenizer.all_special_tokens))
 
+    # Remove replacement char for false positive
+    replacement_char = b"\xc3\xaf\xc2\xbf\xc2\xbd".decode("utf-8")
+    all_special_tokens = [x for x in all_special_tokens if x != replacement_char]
+
     # Check if chat template is enabled!
     check_chat_template1 = True
     check_chat_template2 = True
@@ -518,6 +522,9 @@ def _load_correct_tokenizer(
         return fast_tokenizer
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
+        return fast_tokenizer
+    # Ignore Phi-4 ones as well
+    elif "phi-4" in tokenizer_name.lower():
         return fast_tokenizer
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
