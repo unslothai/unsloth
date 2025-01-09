@@ -194,7 +194,7 @@ pass
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.1.1"):
+    if Version(unsloth_zoo_version) < Version("2025.1.2"):
         try:
             os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
         except:
