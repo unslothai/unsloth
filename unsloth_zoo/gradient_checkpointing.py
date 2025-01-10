@@ -476,7 +476,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         tensor_indices = ctx.tensor_indices
         tensors = ctx.saved_tensors
 
-        print("Backward", len(tensors), tensors[0].shape)
+        print("Backward", len(tensors), tensors[0])
 
         new_size, shape, CPU_INDEX = ctx._saved_metadata
         if CPU_INDEX is not None:
