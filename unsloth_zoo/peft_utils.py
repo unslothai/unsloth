@@ -226,15 +226,34 @@ def requires_grad_for_gradient_checkpointing(model):
         if hasattr(module, "forward"):
             try: forward = inspect.getsource(module.forward)
             except: continue
+
+            # Normal self.language_model(...)
             if f"self.{name_curr}(" in forward:
                 final_where = j + 1
+                break
+
+            # Fix self.blocks[0] like in Qwen
+            module_list = re.sub(r"\[[\d]{1,}\]", "", name_curr)
+            if f"in self.{module_list}:" in forward:
+                final_where = j
                 break
             pass
         pass
     pass
 
     if final_where is None:
-        raise RuntimeError("Unsloth: Could not find an embedding module")
+        # Find all input embeddings and just set them all as a fallback!
+        # Add other hooks first
+        register_other_hooks(
+            "requires_grad_post_hook",
+            "requires_grad_post_hook",
+            module,
+            "_forward_hooks",
+        )
+        module.register_forward_hook(requires_grad_post_hook)
+        return
+    pass
+    
     module_name = "model." + ".".join(name_components[:final_where])
     print(f"Unsloth: Making `{module_name}` require gradients")
     module = eval(module_name)
