@@ -451,8 +451,6 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         with torch.no_grad():
             outputs = run_function(*args)
 
-        print("Forward", [(x.data_ptr(), x.nbytes // 1024 // 1024) if type(x) is torch.Tensor else None for x in args])
-
         if use_gpu_buffer: MAIN_STREAM.wait_stream(EXTRA_STREAM)
         return outputs
     pass
@@ -475,8 +473,6 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         inputs = list(ctx.inputs)
         tensor_indices = ctx.tensor_indices
         tensors = ctx.saved_tensors
-
-        print("Backward", [(x.data_ptr(), x.nbytes // 1024 // 1024) if type(x) is torch.Tensor else None for x in tensors])
 
         new_size, shape, CPU_INDEX = ctx._saved_metadata
         if CPU_INDEX is not None:
