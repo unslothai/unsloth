@@ -258,20 +258,27 @@ def requires_grad_for_gradient_checkpointing(model):
     print(f"Unsloth: Making `{module_name}` require gradients")
     module = eval(module_name)
 
+    still_need_patching = True
     # Check if input_embeddings exists
     if hasattr(module, "get_input_embeddings"):
         # Use forward hook after Embedding() is called
-        module = module.get_input_embeddings()
+        try:
+            module = module.get_input_embeddings()
+            # Add other hooks first
+            register_other_hooks(
+                "requires_grad_post_hook",
+                "requires_grad_post_hook",
+                module,
+                "_forward_hooks",
+            )
+            module.register_forward_hook(requires_grad_post_hook)
+            still_need_patching = False
+        except:
+            # Not Implemented probably?
+            still_need_patching = True
+    pass
 
-        # Add other hooks first
-        register_other_hooks(
-            "requires_grad_post_hook",
-            "requires_grad_post_hook",
-            module,
-            "_forward_hooks",
-        )
-        module.register_forward_hook(requires_grad_post_hook)
-    else:
+    if still_need_patching:
         # Use forward pre hook before module is called
         register_other_hooks(
             "requires_grad_pre_hook",
