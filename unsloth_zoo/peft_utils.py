@@ -226,24 +226,23 @@ def requires_grad_for_gradient_checkpointing(model):
         if hasattr(module, "forward"):
             try: forward = inspect.getsource(module.forward)
             except: continue
+
+            # Normal self.language_model(...)
             if f"self.{name_curr}(" in forward:
                 final_where = j + 1
+                break
+
+            # Fix self.blocks[0] like in Qwen
+            module_list = re.sub(r"\[[\d]{1,}\]", "", name_curr)
+            if f"in self.{module_list}:" in forward:
+                final_where = j
                 break
             pass
         pass
     pass
 
     if final_where is None:
-        raise RuntimeError("Unsloth: Could not find an embedding module")
-    module_name = "model." + ".".join(name_components[:final_where])
-    print(f"Unsloth: Making `{module_name}` require gradients")
-    module = eval(module_name)
-
-    # Check if input_embeddings exists
-    if hasattr(module, "get_input_embeddings"):
-        # Use forward hook after Embedding() is called
-        module = module.get_input_embeddings()
-
+        # Find all input embeddings and just set them all as a fallback!
         # Add other hooks first
         register_other_hooks(
             "requires_grad_post_hook",
@@ -252,7 +251,34 @@ def requires_grad_for_gradient_checkpointing(model):
             "_forward_hooks",
         )
         module.register_forward_hook(requires_grad_post_hook)
-    else:
+        return
+    pass
+    
+    module_name = "model." + ".".join(name_components[:final_where])
+    print(f"Unsloth: Making `{module_name}` require gradients")
+    module = eval(module_name)
+
+    still_need_patching = True
+    # Check if input_embeddings exists
+    if hasattr(module, "get_input_embeddings"):
+        # Use forward hook after Embedding() is called
+        try:
+            module = module.get_input_embeddings()
+            # Add other hooks first
+            register_other_hooks(
+                "requires_grad_post_hook",
+                "requires_grad_post_hook",
+                module,
+                "_forward_hooks",
+            )
+            module.register_forward_hook(requires_grad_post_hook)
+            still_need_patching = False
+        except:
+            # Not Implemented probably?
+            still_need_patching = True
+    pass
+
+    if still_need_patching:
         # Use forward pre hook before module is called
         register_other_hooks(
             "requires_grad_pre_hook",
