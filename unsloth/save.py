@@ -1149,7 +1149,14 @@ def save_to_gguf(
     n_cpus *= 2
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
 
-    final_location = str((Path(model_directory) / f"unsloth.{first_conversion.upper()}.gguf").absolute())
+    # Give GGUF the same filename as project name
+    if "/" not in model_directory:
+        gguf_filename = model_directory
+    else:
+        gguf_filename = model_directory.split('/')[-1]
+    pass
+    
+    final_location = str((Path(model_directory) / f"{gguf_filename}.{first_conversion.upper()}.gguf").absolute())
     
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
@@ -1213,7 +1220,7 @@ def save_to_gguf(
     for quant_method in quantization_method:
         if quant_method != first_conversion:
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This might take 20 minutes...")
-            final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
+            final_location = str((Path(model_directory) / f"{gguf_filename}.{quant_method.upper()}.gguf").absolute())
 
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
