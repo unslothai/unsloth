@@ -1,7 +1,7 @@
 ---
-name: Bug report
-about: Reporting a bug
-title: "[BUG]"
+name: New Issue
+about: Bug / Feature Request
+title: ''
 labels: ''
 assignees: ''
 
@@ -21,4 +21,4 @@ O^O/ \_/ \    Pytorch: 2.4.0+cu121. CUDA = 7.5. CUDA Toolkit = 12.1.
 \        /    Bfloat16 = FALSE. FA [Xformers = 0.0.27.post2. FA2 = False]
  "-____-"     Free Apache license: http://github.com/unslothai/unsloth
 ```
-3. Otherwise, describe your problem:
+3. Otherwise, describe your problem or **feature request**:
