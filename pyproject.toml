@@ -8,28 +8,26 @@ dynamic = ["version"]
 description = "2-5X faster LLM finetuning"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {file = "LICENSE"}
-keywords = ["ai", "llm",]
-authors = [
-    {email = "info@unsloth.ai"},
-    {name = "Unsloth AI team"},
-]
+license = { file = "LICENSE" }
+keywords = ["ai", "llm"]
+authors = [{ email = "info@unsloth.ai" }, { name = "Unsloth AI team" }]
 maintainers = [
-    {name = "Daniel Han", email = "danielhanchen@gmail.com"},
-    {name = "Michael Han", email = "info@unsloth.ai"},
+    { name = "Daniel Han", email = "danielhanchen@gmail.com" },
+    { name = "Michael Han", email = "info@unsloth.ai" },
 ]
-classifiers = [
-    "Programming Language :: Python",
-]
+classifiers = ["Programming Language :: Python"]
 
 [tool.setuptools.dynamic]
-version = {attr = "unsloth.models._utils.__version__"}
+version = { attr = "unsloth.models._utils.__version__" }
 
 [tool.setuptools]
 include-package-data = false
 
 [tool.setuptools.packages.find]
 exclude = ["images*"]
+
+[tool.poetry]
+version = "2.0.1"
 
 [project.optional-dependencies]
 triton = [
@@ -163,16 +161,8 @@ cu124onlytorch251 = [
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post1-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post1-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
 ]
-cu118 = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-    "unsloth[cu118only]",
-]
-cu121 = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-    "unsloth[cu121only]",
-]
+cu118 = ["unsloth[huggingface]", "bitsandbytes>=0.43.3", "unsloth[cu118only]"]
+cu121 = ["unsloth[huggingface]", "bitsandbytes>=0.43.3", "unsloth[cu121only]"]
 cu118-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
@@ -248,16 +238,9 @@ cu124-torch251 = [
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch251]",
 ]
-kaggle = [
-    "unsloth[huggingface]",
-]
-kaggle-new = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-]
-conda = [
-    "unsloth[huggingface]",
-]
+kaggle = ["unsloth[huggingface]"]
+kaggle-new = ["unsloth[huggingface]", "bitsandbytes>=0.43.3"]
+conda = ["unsloth[huggingface]"]
 colab-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
@@ -309,18 +292,13 @@ colab-no-deps = [
     "bitsandbytes>=0.46.1",
     "protobuf<4.0.0",
 ]
-colab = [
-    "unsloth[cu121]",
-]
+colab = ["unsloth[cu121]"]
 flashattention = [
     "packaging ; platform_system == 'Linux'",
     "ninja ; platform_system == 'Linux'",
     "flash-attn>=2.6.3 ; platform_system == 'Linux'",
 ]
-colab-ampere = [
-    "unsloth[colab-ampere-torch220]",
-    "unsloth[flashattention]",
-]
+colab-ampere = ["unsloth[colab-ampere-torch220]", "unsloth[flashattention]"]
 cu118-ampere = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
