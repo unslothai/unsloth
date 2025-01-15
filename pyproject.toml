@@ -39,7 +39,7 @@ triton = [
     "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post5/triton-3.1.0-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
 ]
 huggingface = [
-    "unsloth_zoo>=2025.1.1",
+    "unsloth_zoo>=2025.1.2",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
@@ -285,7 +285,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.1.1",
+    "unsloth_zoo>=2025.1.2",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
