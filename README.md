@@ -82,23 +82,17 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 
 
 ## 🥇 Performance Benchmarking
-- For the full list of **reproducible** benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
+- For our most detailed benchmarks, read our [Llama 3.3 Blog](https://unsloth.ai/blog/llama3-3).
+- Benchmarking of Unsloth was also conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
 
-| 1 A100 40GB  | 🤗Hugging Face | Flash Attention | 🦥Unsloth Open Source | 🦥[Unsloth Pro](https://unsloth.ai/pricing) |
-|--------------|--------------|-----------------|---------------------|-----------------|
-| Alpaca       | 1x           | 1.04x           | 1.98x               | **15.64x**      |
-| LAION Chip2  | 1x           | 0.92x           | 1.61x               | **20.73x**      |
-| OASST        | 1x           | 1.19x           | 2.17x               | **14.83x**      |
-| Slim Orca    | 1x           | 1.18x           | 2.22x               | **14.82x**      |
+We tested using the Alpaca  Dataset, a batch size of 2, gradient accumulation steps of 4, rank = 32, and applied QLoRA on all linear layers (q, k, v, o, gate, up, down):
+  
+| Model          | VRAM  | 🦥 Unsloth speed | 🦥 VRAM reduction | 🦥 Longer context | 😊 Hugging Face + FA2 |
+|----------------|-------|-----------------|----------------|----------------|--------------------|
+| Llama 3.3 (70B)| 80GB  | 2x              | >75%           | 13x longer     | 1x                 |
+| Llama 3.1 (8B) | 80GB  | 2x              | >70%           | 12x longer     | 1x                 |
 
-- Benchmarking table below was conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
-
-| Free Colab T4 | Dataset | 🤗Hugging Face | Pytorch 2.1.1 | 🦥Unsloth | 🦥 VRAM reduction |
-| --- | --- | --- | --- | --- | --- |
-| Llama-2 7b | OASST | 1x | 1.19x | 1.95x | -43.3% |
-| Mistral 7b | Alpaca | 1x | 1.07x | 1.56x | -13.7% |
-| Tiny Llama 1.1b | Alpaca | 1x | 2.06x | 3.87x | -73.8% |
-| DPO with Zephyr | Ultra Chat | 1x | 1.09x | 1.55x | -18.6% |
+<br>
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
@@ -359,119 +353,28 @@ dpo_trainer.train()
 ```
 
 ## 🥇 Detailed Benchmarking Tables
-- Click "Code" for fully reproducible examples
-- "Unsloth Equal" is a preview of our PRO version, with code stripped out. All settings and the loss curve remains identical.
-- For the full list of benchmarking tables, [go to our website](https://unsloth.ai/blog/mistral-benchmark#Benchmark%20tables)
-  
-| 1 A100 40GB | 🤗Hugging Face | Flash Attention 2 | 🦥Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| Alpaca       | 1x          | 1.04x       | 1.98x           | 2.48x        | 5.32x         | **15.64x**      |
-| code | [Code](https://colab.research.google.com/drive/1u4dBeM-0vGNVmmO6X7cScAut-Hyt4KDF?usp=sharing) |    [Code](https://colab.research.google.com/drive/1fgTOxpMbVjloQBvZyz4lF4BacKSZOB2A?usp=sharing) |    [Code](https://colab.research.google.com/drive/1YIPY_18xm-K0iJDgvNkRoJsgkPMPAO3G?usp=sharing) |    [Code](https://colab.research.google.com/drive/1ANW8EFL3LVyTD7Gq4TkheC1Z7Rxw-rHp?usp=sharing) | | |
-| seconds| 1040 | 1001 | 525 | 419 | 196 | 67  |
-| memory MB| 18235 | 15365 | 9631 | 8525 | | |
-| % saved| | 15.74 | 47.18 | 53.25 | | | |
+### Context length benchmarks
+#### Llama 3.1 (8B) max. context length
+We tested Llama 3.1 (8B) Instruct and did 4bit QLoRA on all linear layers (Q, K, V, O, gate, up and down) with rank = 32 with a batch size of 1. We padded all sequences to a certain maximum sequence length to mimic long context finetuning workloads.
+| GPU VRAM | 🦥Unsloth context length | Hugging Face + FA2 |
+|----------|-----------------------|-----------------|
+| 8 GB     | 2,972                 | OOM             |
+| 12 GB    | 21,848                | 932             |
+| 16 GB    | 40,724                | 2,551           |
+| 24 GB    | 78,475                | 5,789           |
+| 40 GB    | 153,977               | 12,264          |
+| 48 GB    | 191,728               | 15,502          |
+| 80 GB    | 342,733               | 28,454          |
 
-### Llama-Factory 3rd party benchmarking
-- [Link to performance table.](https://github.com/hiyouga/LLaMA-Factory/wiki/Performance-Comparison) TGS: tokens per GPU per second. Model: LLaMA2-7B. GPU: NVIDIA A100 * 1. Batch size: 4. Gradient accumulation: 2. LoRA rank: 8. Max length: 1024.
+#### Llama 3.3 (70B) max. context length
+We tested Llama 3.3 (70B) Instruct on a 80GB A100 and did 4bit QLoRA on all linear layers (Q, K, V, O, gate, up and down) with rank = 32 with a batch size of 1. We padded all sequences to a certain maximum sequence length to mimic long context finetuning workloads.
 
-| Method | Bits | TGS | GRAM | Speed |
-| --- | --- | --- | --- | --- |
-| HF | 16 | 2392 | 18GB | 100% |
-| HF+FA2 | 16 | 2954 | 17GB | 123% |
-| Unsloth+FA2 | 16 | 4007 | 16GB | **168%** |
-| HF | 4 | 2415 | 9GB | 101% |
-| Unsloth+FA2 | 4 | 3726 | 7GB | **160%** |
+| GPU VRAM | 🦥Unsloth context length | Hugging Face + FA2 |
+|----------|------------------------|------------------|
+| 48 GB    | 12,106                | OOM              |
+| 80 GB    | 89,389                | 6,916            |
 
-### Performance comparisons between popular models
-<details>
-  <summary>Click for specific model benchmarking tables (Mistral 7b, CodeLlama 34b etc.)</summary>
-  
-### Mistral 7b
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| Mistral 7B Slim Orca  | 1x | 1.15x        | 2.15x        | 2.53x            | 4.61x         | **13.69x**         |
-| code | [Code](https://colab.research.google.com/drive/1mePk3KzwTD81hr5mcNcs_AX3Kbg_Ha0x?usp=sharing) | [Code](https://colab.research.google.com/drive/1dgHxjvTmX6hb0bPcLp26RXSE6_n9DKj7?usp=sharing) | [Code](https://colab.research.google.com/drive/1SKrKGV-BZoU4kv5q3g0jtE_OhRgPtrrQ?usp=sharing) | [Code](https://colab.research.google.com/drive/18yOiyX0T81mTwZqOALFSCX_tSAqju6aD?usp=sharing) | |
-| seconds      | 1813        | 1571        | 842             | 718          | 393           | 132         |
-| memory MB    | 32853       | 19385       | 12465           | 10271        |          |        |
-| % saved| | 40.99      | 62.06       | 68.74           |         |          |
-
-### CodeLlama 34b
-| 1 A100 40GB | Hugging Face | Flash Attention 2 | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|-------------|-------------|-----------------|--------------|---------------|-------------|
-| Code Llama 34B   | OOM ❌         | 0.99x        | 1.87x           | 2.61x        | 4.27x      | 12.82x      |
-| code | [▶️ Code](https://colab.research.google.com/drive/1ykfz3BqrtC_AUFegCzUQjjfUNlxp6Otc?usp=sharing) | [Code](https://colab.research.google.com/drive/12ZypxQh7OC6kBXvWZI-5d05I4m-B_hoR?usp=sharing) | [Code](https://colab.research.google.com/drive/1gdHyAx8XJsz2yNV-DHvbHjR1iCef5Qmh?usp=sharing) | [Code](https://colab.research.google.com/drive/1fm7wqx9MJ0kRrwKOfmLkK1Rmw-pySahB?usp=sharing) | |
-| seconds      | 1953  | 1982  | 1043  | 748   | 458   | 152   |
-| memory MB    | 40000 | 33217 | 27413 | 22161 |       | |
-| % saved|    | 16.96| 31.47 | 44.60 |       | | |
-
-### 1 Tesla T4
-
-| 1 T4 16GB  | Hugging Face | Flash Attention | Unsloth Open    | Unsloth Pro Equal | Unsloth Pro   | Unsloth Max |
-|--------------|-------------|-----------------|-----------------|---------------|---------------|-------------|
-| Alpaca       | 1x          | 1.09x           | 1.69x           | 1.79x         | 2.93x          | **8.3x**        |
-| code | [▶️ Code](https://colab.research.google.com/drive/1XpLIV4s8Bj5uryB-X2gqM88oRGHEGdaB?usp=sharing) |    [Code](https://colab.research.google.com/drive/1LyXu6CjuymQg6ddHX8g1dpUvrMa1nn4L?usp=sharing) |    [Code](https://colab.research.google.com/drive/1gsv4LpY7C32otl1rgRo5wXTk4HIitXoM?usp=sharing) |    [Code](https://colab.research.google.com/drive/1VtULwRQwhEnVdNryjm27zXfdSM1tNfFK?usp=sharing) | | |
-| seconds       | 1599        | 1468        | 942             | 894          | 545           | 193         |
-| memory MB       | 7199        | 7059        | 6459            | 5443         |               |             |
-| % saved        |         | 1.94        | 10.28           | 24.39        |               | |
-
-### 2 Tesla T4s via DDP
-
- | 2 T4 DDP | Hugging Face | Flash Attention | Unsloth Open | Unsloth Equal | Unsloth Pro | Unsloth Max |
-|--------------|----------|-------------|-----------------|--------------|---------------|-------------|
-| Alpaca       | 1x       | 0.99x       | 4.95x           | 4.44x        | 7.28x         | **20.61x**      |
-| code | [▶️ Code](https://www.kaggle.com/danielhanchen/hf-original-alpaca-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/hf-sdpa-alpaca-t4-ddp) |   [Code](https://www.kaggle.com/danielhanchen/unsloth-alpaca-t4-ddp) | | |
-| seconds       | 9882     | 9946        | 1996            | 2227         | 1357          | 480         |
-| memory MB| 9176 | 9128 | 6904 | 6782 |  | |
-| % saved |     | 0.52 | 24.76 | 26.09 |  | | |
-</details>
-
-### Performance comparisons on 1 Tesla T4 GPU:
-<details>
-  <summary>Click for Time taken for 1 epoch</summary>
-
-One Tesla T4 on Google Colab
-`bsz = 2, ga = 4, max_grad_norm = 0.3, num_train_epochs = 1, seed = 3047, lr = 2e-4, wd = 0.01, optim = "adamw_8bit", schedule = "linear", schedule_steps = 10`
-
-| System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) |
-| --- | --- | --- | --- | --- | --- |
-| Huggingface | 1 T4 | 23h 15m | 56h 28m | 8h 38m | 391h 41m |
-| Unsloth Open | 1 T4 | 13h 7m (1.8x) | 31h 47m (1.8x) | 4h 27m (1.9x) | 240h 4m (1.6x) |
-| Unsloth Pro | 1 T4 | 3h 6m (7.5x) | 5h 17m (10.7x) | 1h 7m (7.7x) | 59h 53m (6.5x) |
-| Unsloth Max | 1 T4 | 2h 39m (8.8x) | 4h 31m (12.5x) | 0h 58m (8.9x) | 51h 30m (7.6x) |
-
-**Peak Memory Usage**
-
-| System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) |
-| --- | --- | --- | --- | --- | --- |
-| Huggingface | 1 T4 | 7.3GB | 5.9GB | 14.0GB | 13.3GB |
-| Unsloth Open | 1 T4 | 6.8GB | 5.7GB | 7.8GB | 7.7GB |
-| Unsloth Pro | 1 T4 | 6.4GB | 6.4GB | 6.4GB | 6.4GB |
-| Unsloth Max | 1 T4 | 11.4GB | 12.4GB | 11.9GB | 14.4GB |
-</details>
-
-<details>
-  <summary>Click for Performance Comparisons on 2 Tesla T4 GPUs via DDP:</summary>
-**Time taken for 1 epoch**
-
-Two Tesla T4s on Kaggle
-`bsz = 2, ga = 4, max_grad_norm = 0.3, num_train_epochs = 1, seed = 3047, lr = 2e-4, wd = 0.01, optim = "adamw_8bit", schedule = "linear", schedule_steps = 10`
-
-| System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) * |
-| --- | --- | --- | --- | --- | --- |
-| Huggingface | 2 T4 | 84h 47m | 163h 48m | 30h 51m | 1301h 24m * |
-| Unsloth Pro | 2 T4 | 3h 20m (25.4x) | 5h 43m (28.7x) | 1h 12m (25.7x) | 71h 40m (18.1x) * |
-| Unsloth Max | 2 T4 | 3h 4m (27.6x) | 5h 14m (31.3x) | 1h 6m (28.1x) | 54h 20m (23.9x) * |
-
-**Peak Memory Usage on a Multi GPU System (2 GPUs)**
-
-| System | GPU | Alpaca (52K) | LAION OIG (210K) | Open Assistant (10K) | SlimOrca (518K) * |
-| --- | --- | --- | --- | --- | --- |
-| Huggingface | 2 T4 | 8.4GB \| 6GB | 7.2GB \| 5.3GB | 14.3GB \| 6.6GB | 10.9GB \| 5.9GB * |
-| Unsloth Pro | 2 T4 | 7.7GB \| 4.9GB | 7.5GB \| 4.9GB | 8.5GB \| 4.9GB | 6.2GB \| 4.7GB * |
-| Unsloth Max | 2 T4 | 10.5GB \| 5GB | 10.6GB \| 5GB | 10.6GB \| 5GB | 10.5GB \| 5GB * |
-
-* Slim Orca `bsz=1` for all benchmarks since `bsz=2` OOMs. We can handle `bsz=2`, but we benchmark it with `bsz=1` for consistency.
-</details>
+<br>
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 <br>
