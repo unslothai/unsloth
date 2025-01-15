@@ -664,7 +664,7 @@ def LlamaModel_fast_forward(
 
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
-    if self._has_no_labels and (attention_mask is not None) and (past_key_values is None) and \
+    if getattr(self, "_has_no_labels", False) is True and (attention_mask is not None) and (past_key_values is None) and \
         (not train_embed_tokens):
         # Careful for inference the attention_mask is size (1, kv_seq_len)
         # Whilst the input_embeds is size (1, 1, 4096)
