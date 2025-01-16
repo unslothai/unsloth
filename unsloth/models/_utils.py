@@ -847,6 +847,7 @@ def patch_linear_scaling(
     rotary_emb = rotary_emb[0]
     function = function.replace(rotary_emb, fix_rope_function, 1)
     function = exec_code + "\n\n" + function
+    print(function)
     return init_name, function
 pass
 
