@@ -86,6 +86,10 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
+# First check if CUDA is available ie a NVIDIA GPU is seen
+if not torch.cuda.is_available():
+    raise NotImplementedError("Unsloth: No NVIDIA GPU found? Unsloth currently only supports GPUs!")
+
 # Fix Xformers performance issues since 0.0.25
 import importlib.util
 from pathlib import Path
