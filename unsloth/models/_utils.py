@@ -799,9 +799,7 @@ def patch_linear_scaling(
         f"from typing import Union, Optional, List, Any, Callable, Tuple\n"\
         f"from {model_filepath} import logger, "\
         f"{model_name.title()}Attention, {model_name.title()}Config"
-
-    print(exec_code)
-    print(inspect.getsource(attention_module.__init__))
+    
     try:
         function = inspect.getsource(attention_module.__init__)
     except:
@@ -845,12 +843,12 @@ def patch_linear_scaling(
         "self.rotary_emb = .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
-    if len(rotary_emb) == 0: return None, function
+    if len(rotary_emb) == 0:
+        return None, exec_code + "\n\n" + function
+
     rotary_emb = rotary_emb[0]
     function = function.replace(rotary_emb, fix_rope_function, 1)
     function = exec_code + "\n\n" + function
-    print("###########")
-    print(exec_code)
     return init_name, function
 pass
 
