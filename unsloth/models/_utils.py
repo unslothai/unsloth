@@ -800,6 +800,7 @@ def patch_linear_scaling(
         f"from {model_filepath} import logger, "\
         f"{model_name.title()}Attention, {model_name.title()}Config"
 
+    print(exec_code)
     try:
         function = inspect.getsource(attention_module.__init__)
     except:
