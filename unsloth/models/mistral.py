@@ -304,7 +304,7 @@ class FastMistralModel(FastLlamaModel):
             attention_module   = MistralAttention,
         )
         # Just for Mistral Nemo models!
-        if function is not None:
+        if function is not None and init_name is not None:
             function = patch_mistral_nemo_attention(function)
             # if True:#init_name is not None:
             exec(function, globals())
