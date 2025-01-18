@@ -325,6 +325,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     if bad_not_trainable:
 
         final_bad_items = []
+        which_locations = []
 
         # Re-check the first 250, last 250 input_ids
         size_dataset = len(train_dataset)
@@ -334,7 +335,9 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
             if "input_ids" in input_ids:
                 input_ids = input_ids["input_ids"]
                 for item in input_ids:
-                    if item in where_untrained_set: final_bad_items.append(item)
+                    if item in where_untrained_set:
+                        final_bad_items.append(item)
+                        which_locations.append(j)
             pass
         pass
 
@@ -345,7 +348,9 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
             if "input_ids" in input_ids:
                 input_ids = input_ids["input_ids"]
                 for item in input_ids:
-                    if item in where_untrained_set: final_bad_items.append(item)
+                    if item in where_untrained_set:
+                        final_bad_items.append(item)
+                        which_locations.append(j)
             pass
         pass
 
@@ -359,7 +364,9 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
                 if "input_ids" in input_ids:
                     input_ids = input_ids["input_ids"]
                     for item in input_ids:
-                        if item in where_untrained_set: final_bad_items.append(item)
+                        if item in where_untrained_set:
+                            final_bad_items.append(item)
+                            which_locations.append(j)
                 pass
             pass
 
@@ -370,15 +377,21 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
                 if "input_ids" in input_ids:
                     input_ids = input_ids["input_ids"]
                     for item in input_ids:
-                        if item in where_untrained_set: final_bad_items.append(item)
+                        if item in where_untrained_set:
+                            final_bad_items.append(item)
+                            which_locations.append(j)
                 pass
             pass
             # Most likely false signal!
             if len(final_bad_items) == 0: return
         pass
 
+        token_ids = list(set(final_bad_items))
+        tokens = tokenizer.decode(token_ids)
         raise ValueError(
-            f'Unsloth: Untrained tokens of [{list(set(final_bad_items))}] found, but embed_tokens & lm_head not trainable, causing NaNs. '\
+            f'Unsloth: Untrained tokens in rows [{list(set(which_locations))}] found.\n'\
+            f"The token ids are [{token_ids}] and tokens are [{tokens}].\n"\
+            f"The issue is the embed_tokens & lm_head not trainable, which will cause NaNs. '\
             'Restart then add `embed_tokens` & `lm_head` to '\
             '`FastLanguageModel.get_peft_model(target_modules = [..., "embed_tokens", "lm_head",]). `'\
             'Are you using the `base` model? Instead, use the `instruct` version to silence this warning.',
