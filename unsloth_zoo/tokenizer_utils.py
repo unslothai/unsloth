@@ -391,7 +391,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
         raise ValueError(
             f'Unsloth: Untrained tokens in rows [{list(set(which_locations))}] found.\n'\
             f"The token ids are [{token_ids}] and tokens are [{tokens}].\n"\
-            f"The issue is the embed_tokens & lm_head not trainable, which will cause NaNs. '\
+            f"The issue is the embed_tokens & lm_head not trainable, which will cause NaNs. "\
             'Restart then add `embed_tokens` & `lm_head` to '\
             '`FastLanguageModel.get_peft_model(target_modules = [..., "embed_tokens", "lm_head",]). `'\
             'Are you using the `base` model? Instead, use the `instruct` version to silence this warning.',
