@@ -285,7 +285,7 @@ if major_version >= 8:
     if _is_package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
-            from flash_attn.flash_attn_interface import flash_attn_cuda
+            from flash_attn import flash_attn_interface
             HAS_FLASH_ATTENTION = True
 
             # Also check for softcapping
