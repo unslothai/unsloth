@@ -110,10 +110,10 @@ import os, shutil, re, functools
 
 def _merge_lora(W, lora_stats, name):
     if lora_stats.lora_A is None or lora_stats.lora_B is None: return W
-    W = W.to('cuda', dtype = torch.float32, non_blocking = True)
+    W = W.to("cuda", dtype = torch.float32, non_blocking = True)
     W = W.addmm_(
-        lora_stats.lora_B.to('cuda', dtype = torch.float32, non_blocking = True),
-        lora_stats.lora_A.to('cuda', dtype = torch.float32, non_blocking = True),
+        lora_stats.lora_B.to("cuda", dtype = torch.float32, non_blocking = True),
+        lora_stats.lora_A.to("cuda", dtype = torch.float32, non_blocking = True),
         alpha = lora_stats.alpha,
     )
     if not torch.isfinite(torch.amax(W)).item():
@@ -325,7 +325,7 @@ def _merge_and_overwrite_lora(save_directory, filename, lora_weights, output_dty
             if lora_stats is not None:
                 count += 1
                 W = _merge_lora(W, lora_stats, key)
-                W = W.to(device = 'cpu', dtype = output_dtype, non_blocking = True)
+                W = W.to(device = "cpu", dtype = output_dtype, non_blocking = True)
             pass
             tensors[key] = W
         pass
