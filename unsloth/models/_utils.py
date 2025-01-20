@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.1.5"
+__version__ = "2025.1.6"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -285,7 +285,11 @@ if major_version >= 8:
     if _is_package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
-            from flash_attn.flash_attn_interface import flash_attn_cuda
+            try:
+                # See https://github.com/unslothai/unsloth/issues/1437
+                from flash_attn.flash_attn_interface import flash_attn_gpu
+            except:
+                from flash_attn.flash_attn_interface import flash_attn_cuda
             HAS_FLASH_ATTENTION = True
 
             # Also check for softcapping
@@ -843,7 +847,9 @@ def patch_linear_scaling(
         "self.rotary_emb = .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
-    if len(rotary_emb) == 0: return None, function
+    if len(rotary_emb) == 0:
+        return None, exec_code + "\n\n" + function
+
     rotary_emb = rotary_emb[0]
     function = function.replace(rotary_emb, fix_rope_function, 1)
     function = exec_code + "\n\n" + function
