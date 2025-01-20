@@ -949,10 +949,6 @@ def LlamaModel_fast_forward_inference(
     )
 pass
 
-global global_hidden_states
-global global_labels
-global_hidden_states = None
-global_labels = None
 
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
@@ -1025,11 +1021,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
 
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
-                global global_hidden_states
-                global global_labels
-                global_hidden_states = hidden_states
-                global_labels = labels
-                raise
                 loss = fused_linear_cross_entropy(
                     hidden_states      = hidden_states,
                     lm_weight          = lm_head,
