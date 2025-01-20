@@ -89,6 +89,7 @@ def GraniteAttention_fast_forward(
     n_groups   = self.num_key_value_groups
     n_kv_heads = self.config.num_key_value_heads
     head_dim   = self.head_dim
+    dropout_p  = self.config.attention_dropout if self.training else 0
     assert(n_kv_heads * n_groups == n_heads)
 
     Q, K, V = self.apply_qkv(self, hidden_states)
@@ -135,7 +136,7 @@ def GraniteAttention_fast_forward(
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
         pass
 
-        A = xformers_attention(Q, K, V, attn_bias = causal_mask, scale=self.scaling)
+        A = xformers_attention(Q, K, V, attn_bias = causal_mask, scale=self.scaling, p=dropout_p)
         A = A.view(bsz, q_len, n_heads, head_dim)
 
     elif HAS_FLASH_ATTENTION and attention_mask is None:
@@ -143,7 +144,7 @@ def GraniteAttention_fast_forward(
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
         window = (kv_seq_len, kv_seq_len)
-        A = flash_attn_func(Q, K, V, causal = True, window_size = window, softmax_scale=self.scaling)
+        A = flash_attn_func(Q, K, V, causal = True, window_size = window, softmax_scale=self.scaling, dropout_p=dropout_p)
     else:
         # Grouped query attention
         # if n_groups != 1:
@@ -157,7 +158,7 @@ def GraniteAttention_fast_forward(
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, scale = self.scaling, is_causal = False)
+        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, scale = self.scaling, is_causal = False, dropout_p=dropout_p)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
