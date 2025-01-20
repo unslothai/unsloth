@@ -636,6 +636,7 @@ def LlamaModel_fast_forward(
     IS_GEMMA2  = self.config.model_type.startswith("gemma2")
     IS_COHERE  = self.config.model_type.startswith("cohere")
     IS_GRANITE = self.config.model_type.startswith("granite")
+
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
     if IS_GEMMA:
@@ -664,7 +665,7 @@ def LlamaModel_fast_forward(
 
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
-    if self._has_no_labels and (attention_mask is not None) and (past_key_values is None) and \
+    if getattr(self, "_has_no_labels", False) is True and (attention_mask is not None) and (past_key_values is None) and \
         (not train_embed_tokens):
         # Careful for inference the attention_mask is size (1, kv_seq_len)
         # Whilst the input_embeds is size (1, 1, 4096)
@@ -792,9 +793,12 @@ def LlamaModel_fast_forward(
         pass
     pass
 
-    if IS_ATTENTION_REFACTOR and not hasattr(self.layers[0].self_attn, "rotary_emb"):
+    if (IS_ATTENTION_REFACTOR and (hasattr(self, "rotary_emb") or not hasattr(self.layers[0].self_attn, "rotary_emb"))) or IS_GRANITE:
         # Transformers main has made it mandatory to pass position_embeddings
         # https://github.com/huggingface/transformers/pull/34858
+        # Also, transformers 4.45.0 supports granite but with the attention refactor (it always had the refactor)
+        # unsloth's check for granite too has "version >= 4.45.0 (rightly so)".
+        # so let granite always use the attention refactor implementation.
         position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
     else:
         position_embeddings = None
