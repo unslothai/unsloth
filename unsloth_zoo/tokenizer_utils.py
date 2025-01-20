@@ -247,12 +247,23 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
 
     # Combine both checks
     indicator_untrained = indicator_untrained1 & indicator_untrained2
-
-    # Remove pad token possibility
-    if hasattr(tokenizer, "pad_token_id"):
-        pad_token_id = tokenizer.pad_token_id
-        if pad_token_id is not None and pad_token_id < indicator_untrained.shape[0]:
-            indicator_untrained[pad_token_id] = False
+    
+    # Remove pad token and other important token possibilities
+    special_tokens = (
+        "bos_token",
+        "eos_token",
+        "unk_token",
+        "sep_token",
+        "pad_token",
+        "cls_token",
+        "mask_token",
+    )
+    for special_token in special_tokens:
+        if hasattr(tokenizer, special_token + "_id"):
+            token_id = eval(f"tokenizer.{special_token}_id")
+            if token_id is not None and token_id < indicator_untrained.shape[0]:
+                indicator_untrained[token_id] = False
+        pass
     pass
     
     where_untrained = torch.where(indicator_untrained)[0]
@@ -325,6 +336,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     if bad_not_trainable:
 
         final_bad_items = []
+        which_locations = []
 
         # Re-check the first 250, last 250 input_ids
         size_dataset = len(train_dataset)
@@ -334,7 +346,9 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
             if "input_ids" in input_ids:
                 input_ids = input_ids["input_ids"]
                 for item in input_ids:
-                    if item in where_untrained_set: final_bad_items.append(item)
+                    if item in where_untrained_set:
+                        final_bad_items.append(item)
+                        which_locations.append(j)
             pass
         pass
 
@@ -345,7 +359,9 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
             if "input_ids" in input_ids:
                 input_ids = input_ids["input_ids"]
                 for item in input_ids:
-                    if item in where_untrained_set: final_bad_items.append(item)
+                    if item in where_untrained_set:
+                        final_bad_items.append(item)
+                        which_locations.append(j)
             pass
         pass
 
@@ -359,7 +375,9 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
                 if "input_ids" in input_ids:
                     input_ids = input_ids["input_ids"]
                     for item in input_ids:
-                        if item in where_untrained_set: final_bad_items.append(item)
+                        if item in where_untrained_set:
+                            final_bad_items.append(item)
+                            which_locations.append(j)
                 pass
             pass
 
@@ -370,15 +388,21 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
                 if "input_ids" in input_ids:
                     input_ids = input_ids["input_ids"]
                     for item in input_ids:
-                        if item in where_untrained_set: final_bad_items.append(item)
+                        if item in where_untrained_set:
+                            final_bad_items.append(item)
+                            which_locations.append(j)
                 pass
             pass
             # Most likely false signal!
             if len(final_bad_items) == 0: return
         pass
 
+        token_ids = list(set(final_bad_items))
+        tokens = tokenizer.decode(token_ids)
         raise ValueError(
-            f'Unsloth: Untrained tokens of [{list(set(final_bad_items))}] found, but embed_tokens & lm_head not trainable, causing NaNs. '\
+            f'Unsloth: Untrained tokens in rows [{list(set(which_locations))}] found.\n'\
+            f"The token ids are [{token_ids}] and tokens are [{tokens}].\n"\
+            f"The issue is the embed_tokens & lm_head not trainable, which will cause NaNs. "\
             'Restart then add `embed_tokens` & `lm_head` to '\
             '`FastLanguageModel.get_peft_model(target_modules = [..., "embed_tokens", "lm_head",]). `'\
             'Are you using the `base` model? Instead, use the `instruct` version to silence this warning.',
