@@ -209,3 +209,18 @@ def early_config_prune(configs, named_args, **kwargs):
             random_config.num_stages = 2
             pruned_configs.append(random_config)
     return pruned_configs
+
+class PerfOps:
+    def __init__(self): return
+    @staticmethod
+    def early_config_prune(*args, **kwargs):
+        return _early_config_prune(*args, **kwargs)
+    @staticmethod
+    def estimate_matmul_time(*args, **kwargs):
+        return _estimate_matmul_time(*args, **kwargs)
+pass
+
+class TritonOps:
+    __slots__ = "matmul_perf_model",
+    def __init__(self): self.matmul_perf_model = PerfOps()
+pass
