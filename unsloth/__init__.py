@@ -153,8 +153,8 @@ def fix_triton_ops():
             early_config_prune,
             estimate_matmul_time,
         )
-        triton.ops.early_config_prune   = early_config_prune
-        triton.ops.estimate_matmul_time = estimate_matmul_time
+        triton.ops.matmul_perf_model.early_config_prune   = early_config_prune
+        triton.ops.matmul_perf_model.estimate_matmul_time = estimate_matmul_time
     pass
 pass
 fix_triton_ops()
