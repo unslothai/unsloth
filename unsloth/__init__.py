@@ -149,12 +149,24 @@ def fix_triton_ops():
         import triton.ops
     except:
         # Triton 3.2 removed triton.ops
-        from .kernels.matmul_perf_model import (
-            early_config_prune,
-            estimate_matmul_time,
+        from .matmul_perf_model import (
+            early_config_prune   as _early_config_prune,
+            estimate_matmul_time as _estimate_matmul_time,
         )
-        triton.ops.matmul_perf_model.early_config_prune   = early_config_prune
-        triton.ops.matmul_perf_model.estimate_matmul_time = estimate_matmul_time
+        class PerfOps:
+            def __init__(self): return
+            @staticmethod
+            def early_config_prune(*args, **kwargs):
+                return _early_config_prune(*args, **kwargs)
+            @staticmethod
+            def estimate_matmul_time(*args, **kwargs):
+                return _estimate_matmul_time(*args, **kwargs)
+        pass
+        class TritonOps:
+            __slots__ = "matmul_perf_model",
+            def __init__(self): self.matmul_perf_model = PerfOps()
+        pass
+        triton.ops = TritonOps()
     pass
 pass
 fix_triton_ops()
