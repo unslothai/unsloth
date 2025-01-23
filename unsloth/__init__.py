@@ -134,7 +134,6 @@ else:
     torch.cuda.is_bf16_supported = is_bf16_supported
 pass
 
-
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
