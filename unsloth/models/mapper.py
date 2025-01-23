@@ -522,6 +522,34 @@ __INT_TO_FLOAT_MAPPER = \
         "microsoft/phi-4",
         "unsloth/phi-4-bnb-4bit",
     ),
+    "unsloth/DeepSeek-R1-Distill-Qwen-32B-bnb-4bit" : (
+        "unsloth/DeepSeek-R1-Distill-Qwen-32B",
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+    ),
+    "unsloth/DeepSeek-R1-Distill-Qwen-14B-unsloth-bnb-4bit" : (
+        "unsloth/DeepSeek-R1-Distill-Qwen-14B",
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+        "unsloth/DeepSeek-R1-Distill-Qwen-14B-bnb-4bit",
+    ),
+    "unsloth/DeepSeek-R1-Distill-Qwen-7B-unsloth-bnb-4bit" : (
+        "unsloth/DeepSeek-R1-Distill-Qwen-7B",
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        "unsloth/DeepSeek-R1-Distill-Qwen-7B-bnb-4bit",
+    ),
+    "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-unsloth-bnb-4bit" : (
+        "unsloth/DeepSeek-R1-Distill-Qwen-1.5B",
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+        "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-bnb-4bit",
+    ),
+    "unsloth/DeepSeek-R1-Distill-Llama-8B-unsloth-bnb-4bit" : (
+        "unsloth/DeepSeek-R1-Distill-Llama-8B",
+        "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+        "unsloth/DeepSeek-R1-Distill-Llama-8B-bnb-4bit",
+    ),
+    "unsloth/DeepSeek-R1-Distill-Llama-70B-bnb-4bit" : (
+        "unsloth/DeepSeek-R1-Distill-Llama-70B",
+        "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
