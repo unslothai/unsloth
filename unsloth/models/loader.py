@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING
+from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
@@ -30,14 +31,24 @@ except:
 pass
 from huggingface_hub import HfFileSystem
 
+# [TODO] Move USE_MODELSCOPE to utils
+USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+if USE_MODELSCOPE:
+    import importlib
+    if importlib.util.find_spec("modelscope") is None:
+        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
+    pass
+pass
+
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
-from packaging.version import Version
+from unsloth_zoo.utils import Version, _get_dtype
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 SUPPORTS_GEMMA   = transformers_version >= Version("4.38")
 SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
 SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
 SUPPORTS_LLAMA32 = transformers_version  > Version("4.45.0")
+SUPPORTS_GRANITE = transformers_version >= Version("4.46.0")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -45,28 +56,11 @@ if SUPPORTS_GEMMA2:
 pass
 import torch
 
-def _get_dtype(dtype):
-    __DTYPE_MAP = {
-        "float32": torch.float32,
-        torch.float32: torch.float32,
-        "float16": torch.float16,
-        torch.float16: torch.float16,
-        "bfloat16": torch.bfloat16,
-        torch.bfloat16: torch.bfloat16,
-    }
-    if   dtype is None or dtype == None: return None
-    elif dtype in __DTYPE_MAP: return __DTYPE_MAP[dtype]
-    else:
-        print(f"Unsloth: {dtype} is not recognized, so we'll default to None")
-        return None
-    pass
-pass
-
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name                 = "unsloth/llama-3-8b-bnb-4bit",
+        model_name                 = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length             = None,
         dtype                      = None,
         load_in_4bit               = True,
@@ -78,12 +72,19 @@ class FastLanguageModel(FastLlamaModel):
         use_gradient_checkpointing = "unsloth",
         resize_model_vocab         = None,
         revision                   = None,
+        use_exact_model_name       = False,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
         
         old_model_name = model_name
-        model_name = get_model_name(model_name, load_in_4bit)
+        if not use_exact_model_name:
+            model_name = get_model_name(model_name, load_in_4bit)
+
+        if USE_MODELSCOPE and not os.path.exists(model_name):
+            from modelscope import snapshot_download
+            model_name = snapshot_download(model_name)
+        pass
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
@@ -129,7 +130,8 @@ class FastLanguageModel(FastLlamaModel):
                 exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+                # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
+                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
                 files = (os.path.split(x)[-1] for x in files)
                 if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
@@ -162,7 +164,9 @@ class FastLanguageModel(FastLlamaModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
-            model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            model_name = peft_config.base_model_name_or_path
+            if not use_exact_model_name:
+                model_name = get_model_name(model_name, load_in_4bit)
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -175,7 +179,7 @@ class FastLanguageModel(FastLlamaModel):
 
         model_type = model_config.model_type
 
-        if   model_type == "llama":
+        if model_type == "llama":
             scaling_type = None
             if getattr(model_config, "rope_scaling", None) is not None:
                 scaling_type1 = model_config.rope_scaling.get("type", None)
@@ -231,6 +235,8 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastQwen2Model
         elif model_type == "cohere":
             dispatch_model = FastCohereModel
+        elif model_type == "granite":
+            dispatch_model = FastGraniteModel
         else:
             raise NotImplementedError(
                 f"Unsloth: {model_name} not supported yet!\n"\
@@ -348,6 +354,8 @@ class FastVisionModel(FastBaseVisionModel):
         resize_model_vocab         = None, # [TODO] No effect
         revision                   = None,
         return_logits              = False, # Return logits
+        fullgraph                  = True, # No graph breaks
+        use_exact_model_name       = False,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -355,10 +363,16 @@ class FastVisionModel(FastBaseVisionModel):
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
         if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing()
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
         
         old_model_name = model_name
-        model_name = get_model_name(model_name, load_in_4bit)
+        if not use_exact_model_name:
+            model_name = get_model_name(model_name, load_in_4bit)
+
+        if USE_MODELSCOPE and not os.path.exists(model_name):
+            from modelscope import snapshot_download
+            model_name = snapshot_download(model_name)
+        pass
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
@@ -404,7 +418,7 @@ class FastVisionModel(FastBaseVisionModel):
                 exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
                 both_exist = exist_adapter_config and exist_config
             else:
-                files = HfFileSystem(token = token).glob(os.path.join(model_name, "*.json"))
+                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
                 files = (os.path.split(x)[-1] for x in files)
                 if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
@@ -437,7 +451,10 @@ class FastVisionModel(FastBaseVisionModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
-            model_name = get_model_name(peft_config.base_model_name_or_path, load_in_4bit)
+            model_name = peft_config.base_model_name_or_path
+            if not use_exact_model_name:
+                model_name = get_model_name(model_name, load_in_4bit)
+            
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -448,7 +465,10 @@ class FastVisionModel(FastBaseVisionModel):
 
         if not was_disabled: enable_progress_bars()
 
-        with contextlib.redirect_stdout(open(os.devnull, "w")):
+        do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+        redirector = sys.stdout if do_logging else open(os.devnull, "w")
+
+        with contextlib.redirect_stdout(redirector):
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
@@ -464,16 +484,21 @@ class FastVisionModel(FastBaseVisionModel):
                 fuse_lm_head            = True,
                 gradient_checkpointing  = True,
                 manual_replacements     = True,
+                fast_lora_forwards      = True,
+                fast_residual_stream    = False,
+                accurate_accumulation   = True,
                 epilogue_fusion         = True,
                 max_autotune            = False,
                 shape_padding           = True,
                 cudagraphs              = False,
                 debug                   = False,
+                fullgraph               = fullgraph,
                 import_from_cache       = False,
                 disable                 = False,
                 return_logits           = return_logits,
             )
         pass
+        if do_logging: redirector.close()
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \

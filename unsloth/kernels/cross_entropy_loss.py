@@ -25,11 +25,6 @@ from unsloth_zoo.loss_utils import (
 )
 
 
-@triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
-    "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
-})
-@triton.jit
 def _cross_entropy_forward(
     logits_ptr        ,
     logits_row_stride ,
@@ -95,13 +90,15 @@ def _cross_entropy_forward(
     tl.store(logsumexp_ptr, logsumexp)
     tl.store(loss_ptr, loss)
 pass
+_cross_entropy_forward = triton.jit(_cross_entropy_forward)
+_cross_entropy_forward = triton.heuristics(
+    {
+        "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
+        "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
+    }
+)(_cross_entropy_forward)
 
 
-@triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
-    "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
-})
-@triton.jit
 def _chunked_cross_entropy_forward(
     logits_ptr        ,
     logits_row_stride ,
@@ -177,13 +174,15 @@ def _chunked_cross_entropy_forward(
     pass
     tl.store(logsumexp_ptr, logsumexp)
 pass
+_chunked_cross_entropy_forward = triton.jit(_chunked_cross_entropy_forward)
+_chunked_cross_entropy_forward = triton.heuristics(
+    {
+        "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
+        "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
+    }
+)(_chunked_cross_entropy_forward)
 
 
-@triton.heuristics({
-    "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
-    "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
-})
-@triton.jit
 def _cross_entropy_backward(
     logits_ptr        ,
     logits_row_stride ,
@@ -264,10 +263,16 @@ def _cross_entropy_backward(
     # If y == 0: dC/dx = 0 ==> we already masked it to be = 0, so dloss = 0.
     tl.store(logits_ptr + col_offsets, dloss * y, mask = mask)
 pass
+_cross_entropy_backward = triton.jit(_cross_entropy_backward)
+_cross_entropy_backward = triton.heuristics(
+    {
+        "DO_SOFTCAPPING":   lambda args: bool(args["DO_SOFTCAPPING"  ]),
+        "DO_LOGIT_SCALING": lambda args: bool(args["DO_LOGIT_SCALING"]),
+    }
+)(_cross_entropy_backward)
 
 
 MAX_FUSED_SIZE = 65536 # 2**16
-
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def forward(ctx, logits, labels, logit_softcapping : float = 0, logit_scaling : float = 0):

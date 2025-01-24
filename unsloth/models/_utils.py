@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2024.11.10"
+__version__ = "2025.1.7"
 
 __all__ = [
+    "SUPPORTS_BFLOAT16",
+    "is_bfloat16_supported",
+
     "prepare_model_for_kbit_training",
     "xformers",
     "xformers_attention",
@@ -30,7 +33,6 @@ __all__ = [
     "offload_to_disk",
     "offload_input_embeddings",
     "offload_output_embeddings",
-    "is_bfloat16_supported",
     "unsloth_offloaded_gradient_checkpoint",
     "torch_compile_options",
     "patch_linear_scaling",
@@ -58,7 +60,6 @@ __all__ = [
     "fused_linear_cross_entropy",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
-    "create_gradient_checkpointing_buffer",
 
     "patch_compiled_autograd",
     "process_vision_info",
@@ -74,6 +75,7 @@ import numpy as np
 import warnings, subprocess, re, inspect, psutil, os, math
 from packaging.version import Version
 from unsloth import devices
+from unsloth_zoo.utils import Version
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -99,16 +101,15 @@ from unsloth_zoo.gradient_checkpointing import (
 
     patch_unsloth_smart_gradient_checkpointing,
     unpatch_unsloth_smart_gradient_checkpointing,
-    create_gradient_checkpointing_buffer,
-)
-from unsloth_zoo.loss_utils import (
-    HAS_CUT_CROSS_ENTROPY,
-    fused_linear_cross_entropy,
-)
-from unsloth_zoo.vision_utils import (
-    process_vision_info,
 )
 if not devices.has_mps:
+    from unsloth_zoo.loss_utils import (
+        HAS_CUT_CROSS_ENTROPY,
+        fused_linear_cross_entropy,
+    )
+    from unsloth_zoo.vision_utils import (
+        process_vision_info,
+    )
     from unsloth_zoo.compiler import (
         get_transformers_model_type,
         unsloth_compile_transformers as _unsloth_compile_transformers,
@@ -191,7 +192,7 @@ pass
 
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
-model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2",]
+model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite"]
 
 for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
@@ -293,7 +294,11 @@ if major_version >= 8:
     if _is_package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
-            from flash_attn.flash_attn_interface import flash_attn_cuda
+            try:
+                # See https://github.com/unslothai/unsloth/issues/1437
+                from flash_attn.flash_attn_interface import flash_attn_gpu
+            except:
+                from flash_attn.flash_attn_interface import flash_attn_cuda
             HAS_FLASH_ATTENTION = True
 
             # Also check for softcapping
@@ -411,7 +416,7 @@ pass
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
 accelerate_old_send_to_device = None
 accelerate_new_send_to_device = None
-if Version(xformers_version) >= Version("0.0.27"):
+if xformers_version is not None and Version(xformers_version) >= Version("0.0.27"):
     import accelerate.utils.operations
     if hasattr(accelerate.utils.operations, "send_to_device") and \
         accelerate.utils.operations.send_to_device.__name__ != "_fixed_send_to_device":
@@ -565,6 +570,7 @@ def prepare_model_for_kbit_training(
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    pass
 
     return model
 pass
@@ -851,7 +857,9 @@ def patch_linear_scaling(
         "self.rotary_emb = .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
-    if len(rotary_emb) == 0: return None, function
+    if len(rotary_emb) == 0:
+        return None, exec_code + "\n\n" + function
+
     rotary_emb = rotary_emb[0]
     function = function.replace(rotary_emb, fix_rope_function, 1)
     function = exec_code + "\n\n" + function
@@ -1012,27 +1020,61 @@ pass
 def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
     batch_samples = []
     num_items_in_batch = None
+
+    # Check if model allows **kwargs
+    model = self.model
+    f = model.base_model.model.forward if hasattr(model, "base_model") else model.forward
+    has_kwargs = tuple(inspect.signature(f).parameters.values())[-1].kind == inspect._VAR_KEYWORD
+
+    # Iterate to find all batches
     for _ in range(num_batches):
         try:
             batch_samples += [next(epoch_iterator)]
         except StopIteration:
             break
-    if len(batch_samples) > 0 and "labels" in batch_samples[0]:
+    pass
+
+    # Get num_items_in_batch
+    if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
         try:
             num_items_in_batch = sum(
-                [torch.count_nonzero(x["labels"][..., 1:] != -100) for x in batch_samples]
+                [(x["labels"][..., 1:] != -100).sum() for x in batch_samples]
             )
-        except TypeError:
-            pass
+            
+            if self.args.average_tokens_across_devices:
+                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
+
+            if torch.is_tensor(num_items_in_batch):
+                num_items_in_batch = num_items_in_batch.item()
+
+        except Exception as exception:
+            logger.warning_once(exception)
+    pass
+
     return batch_samples, num_items_in_batch
 pass
 
 
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
+    num_items_in_batch = None
+
     if "num_items_in_batch" in kwargs:
-        if "num_items_in_batch" not in inputs:
-            inputs["num_items_in_batch"] = kwargs["num_items_in_batch"]
+        num_items_in_batch = kwargs["num_items_in_batch"]
+        if num_items_in_batch is None:
+            # Remove it since the model does not support it!
+            kwargs.pop("num_items_in_batch")
+        elif "num_items_in_batch" not in inputs:
+            inputs["num_items_in_batch"] = num_items_in_batch
         pass
+    pass
+
+    if num_items_in_batch is None:
+        name = (model.base_model.model if hasattr(model, "base_model") else model).__class__.__name__
+        logger.warning_once(
+            f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"\
+            "Using gradient accumulation will be very slightly less accurate.\n"\
+            "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
+        )
     pass
     return self._old_compute_loss(model, inputs, *args, **kwargs)
 pass
@@ -1095,6 +1137,30 @@ def patch_gradient_accumulation_fix(Trainer):
         "if num_items_in_batch is not None: loss *= self.args.gradient_accumulation_steps",
     )
     function = function.replace("def training_step", "def _unsloth_training_step", 1)
+
+    # Fix 4.47.0 issue where num_items_in_batch was removed
+    # See https://github.com/huggingface/transformers/pull/35121
+    function = function.replace(
+        "if self.model_accepts_loss_kwargs:",
+        "if False:",
+    )
+
+    # Fix when num_items_in_batch is nothing
+    # https://github.com/huggingface/transformers/pull/35207
+    function = re.sub(
+        r"else:\n"\
+        r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"\
+        r"(.+?)if num_items_in_batch is None\:\n"\
+        r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
+
+        "else:\n"\
+        "\2if num_items_in_batch is None:\n"\
+        "\3loss = loss / self.args.gradient_accumulation_steps\n"\
+        "\1self.accelerator.backward(loss, **kwargs)",
+        
+        function,
+    )
+    
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
 pass
@@ -1131,11 +1197,15 @@ def unsloth_compile_transformers(
     fuse_lm_head            = True,
     gradient_checkpointing  = True,
     manual_replacements     = True,
+    fast_lora_forwards      = True,
+    fast_residual_stream    = True,
+    accurate_accumulation   = True,
     epilogue_fusion         = True,
     max_autotune            = False,
     shape_padding           = True,
     cudagraphs              = False,
     debug                   = False,
+    fullgraph               = True,
     import_from_cache       = False,
     disable                 = False,
     return_logits           = False,
@@ -1150,14 +1220,14 @@ def unsloth_compile_transformers(
         return
     pass
 
-    if disable: return
-
     model_types = get_transformers_model_type(
         model_name        = model_name,
         token             = token,
         revision          = revision,
         trust_remote_code = trust_remote_code,
     )
+
+    if disable: return
 
     for model_type in model_types:
         _unsloth_compile_transformers(
@@ -1174,11 +1244,15 @@ def unsloth_compile_transformers(
             fuse_lm_head           = fuse_lm_head,
             gradient_checkpointing = gradient_checkpointing,
             manual_replacements    = manual_replacements,
+            fast_lora_forwards     = fast_lora_forwards,
+            fast_residual_stream   = fast_residual_stream,
+            accurate_accumulation  = accurate_accumulation,
             epilogue_fusion        = epilogue_fusion,
             max_autotune           = max_autotune,
             shape_padding          = shape_padding,
             cudagraphs             = cudagraphs,
             debug                  = debug,
+            fullgraph              = fullgraph,
             import_from_cache      = import_from_cache,
             disable                = disable,
             return_logits          = return_logits,

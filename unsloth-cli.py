@@ -30,12 +30,15 @@ Happy fine-tuning!
 """
 
 import argparse
+import os
+
 
 from unsloth.devices import has_mps
 
 def run(args):
     import torch
     from datasets import load_dataset
+    from transformers.utils import strtobool
     from trl import SFTTrainer
     from transformers import TrainingArguments
     from unsloth import is_bfloat16_supported
@@ -97,8 +100,13 @@ def run(args):
             texts.append(text)
         return {"text": texts}
 
-    # Load and format dataset
-    dataset = load_dataset(args.dataset, split="train")
+    use_modelscope = strtobool(os.environ.get('UNSLOTH_USE_MODELSCOPE', 'False'))
+    if use_modelscope:
+        from modelscope import MsDataset
+        dataset = MsDataset.load(args.dataset, split="train")
+    else:
+        # Load and format dataset
+        dataset = load_dataset(args.dataset, split="train")
     dataset = dataset.map(formatting_prompts_func, batched=True)
     print("Data is formatted and ready!")
 

@@ -29,7 +29,8 @@ from peft import LoraConfig, TaskType, get_peft_model
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
-    merge_and_overwrite_lora,
+    SKIP_QUANTIZATION_MODULES,
+    requires_grad_for_gradient_checkpointing,
 )
 from triton import __version__ as triton_version
 
@@ -132,6 +133,7 @@ class FastBaseVisionModel:
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
             )
         pass
 
@@ -162,6 +164,8 @@ class FastBaseVisionModel:
             padding_side = "right",
             token        = token,
         )
+        # Add padding side as well
+        tokenizer.tokenizer.padding_side = "right"
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
@@ -183,8 +187,13 @@ class FastBaseVisionModel:
         patch_saving_functions(model, vision = True)
         patch_saving_functions(tokenizer, vision = True)
 
+        # Fix gradient accumulation
+        from transformers.trainer import Trainer
+        patch_gradient_accumulation_fix(Trainer)
+
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference
+        tokenizer.tokenizer.padding_side = "left" # Force inference
         internal_model = model
         while hasattr(internal_model, "model"):
             internal_model._saved_temp_tokenizer = tokenizer
@@ -267,6 +276,8 @@ class FastBaseVisionModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         model = get_peft_model(model, lora_config)
+        # Enable gradients on modules which are trainable
+        requires_grad_for_gradient_checkpointing(model)
 
         model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
 
@@ -313,12 +324,12 @@ class FastBaseVisionModel:
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "right"
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "right"
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
 
         # Clear deleted GPU items
@@ -359,12 +370,12 @@ class FastBaseVisionModel:
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "left"
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "left"
             pass
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "left"
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "left"
         pass
 
         # Also disable training for embeddings for NEFTune
@@ -403,12 +414,12 @@ class FastBaseVisionModel:
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.padding_side = "right"
+                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.padding_side = "right"
+            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
 
         # Also re-enable training for embeddings for NEFTune
@@ -424,5 +435,3 @@ class FastBaseVisionModel:
         return model
     pass
 pass
-
-

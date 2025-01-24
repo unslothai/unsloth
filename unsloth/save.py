@@ -19,6 +19,7 @@ if not has_mps():
     from peft.tuners.lora import Linear4bit as Peft_Linear4bit
     from peft.tuners.lora import Linear as Peft_Linear
     from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
+from unsloth_zoo.utils import Version
 from typing import Optional, Callable, Union, List
 import torch
 import os
@@ -47,6 +48,9 @@ __all__ = [
     "patch_saving_functions",
     "create_huggingface_repo",
 ]
+
+# llama.cpp specific targets - all takes 90s. Below takes 60s
+LLAMA_CPP_TARGETS = ["llama-quantize", "llama-export-lora", "llama-cli",]
 
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
@@ -497,7 +501,7 @@ def unsloth_save_model(
     elif safe_serialization and (n_cpus <= 2):
         logger.warning_once(
             f"Unsloth: You have {n_cpus} CPUs. Using `safe_serialization` is 10x slower.\n"\
-            f"We shall switch to Pytorch saving, which will take 3 minutes and not 30 minutes.\n"\
+            f"We shall switch to Pytorch saving, which might take 3 minutes and not 30 minutes.\n"\
             f"To force `safe_serialization`, set it to `None` instead.",
         )
         safe_serialization = False
@@ -552,6 +556,8 @@ def unsloth_save_model(
 
     max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
 
+    print("Unsloth: Saving model... This might take 5 minutes ...")
+
     from tqdm import tqdm as ProgressBar
     for j, layer in enumerate(ProgressBar(internal_model.model.layers)):
         for item in LLAMA_WEIGHTS:
@@ -575,7 +581,7 @@ def unsloth_save_model(
             #     max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
-                logger.warning_once("We will save to Disk and not RAM now.")
+                logger.warning_once("\nWe will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
                 # weights_only = True weirdly fails?
@@ -667,8 +673,6 @@ def unsloth_save_model(
     else:
         print()
     pass
-
-    print("Unsloth: Saving model... This might take 5 minutes for Llama-7b...")
 
     # Since merged, edit quantization_config
     old_config = model.config
@@ -762,16 +766,36 @@ def install_llama_cpp_make_non_blocking():
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # env = { **os.environ, "LLAMA_CUDA": "1", }
-    n_jobs = max(int(psutil.cpu_count()*1.5), 1)
     # Force make clean
-    os.system("make clean -C llama.cpp")
-    full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
-
+    check = os.system("make clean -C llama.cpp")
+    IS_CMAKE = False
+    if check == 0:
+        # Uses old MAKE
+        n_jobs = max(int(psutil.cpu_count()*1.5), 1)
+        full_command = ["make", "all", "-j"+str(n_jobs), "-C", "llama.cpp"]
+        IS_CMAKE = False
+    else:
+        # Uses new CMAKE
+        n_jobs = max(int(psutil.cpu_count()), 1) # Use less CPUs since 1.5x faster
+        check = os.system("cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON")
+        if check != 0:
+            raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp using os.system(...) with error {check}. Please report this ASAP!")
+        pass
+        # f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+        full_command = [
+            "cmake", "--build", "llama.cpp/build",
+            "--config", "Release",
+            "-j"+str(n_jobs),
+            "--clean-first",
+            "--target",
+        ] + LLAMA_CPP_TARGETS
+        IS_CMAKE = True
+    pass
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
-    return run_installer
+    return run_installer, IS_CMAKE
 pass
 
 
@@ -779,6 +803,29 @@ def install_python_non_blocking(packages = []):
     full_command = ["pip", "install"] + packages
     run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
+pass
+
+
+def try_execute(commands, force_complete = False):
+    for command in commands:
+        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
+            for line in sp.stdout:
+                line = line.decode("utf-8", errors = "replace")
+                if "undefined reference" in line:
+                    raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!")
+                elif "deprecated" in line:
+                    return "CMAKE"
+                elif "Unknown argument" in line:
+                    raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!")
+                elif "***" in line:
+                    raise RuntimeError(f"*** Unsloth: Failed compiling llama.cpp with {line}. Please report this ASAP!")
+                print(line, flush = True, end = "")
+            pass
+            if force_complete and sp.returncode is not None and sp.returncode != 0:
+                raise subprocess.CalledProcessError(sp.returncode, sp.args)
+        pass
+    pass
+    return None
 pass
 
 
@@ -796,13 +843,13 @@ def install_llama_cpp_old(version = -10):
     # Check if the llama.cpp exists
     if os.path.exists("llama.cpp"):
         print(
-            "**[WARNING]** You have a llama.cpp old directory which is broken.\n"\
+            "**[WARNING]** You have a llama.cpp directory which is broken.\n"\
             "Unsloth will DELETE the broken directory and install a new one.\n"\
-            "Press CTRL + C / cancel this if this is wrong. We shall wait 10 seconds.\n"
+            "Press CTRL + C / cancel this if this is wrong. We shall wait 30 seconds.\n"
         )
         import time
-        for i in range(10):
-            print(f"**[WARNING]** Deleting llama.cpp directory... {10-i} seconds left.")
+        for i in range(30):
+            print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
             time.sleep(1)
         import shutil
         shutil.rmtree("llama.cpp", ignore_errors = True)
@@ -813,18 +860,25 @@ def install_llama_cpp_old(version = -10):
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df",
+    ]
+    try_execute(commands)
+
+    # Try using MAKE
+    commands = [
         "make clean -C llama.cpp",
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
     ]
-    for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
-            for line in sp.stdout:
-                line = line.decode("utf-8", errors = "replace")
-                if "undefined reference" in line:
-                    raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-                print(line, flush = True, end = "")
-        pass
+    if try_execute(commands) == "CMAKE":
+        # Instead use CMAKE
+        commands = [
+            "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
+            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            "cp llama.cpp/build/bin/llama-* llama.cpp",
+            "rm -rf llama.cpp/build",
+        ]
+        try_execute(commands)
     pass
+
     # Check if successful
     if not os.path.exists("llama.cpp/quantize") and not os.path.exists("llama.cpp/llama-quantize"):
         raise RuntimeError(
@@ -842,23 +896,27 @@ def install_llama_cpp_blocking(use_cuda = False):
 
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
+        "pip install gguf protobuf",
+    ]
+    if os.path.exists("llama.cpp"): return
+    try_execute(commands)
+
+    commands = [
         "make clean -C llama.cpp",
         # https://github.com/ggerganov/llama.cpp/issues/7062
         # Weirdly GPU conversion for GGUF breaks??
         # f"{use_cuda} make all -j{psutil.cpu_count()*2} -C llama.cpp",
         f"make all -j{psutil.cpu_count()*2} -C llama.cpp",
-        "pip install gguf protobuf",
     ]
-    if os.path.exists("llama.cpp"): return
-
-    for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
-            for line in sp.stdout:
-                line = line.decode("utf-8", errors = "replace")
-                if "undefined reference" in line:
-                    raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-                print(line, flush = True, end = "")
-        pass
+    if try_execute(commands) == "CMAKE":
+        # Instead use CMAKE
+        commands = [
+            "cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=ON",
+            f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            "cp llama.cpp/build/bin/llama-* llama.cpp",
+            "rm -rf llama.cpp/build",
+        ]
+        try_execute(commands)
     pass
 pass
 
@@ -953,9 +1011,9 @@ def save_to_gguf(
 
     print_info = \
         f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
-        f"   \\\   /|    [0] Installing llama.cpp will take 3 minutes.\n"\
-        f"O^O/ \_/ \\    [1] Converting HF to GGUF 16bits will take 3 minutes.\n"\
-        f"\        /    [2] Converting GGUF 16bits to {quantization_method} will take 10 minutes each.\n"\
+        f"   \\\   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
+        f"O^O/ \_/ \\    [1] Converting HF to GGUF 16bits might take 3 minutes.\n"\
+        f"\        /    [2] Converting GGUF 16bits to {quantization_method} might take 10 minutes each.\n"\
         f' "-____-"     In total, you will have to wait at least 16 minutes.\n'
     print(print_info)
 
@@ -974,18 +1032,34 @@ def save_to_gguf(
     quantize_location = get_executable(["llama-quantize", "quantize"])
     convert_location  = get_executable(["convert-hf-to-gguf.py", "convert_hf_to_gguf.py"])
     
+    error = 0
     if quantize_location is not None and convert_location is not None:
         print("Unsloth: llama.cpp found in the system. We shall skip installation.")
     else:
-        print("Unsloth: [0] Installing llama.cpp. This will take 3 minutes...")
+        print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
         if _run_installer is not None:
+            _run_installer, IS_CMAKE = _run_installer
+
             error = _run_installer.wait()
+            # Check if successful
+            if error != 0:
+                print(f"Unsloth: llama.cpp error code = {error}.")
+                install_llama_cpp_old(-10)
+            pass
+
+            if IS_CMAKE:
+                # CMAKE needs to do some extra steps
+                print("Unsloth: CMAKE detected. Finalizing some steps for installation.")
+
+                check = os.system("cp llama.cpp/build/bin/llama-* llama.cpp")
+                if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
+                check = os.system("rm -rf llama.cpp/build")
+                if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
+            pass
         else:
             error = 0
             install_llama_cpp_blocking()
         pass
-
-        # Check if successful. If not install 10th latest release
 
         # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
         # and llama.cpp/main changed to llama.cpp/llama-cli
@@ -1014,11 +1088,6 @@ def save_to_gguf(
                 "Unsloth: The file 'llama.cpp/convert-hf-to-gguf.py' or 'llama.cpp/convert_hf_to_gguf.py' does not exist.\n"\
                 "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
             )
-        pass
-
-        if error != 0 or quantize_location is None or convert_location is None:
-            print(f"Unsloth: llama.cpp error code = {error}.")
-            install_llama_cpp_old(-10)
         pass
     pass
 
@@ -1087,7 +1156,7 @@ def save_to_gguf(
     
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
-          "This will take 3 minutes...")
+          "This might take 3 minutes...")
 
     # We first check if tokenizer.model exists in the model_directory
     if os.path.exists(f"{model_directory}/tokenizer.model"):
@@ -1110,15 +1179,7 @@ def save_to_gguf(
             f"--outtype {first_conversion}"
     pass
 
-    with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
-        for line in sp.stdout:
-            line = line.decode("utf-8", errors = "replace")
-            if "undefined reference" in line:
-                raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-            print(line, flush = True, end = "")
-        if sp.returncode is not None and sp.returncode != 0:
-            raise subprocess.CalledProcessError(sp.returncode, sp.args)
-    pass
+    try_execute([command,], force_complete = True)
 
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
@@ -1154,22 +1215,13 @@ def save_to_gguf(
     # Convert each type!
     for quant_method in quantization_method:
         if quant_method != first_conversion:
-            print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This will take 20 minutes...")
+            print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This might take 20 minutes...")
             final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
 
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
             
-            # quantize uses stderr
-            with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
-                for line in sp.stdout:
-                    line = line.decode("utf-8", errors = "replace")
-                    if "undefined reference" in line:
-                        raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-                    print(line, flush = True, end = "")
-                if sp.returncode is not None and sp.returncode != 0:
-                    raise subprocess.CalledProcessError(sp.returncode, sp.args)
-            pass
+            try_execute([command,], force_complete = True)
 
             # Check if quantization succeeded!
             if not os.path.isfile(final_location):
@@ -1632,7 +1684,7 @@ def unsloth_save_pretrained_gguf(
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
-            makefile  = install_llama_cpp_make_non_blocking()
+            makefile = install_llama_cpp_make_non_blocking()
             new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
@@ -1653,7 +1705,7 @@ def unsloth_save_pretrained_gguf(
                 git_clone = install_llama_cpp_clone_non_blocking()
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 git_clone.wait()
-                makefile  = install_llama_cpp_make_non_blocking()
+                makefile = install_llama_cpp_make_non_blocking()
                 new_save_directory, old_username = unsloth_save_model(**arguments)
                 python_install.wait()
             pass
@@ -1810,7 +1862,7 @@ def unsloth_push_to_hub_gguf(
             git_clone = install_llama_cpp_clone_non_blocking()
             python_install = install_python_non_blocking(["gguf", "protobuf"])
             git_clone.wait()
-            makefile  = install_llama_cpp_make_non_blocking()
+            makefile = install_llama_cpp_make_non_blocking()
             new_save_directory, old_username = unsloth_save_model(**arguments)
             python_install.wait()
         pass
@@ -1831,7 +1883,7 @@ def unsloth_push_to_hub_gguf(
                 git_clone = install_llama_cpp_clone_non_blocking()
                 python_install = install_python_non_blocking(["gguf", "protobuf"])
                 git_clone.wait()
-                makefile  = install_llama_cpp_make_non_blocking()
+                makefile = install_llama_cpp_make_non_blocking()
                 new_save_directory, old_username = unsloth_save_model(**arguments)
                 python_install.wait()
             pass
@@ -2047,8 +2099,8 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
 pass
 
 
-from unsloth_zoo.peft_utils import merge_and_overwrite_lora
 from .models.loader_utils import get_model_name
+from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
 @torch.inference_mode
 def unsloth_generic_save(
@@ -2080,17 +2132,17 @@ def unsloth_generic_save(
     maximum_memory_usage : float = 0.9,
 ):
     if token is None and push_to_hub: token = get_token()
-
     merge_and_overwrite_lora(
         get_model_name,
-        create_huggingface_repo,
-        model,
-        save_location        = save_directory,
+        model                = model,
+        tokenizer            = tokenizer,
+        save_directory       = save_directory,
         push_to_hub          = push_to_hub,
-        token                = token,
-        upload_location      = save_directory if push_to_hub else None,
-        low_disk_space_usage = True,
         private              = private,
+        token                = token,
+        output_dtype         = None,
+        low_disk_space_usage = False,
+        use_temp_file        = False,
     )
     return
 pass
