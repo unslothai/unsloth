@@ -740,8 +740,25 @@ transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndByt
 # Offloading to disk for modules (lm_head, embed_tokens)
 import pickle
 
+def is_writeable(path):
+    """Check if the given path is writeable."""
+    try:
+        testfile = os.path.join(path, ".write_test")
+        os.makedirs(path, exist_ok=True)
+        with open(testfile, "w") as f:
+            f.write("")
+        os.remove(testfile)
+        return True
+    except (OSError, IOError):
+        return False
+pass
+
+
 def offload_to_disk(W, model, name, temporary_location : str = "_unsloth_temporary_saved_buffers"):
     file_location = os.path.join(temporary_location, model.config._name_or_path)
+    if not is_writeable(file_location):
+        file_location = os.path.join(temporary_location, os.path.basename(model.config._name_or_path))
+    pass
     if not os.path.exists(file_location):
         os.makedirs(file_location)
     pass
