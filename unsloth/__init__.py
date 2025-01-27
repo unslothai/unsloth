@@ -16,6 +16,7 @@ import warnings, importlib, sys
 from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
+from unsloth import devices
 
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
@@ -87,7 +88,7 @@ elif (major_torch == 2) and (minor_torch < 2):
 pass
 
 # First check if CUDA is available ie a NVIDIA GPU is seen
-if not torch.cuda.is_available():
+if not torch.cuda.is_available() and not devices.has_mps:
     raise NotImplementedError("Unsloth: No NVIDIA GPU found? Unsloth currently only supports GPUs!")
 
 # Fix Xformers performance issues since 0.0.25
@@ -121,7 +122,11 @@ except:
 pass
 
 # Torch 2.4 has including_emulation
-major_version, minor_version = torch.cuda.get_device_capability()
+devices.get_optimal_device()
+if torch.cuda.is_available():
+    major_version, minor_version = torch.cuda.get_device_capability()
+else:
+    major_version,minor_version =  0,0
 SUPPORTS_BFLOAT16 = (major_version >= 8)
 
 old_is_bf16_supported = torch.cuda.is_bf16_supported
@@ -144,15 +149,16 @@ if Version(triton.__version__) >= Version("3.0.0"):
 else: from triton.common.build import libcuda_dirs
 
 # Try loading bitsandbytes and triton
-import bitsandbytes as bnb
-try:
-    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-    libcuda_dirs()
-except:
-    warnings.warn(
-        "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
-    )
-
+if not devices.has_mps:
+    import bitsandbytes as bnb
+    try:
+        cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+        libcuda_dirs()
+    except:
+        warnings.warn(
+            "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
+        )
+    
     if os.path.exists("/usr/lib64-nvidia"):
         os.system("ldconfig /usr/lib64-nvidia")
     elif os.path.exists("/usr/local"):
@@ -180,7 +186,9 @@ except:
             try: from triton.backends.nvidia.driver import libcuda_dirs
             except: pass
         else: from triton.common.build import libcuda_dirs
-        cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+        if not devices.has_mps:
+            import bitsandbytes as bnb
+            cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
         warnings.warn(
@@ -209,11 +217,14 @@ except:
     raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
 pass
 
-from .models import *
-from .save import *
-from .chat_templates import *
-from .tokenizer_utils import *
-from .trainer import *
+if not devices.has_mps:
+    from .models import *
+    from .save import *
+    from .chat_templates import *
+    from .tokenizer_utils import *
+    from .trainer import *
 
-# Patch TRL trainers for backwards compatibility
-_patch_trl_trainer()
+    # Patch TRL trainers for backwards compatibility
+    _patch_trl_trainer()
+else:
+    from .models._utils  import is_bfloat16_supported
