@@ -1705,11 +1705,11 @@ class FastLlamaModel:
             else:
                 inner_training_loop = Trainer._original_training_loop
         except:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+            pass
         pass
 
         if ((post_check - pre_check) >= 1).sum() > 1:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+            pass
 
         import transformers.trainer
         items_in_trainer = dir(transformers.trainer)
@@ -1746,7 +1746,7 @@ class FastLlamaModel:
             if not torch.cuda.is_available():
                 raise RuntimeError('Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!')
         if ((a - PRE_CHECK) >= 1).sum() > 1:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+            pass
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
@@ -1807,7 +1807,7 @@ class FastLlamaModel:
             "False",
         )
         if "n_total_devices >" not in inner_training_loop:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+            pass
         pass
         inner_training_loop = inner_training_loop.replace(
             "is_sagemaker_mp_enabled()",
