@@ -73,18 +73,21 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import warnings, subprocess, re, inspect, psutil, os, math
+from packaging.version import Version
+from unsloth import devices
 from unsloth_zoo.utils import Version
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
 )
-from unsloth_zoo.patching_utils import (
-    patch_compiling_bitsandbytes,
-    patch_layernorm,
-    patch_torch_compile,
-    patch_model_and_tokenizer,
-    patch_compiled_autograd,
-)
+if not devices.has_mps:
+    from unsloth_zoo.patching_utils import (
+        patch_compiling_bitsandbytes,
+        patch_layernorm,
+        patch_torch_compile,
+        patch_model_and_tokenizer,
+        patch_compiled_autograd,
+    )
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
@@ -99,17 +102,18 @@ from unsloth_zoo.gradient_checkpointing import (
     patch_unsloth_smart_gradient_checkpointing,
     unpatch_unsloth_smart_gradient_checkpointing,
 )
-from unsloth_zoo.loss_utils import (
-    HAS_CUT_CROSS_ENTROPY,
-    fused_linear_cross_entropy,
-)
-from unsloth_zoo.vision_utils import (
-    process_vision_info,
-)
-from unsloth_zoo.compiler import (
-    get_transformers_model_type,
-    unsloth_compile_transformers as _unsloth_compile_transformers,
-)
+if not devices.has_mps:
+    from unsloth_zoo.loss_utils import (
+        HAS_CUT_CROSS_ENTROPY,
+        fused_linear_cross_entropy,
+    )
+    from unsloth_zoo.vision_utils import (
+        process_vision_info,
+    )
+    from unsloth_zoo.compiler import (
+        get_transformers_model_type,
+        unsloth_compile_transformers as _unsloth_compile_transformers,
+    )
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -271,11 +275,16 @@ pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
+if not devices.has_mps:
+    import bitsandbytes as bnb
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
-major_version, minor_version = torch.cuda.get_device_capability()
+devices.get_optimal_device()
+if torch.cuda.is_available():
+    major_version, minor_version = torch.cuda.get_device_capability()
+else:
+    major_version,minor_version = 0,0
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
@@ -450,11 +459,12 @@ def is_big_gpu(index):
     return True
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
-patch_torch_compile(
-    debug = UNSLOTH_COMPILE_DEBUG,
-    O3 = UNSLOTH_COMPILE_MAXIMUM,
-    ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
-)
+if not devices.has_mps:
+    patch_torch_compile(
+        debug = UNSLOTH_COMPILE_DEBUG,
+        O3 = UNSLOTH_COMPILE_MAXIMUM,
+        ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
+    )
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -963,7 +973,7 @@ def check_nvidia():
         output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
         output = np.array([int(x.decode('utf-8'))/1024 for x in output])
     except:
-        if not torch.cuda.is_available():
+        if not torch.cuda.is_available() and not devices.has_mps:
             raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")    
     return output
 pass
