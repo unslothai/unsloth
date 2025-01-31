@@ -143,22 +143,6 @@ if Version(triton.__version__) >= Version("3.0.0"):
     except: pass
 else: from triton.common.build import libcuda_dirs
 
-def fix_triton_ops():
-    # Check if triton.ops exists
-    try:
-        import triton.ops
-    except:
-        # Triton 3.2 removed triton.ops
-        from .kernels.matmul_perf_model import (
-            early_config_prune,
-            estimate_matmul_time,
-        )
-        triton.ops.early_config_prune   = early_config_prune
-        triton.ops.estimate_matmul_time = estimate_matmul_time
-    pass
-pass
-fix_triton_ops()
-
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb
 try:
@@ -198,7 +182,6 @@ except:
         else: from triton.common.build import libcuda_dirs
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
-        fix_triton_ops()
     except:
         warnings.warn(
             "Unsloth: CUDA is not linked properly.\n"\
