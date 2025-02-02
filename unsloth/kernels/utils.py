@@ -15,6 +15,7 @@
 import triton
 MAX_FUSED_SIZE : int = 65536
 next_power_of_2 = triton.next_power_of_2
+import functools
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -96,18 +97,20 @@ def get_lora_parameters(proj):
 pass
 
 
+@functools.cache
 def get_lora_parameters_bias(proj):
     # For DPO or disabled adapters
-    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
+    base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
     bias = base_layer.bias
 
-    if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+    if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, QUANT_STATE(W), None, None, None, bias
     pass
 
     active_adapter = proj.active_adapters[0] if \
-        hasattr(proj, "active_adapters") else proj.active_adapter
+        getattr(proj, "active_adapters", ) else proj.active_adapter
     A = proj.lora_A [active_adapter].weight
     B = proj.lora_B [active_adapter].weight
     s = proj.scaling[active_adapter]
