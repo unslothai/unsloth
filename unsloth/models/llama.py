@@ -70,7 +70,8 @@ except:
     from huggingface_hub.utils._token import get_token
 pass
 from triton import __version__ as triton_version
-BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if xformers is not None else None
+HAS_XFORMERS = xformers is not None
+BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 
 def original_apply_qkv(self, X):
@@ -404,7 +405,7 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and attention_mask is None):
+    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -978,7 +979,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 attention_mask = attention_mask,
             )
         else:
-            causal_mask = xformers.attn_bias.LowerTriangularMask()
+            causal_mask = xformers.attn_bias.LowerTriangularMask() if HAS_XFORMERS else None
 
             output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
             output_hidden_states = (
