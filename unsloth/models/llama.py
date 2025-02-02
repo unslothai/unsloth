@@ -936,13 +936,12 @@ def LlamaModel_fast_forward_inference(
 
     next_decoder_cache = []
     residual = torch.empty_like(X)
-    print(bsz, q_len, hd)
     _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
     XX, XX2 = _XX[0], _XX[1]
     variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = "cuda:0")
     temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
     temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
-
+    
     for idx, decoder_layer in enumerate(self.model.layers):
         residual.copy_(X) # residual = X
         X = fast_rms_layernorm_inference(
