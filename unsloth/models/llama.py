@@ -917,10 +917,23 @@ def LlamaModel_fast_forward_inference(
     attention_mask = None,
 ):
     input_ids = input_ids[:,:self.max_seq_length]
+    bsz, q_len = input_ids.shape
+    hd = self.config.hidden_size
+    mlp_size = self.config.intermediate_size
+    
+    # Get saved buffers to reduce memory movement
+    residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
+    _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
+    XX, XX2 = _XX[0], _XX[1]
+    variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = "cuda:0")
+    temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
+    temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
+
     X = self.model.embed_tokens(input_ids)
     X = X.to(self.config.torch_dtype)
     bsz, q_len, hd = X.shape
-    mlp_size = self.config.intermediate_size
+    assert(q_len == 1)
+
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
@@ -933,15 +946,10 @@ def LlamaModel_fast_forward_inference(
     else:
         attention_mask = None
     pass
+    print(attention_mask)
 
     next_decoder_cache = []
-    residual = torch.empty_like(X)
-    _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
-    XX, XX2 = _XX[0], _XX[1]
-    variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = "cuda:0")
-    temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
-    temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
-    
+
     for idx, decoder_layer in enumerate(self.model.layers):
         residual.copy_(X) # residual = X
         X = fast_rms_layernorm_inference(
