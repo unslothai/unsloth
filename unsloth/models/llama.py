@@ -90,6 +90,8 @@ pass
 from math import sqrt as math_sqrt
 KV_CACHE_INCREMENT = 256 # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
+# SDPA has GQA internally
+SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
@@ -244,7 +246,7 @@ def LlamaAttention_fast_forward_inference(
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
-    if n_groups != 1:
+    if not SDPA_HAS_GQA and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -263,8 +265,10 @@ def LlamaAttention_fast_forward_inference(
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
         A = torch_matmul(A, Vnn, out = Qn)
     else:
-        print(attention_mask)
-        A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
+        if SDPA_HAS_GQA:
+            A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False, enable_gqa = True)
+        else:
+            A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
     pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
