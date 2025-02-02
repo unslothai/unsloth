@@ -946,7 +946,6 @@ def LlamaModel_fast_forward_inference(
     else:
         attention_mask = None
     pass
-    print(attention_mask)
 
     next_decoder_cache = []
 
