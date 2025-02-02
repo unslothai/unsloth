@@ -20,7 +20,7 @@ from ._utils import *
 from ._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
-from unsloth_zoo.utils import Version
+from unsloth_zoo.utils import Version, _get_dtype
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
 IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
