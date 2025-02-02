@@ -246,7 +246,7 @@ def LlamaAttention_fast_forward_inference(
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
-    if not SDPA_HAS_GQA and n_groups != 1:
+    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -260,7 +260,6 @@ def LlamaAttention_fast_forward_inference(
     if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
-        print(Qn.shape, Knn.transpose(2, 3).shape, self.attention[:,:,:,:cached_len].shape, self.attention.shape, cached_len)
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
         # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
