@@ -254,7 +254,6 @@ def LlamaAttention_fast_forward_inference(
     # pass
 
     # Attention
-    print(attention_mask)
     if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
