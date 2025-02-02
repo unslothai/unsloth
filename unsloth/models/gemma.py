@@ -211,12 +211,11 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
     ):
         super().__init__()
         if config is not None:
-            print(config)
-            print(dir(config))
             # [TODO] Hack to pass in config - need to remove later
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
-            dim = int((config.hidden_size // config.num_attention_heads))
+            dim = getattr(config, "head_dim", None)
+            if dim is None: dim = int((config.hidden_size // config.num_attention_heads))
             device = "cuda"
             max_position_embeddings = config.max_position_embeddings
         pass
