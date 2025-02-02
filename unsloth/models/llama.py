@@ -278,15 +278,15 @@ pass
 
 
 torch_nn_functional_silu = torch.nn.functional.silu
-def fast_swiglu_inference(self, X):
+def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
     # mlp_size = self.config.intermediate_size
     # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
 
-    gate = fast_linear_forward(self.gate_proj, X)#, out = temp[0])
-    up   = fast_linear_forward(self.  up_proj, X)#, out = temp[1])
+    gate = fast_linear_forward(self.gate_proj, X, out = temp_gate)
+    up   = fast_linear_forward(self.  up_proj, X, out = temp_up)
     gate = torch_nn_functional_silu(gate, inplace = True)
     gate *= up
 
@@ -920,6 +920,7 @@ def LlamaModel_fast_forward_inference(
     X = self.model.embed_tokens(input_ids)
     X = X.to(self.config.torch_dtype)
     bsz, q_len, hd = X.shape
+    mlp_size = self.config.intermediate_size
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
@@ -935,9 +936,11 @@ def LlamaModel_fast_forward_inference(
 
     next_decoder_cache = []
     residual = torch.empty_like(X)
-    XX  = torch.empty_like(X, dtype = torch.float32)
-    XX2 = torch.empty_like(X, dtype = torch.float32)
-    variance = torch.empty((X.shape[0], X.shape[1], 1), dtype = torch.float32, device = "cuda:0")
+    _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32)
+    XX, XX2 = _XX[0], _XX[1]
+    variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = "cuda:0")
+    temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
+    temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
 
     for idx, decoder_layer in enumerate(self.model.layers):
         residual.copy_(X) # residual = X
@@ -966,12 +969,23 @@ def LlamaModel_fast_forward_inference(
             XX2 = XX2,
             variance = variance,
         )
-        X = fast_swiglu_inference(decoder_layer.mlp, X)
+        X = fast_swiglu_inference(
+            decoder_layer.mlp,
+            X,
+            temp_gate = temp_gate,
+            temp_up = temp_up,
+        )
         X += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    X = fast_rms_layernorm_inference(self.model.norm, X)
+    X = fast_rms_layernorm_inference(
+        self.model.norm,
+        X,
+        XX = XX,
+        XX2 = XX2,
+        variance = variance,
+    )
 
     return BaseModelOutputWithPast(
         last_hidden_state = X,
