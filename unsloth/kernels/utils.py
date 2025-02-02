@@ -97,7 +97,6 @@ def get_lora_parameters(proj):
 pass
 
 
-@functools.cache
 def get_lora_parameters_bias(proj):
     # For DPO or disabled adapters
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
