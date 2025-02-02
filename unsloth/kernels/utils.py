@@ -227,7 +227,7 @@ if HAS_CUDA_STREAM:
         if quant_state is None: return torch.matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
         # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
-        bsz, q_len, hd = X.shape
+        _, q_len, hd = X.shape
         # assert(q_len == 1)
 
         if type(quant_state) is not list:
@@ -254,7 +254,7 @@ if HAS_CUDA_STREAM:
         bout = shape[0]
 
         if out is None:
-            out = torch.empty((bsz, 1, bout,), dtype = dtype, device = "cuda:0")
+            out = torch.empty((1, 1, bout,), dtype = dtype, device = "cuda:0")
         # else:
         #     assert(out.shape == (1, 1, bout,))
         # pass
@@ -284,9 +284,8 @@ if HAS_CUDA_STREAM:
             cgemm_4bit_inference_naive_bf16
 
         blocksize = ctypes.c_int32(blocksize)
-        for i in range(bsz):
-            fx(m, n, k, get_ptr(X[i]), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out[i]),
-               lda, ldb, ldc, blocksize, CUDA_STREAM,)
+        fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
+           lda, ldb, ldc, blocksize, CUDA_STREAM,)
 
         return out
     pass
