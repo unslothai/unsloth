@@ -260,6 +260,7 @@ def LlamaAttention_fast_forward_inference(
     if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
+        print(Qn.shape, Knn.transpose(2, 3).shape, self.attention[:,:,:,:cached_len].shape, self.attention.shape, cached_len)
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
         # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
