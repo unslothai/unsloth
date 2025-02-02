@@ -224,7 +224,6 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
-        print(dim, max_position_embeddings, base)
 
         # Build here to make `torch.jit.trace` work.
         self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
