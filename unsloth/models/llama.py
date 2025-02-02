@@ -262,6 +262,7 @@ def LlamaAttention_fast_forward_inference(
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
         A = torch_matmul(A, Vnn, out = Qn)
     else:
+        print(attention_mask)
         A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
     pass
     A = A.transpose(1, 2)
@@ -2601,7 +2602,7 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"): embeddings.training = True
         pass
-        
+
         return model
     pass
 pass
