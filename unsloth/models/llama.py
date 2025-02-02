@@ -295,14 +295,23 @@ def fast_swiglu_inference(self, X):
     return down
 pass
 
-
-def fast_rms_layernorm_inference(self, X):
+torch_square = torch.square
+torch_mean   = torch.mean
+def fast_rms_layernorm_inference(self, X, XX = None, XX2 = None, variance = None):
     old_dtype = X.dtype
-    XX = X.to(torch.float32)
-    variance = XX.square().mean(-1, keepdim = True)
+    if XX is None:
+        XX = X.to(torch.float32)
+        variance = XX.square().mean(-1, keepdim = True)
+    else:
+        XX.copy_(X)
+        torch_mean(torch_square(XX, out = XX2), -1, keepdim = True, out = variance)
+    pass
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
-    X = XX.to(old_dtype) # Must preserve due to residual
+
+    if XX is None: X = XX.to(old_dtype)
+    else: X.copy_(XX)
+
     X *= self.weight
     return X
 pass
@@ -908,15 +917,15 @@ def LlamaModel_fast_forward_inference(
     attention_mask = None,
 ):
     input_ids = input_ids[:,:self.max_seq_length]
-    hidden_states = self.model.embed_tokens(input_ids)
-    hidden_states = hidden_states.to(self.config.torch_dtype)
-    bsz, q_len, hd = hidden_states.shape
+    X = self.model.embed_tokens(input_ids)
+    X = X.to(self.config.torch_dtype)
+    bsz, q_len, hd = X.shape
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
             (bsz, q_len),
-            hidden_states,
+            X,
             seq_len,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
@@ -925,30 +934,47 @@ def LlamaModel_fast_forward_inference(
     pass
 
     next_decoder_cache = []
+    residual = torch.empty_like(X)
+    XX  = torch.empty_like(X, dtype = torch.float32)
+    XX2 = torch.empty_like(X, dtype = torch.float32)
+    variance = torch.empty((X.shape[0], X.shape[1], 1), dtype = torch.float32, device = "cuda:0")
+
     for idx, decoder_layer in enumerate(self.model.layers):
-        residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
-        hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
+        residual.copy_(X) # residual = X
+        X = fast_rms_layernorm_inference(
+            decoder_layer.input_layernorm,
+            X,
+            XX = XX,
+            XX2 = XX2,
+            variance = variance,
+        )
+        X, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
-            hidden_states = hidden_states,
+            hidden_states = X,
             past_key_value = past_key_values[idx],
             position_ids = position_ids,
             attention_mask = attention_mask,
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
         )
-        hidden_states += residual
+        X += residual
 
-        residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference(decoder_layer.post_attention_layernorm, hidden_states)
-        hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
-        hidden_states += residual
+        residual.copy_(X) # residual = X
+        X = fast_rms_layernorm_inference(
+            decoder_layer.post_attention_layernorm,
+            X,
+            XX = XX,
+            XX2 = XX2,
+            variance = variance,
+        )
+        X = fast_swiglu_inference(decoder_layer.mlp, X)
+        X += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference(self.model.norm, hidden_states)
+    X = fast_rms_layernorm_inference(self.model.norm, X)
 
     return BaseModelOutputWithPast(
-        last_hidden_state = hidden_states,
+        last_hidden_state = X,
         past_key_values = next_decoder_cache,
         hidden_states = [],
         attentions = [],
