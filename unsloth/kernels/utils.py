@@ -242,15 +242,25 @@ else:
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
         cdequantize_blockwise_fp32(
-            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
-            ctypes.c_int(blocksize2), ctypes.c_int(n_elements_absmax),
+            get_ptr(code2),
+            get_ptr(absmax),
+            get_ptr(absmax2),
+            ptr_out_absmax,
+            ctypes.c_int(blocksize2),
+            ctypes.c_int(n_elements_absmax),
         )
         out_absmax += offset
 
         fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
              cdequantize_blockwise_bf16_nf4
-        fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
-           ctypes.c_int(blocksize), ctypes.c_int(out.numel()),)
+        fx(
+            get_ptr(None),
+            get_ptr(W),
+            ptr_out_absmax,
+            get_ptr(out),
+           ctypes.c_int(blocksize),
+           ctypes.c_int(out.numel()),
+        )
 
         # Careful returning transposed data
         is_transposed = (True if W.shape[0] == 1 else False)
@@ -393,6 +403,9 @@ else:
 pass
 
 
+torch_mm = torch.mm
+torch_mv = torch.mv
+torch_matmul = torch.matmul
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
@@ -405,7 +418,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
         out = fast_gemv(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
-        out = torch.matmul(X, W, out = out)
+        out = torch_matmul(X, W, out = out)
     pass
 
     # Add in LoRA weights
@@ -420,11 +433,11 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
         
         if bsz == 1:
             out = out.view(out_dim)
-            temp_lora = torch.mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
+            temp_lora = torch_mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
             out.addmv_(lora_B._fast_lora, temp_lora, alpha = lora_S)
         else:
             out = out.view(bsz, out_dim)
-            temp_lora = torch.mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
+            temp_lora = torch_mm(X.view(bsz, in_dim), lora_A._fast_lora.t(), out = temp_lora)
             out.addmm_(temp_lora, lora_B._fast_lora.t(), alpha = lora_S)
         pass
         out = out.view(bsz, 1, out_dim)
