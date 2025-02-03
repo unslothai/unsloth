@@ -116,9 +116,13 @@ def get_lora_parameters_bias(proj):
     return W, QUANT_STATE(W), A, B, s, bias
 pass
 
+global WEIGHT_BUFFER
+WEIGHT_BUFFER = None
+global ABSMAX_BUFFER
+ABSMAX_BUFFER = None
 
 if HAS_CUDA_STREAM:
-    def fast_dequantize(W, quant_state = None, out = None):
+    def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
         if type(quant_state) is not list:
             # New quant_state as a class
@@ -141,18 +145,34 @@ if HAS_CUDA_STREAM:
         global CUDA_STREAM
         if CUDA_STREAM is None: CUDA_STREAM = torch.cuda.current_stream("cuda:0")
 
+        n_elements_absmax = absmax.numel()
+
         # Create weight matrix
-        if out is None:
-            out = torch.empty(shape, dtype = dtype, device = "cuda:0")
+        if use_global_buffer:
+
+            # Use same buffers for faster inference
+            size = shape[0]*shape[1]
+            global WEIGHT_BUFFER
+            global ABSMAX_BUFFER
+            if WEIGHT_BUFFER is None:
+                WEIGHT_BUFFER = torch.empty(size, dtype = dtype, device = "cuda:0")
+                ABSMAX_BUFFER = torch.empty(n_elements_absmax, dtype = dtype, device = "cuda:0")
+
+            if size > WEIGHT_BUFFER.numel(): WEIGHT_BUFFER.resize_(size)
+            if n_elements_absmax > ABSMAX_BUFFER.numel(): WEIGHT_BUFFER.resize_(n_elements_absmax)
+
+            out = WEIGHT_BUFFER[:size].view(shape)
+            out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
         else:
-            assert(out.shape == shape)
-            assert(out.dtype == dtype)
+            if out is None:
+                out = torch.empty(shape, dtype = dtype, device = "cuda:0")
+            else:
+                assert(out.shape == shape)
+                assert(out.dtype == dtype)
+            out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda:0")
+        pass
 
         # NF4 dequantization of statistics
-        n_elements_absmax = absmax.numel()
-        out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda:0")
-
-        # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
         cdequantize_blockwise_fp32(
             get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
@@ -160,6 +180,7 @@ if HAS_CUDA_STREAM:
         )
         out_absmax += offset
 
+        # Dequantize W
         fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
              cdequantize_blockwise_bf16_nf4
         fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
@@ -170,7 +191,7 @@ if HAS_CUDA_STREAM:
         return out.t() if is_transposed else out
     pass
 else:
-    def fast_dequantize(W, quant_state = None, out = None):
+    def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
         if type(quant_state) is not list:
             # New quant_state as a class
@@ -191,16 +212,32 @@ else:
             absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
 
-        # Create weight matrix
-        if out is None:
-            out = torch.empty(shape, dtype = dtype, device = "cuda:0")
-        else:
-            assert(out.shape == shape)
-            assert(out.dtype == dtype)
-
-        # NF4 dequantization of statistics
         n_elements_absmax = absmax.numel()
-        out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda:0")
+
+        # Create weight matrix
+        if use_global_buffer:
+
+            # Use same buffers for faster inference
+            size = shape[0]*shape[1]
+            global WEIGHT_BUFFER
+            global ABSMAX_BUFFER
+            if WEIGHT_BUFFER is None:
+                WEIGHT_BUFFER = torch.empty(size, dtype = dtype, device = "cuda:0")
+                ABSMAX_BUFFER = torch.empty(n_elements_absmax, dtype = dtype, device = "cuda:0")
+
+            if size > WEIGHT_BUFFER.numel(): WEIGHT_BUFFER.resize_(size)
+            if n_elements_absmax > ABSMAX_BUFFER.numel(): WEIGHT_BUFFER.resize_(n_elements_absmax)
+
+            out = WEIGHT_BUFFER[:size].view(shape)
+            out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
+        else:
+            if out is None:
+                out = torch.empty(shape, dtype = dtype, device = "cuda:0")
+            else:
+                assert(out.shape == shape)
+                assert(out.dtype == dtype)
+            out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda:0")
+        pass
 
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
