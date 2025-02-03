@@ -404,7 +404,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     if q_len != 1: return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
 
     if W_quant is None:
-        out = torch.matmul(X, W.t(), out = out)
+        out = torch_matmul(X, W.t(), out = out)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
@@ -452,7 +452,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         reshape = False
     pass
 
-    out = torch.matmul(X, W, out = out)
+    out = torch_matmul(X, W, out = out)
     if W_quant is not None: del W
 
     if A is not None:
