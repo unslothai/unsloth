@@ -219,6 +219,7 @@ else:
 
             # Use same buffers for faster inference
             size = shape[0]*shape[1]
+            print(shape, size)
             global WEIGHT_BUFFER
             global ABSMAX_BUFFER
             if WEIGHT_BUFFER is None:
