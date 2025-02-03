@@ -154,12 +154,13 @@ if HAS_CUDA_STREAM:
             size = shape[0]*shape[1]
             global WEIGHT_BUFFER
             global ABSMAX_BUFFER
+            print(size, shape)
             if WEIGHT_BUFFER is None:
                 WEIGHT_BUFFER = torch.empty(size, dtype = dtype, device = "cuda:0")
                 ABSMAX_BUFFER = torch.empty(n_elements_absmax, dtype = dtype, device = "cuda:0")
 
             if size > WEIGHT_BUFFER.numel(): WEIGHT_BUFFER.resize_(size)
-            if n_elements_absmax > ABSMAX_BUFFER.numel(): WEIGHT_BUFFER.resize_(n_elements_absmax)
+            if n_elements_absmax > ABSMAX_BUFFER.numel(): ABSMAX_BUFFER.resize_(n_elements_absmax)
 
             out = WEIGHT_BUFFER[:size].view(shape)
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
@@ -219,7 +220,6 @@ else:
 
             # Use same buffers for faster inference
             size = shape[0]*shape[1]
-            print(shape, size)
             global WEIGHT_BUFFER
             global ABSMAX_BUFFER
             if WEIGHT_BUFFER is None:
