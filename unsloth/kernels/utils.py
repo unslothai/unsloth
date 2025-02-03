@@ -175,16 +175,27 @@ if HAS_CUDA_STREAM:
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
         cdequantize_blockwise_fp32(
-            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
-            ctypes.c_int(blocksize2), ctypes.c_int(n_elements_absmax), CUDA_STREAM,
+            get_ptr(code2),
+            get_ptr(absmax),
+            get_ptr(absmax2),
+            ptr_out_absmax,
+            ctypes.c_int(blocksize2),
+            ctypes.c_int(n_elements_absmax),
+            CUDA_STREAM,
         )
         out_absmax += offset
 
         # Dequantize W
         fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
              cdequantize_blockwise_bf16_nf4
-        fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
-           ctypes.c_int(blocksize), ctypes.c_int(out.numel()), CUDA_STREAM,)
+        fx(
+            get_ptr(None),
+            get_ptr(W),
+            ptr_out_absmax,
+            get_ptr(out),
+           ctypes.c_int(blocksize),
+           ctypes.c_int(out.numel()),
+            CUDA_STREAM,)
 
         # Careful returning transposed data
         is_transposed = (True if W.shape[0] == 1 else False)
@@ -242,25 +253,15 @@ else:
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
         cdequantize_blockwise_fp32(
-            get_ptr(code2),
-            get_ptr(absmax),
-            get_ptr(absmax2),
-            ptr_out_absmax,
-            ctypes.c_int(blocksize2),
-            ctypes.c_int(n_elements_absmax),
+            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
+            ctypes.c_int(blocksize2), ctypes.c_int(n_elements_absmax),
         )
         out_absmax += offset
 
         fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
              cdequantize_blockwise_bf16_nf4
-        fx(
-            get_ptr(None),
-            get_ptr(W),
-            ptr_out_absmax,
-            get_ptr(out),
-           ctypes.c_int(blocksize),
-           ctypes.c_int(out.numel()),
-        )
+        fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
+           ctypes.c_int(blocksize), ctypes.c_int(out.numel()),)
 
         # Careful returning transposed data
         is_transposed = (True if W.shape[0] == 1 else False)
