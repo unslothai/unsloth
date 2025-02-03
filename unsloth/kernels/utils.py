@@ -154,10 +154,9 @@ if HAS_CUDA_STREAM:
             size = shape[0]*shape[1]
             global WEIGHT_BUFFER
             global ABSMAX_BUFFER
-            print(size, shape)
             if WEIGHT_BUFFER is None:
                 WEIGHT_BUFFER = torch.empty(size, dtype = dtype, device = "cuda:0")
-                ABSMAX_BUFFER = torch.empty(n_elements_absmax, dtype = dtype, device = "cuda:0")
+                ABSMAX_BUFFER = torch.empty(n_elements_absmax, dtype = torch.float32, device = "cuda:0")
 
             if size > WEIGHT_BUFFER.numel(): WEIGHT_BUFFER.resize_(size)
             if n_elements_absmax > ABSMAX_BUFFER.numel(): ABSMAX_BUFFER.resize_(n_elements_absmax)
