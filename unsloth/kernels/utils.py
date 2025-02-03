@@ -404,7 +404,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
-        W = fast_dequantize(W.t(), W_quant)
+        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch.matmul(X, W, out = out)
     pass
 
@@ -438,7 +438,7 @@ pass
 
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
     dtype = X.dtype
-    W = fast_dequantize(W.t(), W_quant)
+    W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
 
     if X.dim() == 3:
         batch, seq_len, d = X.shape
