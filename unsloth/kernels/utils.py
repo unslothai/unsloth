@@ -226,7 +226,7 @@ else:
                 ABSMAX_BUFFER = torch.empty(n_elements_absmax, dtype = dtype, device = "cuda:0")
 
             if size > WEIGHT_BUFFER.numel(): WEIGHT_BUFFER.resize_(size)
-            if n_elements_absmax > ABSMAX_BUFFER.numel(): WEIGHT_BUFFER.resize_(n_elements_absmax)
+            if n_elements_absmax > ABSMAX_BUFFER.numel(): ABSMAX_BUFFER.resize_(n_elements_absmax)
 
             out = WEIGHT_BUFFER[:size].view(shape)
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
