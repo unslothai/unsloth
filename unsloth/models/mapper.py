@@ -555,12 +555,12 @@ __INT_TO_FLOAT_MAPPER = \
         "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
     ),
     "unsloth/Mistral-Small-24B-Base-2501-unsloth-bnb-4bit" : (
-        "unsloth/Mistral-Small-24B-Base",
+        "unsloth/Mistral-Small-24B-Base-2501",
         "mistralai/Mistral-Small-24B-Base-2501",
         "unsloth/Mistral-Small-24B-Base-2501-bnb-4bit",
     ),
     "unsloth/Mistral-Small-24B-Instruct-2501-unsloth-bnb-4bit" : (
-        "unsloth/Mistral-Small-24B-Instruct",
+        "unsloth/Mistral-Small-24B-Instruct-2501",
         "mistralai/Mistral-Small-24B-Instruct-2501",
         "unsloth/Mistral-Small-24B-Instruct-2501-bnb-4bit",
     ),
