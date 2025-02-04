@@ -24,17 +24,25 @@ __all__ = [
     "create_batches",
 ]
 from typing import Optional, List, Tuple, Dict, Any
-from transformers.utils.import_utils import _is_package_available
+import importlib.util
 import re
 from collections import OrderedDict
 import numpy as np
 from transformers import AutoModelForCausalLM
 from copy import deepcopy
 import math
+import gc
+import os
 from .utils import _get_dtype
 
+# Ignore logging messages
+import logging
+class HideLoggingMessage(logging.Filter):
+    def __init__(self, text): self.text = text
+    def filter(self, x): return not (self.text in x.getMessage())
+pass
 
-if _is_package_available("vllm"):
+if importlib.util.find_spec("vllm") is not None:
 
     # Allow unsloth dynamic quants to work
     def is_layer_skipped_bnb(prefix: str, llm_int8_skip_modules):
@@ -111,6 +119,14 @@ if _is_package_available("vllm"):
         import vllm.model_executor.layers.quantization.bitsandbytes
         vllm.model_executor.layers.quantization.bitsandbytes.is_layer_skipped_bnb = is_layer_skipped_bnb
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesLinearMethod._apply_4bit_weight = _apply_4bit_weight
+
+        # Disable all not supported messages
+        from vllm.config import logger as vllm_config_logger
+        vllm_config_logger.addFilter(HideLoggingMessage("not supported"))
+        vllm_config_logger.addFilter(HideLoggingMessage("is not tested"))
+        vllm_config_logger.addFilter(HideLoggingMessage("is not fully optimized"))
+        vllm_config_logger.addFilter(HideLoggingMessage("not set"))
+        del vllm_config_logger
     pass
 else:
     def patch_vllm_bitsandbytes():
@@ -119,7 +135,7 @@ else:
 pass
 
 
-if _is_package_available("bitsandbytes"):
+if importlib.util.find_spec("bitsandbytes") is not None:
     import bitsandbytes.functional
     from bitsandbytes.utils import pack_dict_to_tensor, unpack_tensor_to_dict
 
@@ -190,6 +206,22 @@ pass
 
 
 def patch_vllm():
+    # All Unsloth Zoo code licensed under LGPLv3
+
+    # Use Flashinfer if possible (doesn't seem to be faster for BnB)
+    # Also seems to process 2x less sequences in 1 go so less throughput?
+    # Maybe FP8 Flashinfer is much better
+    # See https://docs.vllm.ai/en/latest/serving/env_vars.html
+    if importlib.util.find_spec("flashinfer"):
+        # Allowed: FLASHINFER, TORCH_SDPA, FLASH_ATTN, XFORMERS, ROCM_FLASH
+        # os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+
+        # Flashinfer sampler maybe makes it somewhat faster but not much!
+        os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
+
+        # os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "1"
+    pass
+
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
 pass
@@ -493,7 +525,6 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
     new_model.config = config
 
     # Cleanup
-    import gc
     for _ in range(3):
         gc.collect()
         torch.cuda.empty_cache()
@@ -508,12 +539,18 @@ def approximate_vllm_memory_usage(
     enable_lora = True,
     max_lora_rank = 16,
     max_loras = 1,
+    float8_kv_cache = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Gets approximate max model length and max num sequences
     load_in_4bit = "quantization_config" in config
     free_memory, total_memory = torch.cuda.mem_get_info()
     free_memory = gpu_memory_utilization * free_memory
+    # Minus 1.5GB for activations
+    one_gb = 1.5 * 1024 * 1024 * 1024
+    if total_memory - free_memory < one_gb:
+        free_memory = total_memory - one_gb
+    actual_gpu_memory_utilization = free_memory / total_memory
 
     vocab_size = config.vocab_size
     hd = config.hidden_size
@@ -551,19 +588,22 @@ def approximate_vllm_memory_usage(
     bytes_for_model = \
         total_quantizable_elements / factor + total_float16_elements + lora_elements
 
-    # KV cache size (float16 is 2 bytes)
-    kv_elements = (kv_size * 2 * n_layers) * 2
+    # KV cache size (float16 is 2 bytes. float8 is 1.25 bytes since row scaler seen)
+    float_bytes = 1.25 if float8_kv_cache else 2
+    kv_elements = (kv_size * 2 * n_layers) * float_bytes
     memory_left_for_kv_cache = free_memory - bytes_for_model
     # Approx maximum # of KV cache elements
     max_num_batched_tokens = int(0.9*(memory_left_for_kv_cache / kv_elements))
     # Round by 256
     max_num_batched_tokens = (max_num_batched_tokens // 256) * 256
+    # Reduce it by 10%
+    max_num_batched_tokens = int(max_num_batched_tokens * 0.9)
     # Assuming all requests output max_seq_length, get theoretical max requests
     approx_max_num_seqs = int(max_num_batched_tokens / max_seq_length)
 
     if approx_max_num_seqs <= 1:
         raise MemoryError("Unsloth: Not enough memory to load vLLM!")
-    return max_num_batched_tokens, approx_max_num_seqs
+    return max_num_batched_tokens, approx_max_num_seqs, actual_gpu_memory_utilization
 pass
 
 
@@ -572,22 +612,25 @@ def load_vllm(
     config                 = None,
     gpu_memory_utilization : float = 0.8,
     max_seq_length         : int   = 8192,
+    float8_kv_cache        : bool  = False,
     random_state           : int   = 0,
     enable_lora            : bool  = True,
     max_lora_rank          : int   = 16,
     max_loras              : int   = 1,
     use_async              : bool  = False,
+    use_engine             : bool  = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Create vLLM instance
     assert(config is not None)
-    max_num_batched_tokens, approx_max_num_seqs = approximate_vllm_memory_usage(
+    max_num_batched_tokens, approx_max_num_seqs, actual_gpu_memory_utilization = approximate_vllm_memory_usage(
         config, 
         max_seq_length = max_seq_length,
         gpu_memory_utilization = gpu_memory_utilization,
         enable_lora = enable_lora,
         max_lora_rank = max_lora_rank,
         max_loras = max_loras,
+        float8_kv_cache = float8_kv_cache,
     )
     print(
         f"Unsloth: vLLM loading {model_name} with GPU utilization = {gpu_memory_utilization*100}%\n"\
@@ -596,14 +639,20 @@ def load_vllm(
 
     from vllm import LLM, LLMEngine, AsyncLLMEngine, EngineArgs
     use_bitsandbytes = model_name.lower().endswith("-bnb-4bit")
+
+    if   max_num_batched_tokens >= 8192: chunked_prefill_tokens = 8192
+    elif max_num_batched_tokens >= 4096: chunked_prefill_tokens = 4096
+    else: chunked_prefill_tokens = 2048
+
     engine_args = dict(
         model                  = model_name,
-        gpu_memory_utilization = gpu_memory_utilization,
+        gpu_memory_utilization = actual_gpu_memory_utilization,
         max_model_len          = max_seq_length,
         quantization           = "bitsandbytes" if use_bitsandbytes else None,
         load_format            = "bitsandbytes" if use_bitsandbytes else "auto",
+        kv_cache_dtype         = "fp8" if float8_kv_cache else "auto",
 
-        max_num_batched_tokens = max_num_batched_tokens, # Max tokens for chunked prefill or else OOM
+        max_num_batched_tokens = chunked_prefill_tokens, # Max tokens for chunked prefill default 2048
         max_num_seqs           = approx_max_num_seqs, # Force only some requests at 1 time or else OOM
         max_logprobs           = 0, # Disallow logprobs being returned
         seed                   = random_state, # Default is 0
@@ -620,14 +669,37 @@ def load_vllm(
         compilation_config     = 3, # 0, 1, 2, 3
     )
 
-    if use_async:
-        llm = AsyncLLMEngine.from_engine_args(EngineArgs(**engine_args))
-    else:
-        llm = LLM(**engine_args)
+    # Keep trying until success!
+    while True:
+        try:
+            if use_async:
+                llm = AsyncLLMEngine.from_engine_args(EngineArgs(**engine_args))
+            elif use_engine:
+                llm = LLMEngine.from_engine_args(EngineArgs(**engine_args))
+            else:
+                llm = LLM(**engine_args)
+            pass
+            break
+        except Exception as error:
+            # Cleanup
+            for _ in range(3):
+                gc.collect()
+                torch.cuda.empty_cache()
+            pass
+            error = str(error)
+            if "gpu_memory_utilization" in error or "memory" in error:
+                approx_max_num_seqs = int(approx_max_num_seqs * 0.75)
+                engine_args["max_num_seqs"] = approx_max_num_seqs
+                print(
+                    f"Unsloth: Retrying vLLM to process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem."
+                )
+            else:
+                raise RuntimeError(error)
+        pass
     pass
-
-    # Save maximum requests length since llm.generate fails to partition inputs
-    llm.approx_max_num_seqs = approx_max_num_seqs
+    # Save maximum requests length since llm.generate fails to partition inputs sometimes
+    # We'll leave 100 as the maximum
+    llm.approx_max_num_seqs = min(approx_max_num_seqs, 100)
     return llm
 pass
 
@@ -672,7 +744,7 @@ def test_get_vllm_state_dict(
     llm = load_vllm(
         model_name             = model_name,
         config                 = config,
-        gpu_memory_utilization = 0.5,
+        gpu_memory_utilization = 0.9,
         max_seq_length         = 2048,
     )
 
@@ -706,7 +778,7 @@ def test_get_vllm_state_dict(
         padding = True,
     )
     # Cannot just use llm.generate or OOM - split into batches
-    batches = create_batches(inputs, llm.approx_max_num_seqs)
+    batches = create_batches(inputs, 50)
 
     from vllm import SamplingParams
     sampling_params = SamplingParams(
