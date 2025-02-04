@@ -21,6 +21,7 @@ __all__ = [
     "get_vllm_state_dict",
     "assert_same_state_dict",
     "load_vllm",
+    "create_batches",
 ]
 from typing import Optional, List, Tuple, Dict, Any
 from transformers.utils.import_utils import _is_package_available
@@ -29,6 +30,7 @@ from collections import OrderedDict
 import numpy as np
 from transformers import AutoModelForCausalLM
 from copy import deepcopy
+import math
 from .utils import _get_dtype
 
 
@@ -228,7 +230,7 @@ def vllm_dynamic_quant_supported(
 pass
 
 
-def get_vllm_state_dict(llm, return_state_dict = False, vocab_size = None):
+def get_vllm_state_dict(llm, return_state_dict = False, config = None):
     # All Unsloth Zoo code licensed under LGPLv3
     # Unmerges vLLM modules and returns HF equivalent state_dict
     try:
@@ -237,7 +239,8 @@ def get_vllm_state_dict(llm, return_state_dict = False, vocab_size = None):
     except:
         raise RuntimeError("Unsloth: Failed to access llm.llm_engine.model_executor.driver_worker.model_runner.model")
     pass
-    assert(vocab_size is not None)
+    assert(config is not None)
+    vocab_size = config.vocab_size
 
     state_dict = OrderedDict()
     quant_state_dict = OrderedDict()
@@ -348,13 +351,13 @@ def assert_same_state_dict(old_state_dict, new_state_dict):
 
     for key in old_state_dict:
         try:
-            torch.testing.assert_close(state_dict[key], old_state_dict[key], check_stride = True)
+            torch.testing.assert_close(old_state_dict[key], new_state_dict[key], check_stride = True)
         except Exception as error:
             if key == "lm_head.weight":
                 # Maybe tied embeddings?
-                key1 = key if key in state_dict else "model.embed_tokens.weight"
-                key2 = key if key in old_state_dict else "model.embed_tokens.weight"
-                torch.testing.assert_close(state_dict[key1], old_state_dict[key2], check_stride = True)
+                key1 = key if key in old_state_dict else "model.embed_tokens.weight"
+                key2 = key if key in new_state_dict else "model.embed_tokens.weight"
+                torch.testing.assert_close(old_state_dict[key1], new_state_dict[key2], check_stride = True)
             else:
                 raise RuntimeError(f"[{key}]\n{str(error)}")
         pass
@@ -575,6 +578,8 @@ def load_vllm(
     max_loras              : int   = 1,
     use_async              : bool  = False,
 ):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Create vLLM instance
     assert(config is not None)
     max_num_batched_tokens, approx_max_num_seqs = approximate_vllm_memory_usage(
         config, 
@@ -586,7 +591,7 @@ def load_vllm(
     )
     print(
         f"Unsloth: vLLM loading {model_name} with GPU utilization = {gpu_memory_utilization*100}%\n"\
-        f"         vLLM can process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem."
+        f"Unsloth: vLLM can process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem."
     )
 
     from vllm import LLM, LLMEngine, AsyncLLMEngine, EngineArgs
@@ -627,6 +632,18 @@ def load_vllm(
 pass
 
 
+def create_batches(requests, num_sequences = 64):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # llm.generate must be batched!
+    n_splits = int(math.ceil(len(requests) / num_sequences))
+    offsets = np.arange(0, len(requests), num_sequences)
+    if offsets[-1] != len(requests):
+        offsets = np.hstack((offsets, len(requests)))
+    batches = [requests[offsets[i]:offsets[i+1]] for i in range(len(offsets)-1)]
+    return batches
+pass
+
+
 def test_get_vllm_state_dict(
     model_name = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
     dtype = torch.float16,
@@ -662,12 +679,48 @@ def test_get_vllm_state_dict(
     state_dict, quant_state_dict = get_vllm_state_dict(
         llm,
         return_state_dict = True,
-        vocab_size = config.vocab_size,
+        config = config,
     )
     assert_same_state_dict(model.state_dict(), state_dict)
 
     new_model = convert_vllm_to_huggingface(quant_state_dict, config, dtype)
     assert_same_state_dict(model.state_dict(), new_model.state_dict())
+
+    # Run the model as well
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    messages = [
+        [{"role": "user", "content": "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8,"},],
+        [{"role": "user", "content": "Write a long poem about the world."},],
+        [{"role": "user", "content": "What is the capital of France? Describe it."},],
+        [{"role": "user", "content": "Why is the sky blue?"},],
+        [{"role": "user", "content": "Explain Newton's third law of motion."},],
+        [{"role": "user", "content": "Why is spacetime bent?"},],
+        [{"role": "user", "content": "Explain heliocentricism."},],
+        [{"role": "user", "content": "Derive the formula for an infinite sum of 1, 1/2, 1/4, 1/8 and so on."},],
+    ]*100
+    inputs = tokenizer.apply_chat_template(
+        messages,
+        tokenize = False,
+        add_generation_prompt = True, # Must add for generation
+        padding = True,
+    )
+    # Cannot just use llm.generate or OOM - split into batches
+    batches = create_batches(inputs, llm.approx_max_num_seqs)
+
+    from vllm import SamplingParams
+    sampling_params = SamplingParams(
+        temperature = 1.5,
+        min_p = 0.1,
+        logprobs = 0,
+        prompt_logprobs = 0,
+        max_tokens = 256,
+    )
+    completion_ids = []
+    for batch in batches:
+        outputs = llm.generate(batch, sampling_params)
+        completion_ids.extend(out.token_ids for completions in outputs for out in completions.outputs)
+    pass
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
