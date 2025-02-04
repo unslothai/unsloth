@@ -20,6 +20,7 @@ __all__ = [
     "convert_vllm_to_huggingface",
     "get_vllm_state_dict",
     "assert_same_state_dict",
+    "load_vllm",
 ]
 from typing import Optional, List, Tuple, Dict, Any
 from transformers.utils.import_utils import _is_package_available
@@ -227,18 +228,22 @@ def vllm_dynamic_quant_supported(
 pass
 
 
-def get_vllm_state_dict(llm, return_state_dict = False):
+def get_vllm_state_dict(llm, return_state_dict = False, vocab_size = None):
     # All Unsloth Zoo code licensed under LGPLv3
     # Unmerges vLLM modules and returns HF equivalent state_dict
     try:
-        vllm_internals = llm.llm_engine.model_executor.driver_worker.model_runner.model
+        llm_engine = getattr(llm, "llm_engine", llm)
+        vllm_internals = llm_engine.model_executor.driver_worker.model_runner.model
     except:
         raise RuntimeError("Unsloth: Failed to access llm.llm_engine.model_executor.driver_worker.model_runner.model")
     pass
+    assert(vocab_size is not None)
+
     state_dict = OrderedDict()
     quant_state_dict = OrderedDict()
 
     def get_state_dict(prefix, kk, state_dict, proj):
+        proj = getattr(proj, "base_layer", proj)
         qweight = proj.weight
         if hasattr(proj, "output_sizes"):
             dim_offsets = np.cumsum([0] + proj.output_sizes)
@@ -273,8 +278,16 @@ def get_vllm_state_dict(llm, return_state_dict = False):
         pass
     pass
 
-    state_dict["model.embed_tokens.weight"] = vllm_internals.model.embed_tokens.weight.data
+    # Embedding
+    embed_tokens = vllm_internals.model.embed_tokens
+    embed_tokens = getattr(embed_tokens, "base_layer", embed_tokens).weight.data
+
+    # Counteract vLLM padding vocabs for LoRA
+    if vocab_size is not None: embed_tokens = embed_tokens[:vocab_size]
+    state_dict["model.embed_tokens.weight"] = embed_tokens
     quant_state_dict["model.embed_tokens.weight"] = state_dict["model.embed_tokens.weight"]
+
+    # All layers
     for kk in range(len(vllm_internals.model.layers)):
         proj = vllm_internals.model.layers[kk].self_attn.qkv_proj
         get_state_dict(f"model.layers.{kk}.self_attn.q_proj", 0, state_dict, proj)
@@ -302,11 +315,19 @@ def get_vllm_state_dict(llm, return_state_dict = False):
             state_dict[f"model.layers.{kk}.post_attention_layernorm.weight"]
     pass
 
+    # Norm
     state_dict["model.norm.weight"] = vllm_internals.model.norm.weight.data
     quant_state_dict["model.norm.weight"] = state_dict["model.norm.weight"]
 
+    # LM Head
     if getattr(config, "tie_word_embeddings", True) is False:
-        state_dict["lm_head.weight"] = vllm_internals.lm_head.weight.data
+        lm_head = vllm_internals.lm_head
+        lm_head = getattr(lm_head, "base_layer", lm_head).weight.data
+
+        # Counteract vLLM padding vocabs for LoRA
+        if vocab_size is not None: lm_head = lm_head[:vocab_size]
+
+        state_dict["lm_head.weight"] = lm_head
         quant_state_dict["lm_head.weight"] = state_dict["lm_head.weight"]
     pass
 
@@ -477,6 +498,135 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
 pass
 
 
+def approximate_vllm_memory_usage(
+    config, 
+    max_seq_length = 2048,
+    gpu_memory_utilization = 0.8,
+    enable_lora = True,
+    max_lora_rank = 16,
+    max_loras = 1,
+):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Gets approximate max model length and max num sequences
+    load_in_4bit = "quantization_config" in config
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    free_memory = gpu_memory_utilization * free_memory
+
+    vocab_size = config.vocab_size
+    hd = config.hidden_size
+    context_length = config.max_position_embeddings
+    mlp_size = config.intermediate_size
+    n_layers = config.num_hidden_layers
+    n_kv_heads = getattr(config, "num_key_value_heads", 1)
+    n_heads    = getattr(config, "num_attention_heads", 1)
+    # Group Query Attention
+    kv_size = hd // n_heads * n_kv_heads
+
+    # Modules
+    qkvo = hd + kv_size + kv_size + hd
+    qkvo = qkvo * hd
+    mlp  = (hd * mlp_size) * 3
+    layernorms = 2 * hd
+    embed_tokens = vocab_size * hd
+    lm_head = 0 if getattr(config, "tie_word_embeddings", True) else vocab_size * hd
+
+    # LoRA modules on all QKVO, MLP
+    qkvo_A = hd * max_lora_rank * 4
+    qkvo_B = max_lora_rank * (hd + kv_size + kv_size + hd)
+    mlp_A  = hd * max_lora_rank * 2 + mlp_size * max_lora_rank
+    mlp_B  = max_lora_rank * (mlp_size + mlp_size) + max_lora_rank * hd
+    lora_elements = qkvo_A + qkvo_B + mlp_A + mlp_B
+    lora_elements = lora_elements * max_loras
+    # 2 bytes = float16 for LoRA
+    lora_elements = lora_elements*n_layers * 2
+    if not enable_lora: lora_elements = 0
+
+    # 2 bytes = float16
+    total_quantizable_elements = (qkvo + mlp)*n_layers * 2
+    total_float16_elements     = (layernorms + embed_tokens + lm_head)*2
+    factor = 16/5 if load_in_4bit else 1 # Should be 4.5 but use 5
+    bytes_for_model = \
+        total_quantizable_elements / factor + total_float16_elements + lora_elements
+
+    # KV cache size (float16 is 2 bytes)
+    kv_elements = (kv_size * 2 * n_layers) * 2
+    memory_left_for_kv_cache = free_memory - bytes_for_model
+    # Approx maximum # of KV cache elements
+    max_num_batched_tokens = int(0.9*(memory_left_for_kv_cache / kv_elements))
+    # Round by 256
+    max_num_batched_tokens = (max_num_batched_tokens // 256) * 256
+    # Assuming all requests output max_seq_length, get theoretical max requests
+    approx_max_num_seqs = int(max_num_batched_tokens / max_seq_length)
+
+    if approx_max_num_seqs <= 1:
+        raise MemoryError("Unsloth: Not enough memory to load vLLM!")
+    return max_num_batched_tokens, approx_max_num_seqs
+pass
+
+
+def load_vllm(
+    model_name             : str   = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
+    config                 = None,
+    gpu_memory_utilization : float = 0.8,
+    max_seq_length         : int   = 8192,
+    random_state           : int   = 0,
+    enable_lora            : bool  = True,
+    max_lora_rank          : int   = 16,
+    max_loras              : int   = 1,
+    use_async              : bool  = False,
+):
+    assert(config is not None)
+    max_num_batched_tokens, approx_max_num_seqs = approximate_vllm_memory_usage(
+        config, 
+        max_seq_length = max_seq_length,
+        gpu_memory_utilization = gpu_memory_utilization,
+        enable_lora = enable_lora,
+        max_lora_rank = max_lora_rank,
+        max_loras = max_loras,
+    )
+    print(
+        f"Unsloth: vLLM loading {model_name} with GPU utilization = {gpu_memory_utilization*100}%\n"\
+        f"         vLLM can process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem."
+    )
+
+    from vllm import LLM, LLMEngine, AsyncLLMEngine, EngineArgs
+    use_bitsandbytes = model_name.lower().endswith("-bnb-4bit")
+    engine_args = dict(
+        model                  = model_name,
+        gpu_memory_utilization = gpu_memory_utilization,
+        max_model_len          = max_seq_length,
+        quantization           = "bitsandbytes" if use_bitsandbytes else None,
+        load_format            = "bitsandbytes" if use_bitsandbytes else "auto",
+
+        max_num_batched_tokens = max_num_batched_tokens, # Max tokens for chunked prefill or else OOM
+        max_num_seqs           = approx_max_num_seqs, # Force only some requests at 1 time or else OOM
+        max_logprobs           = 0, # Disallow logprobs being returned
+        seed                   = random_state, # Default is 0
+
+        # lora_extra_vocab_size = 0, # Breaks vLLM so we leave it as 256
+        enable_lora            = enable_lora,
+        max_lora_rank          = max_lora_rank,
+        max_loras              = max_loras,
+
+        disable_log_stats      = True,
+        # enable_prefix_caching  = True, # LoRA fails with chunked prefill as at Feb 2025
+        # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
+        max_seq_len_to_capture = 8192, # Default is 8192 for CUDAGraphs
+        compilation_config     = 3, # 0, 1, 2, 3
+    )
+
+    if use_async:
+        llm = AsyncLLMEngine.from_engine_args(EngineArgs(**engine_args))
+    else:
+        llm = LLM(**engine_args)
+    pass
+
+    # Save maximum requests length since llm.generate fails to partition inputs
+    llm.approx_max_num_seqs = approx_max_num_seqs
+    return llm
+pass
+
+
 def test_get_vllm_state_dict(
     model_name = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
     dtype = torch.float16,
@@ -502,16 +652,18 @@ def test_get_vllm_state_dict(
         use_exact_model_name = True,
     )
 
-    from vllm import LLM
-    llm = LLM(
-        model = model_name,
+    llm = load_vllm(
+        model_name             = model_name,
+        config                 = config,
         gpu_memory_utilization = 0.5,
-        max_model_len = 8192,
-        quantization = "bitsandbytes",
-        load_format = "bitsandbytes",
+        max_seq_length         = 2048,
     )
 
-    state_dict, quant_state_dict = get_vllm_state_dict(llm, return_state_dict = True)
+    state_dict, quant_state_dict = get_vllm_state_dict(
+        llm,
+        return_state_dict = True,
+        vocab_size = config.vocab_size,
+    )
     assert_same_state_dict(model.state_dict(), state_dict)
 
     new_model = convert_vllm_to_huggingface(quant_state_dict, config, dtype)
