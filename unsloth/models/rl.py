@@ -151,15 +151,16 @@ def _PatchRLStatistics(metrics):
 pass
 
 
-def PatchRLStatistics(algorithm = "grpo"):
-    if algorithm == "grpo":
+def PatchRLStatistics(algorithm = "GRPO"):
+    algorithm = algorithm.upper()
+    if algorithm == "GRPO":
         metrics = [
             "completion_length",
             "reward",
             "reward_std",
             "kl",
         ]
-    elif algorithm == "dpo" or algorithm == "kto":
+    elif algorithm == "DPO" or algorithm == "KTO":
         metrics = [
             "rewards/chosen",
             "rewards/rejected",
