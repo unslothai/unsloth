@@ -1255,7 +1255,7 @@ def test_get_vllm_state_dict():
             counts = counts // 4
             conservativeness = 0.8
             float8_kv_cache = True
-            gpu_memory_utilization = 0.2
+            gpu_memory_utilization = 0.5
         else:
             conservativeness = 1.0
             float8_kv_cache = True
