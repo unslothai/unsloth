@@ -17,8 +17,8 @@ __all__ = [
     "PatchKTOTrainer",
 ]
 
-from .rl import PatchRLStatistics
+from .rl import PatchFastRL
 
-def PatchDPOTrainer(): PatchRLStatistics("DPO")
+def PatchDPOTrainer(): PatchFastRL("DPO")
 
-def PatchKTOTrainer(): PatchRLStatistics("KTO")
+def PatchKTOTrainer(): PatchFastRL("KTO")
