@@ -979,11 +979,18 @@ pass
 
 def load_lora(model, save_directory):
     # All Unsloth Zoo code licensed under LGPLv3
+    # Check if path exists
+    if not os.path.exists(save_directory):
+        return OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
+
     from vllm.lora.request import LoRARequest
     global LORA_REQUEST_ID
     if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
     lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
     LORA_REQUEST_ID += 1
+
+    # Set model's current LoRA adapater
+    model.vllm_engine.vllm_lora_request = lora_request
     return lora_request
 pass
 
@@ -1007,6 +1014,10 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
             if n_batches != llm.approx_max_num_seqs:
                 print(f"Unsloth: Will use {n_batches} batches to reduce memory usage for generation!")
         pass
+    pass
+
+    if lora_request is None:
+        if hasattr(llm, "vllm_lora_request"): lora_request = llm.vllm_lora_request
     pass
 
     batches = create_batches(inputs, n_batches)
