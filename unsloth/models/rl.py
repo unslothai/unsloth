@@ -16,6 +16,12 @@ __all__ = [
     "PatchFastRL",
 ]
 
+METRICS_MOVE_TO_END = [
+    "nll",
+    "aux",
+    "beta",
+    "alpha",
+]
 import torch
 try:
     from transformers.utils.notebook import (
@@ -203,8 +209,29 @@ def get_trl_metrics():
         left_prefix = 'prefix = "eval_" if train_eval == "eval" else ""' in file
         if left_prefix: metrics += metrics_f
 
-        # Remove all eval_ things
-        metrics = [x for x in metrics if not x.startswith("eval_")]
+        # Move all eval_ things to the end and reward to the front
+        beginning = []
+        middle = []
+        end = []
+        for x in metrics:
+            lowered = x.lower()
+            if "reward" in lowered:
+                beginning.append(x)
+            elif x.lower().startswith("eval"):
+                end.append(x)
+            else:
+                # Check if we want to move to the end
+                moved = False
+                for move_end in METRICS_MOVE_TO_END:
+                    if move_end in lowered:
+                        end.append(x)
+                        moved = True
+                        break
+                if not moved:
+                    middle.append(x)
+            pass
+        pass
+        metrics = beginning + middle + end
 
         all_metrics[trainer[:trainer.find("_")].upper()] = metrics
     pass
