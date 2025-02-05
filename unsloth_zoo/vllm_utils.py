@@ -1,5 +1,5 @@
 # Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
@@ -28,12 +28,12 @@ import importlib.util
 import re
 from collections import OrderedDict
 import numpy as np
-from transformers import AutoModelForCausalLM
 from copy import deepcopy
 import math
 import gc
 import os
-from .utils import _get_dtype
+import contextlib
+from unsloth_zoo.utils import _get_dtype
 
 # Ignore logging messages
 import logging
@@ -128,8 +128,47 @@ if importlib.util.find_spec("vllm") is not None:
         vllm_config_logger.addFilter(HideLoggingMessage("not set"))
         del vllm_config_logger
     pass
+
+    def patch_vllm_compute_dtype(dtype = torch.float16):
+        # vLLM defaults to using the model config file's compute_dtype
+        # We shall fix it dynamically!
+        import vllm.model_executor.layers.quantization.bitsandbytes
+        old_config = vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig
+
+        dtype = str(dtype)
+        if dtype.startswith("torch."): dtype = dtype[len("torch."):]
+        os.environ["UNSLOTH_bnb_4bit_compute_dtype"] = dtype
+
+        class BitsAndBytesConfig(
+            vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig
+        ):
+            def __init__(self, *args, **kwargs):
+                dtype = os.environ.get("UNSLOTH_bnb_4bit_compute_dtype", kwargs["bnb_4bit_compute_dtype"])
+                kwargs["bnb_4bit_compute_dtype"] = dtype
+                print(f"Unsloth: vLLM Bitsandbytes config using kwargs = {kwargs}")
+                super().__init__(*args, **kwargs)
+            pass
+        pass
+
+        vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig = BitsAndBytesConfig
+        return old_config
+    pass
+
+    def unpatch_vllm_compute_dtype(old_config):
+        import vllm.model_executor.layers.quantization.bitsandbytes
+        vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig = old_config
+        del os.environ["UNSLOTH_bnb_4bit_compute_dtype"]
+    pass
 else:
     def patch_vllm_bitsandbytes():
+        return
+    pass
+
+    def patch_vllm_compute_dtype():
+        return
+    pass
+
+    def unpatch_vllm_compute_dtype(old_config):
         return
     pass
 pass
@@ -187,7 +226,9 @@ if importlib.util.find_spec("bitsandbytes") is not None:
             absmax=qs_dict["absmax"].to(device),
             blocksize=qs_dict["blocksize"],
             code=qs_dict["quant_map"].to(device),
-            dtype=getattr(torch, qs_dict["dtype"]),
+            # dtype=getattr(torch, qs_dict["dtype"]),
+            # Patch over the compute dtype for vLLM
+            dtype=getattr(torch, os.environ.get("UNSLOTH_bnb_4bit_compute_dtype", qs_dict["dtype"])),
             shape=torch.Size(qs_dict["shape"]) if qs_dict["shape"] is not None else None,
             offset=offset,
             state2=state2,
@@ -195,33 +236,49 @@ if importlib.util.find_spec("bitsandbytes") is not None:
         return quant_state
     pass
 
+    import bitsandbytes.nn.modules
+    class Linear4bit(bitsandbytes.nn.modules.Linear4bit):
+        def __init__(self, *args, **kwargs):
+            compute_dtype = os.environ.get("UNSLOTH_bnb_4bit_compute_dtype", None)
+            if compute_dtype is not None:
+                compute_dtype = getattr(torch, compute_dtype)
+                kwargs["compute_dtype"] = compute_dtype
+            super().__init__(*args, **kwargs)
+        pass
+    pass
+    
     def patch_bitsandbytes_quant_state():
         bitsandbytes.functional.QuantState.from_dict = from_dict
+        bitsandbytes.nn.modules.Linear4bit = Linear4bit
+    pass
+
+    def patch_bitsandbytes_compute_dtype(dtype):
+        dtype = str(dtype)
+        if dtype.startswith("torch."): dtype = dtype[len("torch."):]
+        os.environ["UNSLOTH_bnb_4bit_compute_dtype"] = dtype
+        return
+    pass
+
+    def unpatch_bitsandbytes_compute_dtype():
+        del os.environ["UNSLOTH_bnb_4bit_compute_dtype"]
+        return
     pass
 else:
     def patch_bitsandbytes_quant_state():
+        return
+    pass
+
+    def patch_bitsandbytes_compute_dtype(dtype):
+        return
+    pass
+
+    def unpatch_bitsandbytes_compute_dtype():
         return
     pass
 pass
 
 
 def patch_vllm():
-    # All Unsloth Zoo code licensed under LGPLv3
-
-    # Use Flashinfer if possible (doesn't seem to be faster for BnB)
-    # Also seems to process 2x less sequences in 1 go so less throughput?
-    # Maybe FP8 Flashinfer is much better
-    # See https://docs.vllm.ai/en/latest/serving/env_vars.html
-    if importlib.util.find_spec("flashinfer"):
-        # Allowed: FLASHINFER, TORCH_SDPA, FLASH_ATTN, XFORMERS, ROCM_FLASH
-        # os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
-
-        # Flashinfer sampler maybe makes it somewhat faster but not much!
-        os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
-
-        # os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "1"
-    pass
-
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
 pass
@@ -262,6 +319,7 @@ def vllm_dynamic_quant_supported(
 pass
 
 
+@torch.inference_mode
 def get_vllm_state_dict(llm, return_state_dict = False, config = None):
     # All Unsloth Zoo code licensed under LGPLv3
     # Unmerges vLLM modules and returns HF equivalent state_dict
@@ -371,6 +429,7 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
 pass
 
 
+@torch.inference_mode
 def assert_same_state_dict(old_state_dict, new_state_dict):
     # All Unsloth Zoo code licensed under LGPLv3
     # Check if state_dict are equivalent
@@ -397,6 +456,7 @@ def assert_same_state_dict(old_state_dict, new_state_dict):
 pass
 
 
+@torch.inference_mode
 def create_empty_causal_lm(config, dtype = torch.float16):
     # All Unsloth Zoo code licensed under LGPLv3
     # Empty model from config
@@ -405,6 +465,13 @@ def create_empty_causal_lm(config, dtype = torch.float16):
     new_config.hidden_size = 0
     new_config.vocab_size = 1
     new_config.pad_token_id = 0
+
+    # Set attention module head_dim
+    # Otherwise will get error if (head_dim)**-0.5 is seen like in Qwen
+    head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+    new_config.update({"head_dim" : head_dim})
+
+    from transformers import AutoModelForCausalLM
     new_model = AutoModelForCausalLM.from_config(
         new_config,
         attn_implementation = "eager",
@@ -414,17 +481,22 @@ def create_empty_causal_lm(config, dtype = torch.float16):
 pass
 
 
+@torch.inference_mode
 def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16):
     # All Unsloth Zoo code licensed under LGPLv3
     # Unmerges vLLM modules to create HF compatible model
+    config.update({"torch_dtype" : dtype}) # Do not use config file's dtype!
     new_model = create_empty_causal_lm(config, dtype)
-    quantization_config = config.quantization_config
+    quantization_config = getattr(config, "quantization_config", {})
     kwargs = dict()
-    # Get quantization_config flags
-    compute_dtype = _get_dtype(quantization_config["bnb_4bit_compute_dtype"])
-    kwargs["compress_statistics"] = quantization_config["bnb_4bit_use_double_quant"]
-    kwargs["quant_type"] = quantization_config["bnb_4bit_quant_type"]
-    kwargs["quant_storage"] = _get_dtype(quantization_config["bnb_4bit_quant_storage"])
+    if quantization_config != {}:
+        # Get quantization_config flags
+        compute_dtype = _get_dtype(quantization_config["bnb_4bit_compute_dtype"])
+        compute_dtype = dtype # Do not use config file's dtype!
+        kwargs["compress_statistics"] = quantization_config["bnb_4bit_use_double_quant"]
+        kwargs["quant_type"] = quantization_config["bnb_4bit_quant_type"]
+        kwargs["quant_storage"] = _get_dtype(quantization_config["bnb_4bit_quant_storage"])
+    pass
 
     from bitsandbytes.nn.modules import Linear4bit, Params4bit
     from torch.nn.modules import Linear
@@ -450,10 +522,11 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
             layer_name = layer_name.format(kk = kk)
             weight = quant_state_dict[f"{layer_name}.weight"]
 
-            if f"{layer_name}.weight.bias" in quant_state_dict:
+            if f"{layer_name}.bias" in quant_state_dict:
                 # Has bias!
                 has_bias = True
-                bias = quant_state_dict[f"{layer_name}.weight.bias"]
+                bias = quant_state_dict[f"{layer_name}.bias"]
+                bias = torch.nn.Parameter(bias, requires_grad = False)
             else:
                 has_bias = False
                 bias = None
@@ -479,6 +552,7 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
                 # Layernorms
                 weight = torch.nn.Parameter(weight, requires_grad = False)
                 layer_name = re.sub(r"\.([\d]{1,})\.", r"[\1].", layer_name)
+                exec(f"new_model.{layer_name}.weight = None")
                 exec(f"new_model.{layer_name}.weight = weight")
                 continue
             pass
@@ -506,22 +580,28 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
         weight = quant_state_dict["model.embed_tokens.weight"]
     else:
         weight = quant_state_dict["lm_head.weight"]
-    layer = Linear(0, 0, device = "cuda:0", bias = has_bias)
+    layer = Linear(0, 0, device = "cuda:0", bias = False)
     layer.in_features  = weight.shape[1]
     layer.out_features = weight.shape[0]
     layer.weight = torch.nn.Parameter(weight, requires_grad = False)
     new_model.lm_head = layer
     if getattr(config, "tie_word_embeddings", False): new_model.tie_weights()
 
-    # Fix up config file
+    # Fix up config items with correct items
+    config_as_dict = config.to_dict()
     for module in new_model.modules():
-        if hasattr(module, "config"):
-            module.config = config
-        if hasattr(module, "intermediate_size"):
-            module.intermediate_size = config.intermediate_size
-        if hasattr(module, "hidden_size"):
-            module.hidden_size = config.hidden_size
+        for key, value in config_as_dict.items():
+            if hasattr(module, key): exec(f"module.{key} = {value}")
+        if hasattr(module, "config"): module.config = config
     pass
+    for param in new_model.parameters():
+        for key, value in config_as_dict.items():
+            if hasattr(param, key): exec(f"param.{key} = {value}")
+        if hasattr(param, "config"): param.config = config
+    pass
+    module = new_model
+    for key, value in config_as_dict.items():
+        if hasattr(module, key): exec(f"module.{key} = {value}")
     new_model.config = config
 
     # Cleanup
@@ -540,17 +620,13 @@ def approximate_vllm_memory_usage(
     max_lora_rank = 16,
     max_loras = 1,
     float8_kv_cache = False,
+    account_for_gradients = True,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Gets approximate max model length and max num sequences
     load_in_4bit = "quantization_config" in config
     free_memory, total_memory = torch.cuda.mem_get_info()
     free_memory = gpu_memory_utilization * free_memory
-    # Minus 1.5GB for activations
-    one_gb = 1.5 * 1024 * 1024 * 1024
-    if total_memory - free_memory < one_gb:
-        free_memory = total_memory - one_gb
-    actual_gpu_memory_utilization = free_memory / total_memory
 
     vocab_size = config.vocab_size
     hd = config.hidden_size
@@ -581,6 +657,28 @@ def approximate_vllm_memory_usage(
     lora_elements = lora_elements*n_layers * 2
     if not enable_lora: lora_elements = 0
 
+    # Get activation and gradients for LoRA
+    # 8bit Adam most likely * 2 for momentum, variance
+    gradient_lora_elements  = lora_elements + lora_elements
+    # Parameter left in float32
+    parameter_lora_elements = lora_elements*4
+
+    # Activation memory - assume bsz=2
+    bsz = 2
+    activation_qkv  = max_seq_length * bsz * (hd + kv_size + kv_size)
+    residual_memory = (max_seq_length * bsz)*2
+    activation_mlp  = max_seq_length * bsz * (mlp_size + mlp_size)
+    weights = mlp_size * hd
+    maximum_activation = \
+        activation_qkv + residual_memory + activation_mlp + weights
+    # 2 bytes with 25% extra just in case
+    maximum_activation = (maximum_activation*1.25) * 2
+    if not account_for_gradients: maximum_activation = 0
+    # Minus for activations
+    if total_memory - free_memory < maximum_activation:
+        free_memory = total_memory - maximum_activation
+    actual_gpu_memory_utilization = free_memory / total_memory
+
     # 2 bytes = float16
     total_quantizable_elements = (qkvo + mlp)*n_layers * 2
     total_float16_elements     = (layernorms + embed_tokens + lm_head)*2
@@ -588,22 +686,23 @@ def approximate_vllm_memory_usage(
     bytes_for_model = \
         total_quantizable_elements / factor + total_float16_elements + lora_elements
 
-    # KV cache size (float16 is 2 bytes. float8 is 1.25 bytes since row scaler seen)
+    # KV cache size (float16 is 2 bytes. float8 is 1.25 bytes)
     float_bytes = 1.25 if float8_kv_cache else 2
     kv_elements = (kv_size * 2 * n_layers) * float_bytes
     memory_left_for_kv_cache = free_memory - bytes_for_model
     # Approx maximum # of KV cache elements
-    max_num_batched_tokens = int(0.9*(memory_left_for_kv_cache / kv_elements))
+    max_num_batched_tokens = int(0.95*(memory_left_for_kv_cache / kv_elements))
     # Round by 256
     max_num_batched_tokens = (max_num_batched_tokens // 256) * 256
-    # Reduce it by 10%
-    max_num_batched_tokens = int(max_num_batched_tokens * 0.9)
     # Assuming all requests output max_seq_length, get theoretical max requests
     approx_max_num_seqs = int(max_num_batched_tokens / max_seq_length)
 
-    if approx_max_num_seqs <= 1:
-        raise MemoryError("Unsloth: Not enough memory to load vLLM!")
-    return max_num_batched_tokens, approx_max_num_seqs, actual_gpu_memory_utilization
+    # GB for KV cache
+    memory_left_for_kv_cache_gb = memory_left_for_kv_cache / 1024 / 1024 / 1024
+
+    return \
+        max_num_batched_tokens, approx_max_num_seqs, \
+        actual_gpu_memory_utilization, memory_left_for_kv_cache_gb
 pass
 
 
@@ -612,18 +711,23 @@ def load_vllm(
     config                 = None,
     gpu_memory_utilization : float = 0.8,
     max_seq_length         : int   = 8192,
-    float8_kv_cache        : bool  = False,
-    random_state           : int   = 0,
-    enable_lora            : bool  = True,
-    max_lora_rank          : int   = 16,
-    max_loras              : int   = 1,
-    use_async              : bool  = False,
-    use_engine             : bool  = False,
+    dtype                  : torch.dtype = None,
+    training               : bool = True,
+    float8_kv_cache        : bool = False,
+    random_state           : int  = 0,
+    enable_lora            : bool = True,
+    max_lora_rank          : int  = 16,
+    max_loras              : int  = 1,
+    use_async              : bool = False,
+    use_engine             : bool = False,
+    disable_log_stats      : bool = True,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Create vLLM instance
     assert(config is not None)
-    max_num_batched_tokens, approx_max_num_seqs, actual_gpu_memory_utilization = approximate_vllm_memory_usage(
+    max_num_batched_tokens, approx_max_num_seqs, \
+    actual_gpu_memory_utilization, memory_left_for_kv_cache_gb = \
+    approximate_vllm_memory_usage(
         config, 
         max_seq_length = max_seq_length,
         gpu_memory_utilization = gpu_memory_utilization,
@@ -631,18 +735,99 @@ def load_vllm(
         max_lora_rank = max_lora_rank,
         max_loras = max_loras,
         float8_kv_cache = float8_kv_cache,
-    )
-    print(
-        f"Unsloth: vLLM loading {model_name} with GPU utilization = {gpu_memory_utilization*100}%\n"\
-        f"Unsloth: vLLM can process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem."
+        account_for_gradients = training,
     )
 
-    from vllm import LLM, LLMEngine, AsyncLLMEngine, EngineArgs
+    # Check max_num_batched_tokens for max_seq_length
+    # Must be >= max_num_batched_tokens
+    if max_num_batched_tokens <= max_seq_length:
+        print(
+            f"Unsloth: Your GPU cannot handle sequence lengths of {max_seq_length} due to limited GPU memory.\n"\
+            f"Unsloth: Your GPU can only handle approximately the maximum sequence length of {max_seq_length}."
+        )
+        max_seq_length = max_num_batched_tokens
+    pass
+
+    major_version, minor_version = torch.cuda.get_device_capability()
+    if major_version < 7: raise NotImplementedError("Unsloth: Your GPU is too old!")
+    if major_version >= 8: _dtype = torch.bfloat16
+    else: _dtype = torch.float16
+    if dtype == torch.bfloat16 and _dtype == torch.float16:
+        print("Unsloth: We switched to dtype = torch.float16 since your GPU does not support torch.bfloat16")
+        dtype = torch.float16
+    elif dtype is None:
+        dtype = _dtype
+        print(f"Unsloth: Using dtype = {dtype} for vLLM.")
+    elif dtype == torch.float16 or dtype == torch.bfloat16: pass
+    else:
+        raise NotImplementedError(f"Unsloth: We do not support dtype = {dtype} yet!")
+
+    free_memory, total_memory = torch.cuda.mem_get_info()
+    total_memory_gb = round(total_memory / 1024 / 1024 / 1024, 2)
+
+    print(
+        f"Unsloth: vLLM loading {model_name} with actual GPU utilization = {round(actual_gpu_memory_utilization*100, 2)}%\n"\
+        f"Unsloth: Your GPU has CUDA compute capability {major_version}.{minor_version} with VRAM = {total_memory_gb} GB.\n"\
+        f"Unsloth: vLLM can process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem.\n"\
+        f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB."
+    )
     use_bitsandbytes = model_name.lower().endswith("-bnb-4bit")
 
-    if   max_num_batched_tokens >= 8192: chunked_prefill_tokens = 8192
-    elif max_num_batched_tokens >= 4096: chunked_prefill_tokens = 4096
-    else: chunked_prefill_tokens = 2048
+    # Fix up vLLM compute_dtype for bitsandbytes
+    BitsAndBytesConfig = patch_vllm_compute_dtype(dtype)
+
+    # Use Flashinfer if possible (doesn't seem to be faster for BnB)
+    # Also seems to process 2x less sequences in 1 go so less throughput?
+    # Maybe FP8 Flashinfer is much better
+    # See https://docs.vllm.ai/en/latest/serving/env_vars.html
+    if importlib.util.find_spec("flashinfer"):
+        # Allowed: FLASHINFER, TORCH_SDPA, FLASH_ATTN, XFORMERS, ROCM_FLASH
+        if not use_bitsandbytes and major_version >= 8:
+            os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+
+        # Flashinfer sampler maybe makes it somewhat faster on newer GPUs
+        # Tesla T4 is 280 tok/s vs 330 tok/s
+        if major_version >= 8:
+            os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "1"
+        else:
+            os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
+        # os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "1"
+    pass
+
+    from vllm import LLM, LLMEngine, AsyncLLMEngine, EngineArgs
+
+    # Default vLLM max_num_seqs is 256
+    approx_max_num_seqs = 256
+    if   memory_left_for_kv_cache_gb <=  2: approx_max_num_seqs = 128 # - 32
+    elif memory_left_for_kv_cache_gb <=  4: approx_max_num_seqs = 160 # - 32
+    elif memory_left_for_kv_cache_gb <=  8: approx_max_num_seqs = 192 # - 32
+    elif memory_left_for_kv_cache_gb <= 12: approx_max_num_seqs = 224 # - 32
+    elif memory_left_for_kv_cache_gb <= 16: approx_max_num_seqs = 256 # Default
+    elif memory_left_for_kv_cache_gb <= 24: approx_max_num_seqs = 288 # + 32
+    elif memory_left_for_kv_cache_gb <= 40: approx_max_num_seqs = 320 # + 32
+    elif memory_left_for_kv_cache_gb <= 48: approx_max_num_seqs = 226 # + 16
+    elif memory_left_for_kv_cache_gb <= 80: approx_max_num_seqs = 368 # + 32
+    else: approx_max_num_seqs = 400 # + 32
+
+    # float8 KV cache can fit more sequences in 1 go so more throughput
+    if float8_kv_cache: approx_max_num_seqs = int(approx_max_num_seqs * 1.05)
+
+    # vLLM default max_num_batched_tokens is 2048
+    chunked_prefill_tokens = 2048
+    if   memory_left_for_kv_cache_gb <=  8: chunked_prefill_tokens = 1024 # + 0
+    elif memory_left_for_kv_cache_gb <= 12: chunked_prefill_tokens = 1536 # + 512
+    elif memory_left_for_kv_cache_gb <= 16: chunked_prefill_tokens = 2048 # + 512
+    elif memory_left_for_kv_cache_gb <= 24: chunked_prefill_tokens = 3072 # + 1024
+    elif memory_left_for_kv_cache_gb <= 40: chunked_prefill_tokens = 4096 # + 1024
+    elif memory_left_for_kv_cache_gb <= 48: chunked_prefill_tokens = 4608 # + 512
+    elif memory_left_for_kv_cache_gb <= 80: chunked_prefill_tokens = 8192 # + 4096
+    else: chunked_prefill_tokens = 8192 # + 0
+
+    # vLLM errors out from max_seq_length (2048) being bigger than chunked_prefill_tokens (1024)
+    if max_seq_length > chunked_prefill_tokens:
+        chunked_prefill_tokens = max_seq_length
+    elif chunked_prefill_tokens > max_seq_length:
+        chunked_prefill_tokens = max_seq_length
 
     engine_args = dict(
         model                  = model_name,
@@ -651,9 +836,10 @@ def load_vllm(
         quantization           = "bitsandbytes" if use_bitsandbytes else None,
         load_format            = "bitsandbytes" if use_bitsandbytes else "auto",
         kv_cache_dtype         = "fp8" if float8_kv_cache else "auto",
+        dtype                  = dtype,
 
         max_num_batched_tokens = chunked_prefill_tokens, # Max tokens for chunked prefill default 2048
-        max_num_seqs           = approx_max_num_seqs, # Force only some requests at 1 time or else OOM
+        max_num_seqs           = approx_max_num_seqs, # vLLM default uses 256 -> reduce if OOM
         max_logprobs           = 0, # Disallow logprobs being returned
         seed                   = random_state, # Default is 0
 
@@ -662,7 +848,7 @@ def load_vllm(
         max_lora_rank          = max_lora_rank,
         max_loras              = max_loras,
 
-        disable_log_stats      = True,
+        disable_log_stats      = disable_log_stats,
         # enable_prefix_caching  = True, # LoRA fails with chunked prefill as at Feb 2025
         # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
         max_seq_len_to_capture = 8192, # Default is 8192 for CUDAGraphs
@@ -698,8 +884,10 @@ def load_vllm(
         pass
     pass
     # Save maximum requests length since llm.generate fails to partition inputs sometimes
-    # We'll leave 100 as the maximum
-    llm.approx_max_num_seqs = min(approx_max_num_seqs, 100)
+    llm.approx_max_num_seqs = approx_max_num_seqs
+
+    # Unpatch vLLM compute_dtype for bitsandbytes
+    unpatch_vllm_compute_dtype(BitsAndBytesConfig)
     return llm
 pass
 
@@ -716,9 +904,31 @@ def create_batches(requests, num_sequences = 64):
 pass
 
 
-def test_get_vllm_state_dict(
+def delete_vllm(llm):
+    # From https://github.com/vllm-project/vllm/issues/1908
+    import ray
+    from vllm.distributed.parallel_state import (
+        destroy_model_parallel,
+        destroy_distributed_environment,
+    )
+    # Delete the llm object and free the memory
+    destroy_model_parallel()
+    destroy_distributed_environment()
+    del llm.llm_engine.model_executor
+    del llm
+    with contextlib.suppress(AssertionError):
+        torch.distributed.destroy_process_group()
+    gc.collect()
+    torch.cuda.empty_cache()
+    ray.shutdown()
+pass
+
+
+@torch.inference_mode
+def _test_get_vllm_state_dict(
     model_name = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
     dtype = torch.float16,
+    gpu_memory_utilization = 0.7,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Check if model is allowed to be used in vLLM
@@ -728,24 +938,44 @@ def test_get_vllm_state_dict(
         token = None,
         revision = None,
         trust_remote_code = False,
+        attn_implementation = "sdpa",
     )
     if not vllm_dynamic_quant_supported(model_name, config):
         raise NotImplementedError(f"Unsloth: Dynamic quant of {model_name} not supported in vLLM")
 
-    from unsloth import FastLanguageModel
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = model_name,
-        max_seq_length = 2048,
-        dtype = None,
-        load_in_4bit = True,
-        use_exact_model_name = True,
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+    bnb_config = None
+    load_in_4bit = model_name.lower().endswith("-bnb-4bit")
+    if load_in_4bit:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit              = True,
+            bnb_4bit_use_double_quant = True,
+            bnb_4bit_quant_type       = "nf4",
+            bnb_4bit_compute_dtype    = dtype,
+        )
+    pass
+    kwargs = dict()
+    if load_in_4bit: kwargs["quantization_config"] = bnb_config
+    # Must patch BnB compute_dtype since it's forced to bfloat16!
+    patch_bitsandbytes_quant_state()
+    patch_bitsandbytes_compute_dtype(dtype)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map          = "sequential",
+        torch_dtype         = dtype,
+        attn_implementation = "sdpa",
+        **kwargs,
     )
+    unpatch_bitsandbytes_compute_dtype()
+    for param in model.parameters():
+        param.requires_grad_(False)
 
     llm = load_vllm(
         model_name             = model_name,
         config                 = config,
-        gpu_memory_utilization = 0.9,
+        gpu_memory_utilization = 0.7,
         max_seq_length         = 2048,
+        dtype                  = dtype,
     )
 
     state_dict, quant_state_dict = get_vllm_state_dict(
@@ -777,8 +1007,29 @@ def test_get_vllm_state_dict(
         add_generation_prompt = True, # Must add for generation
         padding = True,
     )
+
+    # Check hidden_states
+    with torch.autocast(device_type = "cuda", dtype = dtype):
+        input_ids = tokenizer(inputs[0], add_special_tokens = False, return_tensors = "pt")
+        input_ids = input_ids["input_ids"].to("cuda", non_blocking = True)
+        old_outputs =     model(input_ids = input_ids, output_hidden_states = True)
+        new_outputs = new_model(input_ids = input_ids, output_hidden_states = True)
+    pass
+    for i, (a, b) in enumerate(zip(old_outputs.hidden_states, new_outputs.hidden_states)):
+        try:
+            torch.testing.assert_close(a, b)
+        except Exception as error:
+            raise RuntimeError(f"[Hidden_States[{i}]]\n{str(error)}")
+        pass
+    pass
+    try:
+        torch.testing.assert_close(old_outputs.logits, new_outputs.logits)
+    except Exception as error:
+        raise RuntimeError(f"[Logits]\n{str(error)}")
+    pass
+
     # Cannot just use llm.generate or OOM - split into batches
-    batches = create_batches(inputs, 50)
+    batches = create_batches(inputs, llm.approx_max_num_seqs)
 
     from vllm import SamplingParams
     sampling_params = SamplingParams(
@@ -793,10 +1044,53 @@ def test_get_vllm_state_dict(
         outputs = llm.generate(batch, sampling_params)
         completion_ids.extend(out.token_ids for completions in outputs for out in completions.outputs)
     pass
+
+    del completion_ids
+    delete_vllm(llm)
+    for module in new_module.modules():
+        dir(module)
+pass
+
+
+def test_get_vllm_state_dict(
+    model_name = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
+    dtype = torch.float16,
+):
+    patch_vllm()
+    _test_get_vllm_state_dict(
+        model_name = "unsloth/Qwen2.5-1.5B-Instruct",
+        dtype = torch.float16,
+        gpu_memory_utilization = 0.7,
+    )
+    _test_get_vllm_state_dict(
+        model_name = "unsloth/Qwen2.5-1.5B-Instruct",
+        dtype = torch.bfloat16,
+        gpu_memory_utilization = 0.7,
+    )
+    _test_get_vllm_state_dict(
+        model_name = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
+        dtype = torch.bfloat16,
+        gpu_memory_utilization = 0.8,
+    )
+    _test_get_vllm_state_dict(
+        model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+        dtype = torch.float16,
+        gpu_memory_utilization = 0.8,
+    )
+    _test_get_vllm_state_dict(
+        model_name = "unsloth/Llama-3.2-1B-Instruct",
+        dtype = torch.bfloat16,
+        gpu_memory_utilization = 0.7,
+    )
+    _test_get_vllm_state_dict(
+        model_name = "unsloth/meta-Llama-3.1-8B-Instruct-bnb-4bit",
+        dtype = torch.float16,
+        gpu_memory_utilization = 0.5,
+    )
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by

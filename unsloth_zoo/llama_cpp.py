@@ -1,5 +1,5 @@
 # Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
@@ -768,7 +768,7 @@ def assert_correct_gguf(model_name, model, tokenizer):
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
