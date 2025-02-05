@@ -188,7 +188,7 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
         or (model.config.tie_word_embeddings)
 
     # Check pad token's id -> we need to expand the embedding
-    if len(tokenizer) > old_input_embedding.shape[0]:
+    if tokenizer is not None and len(tokenizer) > old_input_embedding.shape[0]:
         # Workaround randomnly fixes it for torch versions < 2.
         requires_grad = old_input_embedding.requires_grad
         old_input_embedding.requires_grad_(False)
