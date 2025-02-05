@@ -2308,7 +2308,7 @@ class FastLlamaModel:
             vllm_fast_generate = model.fast_generate
             vllm_fast_generate_batches = model.fast_generate_batches
 
-            if len(modules_to_save) != 0:
+            if modules_to_save is not None:
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with training embeddings or lm_head.")
 
             if bias != "none":
