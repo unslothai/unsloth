@@ -624,7 +624,11 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
     # Fix up rotary_emb by re-initing them
     for module in new_model.modules():
         if hasattr(module, "rotary_emb"):
-            module.rotary_emb = module.rotary_emb.__class__(config, device = "cuda:0")
+            module.rotary_emb = module.rotary_emb.__class__(
+                config = config,
+                device = "cuda:0",
+            )
+        pass
     pass
 
     # Cleanup

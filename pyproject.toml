@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "torch",
-    "triton<3.2.0 ; platform_system == 'Linux'",
+    "triton ; platform_system == 'Linux'",
     "packaging",
     "tyro",
     "transformers>=4.46.1",
