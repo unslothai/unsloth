@@ -13,14 +13,15 @@
 # limitations under the License.
 
 __all__ = [
-    "patch_rl",
+    "PatchRL",
 ]
 
-from trl.models.utils import unwrap_model_for_generation
-from contextlib import contextmanager
 
+def PatchRL(FastLanguageModel):
 
-def patch_rl(FastLanguageModel):
+    from trl.models.utils import unwrap_model_for_generation
+    from contextlib import contextmanager
+    
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
         FastLanguageModel.for_inference(model)
