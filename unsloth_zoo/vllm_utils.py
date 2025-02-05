@@ -986,7 +986,7 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
             os.environ["UNSLOTH_VLLM_BATCHES"] = str(n_batches)
 
             if n_batches != llm.approx_max_num_seqs:
-                print("Unsloth: Will use {n_batches} batches to reduce memory usage for generation!")
+                print(f"Unsloth: Will use {n_batches} batches to reduce memory usage for generation!")
         pass
     pass
 
@@ -995,7 +995,7 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
     outputs = []
     for batch in batches:
         outputs = llm.generate(batch, *args, **kwargs)
-        outputs += list(completions.outputs)
+        outputs += list(outputs)
     pass
     return outputs
 pass
