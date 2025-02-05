@@ -533,6 +533,13 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
         "input_layernorm",
         "post_attention_layernorm",
     ]
+    # Override .to("cuda") to disable it otherwise we'll get
+    # ValueError: Blockwise quantization only supports 16/32-bit floats, but got torch.uint8
+    from functools import partial
+    def _override_to(self, *args, **kwargs):
+        try: return self.to(*args, **kwargs)
+        except: return self
+    pass
 
     for kk in range(config.num_hidden_layers):
         for layer_name in layer_names:
@@ -559,13 +566,11 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
                 layer.weight = Params4bit(data = weight, requires_grad = False, **kwargs)
                 layer.weight.quant_state = quant_state
                 layer.bias = bias
-                # Override .to("cuda") to disable it otherwise we'll get
-                # ValueError: Blockwise quantization only supports 16/32-bit floats, but got torch.uint8
-                def _override_to(self, *args, **kwargs):
-                    try: return self.to(self, *args, **kwargs)
-                    except: return self
-                pass
-                layer.to = _override_to
+
+                # Must override or else Bitsandbytes will error
+                layer.to = partial(_override_to, layer)
+                layer.weight.to = partial(_override_to, layer.weight)
+
             elif not any(x in layer_name for x in layernorm_names):
                 layer = Linear(0, 0, device = "cuda:0", bias = has_bias)
                 layer.in_features  = weight.shape[1]
@@ -637,6 +642,9 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
             )
         pass
     pass
+
+    # Must override or else Bitsandbytes will error
+    new_model.to = partial(_override_to, new_model)
 
     # Cleanup
     for _ in range(3):
