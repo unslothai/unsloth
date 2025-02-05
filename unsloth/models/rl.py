@@ -33,22 +33,26 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 def PatchRL(FastLanguageModel):
 
-    from trl.models.utils import unwrap_model_for_generation
+    from trl.models import unwrap_model_for_generation
     from contextlib import contextmanager
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, accelerator):
         # Must use for_inference to allow inference in Unsloth
+        FastLanguageModel.for_inference(model)
         with unwrap_model_for_generation(model, accelerator) as unwrapped_model:
-            FastLanguageModel.for_inference(unwrapped_model)
             try:
-                yield unwrapped_model.eval()
+                yield unwrapped_model
             finally:
                 # Finally return back training
                 FastLanguageModel.for_training(model)
             pass
         pass
     pass
+
+    import trl.models
+    trl.models.utils.unwrap_model_for_generation = unwrap_model_for_generation
+    trl.models.unwrap_model_for_generation = unwrap_model_for_generation
 
     import trl.trainer
     trainers = dir(trl.trainer)
