@@ -22,6 +22,7 @@ __all__ = [
     "assert_same_state_dict",
     "load_vllm",
     "create_batches",
+    "delete_vllm",
 ]
 from typing import Optional, List, Tuple, Dict, Any
 import importlib.util
@@ -33,7 +34,8 @@ import math
 import gc
 import os
 import contextlib
-from unsloth_zoo.utils import _get_dtype
+from .utils import _get_dtype
+from .patching_utils import patch_model_and_tokenizer
 
 # Ignore logging messages
 import logging
@@ -116,6 +118,7 @@ if importlib.util.find_spec("vllm") is not None:
     pass
 
     def patch_vllm_bitsandbytes():
+        # All Unsloth Zoo code licensed under LGPLv3
         import vllm.model_executor.layers.quantization.bitsandbytes
         vllm.model_executor.layers.quantization.bitsandbytes.is_layer_skipped_bnb = is_layer_skipped_bnb
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesLinearMethod._apply_4bit_weight = _apply_4bit_weight
@@ -130,6 +133,7 @@ if importlib.util.find_spec("vllm") is not None:
     pass
 
     def patch_vllm_compute_dtype(dtype = torch.float16):
+        # All Unsloth Zoo code licensed under LGPLv3
         # vLLM defaults to using the model config file's compute_dtype
         # We shall fix it dynamically!
         import vllm.model_executor.layers.quantization.bitsandbytes
@@ -142,6 +146,7 @@ if importlib.util.find_spec("vllm") is not None:
         class BitsAndBytesConfig(
             vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig
         ):
+            # All Unsloth Zoo code licensed under LGPLv3
             def __init__(self, *args, **kwargs):
                 dtype = os.environ.get("UNSLOTH_bnb_4bit_compute_dtype", kwargs["bnb_4bit_compute_dtype"])
                 kwargs["bnb_4bit_compute_dtype"] = dtype
@@ -155,6 +160,7 @@ if importlib.util.find_spec("vllm") is not None:
     pass
 
     def unpatch_vllm_compute_dtype(old_config):
+        # All Unsloth Zoo code licensed under LGPLv3
         import vllm.model_executor.layers.quantization.bitsandbytes
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig = old_config
         del os.environ["UNSLOTH_bnb_4bit_compute_dtype"]
@@ -238,6 +244,7 @@ if importlib.util.find_spec("bitsandbytes") is not None:
 
     import bitsandbytes.nn.modules
     class Linear4bit(bitsandbytes.nn.modules.Linear4bit):
+        # All Unsloth Zoo code licensed under LGPLv3
         def __init__(self, *args, **kwargs):
             compute_dtype = os.environ.get("UNSLOTH_bnb_4bit_compute_dtype", None)
             if compute_dtype is not None:
@@ -246,13 +253,15 @@ if importlib.util.find_spec("bitsandbytes") is not None:
             super().__init__(*args, **kwargs)
         pass
     pass
-    
+
     def patch_bitsandbytes_quant_state():
+        # All Unsloth Zoo code licensed under LGPLv3
         bitsandbytes.functional.QuantState.from_dict = from_dict
         bitsandbytes.nn.modules.Linear4bit = Linear4bit
     pass
 
     def patch_bitsandbytes_compute_dtype(dtype):
+        # All Unsloth Zoo code licensed under LGPLv3
         dtype = str(dtype)
         if dtype.startswith("torch."): dtype = dtype[len("torch."):]
         os.environ["UNSLOTH_bnb_4bit_compute_dtype"] = dtype
@@ -604,6 +613,12 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
         if hasattr(module, key): exec(f"module.{key} = {value}")
     new_model.config = config
 
+    # Fix up rotary_emb by re-initing them
+    for module in new_model.modules():
+        if hasattr(module, "rotary_emb"):
+            module.rotary_emb = module.rotary_emb.__class__(config, device = "cuda:0")
+    pass
+
     # Cleanup
     for _ in range(3):
         gc.collect()
@@ -690,6 +705,8 @@ def approximate_vllm_memory_usage(
     float_bytes = 1.25 if float8_kv_cache else 2
     kv_elements = (kv_size * 2 * n_layers) * float_bytes
     memory_left_for_kv_cache = free_memory - bytes_for_model
+    if memory_left_for_kv_cache <= 0: memory_left_for_kv_cache = 0
+
     # Approx maximum # of KV cache elements
     max_num_batched_tokens = int(0.95*(memory_left_for_kv_cache / kv_elements))
     # Round by 256
@@ -721,10 +738,13 @@ def load_vllm(
     use_async              : bool = False,
     use_engine             : bool = False,
     disable_log_stats      : bool = True,
+    conservativeness       : float = 1.0, # For low VRAM devices, scale batches, num_seqs
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Create vLLM instance
     assert(config is not None)
+    assert(conservativeness >= 0.0 and conservativeness <= 1.0)
+
     max_num_batched_tokens, approx_max_num_seqs, \
     actual_gpu_memory_utilization, memory_left_for_kv_cache_gb = \
     approximate_vllm_memory_usage(
@@ -740,6 +760,10 @@ def load_vllm(
 
     # Check max_num_batched_tokens for max_seq_length
     # Must be >= max_num_batched_tokens
+    if max_num_batched_tokens <= 0:
+        max_seq_length = 256
+        max_num_batched_tokens = 256
+
     if max_num_batched_tokens <= max_seq_length:
         print(
             f"Unsloth: Your GPU cannot handle sequence lengths of {max_seq_length} due to limited GPU memory.\n"\
@@ -764,13 +788,6 @@ def load_vllm(
 
     free_memory, total_memory = torch.cuda.mem_get_info()
     total_memory_gb = round(total_memory / 1024 / 1024 / 1024, 2)
-
-    print(
-        f"Unsloth: vLLM loading {model_name} with actual GPU utilization = {round(actual_gpu_memory_utilization*100, 2)}%\n"\
-        f"Unsloth: Your GPU has CUDA compute capability {major_version}.{minor_version} with VRAM = {total_memory_gb} GB.\n"\
-        f"Unsloth: vLLM can process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem.\n"\
-        f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB."
-    )
     use_bitsandbytes = model_name.lower().endswith("-bnb-4bit")
 
     # Fix up vLLM compute_dtype for bitsandbytes
@@ -828,6 +845,16 @@ def load_vllm(
         chunked_prefill_tokens = max_seq_length
     elif chunked_prefill_tokens > max_seq_length:
         chunked_prefill_tokens = max_seq_length
+
+    # Scale num_seqs by conservativeness
+    approx_max_num_seqs = int(approx_max_num_seqs * conservativeness)
+
+    print(
+        f"Unsloth: vLLM loading {model_name} with actual GPU utilization = {round(actual_gpu_memory_utilization*100, 2)}%\n"\
+        f"Unsloth: Your GPU has CUDA compute capability {major_version}.{minor_version} with VRAM = {total_memory_gb} GB.\n"\
+        f"Unsloth: Using conservativeness = {conservativeness}. Chunked prefill tokens = {chunked_prefill_tokens}. Num Sequences = {approx_max_num_seqs}.\n"\
+        f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB."
+    )
 
     engine_args = dict(
         model                  = model_name,
@@ -924,14 +951,145 @@ def delete_vllm(llm):
 pass
 
 
+def _test_same_model(model, new_model, input_ids):
+    # All Unsloth Zoo code licensed under LGPLv3
+    from transformers.models.llama.modeling_llama import (
+        apply_rotary_pos_emb,
+        ALL_ATTENTION_FUNCTIONS,
+    )
+    from peft.utils.integrations import dequantize_module_weight as df
+
+    A =     model.model.embed_tokens(input_ids)
+    B = new_model.model.embed_tokens(input_ids)
+    torch.testing.assert_close(model.model.embed_tokens.weight, new_model.model.embed_tokens.weight)
+    torch.testing.assert_close(A, B)
+
+    position_ids = torch.arange(input_ids.shape[1], device = "cuda")
+    position_ids = position_ids.repeat((1, input_ids.shape[0]))
+    rotary_A =     model.model.rotary_emb(A, position_ids)
+    new_rotary = new_model.model.rotary_emb.__class__(new_model.config, device = "cuda")
+    rotary_B = new_rotary(B, position_ids)
+    torch.testing.assert_close(rotary_A[0], rotary_B[0])
+    torch.testing.assert_close(rotary_A[1], rotary_B[1])
+
+    for i, (old, new) in enumerate(zip(model.model.layers, new_model.model.layers)):
+        print(i, end = ",")
+        residualA = A
+        residualB = B
+        
+        torch.testing.assert_close(old.input_layernorm.weight, new.input_layernorm.weight)
+        A = old.input_layernorm(A)
+        B = new.input_layernorm(B)
+
+        AA, _ = old.self_attn(A.clone(), attention_mask = None, position_embeddings = rotary_A)
+        BB, _ = new.self_attn(B.clone(), attention_mask = None, position_embeddings = rotary_B)
+        torch.testing.assert_close(AA, BB, rtol = 0.01, atol = 0.005)
+        
+        torch.testing.assert_close(df(old.self_attn.q_proj), df(new.self_attn.q_proj))
+        torch.testing.assert_close(df(old.self_attn.k_proj), df(new.self_attn.k_proj))
+        torch.testing.assert_close(df(old.self_attn.v_proj), df(new.self_attn.v_proj))
+
+        input_shapeA = A.shape[:-1]
+        hidden_shapeA = (*input_shapeA, -1, old.self_attn.head_dim)
+        QA = old.self_attn.q_proj(A).view(hidden_shapeA).transpose(1, 2)
+        KA = old.self_attn.k_proj(A).view(hidden_shapeA).transpose(1, 2)
+        VA = old.self_attn.v_proj(A).view(hidden_shapeA).transpose(1, 2)
+
+        input_shapeB = B.shape[:-1]
+        hidden_shapeB = (*input_shapeB, -1, new.self_attn.head_dim)
+        QB = new.self_attn.q_proj(B).view(hidden_shapeB).transpose(1, 2)
+        KB = new.self_attn.k_proj(B).view(hidden_shapeB).transpose(1, 2)
+        VB = new.self_attn.v_proj(B).view(hidden_shapeB).transpose(1, 2)
+        torch.testing.assert_close(QA, QB, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(KA, KB, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(VA, VB, rtol = 0.01, atol = 0.005)
+
+        QA, KA = apply_rotary_pos_emb(QA, KA, *rotary_A)
+        QB, KB = apply_rotary_pos_emb(QB, KB, *rotary_B)
+        torch.testing.assert_close(QA, QB, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(KA, KB, rtol = 0.01, atol = 0.005)
+
+        f = ALL_ATTENTION_FUNCTIONS[old.self_attn.config._attn_implementation]
+        attentionA, _ = f(old.self_attn, QA, KA, VA,
+            attention_mask = None,
+            dropout = 0.0 if not old.self_attn.training else old.self_attn.attention_dropout,
+            scaling = old.self_attn.scaling,
+        )
+        f = ALL_ATTENTION_FUNCTIONS[new.self_attn.config._attn_implementation]
+        attentionB, _ = f(new.self_attn, QB, KB, VB,
+            attention_mask = None,
+            dropout = 0.0 if not new.self_attn.training else new.self_attn.attention_dropout,
+            scaling = new.self_attn.scaling,
+        )
+        torch.testing.assert_close(attentionA, attentionB)
+
+        A = attentionA.reshape(*input_shapeA, -1).contiguous()
+        A = old.self_attn.o_proj(A)
+        B = attentionB.reshape(*input_shapeB, -1).contiguous()
+        B = new.self_attn.o_proj(B)
+        torch.testing.assert_close(A, B, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(AA, BB, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(AA, B, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(BB, B, rtol = 0.01, atol = 0.005)
+
+        residualA = A
+        residualB = B
+        torch.testing.assert_close(old.post_attention_layernorm.weight, new.post_attention_layernorm.weight)
+        A = old.post_attention_layernorm(A)
+        B = new.post_attention_layernorm(B)
+        torch.testing.assert_close(A, B, rtol = 0.01, atol = 0.005)
+
+        AA = old.mlp(A.clone())
+        BB = new.mlp(B.clone())
+        torch.testing.assert_close(AA, BB, rtol = 0.01, atol = 0.005)
+        gateA = old.mlp.gate_proj(A)
+        gateB = new.mlp.gate_proj(B)
+        torch.testing.assert_close(gateA, gateB, rtol = 0.01, atol = 0.005)
+        upA = old.mlp.up_proj(A)
+        upB = new.mlp.up_proj(B)
+        torch.testing.assert_close(upA, upB, rtol = 0.01, atol = 0.005)
+        A = old.mlp.act_fn(gateA) * upA
+        B = new.mlp.act_fn(gateB) * upB
+        A = old.mlp.down_proj(A)
+        B = new.mlp.down_proj(B)
+        torch.testing.assert_close(A, B, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(AA, BB, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(AA, A, rtol = 0.01, atol = 0.005)
+        torch.testing.assert_close(BB, B, rtol = 0.01, atol = 0.005)
+
+        A = residualA + A
+        B = residualB + B
+        torch.testing.assert_close(A, B, rtol = 0.01, atol = 0.005)
+
+        B = A.clone()
+    pass
+
+    A =     model.model.norm(A)
+    B = new_model.model.norm(B)
+    torch.testing.assert_close(A, B)
+
+    torch.testing.assert_close(model.lm_head.weight, new_model.lm_head.weight)
+    A =     model.lm_head(A)
+    B = new_model.lm_head(B)
+    torch.testing.assert_close(A, B)
+    return
+pass
+
+
 @torch.inference_mode
 def _test_get_vllm_state_dict(
     model_name = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
     dtype = torch.float16,
     gpu_memory_utilization = 0.7,
+    counts = 100,
+    conservativeness = 1.0,
+    float8_kv_cache = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Check if model is allowed to be used in vLLM
+    gc.collect()
+    torch.cuda.empty_cache()
+
     from transformers import AutoConfig
     config = AutoConfig.from_pretrained(
         model_name,
@@ -958,7 +1116,7 @@ def _test_get_vllm_state_dict(
     if load_in_4bit: kwargs["quantization_config"] = bnb_config
     # Must patch BnB compute_dtype since it's forced to bfloat16!
     patch_bitsandbytes_quant_state()
-    patch_bitsandbytes_compute_dtype(dtype)
+    # patch_bitsandbytes_compute_dtype(dtype)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         device_map          = "sequential",
@@ -966,16 +1124,20 @@ def _test_get_vllm_state_dict(
         attn_implementation = "sdpa",
         **kwargs,
     )
-    unpatch_bitsandbytes_compute_dtype()
+    # unpatch_bitsandbytes_compute_dtype()
     for param in model.parameters():
         param.requires_grad_(False)
+    model, _ = patch_model_and_tokenizer(model, None)
 
     llm = load_vllm(
         model_name             = model_name,
         config                 = config,
-        gpu_memory_utilization = 0.7,
+        gpu_memory_utilization = gpu_memory_utilization,
         max_seq_length         = 2048,
         dtype                  = dtype,
+        disable_log_stats      = False,
+        float8_kv_cache        = float8_kv_cache,
+        conservativeness       = conservativeness,
     )
 
     state_dict, quant_state_dict = get_vllm_state_dict(
@@ -1000,7 +1162,7 @@ def _test_get_vllm_state_dict(
         [{"role": "user", "content": "Why is spacetime bent?"},],
         [{"role": "user", "content": "Explain heliocentricism."},],
         [{"role": "user", "content": "Derive the formula for an infinite sum of 1, 1/2, 1/4, 1/8 and so on."},],
-    ]*100
+    ]*counts
     inputs = tokenizer.apply_chat_template(
         messages,
         tokenize = False,
@@ -1008,85 +1170,106 @@ def _test_get_vllm_state_dict(
         padding = True,
     )
 
-    # Check hidden_states
-    with torch.autocast(device_type = "cuda", dtype = dtype):
-        input_ids = tokenizer(inputs[0], add_special_tokens = False, return_tensors = "pt")
-        input_ids = input_ids["input_ids"].to("cuda", non_blocking = True)
-        old_outputs =     model(input_ids = input_ids, output_hidden_states = True)
-        new_outputs = new_model(input_ids = input_ids, output_hidden_states = True)
-    pass
-    for i, (a, b) in enumerate(zip(old_outputs.hidden_states, new_outputs.hidden_states)):
-        try:
-            torch.testing.assert_close(a, b)
-        except Exception as error:
-            raise RuntimeError(f"[Hidden_States[{i}]]\n{str(error)}")
-        pass
-    pass
-    try:
-        torch.testing.assert_close(old_outputs.logits, new_outputs.logits)
-    except Exception as error:
-        raise RuntimeError(f"[Logits]\n{str(error)}")
-    pass
-
-    # Cannot just use llm.generate or OOM - split into batches
-    batches = create_batches(inputs, llm.approx_max_num_seqs)
-
     from vllm import SamplingParams
     sampling_params = SamplingParams(
-        temperature = 1.5,
-        min_p = 0.1,
+        # temperature = 1.5,
+        # min_p = 0.1,
+        temperature = 0.8,
+        top_p = 0.95,
         logprobs = 0,
         prompt_logprobs = 0,
         max_tokens = 256,
     )
+
+    # Cannot just use llm.generate or OOM - split into batches
+    batches = create_batches(inputs, llm.approx_max_num_seqs)
     completion_ids = []
     for batch in batches:
         outputs = llm.generate(batch, sampling_params)
         completion_ids.extend(out.token_ids for completions in outputs for out in completions.outputs)
     pass
-
     del completion_ids
+
+    # Check all hidden states manually
+    input_ids = tokenizer(inputs[0], add_special_tokens = False, return_tensors = "pt")
+    input_ids = input_ids["input_ids"].to("cuda", non_blocking = True)
+    _test_same_model(model, new_model, input_ids)
+
     delete_vllm(llm)
-    for module in new_module.modules():
-        dir(module)
+
+    # Delete model as well
+    model.model.embed_tokens.weight = None
+    new_model.model.embed_tokens.weight = None
+
+    for i in range(len(model.model.layers)):
+        model.model.layers[i] = None
+        new_model.model.layers[i] = None
+    pass
+
+    model.model.norm.weight = None
+    new_model.model.norm.weight = None
+    model.lm_head.weight = None
+    new_model.lm_head.weight = None
+    model.model = None
+    new_model.model = None
+    del model
+    del new_model
+
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
 pass
 
 
-def test_get_vllm_state_dict(
-    model_name = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
-    dtype = torch.float16,
-):
+def test_get_vllm_state_dict():
+    # All Unsloth Zoo code licensed under LGPLv3
     patch_vllm()
-    _test_get_vllm_state_dict(
-        model_name = "unsloth/Qwen2.5-1.5B-Instruct",
-        dtype = torch.float16,
-        gpu_memory_utilization = 0.7,
-    )
-    _test_get_vllm_state_dict(
-        model_name = "unsloth/Qwen2.5-1.5B-Instruct",
-        dtype = torch.bfloat16,
-        gpu_memory_utilization = 0.7,
-    )
-    _test_get_vllm_state_dict(
-        model_name = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
-        dtype = torch.bfloat16,
-        gpu_memory_utilization = 0.8,
-    )
-    _test_get_vllm_state_dict(
-        model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
-        dtype = torch.float16,
-        gpu_memory_utilization = 0.8,
-    )
-    _test_get_vllm_state_dict(
-        model_name = "unsloth/Llama-3.2-1B-Instruct",
-        dtype = torch.bfloat16,
-        gpu_memory_utilization = 0.7,
-    )
-    _test_get_vllm_state_dict(
-        model_name = "unsloth/meta-Llama-3.1-8B-Instruct-bnb-4bit",
-        dtype = torch.float16,
-        gpu_memory_utilization = 0.5,
-    )
+
+    free_memory, total_memory = torch.cuda.mem_get_info()
+
+    model_names = [
+        ("unsloth/Llama-3.2-1B-Instruct-bnb-4bit", 100,),
+        ("unsloth/Llama-3.2-1B-Instruct-unsloth-bnb-4bit", 100,),
+        ("unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit", 50,),
+    ]
+    bfloat16_dtype = torch.float16
+    if total_memory >= 40 * 1000 * 1000 * 1000:
+        model_names += [
+            ("unsloth/Qwen2.5-3B-Instruct", 50,),
+            ("unsloth/Llama-3.2-1B-Instruct-bnb-4bit", 100,),
+            ("unsloth/meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit", 25,),
+            ("unsloth/Qwen2.5-7B-Instruct-bnb-4bit", 25,),
+        ]
+        bfloat16_dtype = torch.bfloat16
+    pass
+
+    for i, (model_name, counts,) in enumerate(model_names):
+        gc.collect()
+        torch.cuda.empty_cache()
+        dtype = torch.float16 if i % 2 == 0 else bfloat16_dtype
+        print(f"##### Testing {model_name} with dtype = {dtype} #####")
+        if bfloat16_dtype == torch.float16:
+            counts = counts // 2
+            conservativeness = 0.5
+            float8_kv_cache = False
+        else:
+            conservativeness = 1.0
+            float8_kv_cache = True
+        try:
+            _test_get_vllm_state_dict(
+                model_name = model_name,
+                dtype = dtype,
+                gpu_memory_utilization = 0.6,
+                counts = counts,
+                conservativeness = conservativeness,
+                float8_kv_cache = float8_kv_cache,
+            )
+        except Exception as error:
+            error = str(error)
+            raise RuntimeError(f"[{model_name}]\n{error}")
+        gc.collect()
+        torch.cuda.empty_cache()
+    pass
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
