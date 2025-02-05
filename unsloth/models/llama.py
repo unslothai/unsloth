@@ -1784,7 +1784,6 @@ class FastLlamaModel:
                 gpu_memory_utilization = gpu_memory_utilization,
                 max_seq_length         = max_seq_length,
                 dtype                  = dtype,
-                disable_log_stats      = disable_log_stats,
                 float8_kv_cache        = float8_kv_cache,
                 enable_lora            = True,
                 max_lora_rank          = max_lora_rank,
@@ -2302,6 +2301,20 @@ class FastLlamaModel:
             modules_to_save = list(set(modules_to_save))
         pass
 
+        vllm_engine = None
+        if hasattr(model, "vllm_engine"):
+            # Fast inference!
+            vllm_engine = model.vllm_engine
+            vllm_fast_generate = model.fast_generate
+            vllm_fast_generate_batches = model.fast_generate_batches
+
+            if len(modules_to_save) != 0:
+                raise NotImplementedError("Unsloth: Currently fast inference does not work with training embeddings or lm_head.")
+
+            if bias != "none":
+                raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
+        pass
+
         # Get LoRA
         arguments = dict(
             r                   = r,
@@ -2406,6 +2419,19 @@ class FastLlamaModel:
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
+        pass
+
+        # Patch for fast inference
+        if vllm_engine is not None:
+            model.vllm_engine = vllm_engine
+            model.fast_generate = vllm_fast_generate
+            model.fast_generate_batches = vllm_fast_generate_batches
+
+            # Also saving and loading LoRA
+            from functools import partial
+            from unsloth_zoo.vllm_utils import save_lora, load_lora
+            model.save_lora = partial(save_lora, model)
+            model.load_lora = partial(load_lora, model)
         pass
 
         return model
