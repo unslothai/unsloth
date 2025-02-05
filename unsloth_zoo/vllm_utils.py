@@ -1253,7 +1253,7 @@ def test_get_vllm_state_dict():
         print(f"##### Testing {model_name} with dtype = {dtype} #####")
         if bfloat16_dtype == torch.float16:
             counts = counts // 4
-            conservativeness = 0.5
+            conservativeness = 0.8
             float8_kv_cache = True
             gpu_memory_utilization = 0.2
         else:
