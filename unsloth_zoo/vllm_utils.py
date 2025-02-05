@@ -918,6 +918,11 @@ def load_vllm(
 
     # Unpatch vLLM compute_dtype for bitsandbytes
     unpatch_vllm_compute_dtype(BitsAndBytesConfig)
+
+    # Cleanup
+    for _ in range(3):
+        gc.collect()
+        torch.cuda.empty_cache()
     return llm
 pass
 
