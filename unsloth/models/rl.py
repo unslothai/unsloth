@@ -97,7 +97,9 @@ def NotebookProgressCallback_on_log(Trainer_metrics):
         if args.eval_strategy == IntervalStrategy.NO and "loss" in logs:
             values = {"Training Loss": logs["loss"]}
             for metric in Trainer_metrics:
-                values[metric.replace("/", " / ")] = logs[metric]
+                # Sometimes metric is not inside logs
+                try: values[metric.replace("/", " / ")] = logs[metric]
+                except: pass
             pass
             # First column is necessarily Step since we're not in epoch eval strategy
             values["Step"] = state.global_step
@@ -200,21 +202,6 @@ def get_trl_metrics():
         # metrics[f"{prefix}rewards/chosen"]
         left_prefix = 'prefix = "eval_" if train_eval == "eval" else ""' in file
         if left_prefix: metrics += metrics_f
-
-        # Remove optional items
-        # if ...: metrics[...] = 
-        metrics_optional = re.findall(
-            r"if[^\n]{1,}\n[\s]{4,}"\
-            r"(?:metrics|stats)"\
-            r"\["\
-            r"(?:f[\"\']\{[^\}]{1,}\})?"\
-            r"([^\"\']{1,})[\"\']"\
-            r"\]",
-            file,
-            flags = re.MULTILINE,
-        )
-        metrics_optional = set(metrics_optional)
-        metrics = [x for x in metrics if x not in metrics_optional]
 
         # Remove all eval_ things
         metrics = [x for x in metrics if not x.startswith("eval_")]
