@@ -33,26 +33,37 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 def PatchRL(FastLanguageModel):
 
-    from trl.models import unwrap_model_for_generation
+    from trl.models.utils import unwrap_model_for_generation
     from contextlib import contextmanager
 
     @contextmanager
-    def unsloth_unwrap_model_for_generation(model, accelerator):
-        # Must use for_inference to allow inference in Unsloth
-        FastLanguageModel.for_inference(model)
+    def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
         with unwrap_model_for_generation(model, accelerator) as unwrapped_model:
+            # Put the model in inference mode.
+            FastLanguageModel.for_inference(unwrapped_model)
+            
+            # Monkey-patch the generate method so it clones its output.
+            original_generate = unwrapped_model.generate
+
+            def generate_with_clone(*args, **kwargs):
+                out = original_generate(*args, **kwargs)
+                # If the output is a tensor (i.e. an inference tensor), clone it.
+                if isinstance(out, torch.Tensor):
+                    return out.clone()
+                # Optionally, if out is a tuple or dict containing tensors, you
+                # might want to iterate over it and clone all tensors.
+                return out
+
+            # Replace the generate method.
+            unwrapped_model.generate = generate_with_clone
+
             try:
                 yield unwrapped_model
             finally:
-                # Finally return back training
+                # Restore the original generate method and reset the model mode.
+                unwrapped_model.generate = original_generate
                 FastLanguageModel.for_training(model)
-            pass
-        pass
     pass
-
-    import trl.models
-    trl.models.utils.unwrap_model_for_generation = unwrap_model_for_generation
-    trl.models.unwrap_model_for_generation = unwrap_model_for_generation
 
     import trl.trainer
     trainers = dir(trl.trainer)
