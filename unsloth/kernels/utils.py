@@ -124,6 +124,7 @@ global ABSMAX_BUFFER
 ABSMAX_BUFFER = None
 
 if HAS_CUDA_STREAM:
+    @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
         if type(quant_state) is not list:
@@ -193,6 +194,7 @@ if HAS_CUDA_STREAM:
         return out.t() if is_transposed else out
     pass
 else:
+    @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
         if type(quant_state) is not list:
