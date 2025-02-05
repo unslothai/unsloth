@@ -16,6 +16,7 @@ __all__ = [
     "PatchRL",
 ]
 
+import torch
 
 def PatchRL(FastLanguageModel):
 
