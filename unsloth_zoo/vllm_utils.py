@@ -23,7 +23,11 @@ __all__ = [
     "load_vllm",
     "create_batches",
     "delete_vllm",
+    "save_lora",
+    "load_lora",
+    "generate_batches",
 ]
+
 from typing import Optional, List, Tuple, Dict, Any
 import importlib.util
 import re
@@ -37,6 +41,7 @@ import torch
 import contextlib
 from .utils import _get_dtype
 from .patching_utils import patch_model_and_tokenizer
+global LORA_REQUEST_ID
 
 # Ignore logging messages
 import logging
@@ -291,6 +296,8 @@ pass
 def patch_vllm():
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
+    global LORA_REQUEST_ID
+    LORA_REQUEST_ID = 0
 pass
 
 
@@ -936,6 +943,61 @@ def create_batches(requests, num_sequences = 64):
         offsets = np.hstack((offsets, len(requests)))
     batches = [requests[offsets[i]:offsets[i+1]] for i in range(len(offsets)-1)]
     return batches
+pass
+
+
+@torch.inference_mode
+def save_lora(model, save_directory, *args, **kwargs):
+    # All Unsloth Zoo code licensed under LGPLv3
+    state_dict = model.state_dict()
+    dtype = model.get_input_embeddings().weight.dtype
+    # Cast LoRA to float16 / bfloat16
+    state_dict = {k:v.to(dtype) for k, v in state_dict.items() if ".lora_A." in k or ".lora_B." in k}
+    kwargs["state_dict"] = state_dict
+    model.save_pretrained(save_directory = save_directory, *args, **kwargs)
+pass
+
+
+def load_lora(model, save_directory):
+    # All Unsloth Zoo code licensed under LGPLv3
+    from vllm.lora.request import LoRARequest
+    global LORA_REQUEST_ID
+    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
+    lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
+    LORA_REQUEST_ID += 1
+    return lora_request
+pass
+
+
+def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, **kwargs):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Cannot just use llm.generate or will OOM - split into batches
+    if n_batches is None:
+        if "UNSLOTH_VLLM_BATCHES" not in os.environ:
+            
+            free_memory, total_memory = torch.cuda.mem_get_info()
+            total_memory_gb = round(total_memory / 1024 / 1024 / 1024, 2)
+            if   total_memory_gb <=  8: n_batches = llm.approx_max_num_seqs // 10
+            elif total_memory_gb <= 16: n_batches = llm.approx_max_num_seqs // 5
+            elif total_memory_gb <= 24: n_batches = llm.approx_max_num_seqs // 2
+            else: n_batches = llm.approx_max_num_seqs
+
+            os.environ["UNSLOTH_VLLM_BATCHES"] = str(n_batches)
+
+            if n_batches != llm.approx_max_num_seqs:
+                print("Unsloth: Will use {n_batches} batches to reduce memory usage for generation!")
+        else:
+            n_batches = int(os.environ["UNSLOTH_VLLM_BATCHES"])
+    pass
+
+    batches = create_batches(inputs, n_batches)
+    kwargs["lora_request"] = lora_request
+    outputs = []
+    for batch in batches:
+        outputs = llm.generate(batch, *args, **kwargs)
+        outputs += list(completions.outputs)
+    pass
+    return outputs
 pass
 
 
