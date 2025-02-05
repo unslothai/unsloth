@@ -990,7 +990,7 @@ def load_lora(model, save_directory):
     LORA_REQUEST_ID += 1
 
     # Set model's current LoRA adapater
-    model.vllm_engine.vllm_lora_request = lora_request
+    # model.vllm_engine.vllm_lora_request = lora_request
     return lora_request
 pass
 
@@ -1016,9 +1016,10 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
         pass
     pass
 
-    if lora_request is None:
-        if hasattr(llm, "vllm_lora_request"): lora_request = llm.vllm_lora_request
-    pass
+    # We should disable for now since it might interfere with the reference model in RL
+    # if lora_request is None:
+    #     if hasattr(llm, "vllm_lora_request"): lora_request = llm.vllm_lora_request
+    # pass
 
     batches = create_batches(inputs, n_batches)
     kwargs["lora_request"] = lora_request
