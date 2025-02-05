@@ -559,6 +559,13 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
                 layer.weight = Params4bit(data = weight, requires_grad = False, **kwargs)
                 layer.weight.quant_state = quant_state
                 layer.bias = bias
+                # Override .to("cuda") to disable it otherwise we'll get
+                # ValueError: Blockwise quantization only supports 16/32-bit floats, but got torch.uint8
+                def _override_to(self, *args, **kwargs):
+                    try: return self.to(self, *args, **kwargs)
+                    except: return self
+                pass
+                layer.to = _override_to
             elif not any(x in layer_name for x in layernorm_names):
                 layer = Linear(0, 0, device = "cuda:0", bias = has_bias)
                 layer.in_features  = weight.shape[1]
