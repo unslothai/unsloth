@@ -41,28 +41,26 @@ def PatchRL(FastLanguageModel):
         with unwrap_model_for_generation(model, accelerator) as unwrapped_model:
             # Put the model in inference mode.
             FastLanguageModel.for_inference(unwrapped_model)
-            
-            # Monkey-patch the generate method so it clones its output.
-            original_generate = unwrapped_model.generate
 
+            # We must use .clone for Unsloth since we force inference_mode
+            # Rather we should have used no_grad
+            original_generate = unwrapped_model.generate
             def generate_with_clone(*args, **kwargs):
                 out = original_generate(*args, **kwargs)
-                # If the output is a tensor (i.e. an inference tensor), clone it.
                 if isinstance(out, torch.Tensor):
                     return out.clone()
-                # Optionally, if out is a tuple or dict containing tensors, you
-                # might want to iterate over it and clone all tensors.
                 return out
-
-            # Replace the generate method.
+            pass
             unwrapped_model.generate = generate_with_clone
 
             try:
                 yield unwrapped_model
             finally:
-                # Restore the original generate method and reset the model mode.
+                # Restore generate and return
                 unwrapped_model.generate = original_generate
                 FastLanguageModel.for_training(model)
+            pass
+        pass
     pass
 
     import trl.trainer
