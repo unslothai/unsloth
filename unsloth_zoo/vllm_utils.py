@@ -739,6 +739,7 @@ def load_vllm(
     use_async              : bool = False,
     use_engine             : bool = False,
     disable_log_stats      : bool = True,
+    enforce_eager          : bool = False,
     conservativeness       : float = 1.0, # For low VRAM devices, scale batches, num_seqs
 ):
     # All Unsloth Zoo code licensed under LGPLv3
@@ -881,6 +882,7 @@ def load_vllm(
         # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
         max_seq_len_to_capture = 8192, # Default is 8192 for CUDAGraphs
         compilation_config     = 3, # 0, 1, 2, 3
+        enforce_eager          = enforce_eager,
     )
 
     # Keep trying until success!
