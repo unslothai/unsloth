@@ -43,8 +43,7 @@ def PatchRL(FastLanguageModel):
             FastLanguageModel.for_inference(unwrapped_model)
             yield unwrapped_model
         # Return back to training mode
-        FastLanguageModel.for_training (model)
-        yield model
+        FastLanguageModel.for_training(model)
     pass
 
     import trl.trainer
