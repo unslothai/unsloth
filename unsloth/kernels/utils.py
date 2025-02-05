@@ -67,7 +67,8 @@ global CUDA_STREAM
 CUDA_STREAM = None
 get_ptr = bnb.functional.get_ptr
 import ctypes
-ctypes_c_int = ctypes.c_int
+ctypes_c_int   = ctypes.c_int
+ctypes_c_int32 = ctypes.c_int32
 cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
 cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
 cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
