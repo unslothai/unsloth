@@ -21,11 +21,12 @@ def PatchRL(FastLanguageModel):
 
     from trl.models.utils import unwrap_model_for_generation
     from contextlib import contextmanager
-    
+
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
         FastLanguageModel.for_inference(model)
-        yield unwrap_model_for_generation(model, *args, **kwargs)
+        with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
+            yield unwrapped_model
         FastLanguageModel.for_training (model)
     pass
 
