@@ -156,8 +156,10 @@ def NotebookTrainingTracker_write_line(Trainer_metrics):
 pass
 
 
-def _PatchRLStatistics(metrics):
+def _PatchRLStatistics(metrics, algorithm):
     if HAS_NOTEBOOK:
+        if len(metrics) == 0:
+            raise RuntimeError(f"Unsloth: RL statistics for {algorithm} failed with no metrics seen?")
         from transformers.trainer import is_in_notebook
         if is_in_notebook():
             # Patch DPO notebook printing
@@ -210,7 +212,10 @@ def PatchRLStatistics(algorithm = "GRPO"):
     algorithm = algorithm.upper()
     all_metrics = get_trl_metrics()
     if algorithm not in all_metrics:
-        print(f"Unsloth for {algorithm.upper()} is not yet implemented! Just ignore this function.")
+        print(
+            f"Unsloth for {algorithm.upper()} is not yet implemented! Just ignore this function.\n"\
+            f"We support: `{list(all_metrics.keys())}`"
+        )
     pass
-    _PatchRLStatistics(all_metrics[algorithm])
+    _PatchRLStatistics(all_metrics[algorithm], algorithm)
 pass
