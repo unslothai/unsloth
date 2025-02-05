@@ -41,8 +41,8 @@ def PatchRL(FastLanguageModel):
         # Must use for_inference to allow inference in Unsloth
         FastLanguageModel.for_inference(model)
         try:
-            unwrapped_model = unwrap_model_for_generation(model, *args, **kwargs)
-            yield unwrapped_model
+            with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
+                yield unwrapped_model
         finally:
             # Finally return back training
             FastLanguageModel.for_training(model)
