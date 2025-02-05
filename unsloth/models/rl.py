@@ -29,7 +29,10 @@ except:
     HAS_NOTEBOOK = False
 pass
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
-
+import inspect
+import os
+import re
+import functools
 
 def PatchRL(FastLanguageModel):
 
@@ -94,7 +97,7 @@ def NotebookProgressCallback_on_log(Trainer_metrics):
         # Only for when there is no evaluation
         if args.eval_strategy == IntervalStrategy.NO and "loss" in logs:
             values = {"Training Loss": logs["loss"]}
-            for metric in DPOTrainer_metrics:
+            for metric in Trainer_metrics:
                 values[metric.replace("/", " / ")] = logs[metric]
             pass
             # First column is necessarily Step since we're not in epoch eval strategy
@@ -167,27 +170,47 @@ def _PatchRLStatistics(metrics):
 pass
 
 
+@functools.cache
+def get_trl_metrics():
+    # Gets metrics so we can output them in notebooks
+
+    import trl.trainer
+    trainers = dir(trl.trainer)
+    trainers = [x for x in trainers if x.endswith("_trainer")]
+    filepath = inspect.getfile(trl.trainer)
+    filepath = os.path.split(filepath)[0]
+
+    all_metrics = dict()
+    for trainer in trainers:
+        filename = os.path.join(filepath, f"{trainer}.py")
+        if not os.path.exists(filename): continue
+        with open(filename, "r") as file: file = file.read()
+
+        # Get metrics['kl'] or stats['kl']
+        metrics = re.findall(r"metrics\[[\"\']([^\"\']{1,})[\"\']\]", file)
+        stats = re.findall(r"stats\[[\"\']([^\"\']{1,})[\"\']\]", file)
+        metrics = metrics + stats
+
+        # Get optional f-strings
+        metrics_f = re.findall(r"metrics\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
+        stats_f = re.findall(r"stats\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
+        metrics_f = metrics_f + stats_f
+        # Filter out prefixes if seen
+        # metrics[f"{prefix}rewards/chosen"]
+        left_prefix = 'prefix = "eval_" if train_eval == "eval" else ""' in file
+        if left_prefix: metrics += metrics_f
+
+        all_metrics[trainer[:trainer.find("_")].upper()] = metrics
+    pass
+    return all_metrics
+pass
+
+
 def PatchRLStatistics(algorithm = "GRPO"):
     algorithm = algorithm.upper()
-    if algorithm == "GRPO":
-        metrics = [
-            "completion_length",
-            "reward",
-            "reward_std",
-            "kl",
-        ]
-    elif algorithm == "DPO" or algorithm == "KTO":
-        metrics = [
-            "rewards/chosen",
-            "rewards/rejected",
-            "rewards/accuracies",
-            "rewards/margins",
-            "logps/rejected",
-            "logps/chosen",
-            "logits/rejected",
-            "logits/chosen",
-        ]
-    else:
+    all_metrics = get_trl_metrics()
+    if algorithm not in all_metrics:
         print(f"Unsloth for {algorithm.upper()} is not yet implemented! Just ignore this function.")
-    _PatchRLStatistics(metrics)
+    pass
+    _PatchRLStatistics(all_metrics[algorithm])
 pass
