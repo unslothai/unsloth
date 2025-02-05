@@ -1017,7 +1017,6 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
     pass
 
     if lora_request is None:
-        print(llm, hasattr(llm, "vllm_lora_request"))
         if hasattr(llm, "vllm_lora_request"): lora_request = llm.vllm_lora_request
     pass
 
