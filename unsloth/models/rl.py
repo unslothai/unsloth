@@ -13,8 +13,7 @@
 # limitations under the License.
 
 __all__ = [
-    "PatchRL",
-    "PatchRLStatistics",
+    "PatchFastRL",
 ]
 
 import torch
@@ -202,6 +201,9 @@ def get_trl_metrics():
         left_prefix = 'prefix = "eval_" if train_eval == "eval" else ""' in file
         if left_prefix: metrics += metrics_f
 
+        # Remove all eval_ things
+        metrics = [x for x in metrics if not x.startswith("eval_")]
+
         all_metrics[trainer[:trainer.find("_")].upper()] = metrics
     pass
     return all_metrics
@@ -218,4 +220,10 @@ def PatchRLStatistics(algorithm = "GRPO"):
         )
     pass
     _PatchRLStatistics(all_metrics[algorithm], algorithm)
+pass
+
+
+def PatchFastRL(algorithm = "GRPO", FastLanguageModel = None):
+    if FastLanguageModel is not None: PatchRL(FastLanguageModel)
+    PatchRLStatistics(algorithm)
 pass
