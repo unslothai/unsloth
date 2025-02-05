@@ -973,8 +973,9 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
     # All Unsloth Zoo code licensed under LGPLv3
     # Cannot just use llm.generate or will OOM - split into batches
     if n_batches is None:
-        if "UNSLOTH_VLLM_BATCHES" not in os.environ:
-            
+        if "UNSLOTH_VLLM_BATCHES" in os.environ:
+            n_batches = int(os.environ["UNSLOTH_VLLM_BATCHES"])
+        else:
             free_memory, total_memory = torch.cuda.mem_get_info()
             total_memory_gb = round(total_memory / 1024 / 1024 / 1024, 2)
             if   total_memory_gb <=  8: n_batches = llm.approx_max_num_seqs // 10
@@ -986,8 +987,7 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
 
             if n_batches != llm.approx_max_num_seqs:
                 print("Unsloth: Will use {n_batches} batches to reduce memory usage for generation!")
-        else:
-            n_batches = int(os.environ["UNSLOTH_VLLM_BATCHES"])
+        pass
     pass
 
     batches = create_batches(inputs, n_batches)
