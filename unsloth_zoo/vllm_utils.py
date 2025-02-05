@@ -33,6 +33,7 @@ from copy import deepcopy
 import math
 import gc
 import os
+import torch
 import contextlib
 from .utils import _get_dtype
 from .patching_utils import patch_model_and_tokenizer
