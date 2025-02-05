@@ -89,9 +89,9 @@ def NotebookProgressCallback_on_log(Trainer_metrics):
 pass
 
 
-def _NotebookTrainingTracker_write_line(Trainer_metrics):
+def NotebookTrainingTracker_write_line(Trainer_metrics):
     set_Trainer_metrics = set(Trainer_metrics)
-    def NotebookTrainingTracker_write_line(self, values):
+    def _NotebookTrainingTracker_write_line(self, values):
         """
         Write the values in the inner table.
 
@@ -132,7 +132,7 @@ def _NotebookTrainingTracker_write_line(Trainer_metrics):
             pass
         pass
     pass
-    return NotebookTrainingTracker_write_line
+    return _NotebookTrainingTracker_write_line
 pass
 
 
