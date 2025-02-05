@@ -39,15 +39,14 @@ def PatchRL(FastLanguageModel):
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
         # Must use for_inference to allow inference in Unsloth
-        print("$$$$$$$$$$$$$$")
-        FastLanguageModel.for_inference(model)
-        try:
-            with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
+        with unwrap_model_for_generation(model, accelerator) as unwrapped_model:
+            FastLanguageModel.for_inference(unwrapped_model)
+            try:
                 yield unwrapped_model
-        finally:
-            # Finally return back training
-            FastLanguageModel.for_training(model)
-            print("###############")
+            finally:
+                # Finally return back training
+                FastLanguageModel.for_training(model)
+            pass
         pass
     pass
 
