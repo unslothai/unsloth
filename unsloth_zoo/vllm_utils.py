@@ -1052,9 +1052,11 @@ pass
 @torch.inference_mode
 def load_lora(model, save_directory, load_tensors = True):
     # All Unsloth Zoo code licensed under LGPLv3
+    global LORA_REQUEST_ID
+    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
 
     # Check if path exists
-    if not os.path.exists(save_directory):
+    if not os.path.exists(save_directory) or LORA_REQUEST_ID == 0:
         if load_tensors:
             # We need to save and load the config file once!
             model.peft_config["default"].save_pretrained(save_directory)
@@ -1063,8 +1065,6 @@ def load_lora(model, save_directory, load_tensors = True):
     pass
 
     from vllm.lora.request import LoRARequest
-    global LORA_REQUEST_ID
-    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
 
     if load_tensors:
         # We extract it directly from the model's state_dict
