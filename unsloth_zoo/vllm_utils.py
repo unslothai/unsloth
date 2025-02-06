@@ -817,6 +817,13 @@ def load_vllm(
     assert(config is not None)
     assert(conservativeness >= 0.0 and conservativeness <= 1.0)
 
+    major_version, minor_version = torch.cuda.get_device_capability()
+    if major_version < 7: raise NotImplementedError("Unsloth: Your GPU is too old!")
+
+    # Float8 KV cache only works for 8.0 or higher
+    if float8_kv_cache and major_version < 8:
+        raise NotImplementedError("Unsloth: Your GPU is too old for float8 KV cache! Set it to False.")
+
     max_num_batched_tokens, approx_max_num_seqs, \
     actual_gpu_memory_utilization, memory_left_for_kv_cache_gb = \
     approximate_vllm_memory_usage(
@@ -844,8 +851,7 @@ def load_vllm(
         max_seq_length = max_num_batched_tokens
     pass
 
-    major_version, minor_version = torch.cuda.get_device_capability()
-    if major_version < 7: raise NotImplementedError("Unsloth: Your GPU is too old!")
+    # Get correct dtype
     if major_version >= 8: _dtype = torch.bfloat16
     else: _dtype = torch.float16
     if dtype == torch.bfloat16 and _dtype == torch.float16:
@@ -962,7 +968,7 @@ def load_vllm(
         disable_log_stats      = disable_log_stats,
         enable_prefix_caching  = enable_prefix_caching,
         # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
-        max_seq_len_to_capture = 8192, # Default is 8192 for CUDAGraphs
+        max_seq_len_to_capture = min(8192, max_seq_length + 256), # Default is 8192 for CUDAGraphs
         compilation_config     = compilation_config, # 0, 1, 2, 3
         enforce_eager          = enforce_eager,
         swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
@@ -990,7 +996,8 @@ def load_vllm(
                 approx_max_num_seqs = int(approx_max_num_seqs * 0.75)
                 engine_args["max_num_seqs"] = approx_max_num_seqs
                 print(
-                    f"Unsloth: Retrying vLLM to process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem."
+                    f"Unsloth: Retrying vLLM to process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem.\n"\
+                    f"Error:\n{error}"
                 )
             else:
                 raise RuntimeError(error)
@@ -1045,9 +1052,11 @@ pass
 @torch.inference_mode
 def load_lora(model, save_directory, load_tensors = True):
     # All Unsloth Zoo code licensed under LGPLv3
+    global LORA_REQUEST_ID
+    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
 
     # Check if path exists
-    if not os.path.exists(save_directory):
+    if not os.path.exists(save_directory) or LORA_REQUEST_ID == 0:
         if load_tensors:
             # We need to save and load the config file once!
             model.peft_config["default"].save_pretrained(save_directory)
@@ -1056,8 +1065,6 @@ def load_lora(model, save_directory, load_tensors = True):
     pass
 
     from vllm.lora.request import LoRARequest
-    global LORA_REQUEST_ID
-    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
 
     if load_tensors:
         # We extract it directly from the model's state_dict
@@ -1070,7 +1077,11 @@ def load_lora(model, save_directory, load_tensors = True):
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
     
     LORA_REQUEST_ID += 1
-
+    if LORA_REQUEST_ID % 300 == 0:
+        # Free some VRAM and RAM every 300 saves
+        gc.collect()
+        torch.cuda.empty_cache()
+    pass
     # Set model's current LoRA adapater
     # model.vllm_engine.vllm_lora_request = lora_request
     return lora_request
