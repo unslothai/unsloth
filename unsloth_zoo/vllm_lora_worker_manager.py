@@ -1,3 +1,4 @@
+# From https://github.com/vllm-project/vllm/pull/12609
 from contextlib import contextmanager
 from typing import Any, Dict, List, Literal, Optional, Set, Type, Union
 
