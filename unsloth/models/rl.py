@@ -353,6 +353,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             source,
         )
 
+        # .state_dict()
+        source = re.sub(
+            r"\.state_dict\(\)",
+            r"",
+            source,
+        )
+        
         # Replace self.llm.generate and self.llm.chat
         lora_name = trainer_file + "_lora_model"
         source = re.sub(
@@ -382,6 +389,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         f"class {RLTrainer_name}", f"class Unsloth{RLTrainer_name}", 1
     )
 
+    # Create new class in compiled cache and import it
     module = create_new_function(
         RLTrainer_name,
         RLTrainer_source,
