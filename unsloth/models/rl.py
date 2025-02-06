@@ -276,6 +276,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     __init__ = __init__.split("\n")
     __init__ = "\n".join(x[spaces:] for x in __init__)
 
+    # Replace vLLM sections since we already have it done!
     vllm_part = re.findall(
         r"(\n[\s]{4}"\
         r"if (self|args)\.use_vllm\:.+?"\
@@ -300,6 +301,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if len(sampling_params) != 1: return
 
     sampling_params = sampling_params[0]
+    # Replace with our vLLM engine
     sampling_params = \
         " "*8 + "self.llm = model.vllm_engine; " + \
         sampling_params # Add spaces
@@ -334,12 +336,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             r"\n\1pass\n",
             source,
         )
+
         # llm_model.load_weights(model.state_dict().items())
         source = re.sub(
             r"(\n[\s]{4,}).+?load_weights\(.+?\n",
             r"\n\1pass\n",
             source,
         )
+
         # Replace self.llm.generate and self.llm.chat
         lora_name = trainer_file + "_lora_model"
         source = re.sub(
@@ -347,6 +351,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             r"\1, lora_request = model.load_lora('" + lora_name + r"', load_tensors = True))",
             source
         )
+
+        # Skip if no changes done
         if source == original_source: continue
 
         # Find all imports
