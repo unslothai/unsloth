@@ -38,6 +38,7 @@ import math
 import gc
 import os
 import torch
+import json
 import contextlib
 from .utils import _get_dtype
 from .patching_utils import patch_model_and_tokenizer
@@ -1011,16 +1012,42 @@ def save_lora(model, save_directory, *args, **kwargs):
 pass
 
 
-def load_lora(model, save_directory):
+@functools.cache
+def get_peft_config(save_directory):
+    with open(os.path.join(save_directory, "adapter_config.json")) as f:
+        config = json.load(f)
+    return config
+pass
+
+
+@torch.inference_mode
+def load_lora(model, save_directory, load_tensors = True):
     # All Unsloth Zoo code licensed under LGPLv3
+
     # Check if path exists
     if not os.path.exists(save_directory):
-        return OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
+        if load_tensors:
+            # We need to save and load the config file once!
+            model.peft_config["default"].save_pretrained(save_directory)
+        else:
+            raise OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
+    pass
 
     from vllm.lora.request import LoRARequest
     global LORA_REQUEST_ID
     if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
-    lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
+
+    if load_tensors:
+        # We extract it directly from the model's state_dict
+        peft_config = get_peft_config(save_directory)
+        state_dict = model.state_dict()
+        dtype = model.get_input_embeddings().weight.dtype
+        state_dict = {k.replace(".default", ""):v.to(dtype) for k, v in state_dict.items() if ".lora_A." in k or ".lora_B." in k}
+
+        lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, lora_tensors = state_dict, lora_config = peft_config)
+    else:
+        lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
+    
     LORA_REQUEST_ID += 1
 
     # Set model's current LoRA adapater
