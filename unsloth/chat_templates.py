@@ -759,6 +759,10 @@ DEFAULT_SYSTEM_MESSAGE["llama-3.1"] = "" # Llama3.1 default system message is em
 
 CHAT_TEMPLATES["llama-31"]  = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
 DEFAULT_SYSTEM_MESSAGE["llama-31"] = "" # Llama3.1 default system message is empty + the dates
+
+for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
+    CHAT_TEMPLATES[version] = CHAT_TEMPLATES["llama-3.1"]
+    DEFAULT_SYSTEM_MESSAGE[version] = ""
 pass
 
 
