@@ -52,6 +52,8 @@ class HideLoggingMessage(logging.Filter):
     def filter(self, x): return not (self.text in x.getMessage())
 pass
 
+def _return_nothing(*args, **kwargs): return None
+
 if importlib.util.find_spec("vllm") is not None:
 
     # Allow unsloth dynamic quants to work
@@ -173,8 +175,6 @@ if importlib.util.find_spec("vllm") is not None:
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig = old_config
         del os.environ["UNSLOTH_bnb_4bit_compute_dtype"]
     pass
-
-    def _return_nothing(*args, **kwargs): return None
 
     def patch_vllm_lora_tokenizer():
         import vllm.transformers_utils.tokenizer
@@ -981,6 +981,10 @@ def load_vllm(
 
     # Unpatch vLLM compute_dtype for bitsandbytes
     unpatch_vllm_compute_dtype(BitsAndBytesConfig)
+
+    # Patch tokenizer warnings
+    llm_engine = getattr(llm, "llm_engine", llm)
+    llm_engine.tokenizer.get_lora_tokenizer = _return_nothing
 
     # Cleanup
     for _ in range(3):
