@@ -39,6 +39,7 @@ import gc
 import os
 import torch
 import json
+import psutil
 import functools
 import contextlib
 from functools import partial
@@ -920,11 +921,23 @@ def load_vllm(
     # Scale num_seqs by conservativeness
     approx_max_num_seqs = int(approx_max_num_seqs * conservativeness)
 
+    # Check max RAM usage for vLLM (swap space) default is 4GB
+    memory = psutil.virtual_memory()
+    RAM_GB = memory.available / 1024 / 1024 / 1024
+    swap_space = 4
+    if   RAM_GB <= 4:  swap_space = 0
+    elif RAM_GB <= 8:  swap_space = 1
+    elif RAM_GB <= 12: swap_space = 2
+    elif RAM_GB <= 16: swap_space = 3
+    elif RAM_GB <= 24: swap_space = 4
+    elif RAM_GB <= 48: swap_space = 5
+    else: swap_space = 6
+
     print(
         f"Unsloth: vLLM loading {model_name} with actual GPU utilization = {round(actual_gpu_memory_utilization*100, 2)}%\n"\
         f"Unsloth: Your GPU has CUDA compute capability {major_version}.{minor_version} with VRAM = {total_memory_gb} GB.\n"\
         f"Unsloth: Using conservativeness = {conservativeness}. Chunked prefill tokens = {chunked_prefill_tokens}. Num Sequences = {approx_max_num_seqs}.\n"\
-        f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB."
+        f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB. Also swap space = {swap_space} GB."
     )
 
     engine_args = dict(
@@ -952,6 +965,7 @@ def load_vllm(
         max_seq_len_to_capture = 8192, # Default is 8192 for CUDAGraphs
         compilation_config     = compilation_config, # 0, 1, 2, 3
         enforce_eager          = enforce_eager,
+        swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
     )
 
     # Keep trying until success!
