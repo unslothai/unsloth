@@ -53,6 +53,8 @@ class HideLoggingMessage(logging.Filter):
 pass
 
 def _return_nothing(*args, **kwargs): return None
+def _return_self(self, *args, **kwargs): return self
+
 
 if importlib.util.find_spec("vllm") is not None:
 
@@ -984,7 +986,7 @@ def load_vllm(
 
     # Patch tokenizer warnings
     llm_engine = getattr(llm, "llm_engine", llm)
-    llm_engine.tokenizer.get_lora_tokenizer = _return_nothing
+    llm_engine.tokenizer.get_lora_tokenizer = _return_self
 
     # Cleanup
     for _ in range(3):
