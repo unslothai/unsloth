@@ -304,25 +304,30 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Mistral-Small-Instruct-2409",
         "mistralai/Mistral-Small-Instruct-2409",
     ),
-    "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit" : (
+    "unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-0.5B-Instruct",
         "Qwen/Qwen2.5-0.5B-Instruct",
+        "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit",
     ),
-    "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit" : (
+    "unsloth/Qwen2.5-1.5B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-1.5B-Instruct",
         "Qwen/Qwen2.5-1.5B-Instruct",
+        "unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit",
     ),
-    "unsloth/Qwen2.5-3B-Instruct-bnb-4bit" : (
+    "unsloth/Qwen2.5-3B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-3B-Instruct",
         "Qwen/Qwen2.5-3B-Instruct",
+        "unsloth/Qwen2.5-3B-Instruct-bnb-4bit",
     ),
-    "unsloth/Qwen2.5-7B-Instruct-bnb-4bit" : (
+    "unsloth/Qwen2.5-7B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-7B-Instruct",
         "Qwen/Qwen2.5-7B-Instruct",
+        "unsloth/Qwen2.5-7B-Instruct-bnb-4bit",
     ),
-    "unsloth/Qwen2.5-14B-Instruct-bnb-4bit" : (
+    "unsloth/Qwen2.5-14B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-14B-Instruct",
         "Qwen/Qwen2.5-14B-Instruct",
+        "unsloth/Qwen2.5-14B-Instruct-bnb-4bit",
     ),
     "unsloth/Qwen2.5-32B-Instruct-bnb-4bit" : (
         "unsloth/Qwen2.5-32B-Instruct",
@@ -332,25 +337,30 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2.5-72B-Instruct",
         "Qwen/Qwen2.5-72B-Instruct",
     ),
-    "unsloth/Qwen2.5-0.5B-bnb-4bit" : (
+    "unsloth/Qwen2.5-0.5B-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-0.5B",
         "Qwen/Qwen2.5-0.5B",
+        "unsloth/Qwen2.5-0.5B-bnb-4bit",
     ),
-    "unsloth/Qwen2.5-1.5B-bnb-4bit" : (
+    "unsloth/Qwen2.5-1.5B-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-1.5B",
         "Qwen/Qwen2.5-1.5B",
+        "unsloth/Qwen2.5-1.5B-bnb-4bit",
     ),
-    "unsloth/Qwen2.5-3B-bnb-4bit" : (
+    "unsloth/Qwen2.5-3B-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-3B",
         "Qwen/Qwen2.5-3B",
+        "unsloth/Qwen2.5-3B-bnb-4bit",
     ),
-    "unsloth/Qwen2.5-7B-bnb-4bit" : (
+    "unsloth/Qwen2.5-7B-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-7B",
         "Qwen/Qwen2.5-7B",
+        "unsloth/Qwen2.5-7B-bnb-4bit",
     ),
-    "unsloth/Qwen2.5-14B-bnb-4bit" : (
+    "unsloth/Qwen2.5-14B-unsloth-bnb-4bit" : (
         "unsloth/Qwen2.5-14B",
         "Qwen/Qwen2.5-14B",
+        "unsloth/Qwen2.5-14B-bnb-4bit",
     ),
     "unsloth/Qwen2.5-32B-bnb-4bit" : (
         "unsloth/Qwen2.5-32B",
@@ -555,12 +565,12 @@ __INT_TO_FLOAT_MAPPER = \
         "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
     ),
     "unsloth/Mistral-Small-24B-Base-2501-unsloth-bnb-4bit" : (
-        "unsloth/Mistral-Small-24B-Base",
+        "unsloth/Mistral-Small-24B-Base-2501",
         "mistralai/Mistral-Small-24B-Base-2501",
         "unsloth/Mistral-Small-24B-Base-2501-bnb-4bit",
     ),
     "unsloth/Mistral-Small-24B-Instruct-2501-unsloth-bnb-4bit" : (
-        "unsloth/Mistral-Small-24B-Instruct",
+        "unsloth/Mistral-Small-24B-Instruct-2501",
         "mistralai/Mistral-Small-24B-Instruct-2501",
         "unsloth/Mistral-Small-24B-Instruct-2501-bnb-4bit",
     ),
