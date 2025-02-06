@@ -108,17 +108,32 @@ cu118onlytorch240 = [
 cu121onlytorch240 = [
     "xformers==0.0.27.post2",
 ]
+cu118onlytorch250 = [
+    "xformers==0.0.28.post2",
+]
 cu121onlytorch250 = [
     "xformers==0.0.28.post2",
 ]
 cu124onlytorch250 = [
     "xformers==0.0.28.post2",
 ]
+cu118onlytorch251 = [
+    "xformers==0.0.29.post1",
+]
 cu121onlytorch251 = [
     "xformers==0.0.29.post1",
 ]
 cu124onlytorch251 = [
     "xformers==0.0.29.post1",
+]
+cu118onlytorch260 = [
+    "xformers==0.0.29.post2",
+]
+cu124onlytorch260 = [
+    "xformers==0.0.29.post2",
+]
+cu126onlytorch260 = [
+    "xformers==0.0.29.post2",
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -180,30 +195,55 @@ cu121-torch240 = [
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch240]",
 ]
-cu121-torch250 = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-    "unsloth[cu121onlytorch250]",
-]
-cu121-torch251 = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-    "unsloth[cu121onlytorch251]",
-]
 cu124-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch240]",
+]
+cu118-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu118onlytorch250]",
+]
+cu121-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch250]",
 ]
 cu124-torch250 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch250]",
 ]
+cu118-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu118onlytorch251]",
+]
+cu121-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch251]",
+]
 cu124-torch251 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch251]",
+]
+cu118-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu118onlytorch260]",
+]
+cu124-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu124onlytorch260]",
+]
+cu126-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu126onlytorch260]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -334,22 +374,22 @@ cu121-ampere-torch240 = [
     "unsloth[cu121onlytorch240]",
     "unsloth[flashattention]",
 ]
-cu121-ampere-torch250 = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-    "unsloth[cu121onlytorch250]",
-    "unsloth[flashattention]",
-]
-cu121-ampere-torch251 = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-    "unsloth[cu121onlytorch251]",
-    "unsloth[flashattention]",
-]
 cu124-ampere-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch240]",
+    "unsloth[flashattention]",
+]
+cu118-ampere-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu118onlytorch250]",
+    "unsloth[flashattention]",
+]
+cu121-ampere-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch250]",
     "unsloth[flashattention]",
 ]
 cu124-ampere-torch250 = [
@@ -358,10 +398,40 @@ cu124-ampere-torch250 = [
     "unsloth[cu124onlytorch250]",
     "unsloth[flashattention]",
 ]
+cu118-ampere-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu118onlytorch251]",
+    "unsloth[flashattention]",
+]
+cu121-ampere-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch251]",
+    "unsloth[flashattention]",
+]
 cu124-ampere-torch251 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch251]",
+    "unsloth[flashattention]",
+]
+cu118-ampere-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu118onlytorch260]",
+    "unsloth[flashattention]",
+]
+cu124-ampere-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu124onlytorch260]",
+    "unsloth[flashattention]",
+]
+cu126-ampere-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu126onlytorch260]",
     "unsloth[flashattention]",
 ]
 
