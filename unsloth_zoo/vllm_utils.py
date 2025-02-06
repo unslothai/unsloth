@@ -41,6 +41,7 @@ import torch
 import json
 import functools
 import contextlib
+from functools import partial
 from .utils import _get_dtype
 from .patching_utils import patch_model_and_tokenizer
 global LORA_REQUEST_ID
@@ -571,7 +572,6 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16)
     ]
     # Override .to("cuda") to disable it otherwise we'll get
     # ValueError: Blockwise quantization only supports 16/32-bit floats, but got torch.uint8
-    from functools import partial
     def _override_to(self, *args, **kwargs):
         try: return self.to(*args, **kwargs)
         except: return self
@@ -986,7 +986,7 @@ def load_vllm(
 
     # Patch tokenizer warnings
     llm_engine = getattr(llm, "llm_engine", llm)
-    llm_engine.tokenizer.get_lora_tokenizer = _return_self
+    llm_engine.tokenizer.get_lora_tokenizer = partial(_return_self, llm_engine.tokenizer)
 
     # Cleanup
     for _ in range(3):
