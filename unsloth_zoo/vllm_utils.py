@@ -765,8 +765,11 @@ def load_vllm(
     use_async              : bool = False,
     use_engine             : bool = False,
     disable_log_stats      : bool = True,
-    enforce_eager          : bool = False,
+    enforce_eager          : bool = False, # Good for debugging
+    enable_prefix_caching  : bool = True,
+    compilation_config     : int  = 3, # -O3 for maximum performance
     conservativeness       : float = 1.0, # For low VRAM devices, scale batches, num_seqs
+    max_logprobs           : int  = 0,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Create vLLM instance
@@ -895,7 +898,7 @@ def load_vllm(
 
         max_num_batched_tokens = chunked_prefill_tokens, # Max tokens for chunked prefill default 2048
         max_num_seqs           = approx_max_num_seqs, # vLLM default uses 256 -> reduce if OOM
-        max_logprobs           = 0, # Disallow logprobs being returned
+        max_logprobs           = max_logprobs, # Disallow logprobs being returned
         seed                   = random_state, # Default is 0
 
         # lora_extra_vocab_size = 0, # Breaks vLLM so we leave it as 256
@@ -904,11 +907,11 @@ def load_vllm(
         max_loras              = max_loras,
 
         disable_log_stats      = disable_log_stats,
-        enable_prefix_caching  = False,
+        enable_prefix_caching  = enable_prefix_caching,
         # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
         max_seq_len_to_capture = 8192, # Default is 8192 for CUDAGraphs
-        compilation_config     = 0, # 0, 1, 2, 3
-        enforce_eager          = True,
+        compilation_config     = compilation_config, # 0, 1, 2, 3
+        enforce_eager          = enforce_eager,
     )
 
     # Keep trying until success!
