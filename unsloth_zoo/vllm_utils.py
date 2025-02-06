@@ -990,7 +990,8 @@ def load_vllm(
                 approx_max_num_seqs = int(approx_max_num_seqs * 0.75)
                 engine_args["max_num_seqs"] = approx_max_num_seqs
                 print(
-                    f"Unsloth: Retrying vLLM to process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem."
+                    f"Unsloth: Retrying vLLM to process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem.\n"\
+                    f"Error:\n{error}"
                 )
             else:
                 raise RuntimeError(error)
