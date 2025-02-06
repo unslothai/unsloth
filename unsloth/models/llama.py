@@ -384,6 +384,7 @@ def LlamaAttention_fast_forward(
     assert(n_kv_heads * n_groups == n_heads)
 
     Q, K, V = self.apply_qkv(self, hidden_states)
+    print("#######", Q, self.q_proj.lora_B.default.weight)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
