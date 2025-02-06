@@ -371,12 +371,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Import all functions
     imports = list(set(imports))
     imports = f"from trl.trainer.{trainer_file} import (\n" + ',\n'.join(imports) + ")"
-    exec(imports, locals(), globals())
+    imported_functions = {}
+    exec(imports, imported_functions)
 
     # Patch all functions
     for function in changed:
-        exec(changed[function], locals(), globals())
-        exec(f"trl.trainer.{trainer_file}.{RLTrainer_name}.{function} = _unsloth_{function}", locals(), globals())
+        exec(changed[function], imported_functions, globals())
+        exec(f"trl.trainer.{trainer_file}.{RLTrainer_name}.{function} = _unsloth_{function}", imported_functions, globals())
     pass
 pass
 
