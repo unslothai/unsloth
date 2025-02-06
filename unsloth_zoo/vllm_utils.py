@@ -932,12 +932,12 @@ def load_vllm(
     elif RAM_GB <= 24: swap_space = 4
     elif RAM_GB <= 48: swap_space = 5
     else: swap_space = 6
-    
+
     print(
         f"Unsloth: vLLM loading {model_name} with actual GPU utilization = {round(actual_gpu_memory_utilization*100, 2)}%\n"\
         f"Unsloth: Your GPU has CUDA compute capability {major_version}.{minor_version} with VRAM = {total_memory_gb} GB.\n"\
         f"Unsloth: Using conservativeness = {conservativeness}. Chunked prefill tokens = {chunked_prefill_tokens}. Num Sequences = {approx_max_num_seqs}.\n"\
-        f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB. Also swap space = {swap space} GB."
+        f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB. Also swap space = {swap_space} GB."
     )
 
     engine_args = dict(
