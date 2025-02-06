@@ -904,11 +904,11 @@ def load_vllm(
         max_loras              = max_loras,
 
         disable_log_stats      = disable_log_stats,
-        enable_prefix_caching  = True,
+        enable_prefix_caching  = False,
         # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
         max_seq_len_to_capture = 8192, # Default is 8192 for CUDAGraphs
-        compilation_config     = 3, # 0, 1, 2, 3
-        enforce_eager          = enforce_eager,
+        compilation_config     = 0, # 0, 1, 2, 3
+        enforce_eager          = True,
     )
 
     # Keep trying until success!
