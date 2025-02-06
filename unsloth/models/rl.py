@@ -308,7 +308,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     sampling_params = sampling_params[0]
     # Replace with our vLLM engine
     sampling_params = \
-        " "*8 + "self.llm = model.vllm_engine; " + \
+        " "*8 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
         sampling_params # Add spaces
     new_vllm_part = f"\n    if {args}.use_vllm:\n{sampling_params}\n    else:\n"
     __init__ = __init__.replace(vllm_part, new_vllm_part)
