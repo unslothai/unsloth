@@ -78,8 +78,8 @@ class FastLanguageModel(FastLlamaModel):
         gpu_memory_utilization     = 0.5,
         float8_kv_cache            = False,
         random_state               = 3407,
-        max_lora_rank              = 16,
-        disable_log_stats          = False,
+        max_lora_rank              = 64,
+        disable_log_stats          = True,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
