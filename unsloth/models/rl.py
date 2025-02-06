@@ -39,6 +39,7 @@ import os
 import re
 import functools
 
+
 def PatchRL(FastLanguageModel):
 
     from trl.models.utils import unwrap_model_for_generation
@@ -240,6 +241,7 @@ pass
 
 
 def PatchRLStatistics(algorithm = "GRPO"):
+    # Get notebook statistics columns to show up
     algorithm = algorithm.upper()
     all_metrics = get_trl_metrics()
     if algorithm not in all_metrics:
@@ -252,7 +254,137 @@ def PatchRLStatistics(algorithm = "GRPO"):
 pass
 
 
+def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+    # Patch for vLLM and Unsloth PEFT
+    import trl.trainer
+
+    trainer = eval(f"trl.trainer.{trainer_file}")
+    name = [x for x in dir(trainer) if x.endswith("Trainer") and x != "Trainer" and trainer_file.split("_")[0] in x.lower()]
+    assert(len(name) == 1)
+    RLTrainer_name = name[0]
+    RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
+
+    try:
+        __init__ = inspect.getsource(RLTrainer.__init__)
+    except:
+        # Already patched most likely!
+        return
+    all_imports = dir(trainer)
+    imports = [x for x in all_imports if not x.startswith("_") and x in __init__]
+
+    spaces = __init__.find("def")
+    __init__ = __init__.split("\n")
+    __init__ = "\n".join(x[spaces:] for x in __init__)
+
+    vllm_part = re.findall(
+        r"(\n[\s]{4}"\
+        r"if (self|args)\.use_vllm\:.+?"\
+        r"\n[\s]{4,}"\
+        "else:\n)",
+        __init__,
+        flags = re.MULTILINE | re.DOTALL,
+    )
+    if (len(vllm_part) != 1): return
+
+    vllm_part, args = vllm_part[0][0], vllm_part[0][1]
+    # Strip all comments
+    new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
+
+    # Get SamplingParams
+    sampling_params = re.findall(
+        r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}"\
+        r"SamplingParams\(.+?\))",
+        new_vllm_part,
+        flags = re.MULTILINE | re.DOTALL,
+    )
+    if len(sampling_params) != 1: return
+
+    sampling_params = sampling_params[0]
+    sampling_params = \
+        " "*8 + "self.llm = model.vllm_engine; " + \
+        sampling_params # Add spaces
+    new_vllm_part = f"\n    if {args}.use_vllm:\n{sampling_params}\n    else:\n"
+    __init__ = __init__.replace(vllm_part, new_vllm_part)
+
+    # Remove peft_config
+    __init__ = __init__.replace("elif peft_config is None:", "elif False:")
+    __init__ = __init__.replace("elif peft_config is not None:", "elif False:")
+    __init__ = __init__.replace("if peft_config is None:", "if False:")
+    __init__ = __init__.replace("if peft_config is not None:", "if False:")
+    __init__ = __init__.replace("get_peft_model(model, peft_config)", "model")
+
+    # Search for vLLM calling in all child functions
+    functions = dir(RLTrainer)
+    RLTrainer_source = inspect.getsource(RLTrainer)
+    functions = [x for x in functions if f"def {x}" in RLTrainer_source]
+
+    changed = {"__init__" : __init__}
+    for function in functions:
+        if not hasattr(RLTrainer, function): continue
+        fx = getattr(RLTrainer, function)
+        try:
+            source = inspect.getsource(fx)
+        except:
+            continue
+        original_source = source
+
+        # llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
+        source = re.sub(
+            r"(\n[\s]{4,}).+?model_executor\.driver_worker.+?\n",
+            r"\n\1pass\n",
+            source,
+        )
+        # llm_model.load_weights(model.state_dict().items())
+        source = re.sub(
+            r"(\n[\s]{4,}).+?load_weights\(.+?\n",
+            r"\n\1pass\n",
+            source,
+        )
+        # Replace self.llm.generate and self.llm.chat
+        lora_name = trainer_file + "_lora_model"
+        source = re.sub(
+            r"(self\.llm\.(?:generate|chat)\([^\)]{1,})\)",
+            r"\1, lora_request = model.load_lora('" + lora_name + r"', load_tensors = True))",
+            source
+        )
+        if source == original_source: continue
+
+        # Find all imports
+        imports += [x for x in all_imports if not x.startswith("_") and x in source]
+
+        # Create actual function
+        spaces = source.find("def")
+        source = source.split("\n")
+        source = "\n".join(x[spaces:] for x in source)
+        changed[function] = source
+    pass
+
+    # Import all functions
+    imports = list(set(imports))
+    imports = f"from trl.trainer.{trainer_file} import (\n" + ',\n'.join(imports) + ")"
+    exec(imports)
+
+    # Patch all functions
+    for function in changed:
+        exec(changed[function])
+        exec(f"trl.trainer.{trainer_file}.{RLTrainer_name}.{function} = {function}")
+    pass
+pass
+
+
+def patch_trl_rl_trainers():
+    # Patch all TRL modules if they have vLLM or PEFT
+    import trl.trainer
+    all_trainers = dir(trl.trainer)
+    all_trainers = [x for x in all_trainers if x.islower() and x.endswith("_trainer")]
+    for trainer in all_trainers:
+        _patch_trl_rl_trainers(trainer)
+    return
+pass
+
+
 def PatchFastRL(algorithm = "GRPO", FastLanguageModel = None):
     if FastLanguageModel is not None: PatchRL(FastLanguageModel)
+    patch_trl_rl_trainers()
     PatchRLStatistics(algorithm)
 pass
