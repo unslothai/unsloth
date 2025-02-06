@@ -362,6 +362,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         spaces = source.find("def")
         source = source.split("\n")
         source = "\n".join(x[spaces:] for x in source)
+
+        # Replace function name with _unsloth_...
+        source = source.replace("def ", "def _unsloth_", 1)
         changed[function] = source
     pass
 
@@ -372,8 +375,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Patch all functions
     for function in changed:
-        exec(changed[function])
-        exec(f"trl.trainer.{trainer_file}.{RLTrainer_name}.{function} = {function}")
+        exec(changed[function], locals(), globals())
+        exec(f"trl.trainer.{trainer_file}.{RLTrainer_name}.{function} = _unsloth_{function}", locals(), globals())
     pass
 pass
 
