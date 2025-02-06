@@ -18,6 +18,7 @@ __all__ = [
     "UNSLOTH_COMPILE_LOCATION",
     "get_transformers_model_type",
     "unsloth_compile_transformers",
+    "create_new_function",
 ]
 
 import inspect
