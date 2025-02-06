@@ -256,6 +256,7 @@ pass
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
+    import trl
     import trl.trainer
 
     trainer = eval(f"trl.trainer.{trainer_file}")
@@ -388,6 +389,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     exec(RLTrainer_source, imported_functions, globals())
     exec(f"trl.trainer.{trainer_file}.{RLTrainer_name} = Unsloth{RLTrainer_name}", locals(), globals())
     exec(f"trl.trainer.{RLTrainer_name} = Unsloth{RLTrainer_name}", locals(), globals())
+    exec(f"trl.{RLTrainer_name} = Unsloth{RLTrainer_name}", locals(), globals())
 pass
 
 
