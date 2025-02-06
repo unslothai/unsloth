@@ -171,6 +171,27 @@ if importlib.util.find_spec("vllm") is not None:
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig = old_config
         del os.environ["UNSLOTH_bnb_4bit_compute_dtype"]
     pass
+
+    def _return_nothing(*args, **kwargs): return None
+
+    def patch_vllm_lora_tokenizer():
+        import vllm.transformers_utils.tokenizer
+        vllm.transformers_utils.tokenizer.get_lora_tokenizer = _return_nothing
+    pass
+
+    from .vllm_lora_request import LoRARequest as PatchedLoRARequest
+    from .vllm_lora_worker_manager import (
+        WorkerLoRAManager as PatchedWorkerLoRAManager,
+        LRUCacheWorkerLoRAManager as PatchedLRUCacheWorkerLoRAManager,
+    )
+    def patch_vllm_lora_load_tensors():
+        import vllm.lora.request
+        vllm.lora.request.LoRARequest = PatchedLoRARequest
+        import vllm.lora.worker_manager
+        vllm.lora.worker_manager.LoRARequest = PatchedLoRARequest
+        vllm.lora.worker_manager.WorkerLoRAManager = PatchedWorkerLoRAManager
+        vllm.lora.worker_manager.LRUCacheWorkerLoRAManager = PatchedLRUCacheWorkerLoRAManager
+    pass
 else:
     def patch_vllm_bitsandbytes():
         return
@@ -181,6 +202,14 @@ else:
     pass
 
     def unpatch_vllm_compute_dtype(old_config):
+        return
+    pass
+
+    def patch_vllm_lora_tokenizer():
+        return
+    pass
+
+    def patch_vllm_lora_load_tensors():
         return
     pass
 pass
@@ -296,6 +325,8 @@ pass
 def patch_vllm():
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
+    patch_vllm_lora_tokenizer()
+    patch_vllm_lora_load_tensors()
     global LORA_REQUEST_ID
     LORA_REQUEST_ID = 0
 pass
