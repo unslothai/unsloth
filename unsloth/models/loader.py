@@ -30,11 +30,11 @@ except:
     from huggingface_hub.utils._token import get_token
 pass
 from huggingface_hub import HfFileSystem
+import importlib.util
 
 # [TODO] Move USE_MODELSCOPE to utils
 USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
 if USE_MODELSCOPE:
-    import importlib
     if importlib.util.find_spec("modelscope") is None:
         raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
     pass
@@ -73,9 +73,25 @@ class FastLanguageModel(FastLlamaModel):
         resize_model_vocab         = None,
         revision                   = None,
         use_exact_model_name       = False,
+
+        fast_inference             = False, # uses vLLM
+        gpu_memory_utilization     = 0.5,
+        float8_kv_cache            = False,
+        random_state               = 3407,
+        max_lora_rank              = 64,
+        disable_log_stats          = True,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
+
+        if fast_inference:
+            if importlib.util.find_spec("vllm") is None:
+                raise ImportError(
+                    "Unsloth: Please install vLLM before enabling `fast_inference`!\n"\
+                    "You can do this in a terminal via `pip install vllm`"
+                )
+            pass
+        pass
         
         old_model_name = model_name
         if not use_exact_model_name:
@@ -255,6 +271,24 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name = None
         pass
 
+        if fast_inference:
+            from unsloth_zoo.vllm_utils import (
+                patch_vllm, 
+                vllm_dynamic_quant_supported,
+            )
+            patch_vllm()
+            if model_name.endswith("unsloth-bnb-4bit"):
+                if not vllm_dynamic_quant_supported(model_name, model_config):
+                    # Instead use -bnb-4bit variant
+                    print(
+                        f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
+                        f"we do not yet support fast inference for {model_name}"
+                    )
+                    model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
+                pass
+            pass
+        pass
+
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
@@ -268,6 +302,13 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name    = tokenizer_name,
             trust_remote_code = trust_remote_code,
             revision          = revision if not is_peft else None,
+
+            fast_inference    = fast_inference,
+            gpu_memory_utilization = gpu_memory_utilization,
+            float8_kv_cache   = float8_kv_cache,
+            random_state      = random_state,
+            max_lora_rank     = max_lora_rank,
+            disable_log_stats = disable_log_stats,
             *args, **kwargs,
         )
         
