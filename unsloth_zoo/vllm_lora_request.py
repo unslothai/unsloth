@@ -34,19 +34,19 @@ class LoRARequest(
     base_model_name: Optional[str] = msgspec.field(default=None)
     lora_embeddings: Optional[dict[str, torch.Tensor]] = None
 
-    def __post_init__(self):
-        if 'lora_local_path' in self.__struct_fields__:
-            warnings.warn(
-                "The 'lora_local_path' attribute is deprecated "
-                "and will be removed in a future version. "
-                "Please use 'lora_path' instead.",
-                DeprecationWarning,
-                stacklevel=2)
-            if not self.lora_path:
-                self.lora_path = self.lora_local_path or ""
+    # def __post_init__(self):
+    #     if 'lora_local_path' in self.__struct_fields__:
+    #         warnings.warn(
+    #             "The 'lora_local_path' attribute is deprecated "
+    #             "and will be removed in a future version. "
+    #             "Please use 'lora_path' instead.",
+    #             DeprecationWarning,
+    #             stacklevel=2)
+    #         if not self.lora_path:
+    #             self.lora_path = self.lora_local_path or ""
 
-        # Ensure lora_path is not empty
-        assert self.lora_path, "lora_path cannot be empty"
+    #     # Ensure lora_path is not empty
+    #     assert self.lora_path, "lora_path cannot be empty"
 
     @property
     def adapter_id(self):
