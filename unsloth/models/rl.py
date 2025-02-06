@@ -47,8 +47,8 @@ def PatchRL(FastLanguageModel):
     from contextlib import contextmanager
 
     @contextmanager
-    def unsloth_unwrap_model_for_generation(model, accelerator):
-        with unwrap_model_for_generation(model, accelerator) as unwrapped_model:
+    def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
+        with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
             # Put the model in inference mode.
             FastLanguageModel.for_inference(unwrapped_model)
 
@@ -364,7 +364,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         lora_name = trainer_file + "_lora_model"
         source = re.sub(
             r"(self\.llm\.(?:generate|chat)\([^\)]{1,})\)",
-            r"\1, lora_request = model.load_lora('" + lora_name + r"', load_tensors = True))",
+            r"\1, lora_request = self.model.load_lora('" + lora_name + r"', load_tensors = True))",
             source
         )
 
