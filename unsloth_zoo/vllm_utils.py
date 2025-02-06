@@ -294,8 +294,8 @@ pass
 
 
 def patch_vllm():
-    # patch_bitsandbytes_quant_state()
-    # patch_vllm_bitsandbytes()
+    patch_bitsandbytes_quant_state()
+    patch_vllm_bitsandbytes()
     global LORA_REQUEST_ID
     LORA_REQUEST_ID = 0
 pass
