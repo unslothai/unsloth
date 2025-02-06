@@ -179,6 +179,7 @@ if importlib.util.find_spec("vllm") is not None:
     def patch_vllm_lora_tokenizer():
         import vllm.transformers_utils.tokenizer
         vllm.transformers_utils.tokenizer.get_lora_tokenizer = _return_nothing
+        vllm.transformers_utils.tokenizer.get_lora_tokenizer_async = _return_nothing
     pass
 
     from .vllm_lora_request import LoRARequest as PatchedLoRARequest
