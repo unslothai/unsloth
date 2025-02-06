@@ -183,6 +183,10 @@ if importlib.util.find_spec("vllm") is not None:
         import vllm.transformers_utils.tokenizer
         vllm.transformers_utils.tokenizer.get_lora_tokenizer = _return_nothing
         vllm.transformers_utils.tokenizer.get_lora_tokenizer_async = _return_nothing
+        
+        import vllm.transformers_utils.tokenizer_group.tokenizer_group
+        vllm.transformers_utils.tokenizer_group.tokenizer_group.get_lora_tokenizer = _return_nothing
+        vllm.transformers_utils.tokenizer_group.tokenizer_group.get_lora_tokenizer_async = _return_nothing
     pass
 
     from .vllm_lora_request import LoRARequest as PatchedLoRARequest
@@ -983,10 +987,6 @@ def load_vllm(
 
     # Unpatch vLLM compute_dtype for bitsandbytes
     unpatch_vllm_compute_dtype(BitsAndBytesConfig)
-
-    # Patch tokenizer warnings
-    llm_engine = getattr(llm, "llm_engine", llm)
-    llm_engine.tokenizer.get_lora_tokenizer = partial(_return_self, llm_engine.tokenizer)
 
     # Cleanup
     for _ in range(3):
