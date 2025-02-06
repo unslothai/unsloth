@@ -269,14 +269,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     except:
         # Already patched most likely!
         return
+    old__init__ = __init__
     all_imports = dir(trainer)
-    imports = [x for x in all_imports if not x.startswith("_") and x in __init__]
+    assert("Union" in all_imports)
+    imports = [x for x in all_imports if not x.startswith("_")]
     imports += ["Trainer"]
 
     spaces = __init__.find("def")
     __init__ = __init__.split("\n")
     __init__ = "\n".join(x[spaces:] for x in __init__)
-    __init__ = __init__.replace("def ", "def _unsloth_", 1)
 
     # Replace vLLM sections since we already have it done!
     vllm_part = re.findall(
@@ -318,14 +319,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     __init__ = __init__.replace("get_peft_model(model, peft_config)", "model")
 
     # Change super() to Trainer
-    __init__ = __init__.replace("super()", "super(Trainer, self)")
+    __init__ = __init__.replace("super()", f"super(Unsloth{RLTrainer_name}, self)")
+
+    # Add spaces back into __init__
+    __init__ = __init__.split("\n")
+    __init__ = "\n".join(' '*spaces + x for x in __init__)
 
     # Search for vLLM calling in all child functions
     functions = dir(RLTrainer)
     RLTrainer_source = inspect.getsource(RLTrainer)
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
-    changed = {"__init__" : __init__}
+    changed = {"__init__" : (old__init__, __init__,)}
     for function in functions:
         if not hasattr(RLTrainer, function): continue
         fx = getattr(RLTrainer, function)
@@ -363,26 +368,26 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         # Find all imports
         imports += [x for x in all_imports if not x.startswith("_") and x in source]
 
-        # Create actual function
-        spaces = source.find("def")
-        source = source.split("\n")
-        source = "\n".join(x[spaces:] for x in source)
-
-        # Replace function name with _unsloth_...
-        source = source.replace("def ", "def _unsloth_", 1)
-        changed[function] = source
+        changed[function] = (original_source, source,)
     pass
 
     # Import all functions
     imports = list(set(imports))
     imports = f"from trl.trainer.{trainer_file} import (\n" + ',\n'.join(imports) + ")"
-    exec(imports, locals())
+    imported_functions = {}
+    exec(imports, globals(), imported_functions)
 
     # Patch all functions
     for function in changed:
-        exec(changed[function], locals(), globals())
-        exec(f"trl.trainer.{trainer_file}.{RLTrainer_name}.{function} = _unsloth_{function}", locals(), globals())
+        old, new = changed[function]
+        RLTrainer_source = RLTrainer_source.replace(old, new)
     pass
+    RLTrainer_source = RLTrainer_source.replace(
+        f"class {RLTrainer_name}", f"class Unsloth{RLTrainer_name}", 1
+    )
+    exec(RLTrainer_source, imported_functions, globals())
+    exec(f"trl.trainer.{trainer_file}.{RLTrainer_name} = Unsloth{RLTrainer_name}", locals(), globals())
+    exec(f"trl.trainer.{RLTrainer_name} = Unsloth{RLTrainer_name}", locals(), globals())
 pass
 
 
