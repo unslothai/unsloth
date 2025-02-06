@@ -817,6 +817,13 @@ def load_vllm(
     assert(config is not None)
     assert(conservativeness >= 0.0 and conservativeness <= 1.0)
 
+    major_version, minor_version = torch.cuda.get_device_capability()
+    if major_version < 7: raise NotImplementedError("Unsloth: Your GPU is too old!")
+
+    # Float8 KV cache only works for 8.0 or higher
+    if float8_kv_cache and major_version < 8:
+        raise NotImplementedError("Unsloth: Your GPU is too old for float8 KV cache! Set it to False.")
+
     max_num_batched_tokens, approx_max_num_seqs, \
     actual_gpu_memory_utilization, memory_left_for_kv_cache_gb = \
     approximate_vllm_memory_usage(
@@ -844,8 +851,7 @@ def load_vllm(
         max_seq_length = max_num_batched_tokens
     pass
 
-    major_version, minor_version = torch.cuda.get_device_capability()
-    if major_version < 7: raise NotImplementedError("Unsloth: Your GPU is too old!")
+    # Get correct dtype
     if major_version >= 8: _dtype = torch.bfloat16
     else: _dtype = torch.float16
     if dtype == torch.bfloat16 and _dtype == torch.float16:
@@ -1071,7 +1077,11 @@ def load_lora(model, save_directory, load_tensors = True):
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
     
     LORA_REQUEST_ID += 1
-
+    if LORA_REQUEST_ID % 300 == 0:
+        # Free some VRAM and RAM every 300 saves
+        gc.collect()
+        torch.cuda.empty_cache()
+    pass
     # Set model's current LoRA adapater
     # model.vllm_engine.vllm_lora_request = lora_request
     return lora_request
