@@ -275,6 +275,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     spaces = __init__.find("def")
     __init__ = __init__.split("\n")
     __init__ = "\n".join(x[spaces:] for x in __init__)
+    __init__ = __init__.replace("def ", "def _unsloth_", 1)
 
     # Replace vLLM sections since we already have it done!
     vllm_part = re.findall(
