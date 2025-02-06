@@ -271,6 +271,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         return
     all_imports = dir(trainer)
     imports = [x for x in all_imports if not x.startswith("_") and x in __init__]
+    imports += ["Trainer"]
 
     spaces = __init__.find("def")
     __init__ = __init__.split("\n")
@@ -315,6 +316,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     __init__ = __init__.replace("if peft_config is None:", "if False:")
     __init__ = __init__.replace("if peft_config is not None:", "if False:")
     __init__ = __init__.replace("get_peft_model(model, peft_config)", "model")
+
+    # Change super() to Trainer
+    __init__ = __init__.replace("super()", "super(Trainer, self)")
 
     # Search for vLLM calling in all child functions
     functions = dir(RLTrainer)
