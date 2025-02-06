@@ -387,6 +387,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         f"class {RLTrainer_name}", f"class Unsloth{RLTrainer_name}", 1
     )
     exec(RLTrainer_source, imported_functions, globals())
+    globals()[f"Unsloth{RLTrainer_name}"] = eval(f"Unsloth{RLTrainer_name}")
     exec(f"trl.trainer.{trainer_file}.{RLTrainer_name} = Unsloth{RLTrainer_name}", locals(), globals())
     exec(f"trl.trainer.{RLTrainer_name} = Unsloth{RLTrainer_name}", locals(), globals())
     exec(f"trl.{RLTrainer_name} = Unsloth{RLTrainer_name}", locals(), globals())
