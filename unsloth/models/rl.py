@@ -388,6 +388,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         f"trl.trainer.{trainer_file}",
         imports,
     )
+
+    # Patch over modules
+    exec(f"trl.{RLTrainer_name} = module.Unsloth{RLTrainer_name}", locals(), globals())
+    exec(f"trl.trainer.{RLTrainer_name} = module.Unsloth{RLTrainer_name}", locals(), globals())
+    exec(f"trl.trainer.{trainer_file}.{RLTrainer_name} = module.Unsloth{RLTrainer_name}", locals(), globals())
     return module
 pass
 
