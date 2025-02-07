@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.2.1",
+    "unsloth_zoo>=2025.2.3",
     "torch>=2.4.0",
     "xformers>=0.0.27.post2",
     "bitsandbytes",
@@ -42,6 +42,8 @@ dependencies = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
+    "diffusers",
+    "torchvision",
 ]
 
 [tool.setuptools.dynamic]
@@ -55,7 +57,7 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2025.2.2",
+    "unsloth_zoo>=2025.2.3",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
@@ -71,6 +73,8 @@ huggingface = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
+    "diffusers",
+    "torchvision",
 ]
 cu118only = [
     "xformers==0.0.22.post7",
