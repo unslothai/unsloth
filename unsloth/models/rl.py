@@ -113,7 +113,9 @@ def PatchRL(FastLanguageModel):
     else:
         IS_SAGEMAKER_MP_POST_1_10 = False
     from transformers.trainer_pt_utils import nested_detach
-    breakpoint()
+    
+    #breakpoint()
+    
     def unsloth_prediction_step(self, model, inputs, prediction_loss_only,ignore_keys,):
         """
         Perform an evaluation step on `model` using `inputs`.
@@ -214,50 +216,7 @@ def PatchRL(FastLanguageModel):
             logits = logits[0]
 
         return (loss, logits, labels)
-    # start_time defaults to None to allow compatibility with transformers<=4.46
-    def unsloth_maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time=None):
-        if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
-            logs: dict[str, float] = {}
 
-            # all_gather + mean() to get average loss over all processes
-            tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
-
-            # reset tr_loss to zero
-            tr_loss -= tr_loss
-
-            logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
-            if grad_norm is not None:
-                logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
-            logs["learning_rate"] = self._get_learning_rate()
-
-            # Add our metrics
-            for key, val in self.stats.items():
-                logs[key] = sum(val) / len(val)
-            self.stats = {key: [] for key in self.stats}  # reset stats
-
-            self._total_loss_scalar += tr_loss_scalar
-            self._globalstep_last_logged = self.state.global_step
-            self.store_flos()
-
-            if version.parse(transformers.__version__) >= version.parse("4.47.0.dev0"):
-                self.log(logs, start_time)
-            else:  # transformers<=4.46
-                self.log(logs)
-
-            #we need to edit 
-            #"/home/kt828/miniconda3/envs/trl_env/lib/python3.11/site-packages/transformers/trainer.py", line 4471 needs to be modified
-            """
-            metrics = None
-            if self.control.should_evaluate:
-                metrics = self._evaluate(trial, ignore_keys_for_eval)
-                is_new_best_metric = self._determine_best_metric(metrics=metrics, trial=trial)
-
-                if self.args.save_strategy == "best":
-                    self.control.should_save = is_new_best_metric
-            """
-            if self.control.should_save:
-                self._save_checkpoint(model, trial)
-                self.control = self.callback_handler.on_save(self.args, self.state, self.control)
     import trl.trainer
     trainers = dir(trl.trainer)
 
