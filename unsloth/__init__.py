@@ -17,16 +17,6 @@ from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
 
-# # Define a list of modules to check
-# MODULES_TO_CHECK = ["bitsandbytes"]
-
-# # Check if any of the modules in the list have been imported
-# for module in MODULES_TO_CHECK:
-#     if module in sys.modules:
-#         raise ImportError(f"Unsloth: Please import Unsloth before {module}.")
-#     pass
-# pass
-
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
@@ -55,7 +45,14 @@ else:
 pass
 
 # Reduce VRAM usage by reducing fragmentation
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,roundup_power2_divisions:[64:128,256:64,>:32]"
+# And optimize pinning of memory
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
+    "expandable_segments:True,"\
+    "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
+
+# [TODO] Check why some GPUs don't work
+#    "pinned_use_cuda_host_register:True,"\
+#    "pinned_num_register_threads:8"
 
 # Hugging Face Hub faster downloads
 if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
@@ -89,6 +86,40 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
+# First check if CUDA is available ie a NVIDIA GPU is seen
+if not torch.cuda.is_available():
+    raise NotImplementedError("Unsloth: No NVIDIA GPU found? Unsloth currently only supports GPUs!")
+
+# Fix Xformers performance issues since 0.0.25
+import importlib.util
+from pathlib import Path
+from importlib.metadata import version as importlib_version
+from packaging.version import Version
+try:
+    xformers_version = importlib_version("xformers")
+    if Version(xformers_version) < Version("0.0.29"):
+        xformers_location = importlib.util.find_spec("xformers").origin
+        xformers_location = os.path.split(xformers_location)[0]
+        cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
+
+        if cutlass.exists():
+            with open(cutlass, "r+") as f:
+                text = f.read()
+                # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
+                if "num_splits_key=-1," in text:
+                    text = text.replace("num_splits_key=-1,", "num_splits_key=None,")
+                    f.seek(0)
+                    f.write(text)
+                    f.truncate()
+                    print("Unsloth: Patching Xformers to fix some performance issues.")
+                pass
+            pass
+        pass
+    pass
+except:
+    pass
+pass
+
 # Torch 2.4 has including_emulation
 major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = (major_version >= 8)
@@ -103,72 +134,79 @@ else:
     torch.cuda.is_bf16_supported = is_bf16_supported
 pass
 
+# For Gradio HF Spaces?
+# if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
+import triton
+libcuda_dirs = lambda: None
+if Version(triton.__version__) >= Version("3.0.0"):
+    try: from triton.backends.nvidia.driver import libcuda_dirs
+    except: pass
+else: from triton.common.build import libcuda_dirs
+
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb
+try:
+    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+    libcuda_dirs()
+except:
+    warnings.warn(
+        "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
+    )
 
-if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
+    if os.path.exists("/usr/lib64-nvidia"):
+        os.system("ldconfig /usr/lib64-nvidia")
+    elif os.path.exists("/usr/local"):
+        # Sometimes bitsandbytes cannot be linked properly in Runpod for example
+        possible_cudas = subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
+        find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
+        possible_cudas = [find_cuda.search(x) for x in possible_cudas]
+        possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
 
-    import triton
-    libcuda_dirs = lambda: None
-    if Version(triton.__version__) >= Version("3.0.0"):
-        try: from triton.backends.nvidia.driver import libcuda_dirs
-        except: pass
-    else: from triton.common.build import libcuda_dirs
+        # Try linking cuda folder, or everything in local
+        if len(possible_cudas) == 0:
+            os.system("ldconfig /usr/local/")
+        else:
+            find_number = re.compile(r"([\d\.]{2,})")
+            latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
+            latest_cuda = possible_cudas[latest_cuda]
+            os.system(f"ldconfig /usr/local/{latest_cuda}")
+    pass
 
+    importlib.reload(bnb)
+    importlib.reload(triton)
     try:
+        libcuda_dirs = lambda: None
+        if Version(triton.__version__) >= Version("3.0.0"):
+            try: from triton.backends.nvidia.driver import libcuda_dirs
+            except: pass
+        else: from triton.common.build import libcuda_dirs
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
         warnings.warn(
-            "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
+            "Unsloth: CUDA is not linked properly.\n"\
+            "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"\
+            "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
+            "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"\
+            "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
+            "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
         )
-
-        if os.path.exists("/usr/lib64-nvidia"):
-            os.system("ldconfig /usr/lib64-nvidia")
-        elif os.path.exists("/usr/local"):
-            # Sometimes bitsandbytes cannot be linked properly in Runpod for example
-            possible_cudas = subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
-            find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
-            possible_cudas = [find_cuda.search(x) for x in possible_cudas]
-            possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
-
-            # Try linking cuda folder, or everything in local
-            if len(possible_cudas) == 0:
-                os.system("ldconfig /usr/local/")
-            else:
-                find_number = re.compile(r"([\d\.]{2,})")
-                latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
-                latest_cuda = possible_cudas[latest_cuda]
-                os.system(f"ldconfig /usr/local/{latest_cuda}")
-        pass
-
-        importlib.reload(bnb)
-        importlib.reload(triton)
-        try:
-            libcuda_dirs = lambda: None
-            if Version(triton.__version__) >= Version("3.0.0"):
-                try: from triton.backends.nvidia.driver import libcuda_dirs
-                except: pass
-            else: from triton.common.build import libcuda_dirs
-            cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-            libcuda_dirs()
-        except:
-            warnings.warn(
-                "Unsloth: CUDA is not linked properly.\n"\
-                "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"\
-                "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
-                "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"\
-                "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
-                "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
-            )
-    pass
 pass
 
 # Check for unsloth_zoo
 try:
+    unsloth_zoo_version = importlib_version("unsloth_zoo")
+    if Version(unsloth_zoo_version) < Version("2025.2.2"):
+        try:
+            os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
+        except:
+            try:
+                os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+            except:
+                raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
 except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth-zoo`")
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
 pass
 
 from .models import *

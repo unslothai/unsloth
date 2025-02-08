@@ -39,14 +39,15 @@ pass
 
 def MistralAttention_fast_forward(
     self,
-    hidden_states:        torch.Tensor,
-    causal_mask:          Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    bool = False,
-    use_cache:            bool = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    hidden_states:       torch.Tensor,
+    causal_mask:         Optional[BlockDiagonalCausalMask] = None,
+    attention_mask:      Optional[torch.Tensor] = None,
+    position_ids:        Optional[torch.LongTensor] = None,
+    past_key_value:      Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:   bool = False,
+    use_cache:           bool = False,
+    padding_mask:        Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
@@ -63,9 +64,9 @@ def MistralAttention_fast_forward(
 
     bsz, q_len, _ = hidden_states.size()
 
-    n_heads    = self.num_heads
+    n_heads    = self.config.num_attention_heads
     n_groups   = self.num_key_value_groups
-    n_kv_heads = self.num_key_value_heads
+    n_kv_heads = self.config.num_key_value_heads
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
@@ -171,7 +172,7 @@ pass
 def MistralForCausalLM_fast_forward(
     self,
     input_ids: torch.LongTensor = None,
-    causal_mask: Optional[xformers.attn_bias.BlockDiagonalCausalMask] = None,
+    causal_mask: Optional[BlockDiagonalCausalMask] = None,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
     past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -277,16 +278,16 @@ pass
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
 def patch_mistral_nemo_attention(function):
     function = function.replace(
-        "(self.head_dim * self.num_heads) != self.hidden_size",
+        "(self.head_dim * self.config.num_attention_heads) != self.config.hidden_size",
         "False",
     )
     function = function.replace(
-        "self.head_dim = self.hidden_size // self.num_heads",
+        "self.head_dim = self.config.hidden_size // self.config.num_attention_heads",
         "self.head_dim = config.head_dim",
     )
     function = function.replace(
-        "self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=False)",
-        "self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)",
+        "self.o_proj = nn.Linear(self.config.hidden_size, self.config.hidden_size, bias=False)",
+        "self.o_proj = nn.Linear(self.config.num_attention_heads * self.head_dim, self.config.hidden_size, bias=False)",
     )
     return function
 pass
@@ -303,7 +304,7 @@ class FastMistralModel(FastLlamaModel):
             attention_module   = MistralAttention,
         )
         # Just for Mistral Nemo models!
-        if function is not None:
+        if function is not None and init_name is not None:
             function = patch_mistral_nemo_attention(function)
             # if True:#init_name is not None:
             exec(function, globals())

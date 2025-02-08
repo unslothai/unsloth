@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unsloth_zoo.utils import Version
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -577,7 +578,7 @@ def unsloth_save_model(
             #     max_ram = max(max_ram - W.nbytes, 0)
             else:
                 # Save to Disk
-                logger.warning_once("We will save to Disk and not RAM now.")
+                logger.warning_once("\nWe will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
                 # weights_only = True weirdly fails?
@@ -2095,8 +2096,8 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
 pass
 
 
-from unsloth_zoo.peft_utils import merge_and_overwrite_lora
 from .models.loader_utils import get_model_name
+from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
 @torch.inference_mode
 def unsloth_generic_save(
@@ -2128,17 +2129,17 @@ def unsloth_generic_save(
     maximum_memory_usage : float = 0.9,
 ):
     if token is None and push_to_hub: token = get_token()
-
     merge_and_overwrite_lora(
         get_model_name,
-        create_huggingface_repo,
-        model,
-        save_location        = save_directory,
+        model                = model,
+        tokenizer            = tokenizer,
+        save_directory       = save_directory,
         push_to_hub          = push_to_hub,
-        token                = token,
-        upload_location      = save_directory if push_to_hub else None,
-        low_disk_space_usage = True,
         private              = private,
+        token                = token,
+        output_dtype         = None,
+        low_disk_space_usage = False,
+        use_temp_file        = False,
     )
     return
 pass

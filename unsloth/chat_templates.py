@@ -759,6 +759,10 @@ DEFAULT_SYSTEM_MESSAGE["llama-3.1"] = "" # Llama3.1 default system message is em
 
 CHAT_TEMPLATES["llama-31"]  = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
 DEFAULT_SYSTEM_MESSAGE["llama-31"] = "" # Llama3.1 default system message is empty + the dates
+
+for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
+    CHAT_TEMPLATES[version] = CHAT_TEMPLATES["llama-3.1"]
+    DEFAULT_SYSTEM_MESSAGE[version] = ""
 pass
 
 
@@ -889,6 +893,46 @@ DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message # No system mes
 CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
 pass
+
+# =========================================== Phi-4
+# "{{ bos_token }}"\ # Phi-4 removes BOS?
+phi4_template = \
+    "{% for message in messages %}"\
+        "{% if (message['role'] == 'system') %}"\
+            "{{'<|im_start|>system<|im_sep|>' + message['content'] + '<|im_end|>'}}"\
+        "{% elif (message['role'] == 'user') %}"\
+            "{{'<|im_start|>user<|im_sep|>' + message['content'] + '<|im_end|>'}}"\
+        "{% elif (message['role'] == 'assistant') %}"\
+            "{{'<|im_start|>assistant<|im_sep|>' + message['content'] + '<|im_end|>'}}"\
+        "{% endif %}"\
+    "{% endfor %}"\
+    "{% if add_generation_prompt %}"\
+        "{{ '<|im_start|>assistant<|im_sep|>' }}"\
+    "{% endif %}"
+pass
+
+_phi4_ollama_template = \
+    "{{ if .System }}<|im_start|><|system|><|im_sep|>{{ .System }}<|im_end|>{{ end }}"\
+    "{{ if .Prompt }}<|im_start|><|user|><|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"\
+    "<|im_start|><|assistant|><|im_sep|>{{ .Response }}<|im_end|>"
+
+# Ollama from https://www.ollama.com/library/phi4 is different
+phi4_ollama = \
+f'''
+FROM {{__FILE_LOCATION__}}
+TEMPLATE """{_phi4_ollama_template}"""
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_sep|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
+'''
+
+phi4_template_eos_token = "<|im_end|>"
+CHAT_TEMPLATES["phi-4"] = (phi4_template, phi4_template_eos_token, False, phi4_ollama,)
+DEFAULT_SYSTEM_MESSAGE["phi-4"] = None # No system message in Phi-4
+pass
+
 
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
     system_message_pattern = r"\{system_message\}"
