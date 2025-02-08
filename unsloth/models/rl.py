@@ -44,6 +44,7 @@ from unsloth_zoo.compiler import create_new_function
 def PatchRL(FastLanguageModel):
 
     from trl.models.utils import unwrap_model_for_generation
+    from trl.trainer.utils import first_true_indices, get_reward
     from contextlib import contextmanager
 
     @contextmanager
@@ -72,17 +73,206 @@ def PatchRL(FastLanguageModel):
             pass
         pass
     pass
+    def unsloth_get_reward(
+        model, query_responses, pad_token_id, context_length):
+            attention_mask = query_responses != pad_token_id
+            position_ids = attention_mask.cumsum(1) - attention_mask.long()  # exclusive cumsum
+            lm_backbone = getattr(model, model.base_model_prefix)
+            input_ids = torch.masked_fill(query_responses, ~attention_mask, 0)
+            FastLanguageModel.reset_functions()
+            output = lm_backbone(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                return_dict=True,
+                output_hidden_states=True,
+                use_cache=False,  # otherwise mistral-based RM would error out
+            )
+            reward_logits = model.score(output.hidden_states[-1])
+            sequence_lengths = first_true_indices(query_responses[:, context_length:] == pad_token_id) - 1 + context_length
+            FastLanguageModel.set_functions()
+            # https://github.com/huggingface/transformers/blob/dc68a39c8111217683bf49a4912d0c9018bab33d/src/transformers/models/gpt2/modeling_gpt2.py#L1454
+            return (
+                reward_logits,
+                reward_logits[
+                    torch.arange(reward_logits.size(0), device=reward_logits.device),
+                    sequence_lengths,
+                ].squeeze(-1),
+                sequence_lengths,
+            )
 
+    from transformers import Trainer
+    from transformers.utils import is_sagemaker_mp_enabled
+    if is_sagemaker_mp_enabled():
+        import smdistributed.modelparallel.torch as smp
+        from smdistributed.modelparallel import __version__ as SMP_VERSION
+
+        IS_SAGEMAKER_MP_POST_1_10 = version.parse(SMP_VERSION) >= version.parse("1.10")
+
+        from .trainer_pt_utils import smp_forward_backward, smp_forward_only, smp_gather, smp_nested_concat
+    else:
+        IS_SAGEMAKER_MP_POST_1_10 = False
+    from transformers.trainer_pt_utils import nested_detach
+    breakpoint()
+    def unsloth_prediction_step(self, model, inputs, prediction_loss_only,ignore_keys,):
+        """
+        Perform an evaluation step on `model` using `inputs`.
+
+        Subclass and override to inject custom behavior.
+
+        Args:
+            model (`nn.Module`):
+                The model to evaluate.
+            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
+                The inputs and targets of the model.
+
+                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
+                argument `labels`. Check your model's documentation for all accepted arguments.
+            prediction_loss_only (`bool`):
+                Whether or not to return the loss only.
+            ignore_keys (`List[str]`, *optional*):
+                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
+                gathering predictions.
+
+        Return:
+            Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]: A tuple with the loss,
+            logits and labels (each being optional).
+        """
+        has_labels = False if len(self.label_names) == 0 else all(inputs.get(k) is not None for k in self.label_names)
+        # For CLIP-like models capable of returning loss values.
+        # If `return_loss` is not specified or being `None` in `inputs`, we check if the default value of `return_loss`
+        # is `True` in `model.forward`.
+        return_loss = inputs.get("return_loss", None)
+        if return_loss is None:
+            return_loss = self.can_return_loss
+        loss_without_labels = True if len(self.label_names) == 0 and return_loss else False
+
+        inputs = self._prepare_inputs(inputs)
+        if ignore_keys is None:
+            if hasattr(self.model, "config"):
+                ignore_keys = getattr(self.model.config, "keys_to_ignore_at_inference", [])
+            else:
+                ignore_keys = []
+
+        # labels may be popped when computing the loss (label smoothing for instance) so we grab them first.
+        if has_labels or loss_without_labels:
+            labels = nested_detach(tuple(inputs.get(name) for name in self.label_names))
+            if len(labels) == 1:
+                labels = labels[0]
+        else:
+            labels = None
+
+        with torch.no_grad():
+            if is_sagemaker_mp_enabled():
+                raw_outputs = smp_forward_only(model, inputs)
+                if has_labels or loss_without_labels:
+                    if isinstance(raw_outputs, dict):
+                        loss_mb = raw_outputs["loss"]
+                        logits_mb = tuple(v for k, v in raw_outputs.items() if k not in ignore_keys + ["loss"])
+                    else:
+                        loss_mb = raw_outputs[0]
+                        logits_mb = raw_outputs[1:]
+
+                    loss = loss_mb.reduce_mean().detach().cpu()
+                    logits = smp_nested_concat(logits_mb)
+                else:
+                    loss = None
+                    if isinstance(raw_outputs, dict):
+                        logits_mb = tuple(v for k, v in raw_outputs.items() if k not in ignore_keys)
+                    else:
+                        logits_mb = raw_outputs
+                    logits = smp_nested_concat(logits_mb)
+            else:
+                if has_labels or loss_without_labels:
+                    with self.compute_loss_context_manager():
+                        loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                    loss = loss.mean().detach()
+
+                    if isinstance(outputs, dict):
+                        logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
+                    else:
+                        logits = outputs[1:]
+                else:
+                    loss = None
+                    with self.compute_loss_context_manager():
+                        #breakpoint()
+                        tokenized_output = self.processing_class(inputs["prompt"], padding=True, truncation=True, return_tensors="pt")
+                        outputs = model(**tokenized_output)
+                    if isinstance(outputs, dict):
+                        logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
+                    else:
+                        logits = outputs
+                    # TODO: this needs to be fixed and made cleaner later.
+                    if self.args.past_index >= 0:
+                        self._past = outputs[self.args.past_index - 1]
+
+        if prediction_loss_only:
+            return (loss, None, None)
+
+        logits = nested_detach(logits)
+        if len(logits) == 1:
+            logits = logits[0]
+
+        return (loss, logits, labels)
+    # start_time defaults to None to allow compatibility with transformers<=4.46
+    def unsloth_maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval, start_time=None):
+        if self.control.should_log and self.state.global_step > self._globalstep_last_logged:
+            logs: dict[str, float] = {}
+
+            # all_gather + mean() to get average loss over all processes
+            tr_loss_scalar = self._nested_gather(tr_loss).mean().item()
+
+            # reset tr_loss to zero
+            tr_loss -= tr_loss
+
+            logs["loss"] = round(tr_loss_scalar / (self.state.global_step - self._globalstep_last_logged), 4)
+            if grad_norm is not None:
+                logs["grad_norm"] = grad_norm.detach().item() if isinstance(grad_norm, torch.Tensor) else grad_norm
+            logs["learning_rate"] = self._get_learning_rate()
+
+            # Add our metrics
+            for key, val in self.stats.items():
+                logs[key] = sum(val) / len(val)
+            self.stats = {key: [] for key in self.stats}  # reset stats
+
+            self._total_loss_scalar += tr_loss_scalar
+            self._globalstep_last_logged = self.state.global_step
+            self.store_flos()
+
+            if version.parse(transformers.__version__) >= version.parse("4.47.0.dev0"):
+                self.log(logs, start_time)
+            else:  # transformers<=4.46
+                self.log(logs)
+
+            #we need to edit 
+            #"/home/kt828/miniconda3/envs/trl_env/lib/python3.11/site-packages/transformers/trainer.py", line 4471 needs to be modified
+            """
+            metrics = None
+            if self.control.should_evaluate:
+                metrics = self._evaluate(trial, ignore_keys_for_eval)
+                is_new_best_metric = self._determine_best_metric(metrics=metrics, trial=trial)
+
+                if self.args.save_strategy == "best":
+                    self.control.should_save = is_new_best_metric
+            """
+            if self.control.should_save:
+                self._save_checkpoint(model, trial)
+                self.control = self.callback_handler.on_save(self.args, self.state, self.control)
     import trl.trainer
     trainers = dir(trl.trainer)
+
     trainers = [x for x in trainers if x.endswith("_trainer")]
+    trainers.append("callbacks")
     unwrap = "unwrap_model_for_generation"
+    _get_reward = "get_reward"
     for trainer in trainers:
         if hasattr(eval(f"trl.trainer.{trainer}"), unwrap):
             exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
+            exec(f"trl.trainer.{trainer}.{_get_reward} = unsloth_{_get_reward}")
+    exec(f"Trainer.prediction_step=unsloth_prediction_step")
     pass
 pass
-
+#To do, also in trl/trainer/callbacks.py make that unwrap compatible
 
 def NotebookProgressCallback_on_train_begin(Trainer_metrics):
     def _NotebookProgressCallback_on_train_begin(self, args, state, control, **kwargs):
