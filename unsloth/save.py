@@ -1215,7 +1215,7 @@ def save_to_gguf(
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This might take 20 minutes...")
             final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
 
-            command = f"./{quantize_location} {full_precision_location} "\
+            command = f"{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
             
             try_execute([command,], force_complete = True)
