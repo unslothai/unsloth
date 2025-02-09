@@ -1604,9 +1604,13 @@ pass
 
 def push_to_ollama_hub(
     model_name: str,
-    tag: str
+    tag: str,
+    username: str
 ) -> str:  
-    print("Make sure to add the public key from ~/.ollama/id_ed22519.pub (in colab) to ollama.com")
+    print(
+        "Make sure to add the public key from ~/.ollama/id_ed22519.pub (in colab) to ollama.com"
+    )
+    assert model_name.split("/")[0] == username, "Rename the model to <username>/<model_name>"
     response = requests.post(
         "http://localhost:11434/api/push",
         json={
