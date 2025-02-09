@@ -73,7 +73,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 | <img height="14" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />&nbsp; **Reddit**                    | [Join our Reddit page](https://reddit.com/r/unsloth)|
 
 ## ⭐ Key Features
-- All kernels written in [OpenAI's Triton](https://openai.com/research/triton) language. **Manual backprop engine**.
+- All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. **Manual backprop engine**.
 - **0% loss in accuracy** - no approximation methods - all exact.
 - No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
 - Works on **Linux** and **Windows** via WSL.
