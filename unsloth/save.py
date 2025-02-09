@@ -17,6 +17,7 @@ from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
+import requests
 import torch
 import os
 import shutil
@@ -1599,6 +1600,21 @@ def create_ollama_modelfile(tokenizer, gguf_location):
 
     return modelfile
 pass
+
+
+def push_to_ollama_hub(
+    model_name: str,
+    tag: str
+) -> str:  
+    print("Make sure to add the public key from ~/.ollama/id_ed22519.pub (in colab) to ollama.com")
+    response = requests.post(
+        "http://localhost:11434/api/push",
+        json={
+            "model": f"{model_name}:{tag}"
+        }
+    )
+
+    return response.status_code
 
 
 def unsloth_save_pretrained_gguf(
