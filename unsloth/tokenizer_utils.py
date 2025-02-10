@@ -1059,8 +1059,11 @@ for trainer_name in ("SFTTrainer", "DPOTrainer", "KTOTrainer"):
     if trainer_text is None: continue
     try:
         exec(trainer_text, globals())
-    except:
-        raise RuntimeError(f"Unsloth: Please file a bug report! Error patching {trainer_name}")
+    except Exception as error:
+        raise RuntimeError(
+            f"Unsloth: Please file a bug report! Error patching {trainer_name}. Error:\n"\
+            f"{str(error)}",
+        )
     exec(f"trl.trainer.{trainer_name} = Unsloth{trainer_name}", globals())
 pass
 
