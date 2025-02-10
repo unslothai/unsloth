@@ -194,15 +194,14 @@ def get_trl_metrics():
         pass
         metrics = beginning + middle + end
 
-        all_metrics[trainer[:trainer.find("_")].upper()] = metrics
+        all_metrics[trainer] = metrics
     pass
     return all_metrics
 pass
 
 
-def PatchRLStatistics(algorithm = "GRPO", other_metrics = []):
+def PatchRLStatistics(algorithm = "grpo_trainer", other_metrics = []):
     # Get notebook statistics columns to show up
-    algorithm = algorithm.upper()
     all_metrics = get_trl_metrics()
     if algorithm not in all_metrics:
         print(
