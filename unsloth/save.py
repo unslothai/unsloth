@@ -17,6 +17,7 @@ from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
+import sys
 import requests
 import torch
 import os
@@ -1602,23 +1603,37 @@ def create_ollama_modelfile(tokenizer, gguf_location):
 pass
 
 
-def push_to_ollama_hub(
-    model_name: str,
-    tag: str,
-    username: str
-) -> str:  
-    print(
-        "Make sure to add the public key from ~/.ollama/id_ed22519.pub (in colab) to ollama.com"
-    )
-    assert model_name.split("/")[0] == username, "Rename the model to <username>/<model_name>"
-    response = requests.post(
-        "http://localhost:11434/api/push",
-        json={
-            "model": f"{model_name}:{tag}"
-        }
+def push_to_ollama_hub(username: str, model_name: str, tag: str):
+    try:
+        init_check = subprocess.run(
+            ['curl', 'http://localhost:11434'], capture_output=True, text=True,  timeout=3
+        )
+        if init_check.returncode == 0:
+            print(init_check.stdout.strip())
+        else:
+            print("Ollama Server is not Running")
+    except subprocess.TimeoutExpired:
+        return "Ollama Request Timeout"
+
+    process = subprocess.Popen(
+            ['ollama', 'push', f'{username}/{model_name}:{tag}'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
     )
 
-    return response.status_code
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')
+        sys.stdout.flush()
+
+    return_code = process.wait()
+
+    if return_code != 0:
+        print(f"\nMODEL PUBLISHED FAILED WITH RETURN CODE {return_code}")
+    else:
+        print("\nMODEL PUBLISHED SUCCESSFULLY")
 
 
 def unsloth_save_pretrained_gguf(
