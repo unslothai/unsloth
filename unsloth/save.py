@@ -877,10 +877,15 @@ def install_llama_cpp_old(version = -10):
     pass
 
     # Check if successful
-    if not os.path.exists("llama.cpp/llama-quantize.exe") and not os.path.exists("llama.cpp/llama-quantize.exe"):
+    if not (
+        os.path.exists("llama.cpp/llama-quantize.exe") or
+        os.path.exists("llama.cpp/llama-quantize") or
+        os.path.exists("llama.cpp/quantize.exe") or
+        os.path.exists("llama.cpp/quantize")
+    ):
         raise RuntimeError(
             "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
-            "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+            "But we expect this file to exist! Maybe the llama.cpp developers changed the name or check extension of the llama-quantize file."
         )
     pass
 pass
@@ -1026,7 +1031,7 @@ def save_to_gguf(
     pass
 
     # Determine whether the system already has llama.cpp installed and the scripts are executable
-    quantize_location = get_executable(["llama-quantize", "quantize"])
+    quantize_location = get_executable(["llama-quantize", "quantize", "llama-quantize.exe", "quantize.exe"])
     convert_location  = get_executable(["convert-hf-to-gguf.py", "convert_hf_to_gguf.py"])
 
     error = 0
@@ -1064,12 +1069,16 @@ def save_to_gguf(
         quantize_location = None
         if os.path.exists("llama.cpp/quantize.exe"):
             quantize_location = "llama.cpp/quantize.exe"
+        elif os.path.exists("llama.cpp/quantize"):
+            quantize_location = "llama.cpp/quantize"
         elif os.path.exists("llama.cpp/llama-quantize.exe"):
             quantize_location = "llama.cpp/llama-quantize.exe"
+        elif os.path.exists("llama.cpp/llama-quantize"):
+            quantize_location = "llama.cpp/llama-quantize"
         else:
             raise RuntimeError(
-                "Unsloth: The file 'llama.cpp/llama-quantize.exe' or 'llama.cpp/quantize.exe' does not exist.\n"\
-                "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+                "Unsloth: The file ('llama.cpp/llama-quantize' or 'llama.cpp/llama-quantize.exe' if you are on Windows WSL) or 'llama.cpp/quantize' does not exist.\n"\
+                "But we expect this file to exist! Maybe the llama.cpp developers changed the name or check extension of the llama-quantize file."
             )
         pass
 
