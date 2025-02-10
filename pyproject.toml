@@ -39,7 +39,7 @@ triton = [
     "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post5/triton-3.1.0-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
 ]
 huggingface = [
-    "unsloth_zoo>=2025.1.4",
+    "unsloth_zoo>=2025.2.2",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
@@ -131,6 +131,12 @@ cu124onlytorch240 = [
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post1-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post1-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
 ]
+cu118onlytorch250 = [
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.28.post2-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.28.post2-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.28.post2-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.28.post2-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12' and platform_system == 'Linux'",
+]
 cu121onlytorch250 = [
     "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
     "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.28.post2-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
@@ -147,6 +153,12 @@ cu124onlytorch250 = [
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post2-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.28.post2-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
 ]
+cu118onlytorch251 = [
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.29.post1-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.29.post1-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.29.post1-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.29.post1-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12' and platform_system == 'Linux'",
+]
 cu121onlytorch251 = [
     "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.29.post1-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
     "xformers @ https://download.pytorch.org/whl/cu121/xformers-0.0.29.post1-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
@@ -162,6 +174,28 @@ cu124onlytorch251 = [
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post1-cp310-cp310-win_amd64.whl ; python_version=='3.10' and platform_system == 'Windows'",
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post1-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
     "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post1-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
+]
+cu118onlytorch260 = [
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.29.post2-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.29.post2-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.29.post2-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.29.post2-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12' and platform_system == 'Linux'",
+]
+cu124onlytorch260 = [
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post2-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post2-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post2-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post2-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post2-cp39-cp39-win_amd64.whl ; python_version=='3.9' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post2-cp310-cp310-win_amd64.whl ; python_version=='3.10' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post2-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu124/xformers-0.0.29.post2-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
+]
+cu126onlytorch260 = [
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.29.post2-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.29.post2-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.29.post2-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.29.post2-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12' and platform_system == 'Linux'",
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -223,20 +257,30 @@ cu121-torch240 = [
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch240]",
 ]
-cu121-torch250 = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-    "unsloth[cu121onlytorch250]",
-]
 cu124-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch240]",
 ]
+cu118-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu118onlytorch250]",
+]
+cu121-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch250]",
+]
 cu124-torch250 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch250]",
+]
+cu118-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu118onlytorch251]",
 ]
 cu121-torch251 = [
     "unsloth[huggingface]",
@@ -247,6 +291,21 @@ cu124-torch251 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch251]",
+]
+cu118-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu118onlytorch260]",
+]
+cu124-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu124onlytorch260]",
+]
+cu126-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu126onlytorch260]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -285,7 +344,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.1.4",
+    "unsloth_zoo>=2025.2.2",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
@@ -381,22 +440,34 @@ cu121-ampere-torch240 = [
     "unsloth[cu121onlytorch240]",
     "unsloth[flashattention]",
 ]
-cu121-ampere-torch250 = [
-    "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
-    "unsloth[cu121onlytorch250]",
-    "unsloth[flashattention]",
-]
 cu124-ampere-torch240 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch240]",
     "unsloth[flashattention]",
 ]
+cu118-ampere-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu118onlytorch250]",
+    "unsloth[flashattention]",
+]
+cu121-ampere-torch250 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu121onlytorch250]",
+    "unsloth[flashattention]",
+]
 cu124-ampere-torch250 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch250]",
+    "unsloth[flashattention]",
+]
+cu118-ampere-torch251 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.43.3",
+    "unsloth[cu118onlytorch251]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch251 = [
@@ -409,6 +480,24 @@ cu124-ampere-torch251 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu124onlytorch251]",
+    "unsloth[flashattention]",
+]
+cu118-ampere-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu118onlytorch260]",
+    "unsloth[flashattention]",
+]
+cu124-ampere-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu124onlytorch260]",
+    "unsloth[flashattention]",
+]
+cu126-ampere-torch260 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.1",
+    "unsloth[cu126onlytorch260]",
     "unsloth[flashattention]",
 ]
 
