@@ -39,6 +39,39 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - This [continued pretraining notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Mistral_v0.3_(7B)-CPT.ipynb) is for learning another language
 - Click [here](https://docs.unsloth.ai/) for detailed documentation for Unsloth.
 
+## Exporting Models from Colab to Local Machine
+
+If you have fine-tuned a model in Colab and want to use it locally on your machine, follow these steps:
+
+1. **Save the Model in Colab**: Ensure you have saved the model in a format that can be easily downloaded. You can use the `unsloth_save_model` function to save the model in the desired format.
+
+2. **Connect to Google Drive**: Mount your Google Drive in Colab to save the model files there. This allows you to download the files to your local machine later.
+
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+```
+
+3. **Save Model to Google Drive**: Save the model files to a directory in your Google Drive.
+
+```python
+model.save_pretrained('/content/drive/MyDrive/your_model_directory')
+tokenizer.save_pretrained('/content/drive/MyDrive/your_model_directory')
+```
+
+4. **Download Model Files**: After saving the model files to Google Drive, you can download them to your local machine. Go to your Google Drive, locate the model directory, and download the files.
+
+5. **Load Model Locally**: Once you have downloaded the model files to your local machine, you can load the model using the `from_pretrained` method.
+
+```python
+from transformers import AutoModel, AutoTokenizer
+
+model = AutoModel.from_pretrained('path_to_your_model_directory')
+tokenizer = AutoTokenizer.from_pretrained('path_to_your_model_directory')
+```
+
+By following these steps, you can easily export a fine-tuned model from Colab and use it locally on your machine.
+
 ## 🦥 Unsloth.ai News
 - 📣 NEW! Introducing [Reasoning](https://unsloth.ai/blog/r1-reasoning) in Unsloth. You can now reproduce DeepSeek-R1's "aha" moment with just 7GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 NEW! [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - the most powerful open reasoning models with Llama & Qwen distillations. Run or fine-tune them now! More details: [unsloth.ai/blog/deepseek-r1](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
