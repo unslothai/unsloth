@@ -907,35 +907,6 @@ except:
 pass
 
 
-def patch_trl_tokenizer_processing_class(trainer_name):
-    # New TRL removes tokenizer!
-    # We return it back!
-    exec(f"from trl import {trainer_name}", globals())
-    if str(eval(f"{trainer_name}").__name__).startswith("Unsloth"): return None
-    parameters = eval(f"inspect.signature({trainer_name}).parameters")
-    if "tokenizer" in parameters: return None
-
-    args = {
-        key : \
-            value.default \
-            if type(value.default) is not str else \
-            f"'{value.default}'" \
-        for key, value in parameters.items()
-    }
-    args["tokenizer"] = None
-    new_args = args.copy()
-    del new_args["tokenizer"]
-    del new_args["processing_class"]
-    new_args = ",\n".join(f"{' '*12}{key} = {key}" for key in new_args) + \
-        f",\n{' '*12}processing_class = tokenizer if tokenizer else processing_class"
-    args = ",\n".join(f"{' '*8}{key} = {value}" for key, value in args.items())
-    args = f"def __init__(\n" + f"{' '*8}self,\n" + args + "):"
-    args += f"\n{' '*8}\n{' '*8}super().__init__(\n{new_args}\n{' '*8})"
-    new_class = f"""class Unsloth{trainer_name}({trainer_name}):\n{' '*4}{args}\n"""
-    return new_class
-pass
-
-
 def patch_sft_trainer_tokenizer():
     """
         Patches the trainer with changes
@@ -1051,21 +1022,6 @@ def patch_sft_trainer_tokenizer():
 
         exec(f"trl.trainer.{path_to_trainer}.{function_name} = {function_name}", globals())
     pass
-pass
-
-# Fix TRL trainers with removed tokenizer args (got replaced with processing_class)
-for trainer_name in ("SFTTrainer", "DPOTrainer", "KTOTrainer"):
-    trainer_text = patch_trl_tokenizer_processing_class(trainer_name)
-    if trainer_text is None: continue
-    try:
-        print(trainer_text)
-        exec(trainer_text, globals())
-    except Exception as error:
-        raise RuntimeError(
-            f"Unsloth: Please file a bug report! Error patching {trainer_name}. Error:\n"\
-            f"{str(error)}",
-        )
-    exec(f"trl.trainer.{trainer_name} = Unsloth{trainer_name}", globals())
 pass
 
 # FInally patch TRL tokenizer things
