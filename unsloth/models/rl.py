@@ -316,9 +316,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 pass
 
 
-def patch_vllm(trainer_file, RLTrainer_name, all_imports, imports):
-    import trl.trainer
-    RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
+def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
