@@ -107,18 +107,21 @@ pass
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
+    print(1)
     import trl
     import trl.trainer
     try:
         trainer = eval(f"trl.trainer.{trainer_file}")
     except Exception as error:
         return
+    print(2)
     
     # Get SFTTrainer and SFTConfig names
     name   = [x for x in dir(trainer) if x.endswith("Trainer") and x != "Trainer" and trainer_file.split("_")[0] in x.lower()]
     config = [x for x in dir(trainer) if x.endswith("Config")  and x != "Config"  and trainer_file.split("_")[0] in x.lower()]
     if len(name)   != 1: return
     if len(config) != 1: return
+    print(3)
 
     # Get SFTTrainer, SFTConfig
     RLTrainer_name = name[0]
@@ -127,6 +130,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     except: return
     try: RLConfig  = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}" )
     except: return
+    print(4)
 
     # Check name
     if RLTrainer.__name__.startswith("Unsloth"): return
@@ -134,6 +138,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     all_imports = dir(trainer)
     imports = [x for x in all_imports if not x.startswith("_")]
+    print(5)
 
     # Get default arguments
     EMPTY = inspect.Parameter.empty
@@ -157,6 +162,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         call_args = f"\n{' '*12}" + f",\n{' '*12}".join(call_args)
         processed.append((arguments, call_args,))
     pass
+    print(6)
 
     # Process RLTrainer first
     arguments, call_args = processed[0]
@@ -274,11 +280,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_extras = patch_vllm(trainer_file, RLTrainer_name, all_imports, imports)
     if RLTrainer_extras is None:
         RLTrainer_extras = f"_Unsloth{RLTrainer_name} = {RLTrainer_name}"
+    print(7)
 
     # Create full module
     exec(f"from trl.trainer import ({RLTrainer_name}, {RLConfig_name},)")
     __RLTrainer_doc__ = eval(f"trl.trainer.{RLTrainer_name}").__doc__
     __RLConfig_doc__  = eval(f"trl.trainer.{RLConfig_name}") .__doc__
+    print(8)
 
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
@@ -295,7 +303,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         RLTrainer_extras     = RLTrainer_extras,
     )
-    print(RLTrainer_source)
 
     # Create new function
     created_module = create_new_function(
@@ -304,6 +311,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         f"trl.trainer.{trainer_file}",
         imports,
     )
+    print(9)
     
     # Patch Trainer
     exec(f"trl.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
