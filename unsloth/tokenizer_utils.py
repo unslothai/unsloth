@@ -946,8 +946,9 @@ def patch_sft_trainer_tokenizer():
         "    tokenizer = partial(tokenizer, add_special_tokens = False)\n"\
         "    processing_class = tokenizer\n"\
         "else:\n"\
-        "    add_special_tokens = False if has_bos_token_already else add_special_tokens"
-
+        "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
+        f"{' '*4}"
+        
         check_text = check_text.split("\n")
         check_text = "\n".join(" "*where + x for x in check_text)
 
