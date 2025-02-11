@@ -89,8 +89,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         **kwargs,
     ):
 {RLConfig_extra_args}
-        super().__init__({RLConfig_call_args},
-        **kwargs)
+        super().__init__({RLConfig_call_args}{RLConfig_kwargs})
 pass
 
 {RLTrainer_extras}
@@ -100,12 +99,11 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
     {__RLTrainer_doc__}
     """
     def __init__({RLTrainer_arguments},
-        **kwargs,
+        **kwargs
     ):
         if args is None: args = Unsloth{RLConfig_name}()
 {RLTrainer_extra_args}
-        super().__init__({RLTrainer_call_args},
-        **kwargs)
+        super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
 pass
 '''
 
@@ -290,12 +288,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_arguments  = RLTrainer_arguments,
         RLTrainer_extra_args = RLTrainer_extra_args,
         RLTrainer_call_args  = RLTrainer_call_args,
+        RLTrainer_kwargs     = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0:],
 
         RLConfig_name        = RLConfig_name,
         __RLConfig_doc__     = __RLConfig_doc__,
         RLConfig_arguments   = RLConfig_arguments,
         RLConfig_extra_args  = RLConfig_extra_args,
         RLConfig_call_args   = RLConfig_call_args,
+        RLConfig_kwargs      = ",**kwargs"[1 if RLConfig_call_args .endswith(",") else 0:],
 
         RLTrainer_extras     = RLTrainer_extras,
     )
