@@ -302,9 +302,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "max_seq_length" in call_args:
         length_check = \
         "if hasattr(model, 'max_seq_length') and model.max_seq_length > max_seq_length:\n"\
-        "    print('Unsloth: You set `max_seq_length` as ' + str(max_seq_length) + ' but the\\n'"\
+        "    print('Unsloth: You set `max_seq_length` as ' + str(max_seq_length) + ' but the\\n'\n"\
         "          'model maximum sequence length is ' + str(model.max_seq_length) + '. We will reduce it.')\n"
         "    max_seq_length = model.max_seq_length\n"
+        "if hasattr(model, 'max_seq_length') and max_seq_length is None: max_seq_length = model.max_seq_length\n"
         extra_args += length_check
     pass
 
