@@ -914,6 +914,7 @@ def patch_sft_trainer_tokenizer():
     try:
         sft_trainer = eval(f"trl.trainer.sft_trainer.SFTTrainer")
     except:
+        return
     all_imports = dir(trl.trainer.sft_trainer)
 
     for function_name, replacer in (
