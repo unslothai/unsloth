@@ -453,5 +453,5 @@ pass
 def PatchFastRL(algorithm = "GRPO", FastLanguageModel = None):
     if FastLanguageModel is not None: PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
-    PatchRLStatistics(algorithm)
+    if algorithm is nont None: PatchRLStatistics(algorithm)
 pass
