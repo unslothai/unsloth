@@ -961,7 +961,7 @@ def patch_sft_trainer_tokenizer():
             if len(replacer) == 0: continue
             replacer = replacer[0]
             print("====")
-            print(check_text)
+            print(replacer)
             print("====")
             function = function.replace(replacer, replacer + check_text)
         else:
