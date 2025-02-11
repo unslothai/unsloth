@@ -2739,3 +2739,5 @@ class FastLlamaModel:
     pass
 pass
 
+from .rl import PatchFastRL
+PatchFastRL(FastLanguageModel = FastLlamaModel)
