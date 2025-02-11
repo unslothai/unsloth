@@ -126,8 +126,7 @@ pass
 
 def _PatchRLStatistics(metrics, algorithm):
     if HAS_NOTEBOOK:
-        if len(metrics) == 0:
-            raise RuntimeError(f"Unsloth: RL statistics for {algorithm} failed with no metrics seen?")
+        if len(metrics) == 0: return
         from transformers.trainer import is_in_notebook
         if is_in_notebook():
             # Patch DPO notebook printing
