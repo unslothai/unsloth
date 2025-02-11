@@ -361,7 +361,6 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
             new_vllm_part,
             flags = re.MULTILINE | re.DOTALL,
         )
-        print(sampling_params)
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
             # Replace with our vLLM engine
