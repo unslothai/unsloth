@@ -449,7 +449,7 @@ def patch_trl_rl_trainers():
 pass
 
 
-def PatchFastRL(algorithm = "GRPO", FastLanguageModel = None):
+def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None: PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
     if algorithm is not None: PatchRLStatistics(algorithm)
