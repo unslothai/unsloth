@@ -917,7 +917,7 @@ def patch_sft_trainer_tokenizer():
         return
     all_imports = dir(trl.trainer.sft_trainer)
 
-    for function_name, replacer in (
+    for (function_name, replacer,) in (
         ("_prepare_non_packed_dataloader", "def tokenize(element):",),
         ("_prepare_dataset", None,),
         # ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
@@ -962,12 +962,12 @@ def patch_sft_trainer_tokenizer():
         else:
             function = function.replace(replacer, check_text + replacer)
         pass
+        print(function)
 
         x = [x for x in all_imports if x in function]
         exec(f"from trl.trainer.sft_trainer import ({','.join(x)})", locals())
         exec(function, locals(), globals())
         exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
-        print("Patched")
     pass
 
     # Patch train with fix_untrained_tokens
