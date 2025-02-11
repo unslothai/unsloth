@@ -86,11 +86,11 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     )
     def __init__({RLConfig_arguments},
         sampling_params = None,
-        *args, **kwargs,
+        **kwargs,
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args},
-        *args, **kwargs)
+        **kwargs)
 pass
 
 {RLTrainer_extras}
@@ -100,12 +100,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
     {__RLTrainer_doc__}
     """
     def __init__({RLTrainer_arguments},
-        *args, **kwargs,
+        **kwargs,
     ):
         if args is None: args = Unsloth{RLConfig_name}()
 {RLTrainer_extra_args}
         super().__init__({RLTrainer_call_args},
-        *args, **kwargs)
+        **kwargs)
 pass
 '''
 
