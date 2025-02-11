@@ -950,7 +950,8 @@ def patch_sft_trainer_tokenizer():
 
         check_text = check_text.split("\n")
         check_text = "\n".join(" "*where + x for x in check_text)
-
+        check_text = check_text.rstrip() + "\n"
+        
         if replacer is None:
             # .*? matches first match. .+? matches final match.
             replacer = re.findall(
