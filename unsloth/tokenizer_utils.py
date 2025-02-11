@@ -911,14 +911,19 @@ def patch_sft_trainer_tokenizer():
     """
         Patches the trainer with changes
     """
-    sft_trainer = eval(f"trl.trainer.sft_trainer.SFTTrainer")
+    try:
+        sft_trainer = eval(f"trl.trainer.sft_trainer.SFTTrainer")
+    except:
+    all_imports = dir(trl.trainer.sft_trainer)
+
     for function_name, replacer in (
-        ("_prepare_non_packed_dataloader", "def tokenize(element):", "_prepare_dataset",),
+        ("_prepare_non_packed_dataloader", "def tokenize(element):",),
+        ("_prepare_dataset", None,),
         # ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
     ):
         if not hasattr(sft_trainer, function_name): continue
 
-        function = getsource(eval(f"{sft_trainer}.{function_name}"))
+        function = getsource(eval(f"sft_trainer.{function_name}"))
         where = function.find("def")
         function = function.split("\n")
         function = "\n".join(x[where:] for x in function)
@@ -940,14 +945,28 @@ def patch_sft_trainer_tokenizer():
         "    processing_class = tokenizer\n"\
         "else:\n"\
         "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
-        
+
         check_text = check_text.split("\n")
         check_text = "\n".join(" "*where + x for x in check_text)
 
-        function = function.replace(replacer, check_text + replacer)
-        exec(function, globals())
+        if replacer is None:
+            replacer = re.findall(
+                f"def {function_name}\(.+?\).+?\:\n",
+                function,
+                flags = re.MULTILINE | re.DOTALL,
+            )
+            if len(replacer) == 0: continue
+            replacer = replacer[0]
+            function = function.replace(replacer, replacer + check_text)
+        else:
+            function = function.replace(replacer, check_text + replacer)
+        pass
 
+        x = [x for x in all_imports if x in function]
+        exec(f"from trl.trainer.sft_trainer import ({','.join(x)})", locals())
+        exec(function, locals(), globals())
         exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
+        print("Patched")
     pass
 
     # Patch train with fix_untrained_tokens
