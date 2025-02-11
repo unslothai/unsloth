@@ -945,6 +945,7 @@ def patch_sft_trainer_tokenizer():
         "    from functools import partial\n"\
         "    tokenizer = partial(tokenizer, add_special_tokens = False)\n"\
         "    processing_class = tokenizer\n"\
+        "    print(1111)\n"
         "else:\n"\
         "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
 
