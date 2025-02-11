@@ -349,31 +349,31 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
         init,
         flags = re.MULTILINE | re.DOTALL,
     )
-    if len(vllm_part) != 1: return None
+    if len(vllm_part) == 1:
+        vllm_part, args = vllm_part[0][0], vllm_part[0][1]
+        # Strip all comments
+        new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
 
-    vllm_part, args = vllm_part[0][0], vllm_part[0][1]
-    # Strip all comments
-    new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
-
-    # Get SamplingParams
-    sampling_params = re.findall(
-        r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}"\
-        r"SamplingParams\(.+?\))",
-        new_vllm_part,
-        flags = re.MULTILINE | re.DOTALL,
-    )
-    print(len(sampling_params), RLTrainer_name)
-    if len(sampling_params) == 1:
-        sampling_params = sampling_params[0]
-        # Replace with our vLLM engine
-        sampling_params = \
-            " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
-            sampling_params # Add spaces
-        new_vllm_part = \
-            f"\n{' '*8}if {args}.use_vllm:\n{sampling_params} "\
-            f"if getattr(args, 'sampling_params', None) is None else "\
-            f"getattr(args, 'sampling_params', None)\n{' '*8}else:\n"
-        init = init.replace(vllm_part, new_vllm_part)
+        # Get SamplingParams
+        sampling_params = re.findall(
+            r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}"\
+            r"SamplingParams\(.+?\))",
+            new_vllm_part,
+            flags = re.MULTILINE | re.DOTALL,
+        )
+        print(sampling_params)
+        if len(sampling_params) == 1:
+            sampling_params = sampling_params[0]
+            # Replace with our vLLM engine
+            sampling_params = \
+                " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
+                sampling_params # Add spaces
+            new_vllm_part = \
+                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params} "\
+                f"if getattr(args, 'sampling_params', None) is None else "\
+                f"getattr(args, 'sampling_params', None)\n{' '*8}else:\n"
+            init = init.replace(vllm_part, new_vllm_part)
+        pass
     pass
 
     # Search for vLLM calling in all child functions
