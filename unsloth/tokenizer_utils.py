@@ -911,11 +911,14 @@ def patch_sft_trainer_tokenizer():
     """
         Patches the trainer with changes
     """
+    sft_trainer = eval(f"trl.trainer.sft_trainer.SFTTrainer")
     for function_name, replacer in (
-        ("_prepare_non_packed_dataloader", "def tokenize(element):",),
+        ("_prepare_non_packed_dataloader", "def tokenize(element):", "_prepare_dataset",),
         # ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
     ):
-        function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
+        if not hasattr(sft_trainer, function_name): continue
+
+        function = getsource(eval(f"{sft_trainer}.{function_name}"))
         where = function.find("def")
         function = function.split("\n")
         function = "\n".join(x[where:] for x in function)
@@ -924,14 +927,20 @@ def patch_sft_trainer_tokenizer():
         "\n"\
         "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
         "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
+        "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"\
         "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"\
         "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
         "if getattr(tokenizer, 'bos_token', None) is not None else False\n"\
-        "add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
-
+        "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"\
+        "    from functools import partial\n"\
+        "    tokenizer = partial(tokenizer, add_special_tokens = False)\n"\
+        "    processing_class = tokenizer\n"\
+        "else:\n"\
+        "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
+        
         check_text = check_text.split("\n")
         check_text = "\n".join(" "*where + x for x in check_text)
 
