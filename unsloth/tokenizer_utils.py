@@ -947,8 +947,7 @@ def patch_sft_trainer_tokenizer():
         "    processing_class = tokenizer\n"\
         "else:\n"\
         "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
-        f"{' '*4}"
-        
+
         check_text = check_text.split("\n")
         check_text = "\n".join(" "*where + x for x in check_text)
 
@@ -961,6 +960,9 @@ def patch_sft_trainer_tokenizer():
             )
             if len(replacer) == 0: continue
             replacer = replacer[0]
+            print("====")
+            print(check_text)
+            print("====")
             function = function.replace(replacer, replacer + check_text)
         else:
             function = function.replace(replacer, check_text + replacer)
