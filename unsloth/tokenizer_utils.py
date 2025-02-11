@@ -918,7 +918,8 @@ def patch_sft_trainer_tokenizer():
     all_imports = dir(trl.trainer.sft_trainer)
 
     for (function_name, replacer,) in (
-        ("_prepare_non_packed_dataloader", "def tokenize(element):",),
+        # ("_prepare_non_packed_dataloader", "def tokenize(element):",),
+        ("_prepare_non_packed_dataloader", None,),
         ("_prepare_dataset", None,),
         # ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
     ):
