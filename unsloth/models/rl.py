@@ -246,6 +246,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "per_device_eval_batch_size"  : 4,
         "eval_accumulation_steps"     : 2,
         "torch_empty_cache_steps"     : 250,
+        "logging_steps"               : 1,
     }
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
