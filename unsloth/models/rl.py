@@ -340,7 +340,6 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
         r"args.use_vllm = True\n\2",
         init, 1,
     )
-    print(init)
 
     vllm_part = re.findall(
         r"(\n[\s]{8}"\
@@ -355,7 +354,6 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     vllm_part, args = vllm_part[0][0], vllm_part[0][1]
     # Strip all comments
     new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
-    print(new_vllm_part)
 
     # Get SamplingParams
     sampling_params = re.findall(
@@ -364,19 +362,19 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
         new_vllm_part,
         flags = re.MULTILINE | re.DOTALL,
     )
-    if len(sampling_params) != 1: return None
-    print(sampling_params)
-
-    sampling_params = sampling_params[0]
-    # Replace with our vLLM engine
-    sampling_params = \
-        " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
-        sampling_params # Add spaces
-    new_vllm_part = \
-        f"\n{' '*8}if {args}.use_vllm:\n{sampling_params} "\
-        f"if getattr(args, 'sampling_params', None) is None else "\
-        f"getattr(args, 'sampling_params', None)\n{' '*8}else:\n"
-    init = init.replace(vllm_part, new_vllm_part)
+    print(len(sampling_params), RLTrainer_name)
+    if len(sampling_params) == 1:
+        sampling_params = sampling_params[0]
+        # Replace with our vLLM engine
+        sampling_params = \
+            " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
+            sampling_params # Add spaces
+        new_vllm_part = \
+            f"\n{' '*8}if {args}.use_vllm:\n{sampling_params} "\
+            f"if getattr(args, 'sampling_params', None) is None else "\
+            f"getattr(args, 'sampling_params', None)\n{' '*8}else:\n"
+        init = init.replace(vllm_part, new_vllm_part)
+    pass
 
     # Search for vLLM calling in all child functions
     functions = dir(RLTrainer)
