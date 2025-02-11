@@ -295,6 +295,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         RLTrainer_extras     = RLTrainer_extras,
     )
+    print(RLTrainer_source)
 
     # Create new function
     created_module = create_new_function(
