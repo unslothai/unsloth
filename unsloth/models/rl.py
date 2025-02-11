@@ -340,6 +340,7 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
         r"args.use_vllm = True\n\2",
         init, 1,
     )
+    print(init)
 
     vllm_part = re.findall(
         r"(\n[\s]{8}"\
@@ -354,6 +355,7 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     vllm_part, args = vllm_part[0][0], vllm_part[0][1]
     # Strip all comments
     new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
+    print(new_vllm_part)
 
     # Get SamplingParams
     sampling_params = re.findall(
@@ -363,6 +365,7 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
         flags = re.MULTILINE | re.DOTALL,
     )
     if len(sampling_params) != 1: return None
+    print(sampling_params)
 
     sampling_params = sampling_params[0]
     # Replace with our vLLM engine
