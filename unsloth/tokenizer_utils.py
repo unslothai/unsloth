@@ -1056,5 +1056,5 @@ def patch_sft_trainer_tokenizer():
     pass
 pass
 
-# FInally patch TRL tokenizer things
-patch_sft_trainer_tokenizer()
+# Finally patch TRL tokenizer things
+# patch_sft_trainer_tokenizer()
