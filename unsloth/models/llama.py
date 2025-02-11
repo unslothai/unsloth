@@ -1952,13 +1952,13 @@ class FastLlamaModel:
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save max_seq_length
-        model.max_seq_length = max_position_embeddings
+        model.max_seq_length = max_seq_length
         internal_model = model
         while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_position_embeddings
+            internal_model.max_seq_length = max_seq_length
             internal_model = internal_model.model
         pass
-        internal_model.max_seq_length = max_position_embeddings
+        internal_model.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
