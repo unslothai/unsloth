@@ -230,6 +230,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += eval_changes
     pass
 
+    # Check max_seq_length
+    if "max_seq_length" in call_args:
+        length_check = \
+        "if hasattr(model, 'max_seq_length') and model.max_seq_length > max_seq_length:\n"\
+        "    print('Unsloth: You set `max_seq_length` as ' + str(max_seq_length) + ' but the\\n'\n"\
+        "          'model maximum sequence length is ' + str(model.max_seq_length) + '. We will reduce it.')\n"
+        "    max_seq_length = model.max_seq_length\n"
+        "if hasattr(model, 'max_seq_length') and max_seq_length is None: max_seq_length = model.max_seq_length\n"
+        extra_args += length_check
+    pass
+
     # Add statistics as well!
     extra_args += \
         "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
@@ -296,17 +307,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    from multiprocessing import cpu_count\n"\
         "    dataset_num_proc = cpu_count()\n"
         extra_args += num_proc_check
-    pass
-
-    # Check max_seq_length
-    if "max_seq_length" in call_args:
-        length_check = \
-        "if hasattr(model, 'max_seq_length') and model.max_seq_length > max_seq_length:\n"\
-        "    print('Unsloth: You set `max_seq_length` as ' + str(max_seq_length) + ' but the\\n'\n"\
-        "          'model maximum sequence length is ' + str(model.max_seq_length) + '. We will reduce it.')\n"
-        "    max_seq_length = model.max_seq_length\n"
-        "if hasattr(model, 'max_seq_length') and max_seq_length is None: max_seq_length = model.max_seq_length\n"
-        extra_args += length_check
     pass
 
     # Create RLConfig args
