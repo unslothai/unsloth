@@ -74,6 +74,7 @@ pass
 RLTrainer_replacement = '''
 from typing import *
 from dataclasses import dataclass, field
+from packaging.version import Version
 
 @dataclass
 class Unsloth{RLConfig_name}({RLConfig_name}):
@@ -197,14 +198,25 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         # Check eval_dataset first
         if "eval_dataset" in call_args:
             check_eval_dataset = \
-            "if getattr(args, 'eval_strategy', 'no') == 'no':\n"\
+            "if getattr(args, 'eval_dataset', None) is not None and "\
+            "getattr(args, 'eval_strategy', 'no') == 'no':\n"\
             "    args.eval_strategy = 'steps'\n"\
             "    if getattr(args, 'eval_steps', None) is None: args.eval_steps = 0.1\n"
             extra_args += check_eval_dataset
         pass
 
-        eval_changes = \
+        # Check if gradient accumulation bug fix is applied
+        check_ga = \
         "ga_steps = getattr(args, 'gradient_accumulation_steps', None)\n"\
+        "if ga_steps is not None and ga_steps > 1:\n"\
+        "    from transformers import __version__ as transformers_version\n"\
+        "    if Version(transformers_version) <= Version('4.45.2'):\n"\
+        "        print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers, TRL and Unsloth!\\n'\n"\
+        "              '`pip install --upgrade --no-cache-dir --force-reinstall --no-deps unsloth transformers trl unsloth_zoo`')\n"
+
+        extra_args += check_ga
+
+        eval_changes = \
         "if getattr(args, 'eval_strategy', 'no') != 'no':\n"\
         "    eval_bsz = getattr(args, 'per_device_eval_batch_size', 8)\n"\
         "    if eval_bsz == 8 and args.per_device_train_batch_size < eval_bsz: args.per_device_eval_batch_size = args.per_device_train_batch_size\n"\
@@ -236,7 +248,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Edit GA / bsz and weight_decay
     replacements = {
-        "output_dir"                  : 'unsloth_training_checkpoints',
+        "output_dir"                  : None,
         "logging_nan_inf_filter"      : False,
         "per_device_train_batch_size" : 4,
         "gradient_accumulation_steps" : 2,
@@ -263,6 +275,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "if learning_rate < 1e-7: raise FloatingPointError(f'Unsloth: Your learning rate of `{learning_rate}` is too small and less than 1e-7! Consider increasing it, otherwise gradient updates will be close to 0!')\n"\
         "if learning_rate > 1: raise OverflowError(f'Unsloth: Your learning rate of `{learning_rate}` is way too larger > 1! Consider decreasing it to 1e-1, otherwise gradient updates will explode!')"
         extra_args += learning_rate_check
+    pass
+
+    # Add output_dir saving
+    if "output_dir" in call_args:
+        # Default checks
+        saving_check = \
+        "if output_dir is None and save_strategy == 'steps' and save_steps == 500:\n"\
+        "    output_dir = 'unsloth_training_checkpoints'\n"\
+        "    save_strategy = 'no'\n"
+        extra_args += saving_check
     pass
 
     # Create RLConfig args
