@@ -110,7 +110,7 @@ def sft_trainer_compute_loss(function_name, function):
     )
     if len(replacer) != 0:
         replacer = replacer[0]
-        returner = " "*8 + "return (loss, outputs) if return_outputs else loss"
+        returner = "\n" + " "*8 + "return (loss, outputs) if return_outputs else loss"
         function = function.replace(replacer, replacer + returner)
     pass
     return function
