@@ -116,7 +116,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if args is None: args = Unsloth{RLConfig_name}()
 {RLTrainer_extra_args}
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
-        {RLTrainer_post}
+{RLTrainer_post}
 pass
 '''
 
