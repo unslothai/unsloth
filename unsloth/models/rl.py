@@ -282,7 +282,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    if hasattr(self, 'neftune_hook_handle'): del self.neftune_hook_handle\n"\
         "if getattr(args, 'neftune_noise_alpha', None) is not None:\n"\
         "    model.get_input_embeddings().neftune_noise_alpha = self.neftune_noise_alpha\n"\
-        "    self.neftune_hook_handle = self.model.get_input_embeddings().register_forward_hook(neftune_post_forward_hook)\n"\
         "pass\n"
         RLTrainer_post += neftune_check
     pass
