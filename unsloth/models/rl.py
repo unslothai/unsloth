@@ -269,7 +269,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"\
         "if 'processing_class' in locals():\n"\
         "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"\
-        "    if hasattr(processing_class, tokenizer) and hasattr(processing_class.tokenizer, 'padding_side'): "\
+        "    if hasattr(processing_class, 'tokenizer') and hasattr(processing_class.tokenizer, 'padding_side'): "\
         "processing_class.tokenizer.padding_side = 'right'\n"
         extra_args += training_check
     pass
