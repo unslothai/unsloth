@@ -34,6 +34,42 @@ import os
 
 
 def run(args):
+    """Trains a fast language model on a specified dataset and optionally saves the trained model.
+
+    This function loads a pre-trained language model and configures it to use Parameter-Efficient
+    Fine-Tuning (PEFT). It then formats a dataset using a specified prompt template and trains the model
+    using specified training arguments. After training, the function saves the model in a specified format
+    and optionally pushes it to a model hub.
+
+    Args:
+        args: An object containing various configuration parameters including:
+            - model_name (str): The name of the pre-trained model to use.
+            - max_seq_length (int): Maximum sequence length for the model inputs.
+            - dtype (str): Data type for model weights.
+            - load_in_4bit (bool): Whether to load the model in 4-bit precision.
+            - r (int): Rank parameter for PEFT.
+            - lora_alpha (float): Alpha parameter for LoRA.
+            - lora_dropout (float): Dropout rate for LoRA.
+            - bias (str): Bias configuration for PEFT.
+            - use_gradient_checkpointing (bool): Whether to use gradient checkpointing.
+            - random_state (int): Random state for reproducibility.
+            - use_rslora (bool): Whether to use RSLora.
+            - loftq_config (dict): Configuration for loftQ.
+            - dataset (str): The name of the dataset to load.
+            - per_device_train_batch_size (int): Batch size per device during training.
+            - gradient_accumulation_steps (int): Number of gradient accumulation steps.
+            - warmup_steps (int): Number of warmup steps for learning rate scheduler.
+            - max_steps (int): Maximum number of training steps.
+            - learning_rate (float): Learning rate for training.
+            - logging_steps (int): Frequency of logging training progress.
+            - optim (str): Optimizer to use.
+            - weight_decay (float): Weight decay for optimizer.
+            - lr_scheduler_type (str): Type of learning rate scheduler.
+            - seed (int): Random seed for initialization.
+            - output_dir (str): Directory to save training outputs.
+            - report_to (list): List of services to report training metrics.
+            - save_model (bool): Whether to save the trained model.
+            - save_gguf (bool): Whether to save the model in GGUF format."""
     import torch
     from unsloth import FastLanguageModel
     from datasets import load_dataset
@@ -80,6 +116,20 @@ def run(args):
 
     EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
     def formatting_prompts_func(examples):
+        """Formats a list of prompts with given instructions, inputs, and outputs.
+
+    This function takes a dictionary containing lists of 'instruction', 'input',
+    and 'output', and formats them into text prompts using a predefined template.
+    It appends an end-of-sequence token to each formatted prompt.
+
+    Args:
+        examples (dict): A dictionary with keys 'instruction', 'input', and 'output'.
+            Each key corresponds to a list of strings that provide the necessary
+            components for formatting prompts.
+
+    Returns:
+        dict: A dictionary with a single key 'text', containing a list of formatted
+            prompt strings."""
         instructions = examples["instruction"]
         inputs       = examples["input"]
         outputs      = examples["output"]

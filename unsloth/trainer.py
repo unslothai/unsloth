@@ -42,10 +42,46 @@ __all__ = [
 from transformers import __version__ as transformers_version
 if Version(transformers_version) > Version("4.45.2"):
     def unsloth_train(trainer, *args, **kwargs):
+        """Executes a custom training routine with gradient accumulation.
+
+    This function serves as a wrapper for the custom gradient accumulation
+    fixed trainer. It ensures that no additional arguments or keyword
+    arguments are passed, as they are not supported. Users are advised to
+    update their `transformers` package to the latest version if they require
+    more features.
+
+    Args:
+        trainer: The training object or configuration to be used.
+
+    Raises:
+        RuntimeError: If any additional positional or keyword arguments
+        are provided.
+
+    Returns:
+        The result of the `_unsloth_train` function, which runs the custom
+        training routine."""
         return trainer.train(*args, **kwargs)
     pass
 else:
     def unsloth_train(trainer, *args, **kwargs):
+        """Executes a custom training routine with gradient accumulation.
+
+    This function serves as a wrapper for the custom gradient accumulation
+    fixed trainer. It ensures that no additional arguments or keyword
+    arguments are passed, as they are not supported. Users are advised to
+    update their `transformers` package to the latest version if they require
+    more features.
+
+    Args:
+        trainer: The training object or configuration to be used.
+
+    Raises:
+        RuntimeError: If any additional positional or keyword arguments
+        are provided.
+
+    Returns:
+        The result of the `_unsloth_train` function, which runs the custom
+        training routine."""
         if len(args) != 0 or len(kwargs) != 0:
             raise RuntimeError(
                 "Unsloth: Our custom gradient accumulation fixed trainer does not support other arguments.\n"\
@@ -68,6 +104,25 @@ except:
 pass
 @dataclass
 class UnslothTrainingArguments(TrainingArguments):
+    """Arguments for configuring the training process with specific learning rates.
+
+    This data class extends `TrainingArguments` to include an optional parameter
+    for setting different learning rates specifically for embeddings and the
+    language model head.
+
+    Attributes:
+        embedding_learning_rate (Optional[float]): Specifies a separate learning
+            rate for embeddings and the language model head. If not set, the
+            default learning rate from `TrainingArguments` is used for all
+            components.
+
+    Args:
+        embedding_learning_rate: Optional; A float representing the learning rate
+            for embeddings and lm_head. If `None`, the default learning rate is used.
+
+    Returns:
+        An instance of `UnslothTrainingArguments` configured with the specified
+        learning rates."""
     embedding_learning_rate : Optional[float] = field(
         default = None,
         metadata = {"help" : "Different learning rates for embeddings and lm_head."}
@@ -81,6 +136,22 @@ def _create_unsloth_optimizer(
     optimizer_kwargs,
     embedding_lr = 5e-5,
 ):
+    """Creates an optimizer with separate learning rates for embeddings and non-embeddings.
+
+    This function configures an optimizer for a model, applying a different learning
+    rate to the model's embedding parameters than to the rest of the parameters.
+    Parameters ending with 'modules_to_save.default.weight' are considered embedding
+    parameters and are assigned a specified embedding learning rate.
+
+    Args:
+        model: The model containing parameters to be optimized.
+        optimizer_cls: The class of the optimizer to be used.
+        optimizer_kwargs: A dictionary of keyword arguments to be passed to the optimizer.
+        embedding_lr: The learning rate to be applied to embedding parameters (default is 5e-5).
+
+    Returns:
+        An instance of the specified optimizer class with separate parameter groups for
+        embeddings and non-embeddings, each with their respective learning rates."""
     lr = optimizer_kwargs["lr"]
     weight_decay = optimizer_kwargs.get("weight_decay", 0.0)
 
@@ -120,7 +191,24 @@ pass
 
 
 class UnslothTrainer(SFTTrainer):
+    """Trainer class that extends SFTTrainer to create a custom optimizer.
+
+    The UnslothTrainer class overrides the `create_optimizer` method to allow 
+    for a specific learning rate for embeddings if specified in the arguments.
+
+    Methods:
+        create_optimizer: Creates and returns an optimizer, using a custom 
+        learning rate for embeddings if provided."""
     def create_optimizer(self):
+        """Creates and returns an optimizer for model training.
+
+    This method customizes the optimizer creation process by checking for a 
+    specified `embedding_learning_rate` in the arguments. If such a rate is 
+    defined, a specialized optimizer is created using this learning rate for 
+    embeddings. Otherwise, the default optimizer creation process is invoked.
+
+    Returns:
+        Optimizer: The created optimizer instance for the model."""
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
         if embedding_learning_rate is None: return super().create_optimizer()
 
@@ -140,10 +228,45 @@ pass
 # From `trl>=0.13.0`, they changed how to pass several params to the trainer
 # We need to patch to make the transition smooth
 def _backwards_compatible_trainer(trainer_class, config_class):
+    """Modifies the initialization method of a trainer class for backward compatibility with newer versions.
+
+    This function wraps the initialization method of the provided trainer class to ensure that
+    parameters are correctly passed and processed, allowing for a smooth transition between
+    different versions of a training library. Specifically, it adapts the parameter handling
+    to accommodate changes introduced in version 0.13.0 of the `trl` library, such as the
+    renaming of certain parameters and the introduction of new configuration handling.
+
+    Args:
+        trainer_class: The trainer class whose initialization method is to be modified.
+        config_class: The configuration class used to create a configuration object with
+            appropriate parameters extracted from the arguments.
+
+    Returns:
+        function: A new initialization function that replaces the original one in the trainer class,
+        ensuring backward compatibility with the expected parameters."""
     original_init = trainer_class.__init__
     
     @wraps(original_init)
     def new_init(self, *args, **kwargs):
+        """Initializes a Trainer-like object with updated arguments for compatibility.
+
+    This function wraps the original initialization method of a Trainer-like
+    object to ensure compatibility with newer versions of a library by adjusting
+    the arguments passed to it. Specifically, it renames the 'tokenizer' argument
+    to 'processing_class' if needed, and constructs a configuration object with
+    parameters that have been moved from TrainingArguments to a separate Config
+    class.
+
+    Args:
+        *args: Positional arguments passed to the original initialization method.
+        **kwargs: Keyword arguments passed to the original initialization method.
+            - 'processing_class': Replaces 'tokenizer' if present.
+            - 'args': If present and the library version is 0.13.0.dev0 or newer,
+              it is used to build a configuration object with relevant fields.
+
+    Returns:
+        None: This function does not return any value. It modifies the initialization
+        process of the object it is applied to."""
         # All Trainer tokenizer are now called processing_class
         trainer_params = set(inspect.signature(original_init).parameters.keys())
 
@@ -207,6 +330,20 @@ pass
 
 
 def _patch_trl_trainer():
+    """Patches the training classes in the `trl` library for backwards compatibility.
+
+    This function checks if the `trl` library has a specific backwards compatibility
+    attribute set. If not, and if the library version is greater than 0.11.0, it identifies
+    trainer and configuration classes within the `trl.trainer` module. It then modifies
+    the `__init__` methods of these classes to ensure compatibility with older versions
+    of the library. After patching, it sets an attribute on the `trl` module to indicate
+    that the patch has been applied.
+
+    This function does not take any arguments and does not return anything.
+
+    Note:
+        - This function relies on an external function `_backwards_compatible_trainer`
+          which is assumed to adjust the `__init__` methods appropriately."""
     import trl
     if hasattr(trl, "__UNSLOTH_BACKWARDS_COMPATIBLE__"): return
     if Version(trl.__version__) <= Version("0.11.0"): return
