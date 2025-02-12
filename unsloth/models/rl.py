@@ -72,6 +72,7 @@ pass
 
 
 RLTrainer_replacement = '''
+import os
 from typing import *
 from dataclasses import dataclass, field
 from packaging.version import Version
@@ -188,7 +189,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "if not float16 and use_fp16: raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"\
         "if not use_bf16 and not use_fp16:\n"\
         "    args.fp16 = float16\n"\
-        "    args.bf16 = not float16\n"
+        "    args.bf16 = not float16\n"\
+        "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
         extra_args += mixed_precision
     pass
 
@@ -244,8 +246,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Add statistics as well!
     extra_args += \
         "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
-        f"PatchRLStatistics('{trainer_file}')\n"\
-        "print(args)\n"
+        f"PatchRLStatistics('{trainer_file}')\n"
 
     # Create RLTrainer args
     extra_args = extra_args.split("\n")
