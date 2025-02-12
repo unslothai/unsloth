@@ -25,6 +25,7 @@ from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from .rl_replacements import (
     RL_EXTRA_ARGS,
+    RL_FUNCTIONS,
 )
 
 def PatchRL(FastLanguageModel):
@@ -365,8 +366,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLConfig_extra_args = extra_args
     RLConfig_call_args  = call_args
 
-    # Patch vLLM
-    RLTrainer_extras = patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports)
+    # Patch vLLM and other functions
+    RLTrainer_extras = patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports)
     if RLTrainer_extras is None:
         RLTrainer_extras = f"_Unsloth{RLTrainer_name} = {RLTrainer_name}"
 
@@ -414,7 +415,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 pass
 
 
-def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
+def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
@@ -475,6 +476,7 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
     changed = {"__init__" : (old_init, init,)}
+    edit_functions = RL_FUNCTIONS.get(trainer_file, [])
 
     for function in functions:
         if not hasattr(RLTrainer, function): continue
@@ -482,6 +484,11 @@ def patch_vllm(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
         try: source = inspect.getsource(fx)
         except: continue
         original_source = source
+
+        # Check for function
+        for edit_function in edit_functions:
+            source = edit_function(function, source)
+        pass
 
         # llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         source = re.sub(
