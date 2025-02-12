@@ -43,7 +43,7 @@ def dpo_trainer_fix_columns(call_args, extra_args):
         "             'prompt_input_ids', 'prompt_attention_mask']\n"\
         "    if all(x in column_names for x in check):\n"\
         "        train_dataset = train_dataset.remove_columns(['chosen', 'rejected', 'prompt'])\n"\
-        "    del check, column_names\n"\
+        "    del check, column_names\n"
         return fix_dpo
     return ""
 pass
