@@ -33,7 +33,6 @@ def sft_trainer_fix_untraiend_tokens(call_args, extra_args):
         "if 'tokenizer' not in locals(): tokenizer = processing_class\n"\
         "fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAMES, eps = 1e-16)\n"\
         "fix_zero_training_loss(model, tokenizer, train_dataset)\n"
-        "print(1111)\n",
         return fix_tokenizer
     return ""
 pass
