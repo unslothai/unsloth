@@ -257,8 +257,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "        if args_max_seq_length > model_max_seq_length:\n"\
         "            print('Unsloth: You set `max_seq_length` as ' + str(args_max_seq_length) + ' but \n"\
         "                   the maximum the model supports is ' + str(model_max_seq_length) + '. We shall reduce it.')\n"\
-        "            args.max_seq_length = model_max_seq_length\n\n"
+        "            args.max_seq_length = model_max_seq_length\n"
         extra_args += length_check
+    pass
+
+    # Enable for training and move padding side of tokenizer to right
+    if "model" in call_args:
+        training_check = \
+        "if model is not None and hasattr(model, 'for_training'):\n"\
+        "    model.for_training()\n"\
+        "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"\
+        "if 'processing_class' in locals():\n"\
+        "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"\
+        "    if hasattr(processing_class, tokenizer) and hasattr(processing_class.tokenizer, 'padding_side'): "\
+        "processing_class.tokenizer.padding_side = 'right'\n"
+        extra_args += training_check
     pass
 
     # Check NEFTune
@@ -274,19 +287,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_post += neftune_check
     pass
 
-    # Enable for training and move padding side of tokenizer to right
-    if "model" in call_args:
-        training_check = \
-        "if model is not None and hasattr(model, 'for_training'):\n"\
-        "    model.for_training()\n"\
-        "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"\
-        "if 'processing_class' in locals():\n"\
-        "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"\
-        "    if hasattr(processing_class, tokenizer) and hasattr(processing_class.tokenizer, 'padding_side'): "\
-        "processing_class.tokenizer.padding_side = 'right'\n"
-        RLTrainer_post += training_check
-    pass
-    
     # Add statistics as well!
     extra_args += \
         "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
