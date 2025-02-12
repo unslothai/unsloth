@@ -304,7 +304,7 @@ def train_on_responses_only(
 
     # Check if all labels randomnly got masked to nothing - maybe wrong chat template?
     from .training_utils import fix_zero_training_loss
-    fix_zero_training_loss(None, tokenizer, train_dataset)
+    fix_zero_training_loss(None, tokenizer, trainer.train_dataset)
     return trainer
 pass
 
