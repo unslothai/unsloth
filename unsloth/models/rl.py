@@ -245,6 +245,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     extra_args += \
         "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
         f"PatchRLStatistics('{trainer_file}')\n"
+        "print(args)\n"
 
     # Create RLTrainer args
     extra_args = extra_args.split("\n")
