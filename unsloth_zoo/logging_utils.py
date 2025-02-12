@@ -28,6 +28,7 @@ METRICS_MOVE_TO_END = [
 REMOVED_METRICS = [
     "mean_token_accuracy", # SFT extras
 ]
+REMOVED_METRICS = frozenset(REMOVED_METRICS)
 
 import torch
 try:
@@ -197,7 +198,7 @@ def get_trl_metrics():
         pass
         metrics = beginning + middle + end
 
-        for remove in REMOVED_METRICS: metrics.remove(remove)
+        metrics = [x for x in metrics if x not in REMOVED_METRICS]
 
         all_metrics[trainer] = metrics
     pass
