@@ -78,15 +78,6 @@ from dataclasses import dataclass, field
 from packaging.version import Version
 import torch
 
-# https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_utils.py#L126
-def neftune_post_forward_hook(module, input, output):
-    if module.training:
-        dims = torch.tensor(output.size(1) * output.size(2))
-        mag_norm = module.neftune_noise_alpha / torch.sqrt(dims)
-        output = output + torch.zeros_like(output).uniform_(-mag_norm, mag_norm)
-    return output
-pass
-
 @dataclass
 class Unsloth{RLConfig_name}({RLConfig_name}):
     """
