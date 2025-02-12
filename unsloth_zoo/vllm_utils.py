@@ -946,6 +946,12 @@ def load_vllm(
         f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB. Also swap space = {swap_space} GB."
     )
 
+    # Get device as well
+    device = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+    if not "," in device: device = device + ","
+    device = device.split(",")[0]
+    device = f"cuda:{device}"
+
     engine_args = dict(
         model                  = model_name,
         gpu_memory_utilization = actual_gpu_memory_utilization,
@@ -972,9 +978,11 @@ def load_vllm(
         compilation_config     = compilation_config, # 0, 1, 2, 3
         enforce_eager          = enforce_eager,
         swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
+        device                 = device,
     )
 
-    # Keep trying until success!
+    # Keep trying until success (2 times)
+    trials = 0
     while True:
         try:
             if use_async:
@@ -986,12 +994,16 @@ def load_vllm(
             pass
             break
         except Exception as error:
+            trials += 1
             # Cleanup
             for _ in range(3):
                 gc.collect()
                 torch.cuda.empty_cache()
             pass
             error = str(error)
+            if trials >= 2:
+                raise RuntimeError(error)
+            
             if "gpu_memory_utilization" in error or "memory" in error:
                 approx_max_num_seqs = int(approx_max_num_seqs * 0.75)
                 engine_args["max_num_seqs"] = approx_max_num_seqs
