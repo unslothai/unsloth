@@ -71,6 +71,16 @@ def PatchRL(FastLanguageModel):
 pass
 
 
+# Handles NEFTune
+def neftune_post_forward_hook(module, input, output):
+    if module.training:
+        dims = torch.tensor(output.size(1) * output.size(2))
+        mag_norm = module.neftune_noise_alpha / torch.sqrt(dims)
+        output = output + torch.zeros_like(output).uniform_(-mag_norm, mag_norm)
+    return output
+pass
+
+
 RLTrainer_replacement = '''
 import os
 from typing import *
@@ -106,6 +116,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if args is None: args = Unsloth{RLConfig_name}()
 {RLTrainer_extra_args}
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
+        {RLTrainer_post}
 pass
 '''
 
@@ -164,6 +175,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Process RLTrainer first
     arguments, call_args = processed[0]
+    RLTrainer_post = ""
 
     # Add tokenizer if not seen
     if "tokenizer" not in parameters and "processing_class" in parameters:
@@ -215,7 +227,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    if Version(transformers_version) <= Version('4.45.2'):\n"\
         "        print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers, TRL and Unsloth!\\n'\n"\
         "              '`pip install --upgrade --no-cache-dir --force-reinstall --no-deps unsloth transformers trl unsloth_zoo`')\n"
-
         extra_args += check_ga
 
         eval_changes = \
@@ -243,6 +254,29 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += length_check
     pass
 
+    # Check NEFTune
+    if "neftune_noise_alpha" in call_args:
+        neftune_check = \
+        "if hasattr(self, 'neftune_hook_handle'):\n"\
+        "    self.neftune_hook_handle.remove()\n"\
+        "    if hasattr(self, 'neftune_hook_handle'): del self.neftune_hook_handle\n"\
+        "if getattr(args, 'neftune_noise_alpha', None) is not None:\n"\
+        "    model.get_input_embeddings().neftune_noise_alpha = self.neftune_noise_alpha\n"\
+        "    self.neftune_hook_handle = self.model.get_input_embeddings().register_forward_hook(neftune_post_forward_hook)\n"\
+        "pass\n"
+        RLTrainer_post += neftune_check
+    pass
+
+    # Enable for training and move padding side of tokenizer to right
+    RLTrainer_post += \
+    "if model is not None and hasattr(model, 'for_training'):\n"\
+    "    model.for_training()\n"\
+    "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"\
+    "if 'processing_class' in locals():\n"\
+    "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"\
+    "    if hasattr(processing_class, tokenizer) and hasattr(processing_class.tokenizer, 'padding_side'): "\
+    "processing_class.tokenizer.padding_side = 'right'\n"
+
     # Add statistics as well!
     extra_args += \
         "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
@@ -251,6 +285,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Create RLTrainer args
     extra_args = extra_args.split("\n")
     extra_args = "\n".join(" "*8 + x for x in extra_args)
+    RLTrainer_post = RLTrainer_post.split("\n")
+    RLTrainer_post = "\n".join(" "*8 + x for x in RLTrainer_post)
     RLTrainer_arguments  = arguments
     RLTrainer_extra_args = extra_args
     RLTrainer_call_args  = call_args
@@ -344,6 +380,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLConfig_kwargs      = ",**kwargs"[1 if RLConfig_call_args .endswith(",") else 0:],
 
         RLTrainer_extras     = RLTrainer_extras,
+        RLTrainer_post       = RLTrainer_post,
     )
 
     # Create new function
