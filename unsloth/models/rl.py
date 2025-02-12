@@ -401,6 +401,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source,
         f"trl.trainer.{trainer_file}",
         imports,
+        overwrite = False,
     )
     
     # Patch Trainer
