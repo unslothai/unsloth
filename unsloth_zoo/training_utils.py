@@ -67,13 +67,15 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
             raise ZeroDivisionError(
                 "Unsloth: All labels in your dataset are -100. Training losses will be all 0.\n"\
                 "For example, are you sure you used `train_on_responses_only` correctly?\n"\
-                "Or did you mask our tokens incorrectly? Maybe this is intended?"
+                "Or did you mask our tokens incorrectly? Maybe this is intended?\n"\
+                "Maybe you're using a Llama chat template on a non Llama model for example?"
             )
         elif seen_bad / (seen_bad + seen_good) >= 0.9:
             print(
                 "Unsloth: Nearly all labels in your dataset are -100. Training losses will be all 0.\n"\
                 "For example, are you sure you used `train_on_responses_only` correctly?\n"\
-                "Or did you mask our tokens incorrectly? Maybe this is intended?"
+                "Or did you mask our tokens incorrectly? Maybe this is intended?\n"\
+                "Maybe you're using a Llama chat template on a non Llama model for example?"
             )
     pass
 pass
