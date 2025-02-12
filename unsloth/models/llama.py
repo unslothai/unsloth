@@ -2145,8 +2145,6 @@ class FastLlamaModel:
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora"   in signature
-        
-        assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
             logger.warning_once(
