@@ -59,6 +59,7 @@ IGNORED_TOKENIZER_NAMES = frozenset(
     [x.lower() for x in IGNORED_TOKENIZER_NAMES] + \
     [x.lower()+"-bnb-4bit" for x in IGNORED_TOKENIZER_NAMES]
 )
+os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
@@ -1055,5 +1056,5 @@ def patch_sft_trainer_tokenizer():
     pass
 pass
 
-# Finally patch TRL tokenizer things
+# Finally patch TRL tokenizer things -> moved to RL
 # patch_sft_trainer_tokenizer()
