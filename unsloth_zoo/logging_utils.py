@@ -25,6 +25,10 @@ METRICS_MOVE_TO_END = [
     "alpha",
 ]
 
+REMOVED_METRICS = [
+    "mean_token_accuracy", # SFT extras
+]
+
 import torch
 try:
     from transformers.utils.notebook import (
@@ -192,6 +196,8 @@ def get_trl_metrics():
             pass
         pass
         metrics = beginning + middle + end
+
+        for remove in REMOVED_METRICS: metrics.remove(remove)
 
         all_metrics[trainer] = metrics
     pass
