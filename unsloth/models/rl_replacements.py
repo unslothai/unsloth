@@ -78,7 +78,7 @@ def sft_trainer_prepare_dataset(function_name, function):
     "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n"
 
     check_text = check_text.split("\n")
-    check_text = "\n".join(" "*4 + x for x in check_text)
+    check_text = "\n".join(" "*8 + x for x in check_text)
     check_text = check_text.rstrip() + "\n"
 
     # .*? matches first match. .+? matches final match.
