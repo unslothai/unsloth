@@ -1635,9 +1635,9 @@ def create_ollama_model(
     return_code = process.wait()
 
     if return_code != 0:
-        print(f"\nMODEL PUBLISHED FAILED WITH RETURN CODE {return_code}")
+        print(f"\nMODEL CREATED FAILED WITH RETURN CODE {return_code}")
     else:
-        print("\nMODEL PUBLISHED SUCCESSFULLY")
+        print("\nMODEL CREATED SUCCESSFULLY")
     pass
 
 
