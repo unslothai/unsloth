@@ -1154,6 +1154,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
+        print("========== dtype = ", logits.dtype)
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
