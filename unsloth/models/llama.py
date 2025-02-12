@@ -15,6 +15,7 @@
 import torch
 import gc
 import math
+from functools import partial
 from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import __version__
@@ -1802,8 +1803,6 @@ class FastLlamaModel:
             model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
-
-            from functools import partial
             model.fast_generate_batches = partial(generate_batches, model.vllm_engine)
         pass
         # Return old flag
@@ -2632,6 +2631,10 @@ class FastLlamaModel:
             gc.collect()
             torch.cuda.empty_cache()
         pass
+
+        # Add for_inference and for_training
+        model.for_training  = partial(FastLlamaModel.for_training,  model)
+        model.for_inference = partial(FastLlamaModel.for_inference, model)
         return model
     pass
 
