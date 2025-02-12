@@ -116,3 +116,22 @@ def sft_trainer_compute_loss(function_name, function):
     return function
 pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
+
+
+# Autocast precision for GRPO
+def grpo_trainer__prepare_inputs(function_name, function):
+    if  function_name != "_prepare_inputs": return function
+
+    if "with torch.inference_mode()" not in function: return function
+
+    function = function.replace(
+        "with torch.inference_mode()",
+
+        "with torch.inference_mode(), "\
+        "torch.amp.autocast(device_type = 'cuda', "\
+        "dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "\
+        "if not torch.is_autocast_enabled('cuda') else nullcontext()",
+    )
+    return function
+pass
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
