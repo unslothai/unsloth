@@ -428,19 +428,27 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = init.replace("get_peft_model(model, peft_config)", "model")
 
     # Set use_vllm if not set
-    init = re.sub(
-        r"\)([ ]{0,}\-\>[ ]{0,}None[ ]{0,}):\n([\s]{4})",
-        r"):\n\2    "\
-        r"if hasattr(model, 'vllm_engine') and "\
-        r"getattr(args, 'use_vllm') and getattr(args, 'use_vllm', False): "\
-        r"args.use_vllm = True\n\2",
-        init, 1,
-    )
+    if "args.use_vllm" in init and "model" in init and "args" in init:
+        # .*? matches first match. .+? matches final match.
+        replacer = re.findall(
+            "def __init__\(.*?\).*?\:\n",
+            init,
+            flags = re.MULTILINE | re.DOTALL,
+        )
+        if len(replacer) != 0:
+            replacer = replacer[0]
+            vllm_setter = "\n" + " "*8 + \
+            "if hasattr(model, 'vllm_engine') and "\
+            "getattr(args, 'use_vllm') and getattr(args, 'use_vllm', False): "\
+            "args.use_vllm = True\n"
+            init = init.replace(replacer, replacer + vllm_setter)
+        pass
+    pass
 
     vllm_part = re.findall(
         r"(\n[\s]{8}"\
-        r"if (self|args)\.use_vllm\:.+?"\
-        r"\n[\s]{8,}"\
+        r"if (self|args)\.use_vllm\:.*?"\
+        r"\n[\s]{8}"\
         "else:\n)",
         init,
         flags = re.MULTILINE | re.DOTALL,
