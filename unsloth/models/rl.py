@@ -288,7 +288,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if trainer_file in RL_EXTRA_ARGS:
         process_extra_args = RL_EXTRA_ARGS[trainer_file]
         for process_extra_arg in process_extra_args:
-            extra_args += process_extra_args(call_args, extra_args)
+            extra_args += process_extra_arg(call_args, extra_args)
     pass
 
     # Create RLTrainer args
