@@ -23,6 +23,7 @@ RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS  = defaultdict(list)
 
 
+# Check untrained tokens
 def sft_trainer_fix_untraiend_tokens(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_tokenizer = \
@@ -38,6 +39,7 @@ pass
 RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untraiend_tokens)
 
 
+# Remove DPO columns which might randomnly be tokenized
 def dpo_trainer_fix_columns(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_dpo = \
@@ -55,6 +57,7 @@ pass
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
 
 
+# Fix tokenizer double BOS
 def sft_trainer_prepare_dataset(function_name, function):
     if  function_name != "_prepare_non_packed_dataloader" and \
         function_name != "_prepare_dataset": return function
@@ -93,3 +96,23 @@ def sft_trainer_prepare_dataset(function_name, function):
     return function
 pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
+
+
+# Ignore mean_token_accuracy since it needs logits
+def sft_trainer_compute_loss(function_name, function):
+    if  function_name != "compute_loss": return function
+
+    # .*? matches first match. .+? matches final match.
+    replacer = re.findall(
+        f"\.compute_loss\(.*?\)",
+        function,
+        flags = re.MULTILINE | re.DOTALL,
+    )
+    if len(replacer) != 0:
+        replacer = replacer[0]
+        returner = " "*8 + "return (loss, outputs) if return_outputs else loss"
+        function = function.replace(replacer, replacer + returner)
+    pass
+    return function
+pass
+RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
