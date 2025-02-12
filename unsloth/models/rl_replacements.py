@@ -57,8 +57,8 @@ RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
 
 def sft_trainer_prepare_dataset(function_name, function):
     if  function_name != "_prepare_non_packed_dataloader" and \
-        function_name != "_prepare_dataset": return
-    
+        function_name != "_prepare_dataset": return function
+
     check_text = \
     "\n"\
     "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
@@ -90,7 +90,7 @@ def sft_trainer_prepare_dataset(function_name, function):
     if len(replacer) != 0:
         replacer = replacer[0]
         function = function.replace(replacer, replacer + check_text)
-        pass
+    pass
     return function
 pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
