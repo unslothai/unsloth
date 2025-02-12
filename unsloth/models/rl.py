@@ -188,7 +188,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Edit bf16, fp16 by checking model's torch_dtype directly
     extra_args = ""
-    if "args" in call_args:
+    if "args" in call_args and "model" in call_args:
         mixed_precision = \
         "use_bf16 = getattr(args, 'bf16', False)\n"\
         "use_fp16 = getattr(args, 'fp16', False)\n"\
@@ -239,23 +239,30 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "if args.fp16 and bf16_full_eval: args.bf16_full_eval = False; args.fp16_full_eval = True\n"\
         "if args.bf16 and fp16_full_eval: args.bf16_full_eval = True; args.fp16_full_eval = False\n"\
         "if not bf16_full_eval and not fp16_full_eval: args.bf16_full_eval = args.bf16; args.fp16_full_eval = args.fp16\n"
-
         extra_args += eval_changes
     pass
 
     # Check max_seq_length
-    if "max_seq_length" in call_args:
+    if "model" in call_args:
         length_check = \
-        "if hasattr(model, 'max_seq_length') and model.max_seq_length > max_seq_length:\n"\
-        "    print('Unsloth: You set `max_seq_length` as ' + str(max_seq_length) + ' but the\\n'\n"\
-        "          'model maximum sequence length is ' + str(model.max_seq_length) + '. We will reduce it.')\n"
-        "    max_seq_length = model.max_seq_length\n"
-        "if hasattr(model, 'max_seq_length') and max_seq_length is None: max_seq_length = model.max_seq_length\n"
+        "if 'max_seq_length' not in locals() and not hasattr(args, 'max_seq_length'):\n"\
+        "    pass\n"\
+        "else:\n"\
+        "    model_max_seq_length = getattr(model, 'max_seq_length', None)\n"\
+        "    args_max_seq_length  = getattr(args,  'max_seq_length', None)\n"\
+        "    if args_max_seq_length is None and model_max_seq_length is not None:\n"\
+        "        max_seq_length = model.max_seq_length\n"\
+        "        if hasattr(args, 'max_seq_length'): args.max_seq_length = max_seq_length\n"
+        "    elif args_max_seq_length is not None and model_max_seq_length is not None:\n"\
+        "        if args_max_seq_length > model_max_seq_length:\n"\
+        "            print('Unsloth: You set `max_seq_length` as ' + str(args_max_seq_length) + ' but \n"\
+        "                   the maximum the model supports is ' + str(model_max_seq_length) + '. We shall reduce it.')\n"\
+        "            args.max_seq_length = model_max_seq_length\n\n"
         extra_args += length_check
     pass
 
     # Check NEFTune
-    if "neftune_noise_alpha" in call_args:
+    if "model" in call_args:
         neftune_check = \
         "if hasattr(self, 'neftune_hook_handle'):\n"\
         "    self.neftune_hook_handle.remove()\n"\
@@ -268,15 +275,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     pass
 
     # Enable for training and move padding side of tokenizer to right
-    RLTrainer_post += \
-    "if model is not None and hasattr(model, 'for_training'):\n"\
-    "    model.for_training()\n"\
-    "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"\
-    "if 'processing_class' in locals():\n"\
-    "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"\
-    "    if hasattr(processing_class, tokenizer) and hasattr(processing_class.tokenizer, 'padding_side'): "\
-    "processing_class.tokenizer.padding_side = 'right'\n"
-
+    if "model" in call_args:
+        training_check = \
+        "if model is not None and hasattr(model, 'for_training'):\n"\
+        "    model.for_training()\n"\
+        "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"\
+        "if 'processing_class' in locals():\n"\
+        "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"\
+        "    if hasattr(processing_class, tokenizer) and hasattr(processing_class.tokenizer, 'padding_side'): "\
+        "processing_class.tokenizer.padding_side = 'right'\n"
+        RLTrainer_post += training_check
+    pass
+    
     # Add statistics as well!
     extra_args += \
         "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
@@ -346,6 +356,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    dataset_num_proc = cpu_count()\n"
         extra_args += num_proc_check
     pass
+
+    # Edit report_to and default it to nothing if max_steps is like 60
 
     # Create RLConfig args
     extra_args = extra_args.split("\n")
