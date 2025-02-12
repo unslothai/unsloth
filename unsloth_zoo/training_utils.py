@@ -45,6 +45,7 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
     
     if len(train_dataset) == 0: return
 
+
     row = train_dataset[0]
     if type(row) is dict and "labels" in row:
 
@@ -60,16 +61,23 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
         pass
 
         # Check ratio
-        if seen_bad / (seen_bad + seen_good) >= 0.9:
-            print(
-                "Unsloth: Most labels in your dataset are -100. Training losses will be all 0.\n"\
+        if seen_bad == 0 and seen_good == 0: return
+
+        elif seen_bad / (seen_bad + seen_good) == 1:
+            raise ZeroDivisionError(
+                "Unsloth: All labels in your dataset are -100. Training losses will be all 0.\n"\
                 "For example, are you sure you used `train_on_responses_only` correctly?\n"\
                 "Or did you mask our tokens incorrectly? Maybe this is intended?"
             )
-        pass
+        elif seen_bad / (seen_bad + seen_good) >= 0.9:
+            print(
+                "Unsloth: Nearly all labels in your dataset are -100. Training losses will be all 0.\n"\
+                "For example, are you sure you used `train_on_responses_only` correctly?\n"\
+                "Or did you mask our tokens incorrectly? Maybe this is intended?"
+            )
     pass
 pass
-
+            
 
 def get_max_steps(training_args, n_training_samples, train_dataset):
     # Approximately from https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py#L2092
