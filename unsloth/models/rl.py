@@ -71,7 +71,14 @@ def PatchRL(FastLanguageModel):
 pass
 
 
-# Handles NEFTune
+RLTrainer_replacement = '''
+import os
+from typing import *
+from dataclasses import dataclass, field
+from packaging.version import Version
+import torch
+
+# https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_utils.py#L126
 def neftune_post_forward_hook(module, input, output):
     if module.training:
         dims = torch.tensor(output.size(1) * output.size(2))
@@ -79,13 +86,6 @@ def neftune_post_forward_hook(module, input, output):
         output = output + torch.zeros_like(output).uniform_(-mag_norm, mag_norm)
     return output
 pass
-
-
-RLTrainer_replacement = '''
-import os
-from typing import *
-from dataclasses import dataclass, field
-from packaging.version import Version
 
 @dataclass
 class Unsloth{RLConfig_name}({RLConfig_name}):
