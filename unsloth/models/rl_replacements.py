@@ -85,7 +85,7 @@ def sft_trainer_prepare_dataset(function_name, function):
 
     # .*? matches first match. .+? matches final match.
     replacer = re.findall(
-        f"def {function_name}\(.*?\).*?\:\n",
+        r"def {function_name}\(.*?\).*?\:\n",
         function,
         flags = re.MULTILINE | re.DOTALL,
     )
@@ -104,7 +104,7 @@ def sft_trainer_compute_loss(function_name, function):
 
     # .*? matches first match. .+? matches final match.
     replacer = re.findall(
-        f"\.compute_loss\(.*?\)",
+        r"\.compute_loss\(.*?\)",
         function,
         flags = re.MULTILINE | re.DOTALL,
     )
@@ -162,13 +162,13 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     # Edit model to autocast it
     # .*? matches first match. .+? matches final match.
     original = re.findall(
-        f"logits = model\(.*?\)",
+        r"\n([ ]{4,})(logits = model\(.*?\))",
         function,
         flags = re.MULTILINE | re.DOTALL,
     )
     if len(original) != 0:
-        original = original[0]
-        spaces = function.find(original)
+        spaces, original = original[0]
+        spaces = len(spaces)
         replacer = \
         "with torch.amp.autocast(device_type = 'cuda', "\
         "dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "\
