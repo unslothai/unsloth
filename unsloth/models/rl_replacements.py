@@ -124,6 +124,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
 
     if "with torch.inference_mode()" not in function: return function
 
+    # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
 
@@ -131,6 +132,12 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "torch.amp.autocast(device_type = 'cuda', "\
         "dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "\
         "if not torch.is_autocast_enabled('cuda') else nullcontext():",
+    )
+
+    # Disable attaching a float32 conversion hook which upcasts logits to FP32
+    function = function.replace(
+        "self.accelerator.unwrap_model(self.model)",
+        "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
     return function
 pass
@@ -148,15 +155,26 @@ pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 
 
-# Edit _get_per_token_logps
+# Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
-    # Set attention_mask to boolean
-    # function = function.replace(
-    #     "attention_mask=attention_mask",
-    #     "attention_mask=attention_mask.to(torch.bool)"
-    # )
+    # Edit model to autocast it
+    # .*? matches first match. .+? matches final match.
+    original = re.findall(
+        f"logits = model\(.*?\)",
+        function,
+        flags = re.MULTILINE | re.DOTALL,
+    )
+    if len(original) != 0:
+        original = original[0]
+        replacer = \
+        " "*4 + "with torch.amp.autocast(device_type = 'cuda', "\
+        "dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "\
+        "if not torch.is_autocast_enabled('cuda') else nullcontext():\n" + \
+        " "*8 + original
+        function = function.replace(original, replacer)
+    pass
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
