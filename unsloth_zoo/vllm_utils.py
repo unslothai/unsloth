@@ -1100,6 +1100,113 @@ def load_lora(model, save_directory, load_tensors = True):
 pass
 
 
+def check_vllm_lora_loaded(model):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Check if LoRA is loaded - if not, we should load the first one
+    m = model.vllm_engine.llm_engine.model_executor.driver_worker.model_runner
+    lora_cache = m.lora_manager._adapter_manager._active_adapters.cache
+    return len(lora_cache) != 0
+pass
+
+
+@torch.inference_mode
+def prepare_vllm_lora_loading(model):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Get all vLLM LoRAs
+    assert(hasattr(model, "vllm_engine"))
+
+    # Must split into 2 lists since B is scaled in vLLM
+    model_loras_A, model_loras_B = [], []
+    vllm_loras_A,  vllm_loras_B  = [], []
+    vllm_model = model.vllm_engine.llm_engine.model_executor.driver_worker.model_runner.model
+    
+    # Go through all layers!
+    for v_layer, m_layer in zip(vllm_model .model.layers, model.model.model.layers):
+        model_loras_A.append(m_layer.self_attn.q_proj.lora_A.default.weight)
+        model_loras_A.append(m_layer.self_attn.k_proj.lora_A.default.weight)
+        model_loras_A.append(m_layer.self_attn.v_proj.lora_A.default.weight)
+        vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[0])
+        vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[1])
+        vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[2])
+
+        sq = m_layer.self_attn.q_proj.scaling["default"]
+        sk = m_layer.self_attn.k_proj.scaling["default"]
+        sv = m_layer.self_attn.v_proj.scaling["default"]
+        sq = None if sq == 1.0 else sq
+        sk = None if sk == 1.0 else sk
+        sv = None if sv == 1.0 else sv
+        model_loras_B.append( m_layer.self_attn.q_proj.lora_B.default.weight)
+        model_loras_B.append( m_layer.self_attn.k_proj.lora_B.default.weight)
+        model_loras_B.append( m_layer.self_attn.v_proj.lora_B.default.weight)
+        vllm_loras_B .append((v_layer.self_attn.qkv_proj.lora_b_stacked[0], sq,))
+        vllm_loras_B .append((v_layer.self_attn.qkv_proj.lora_b_stacked[1], sk,))
+        vllm_loras_B .append((v_layer.self_attn.qkv_proj.lora_b_stacked[2], sv,))
+
+        so = m_layer.self_attn.o_proj.scaling["default"]
+        so = None if so == 1.0 else so
+        model_loras_A.append(m_layer.self_attn.o_proj.lora_A.default.weight)
+        vllm_loras_A .append(v_layer.self_attn.o_proj.lora_a_stacked[0])
+        model_loras_B.append( m_layer.self_attn.o_proj.lora_B.default.weight)
+        vllm_loras_B .append((v_layer.self_attn.o_proj.lora_b_stacked[0], so,))
+
+        model_loras_A.append(m_layer.mlp.gate_proj.lora_A.default.weight)
+        model_loras_A.append(m_layer.mlp.gate_proj.lora_A.default.weight)
+        vllm_loras_A .append(v_layer.mlp.gate_up_proj.lora_a_stacked[0])
+        vllm_loras_A .append(v_layer.mlp.gate_up_proj.lora_a_stacked[1])
+
+        sg = m_layer.mlp.gate_proj.scaling["default"]
+        su = m_layer.mlp.  up_proj.scaling["default"]
+        sg = None if sg == 1.0 else sg
+        su = None if su == 1.0 else su
+        model_loras_B.append( m_layer.mlp.gate_proj.lora_B.default.weight)
+        model_loras_B.append( m_layer.mlp.gate_proj.lora_B.default.weight)
+        vllm_loras_B .append((v_layer.mlp.gate_up_proj.lora_b_stacked[0], sg,))
+        vllm_loras_B .append((v_layer.mlp.gate_up_proj.lora_b_stacked[1], su,))
+
+        sd = m_layer.mlp.down_proj.scaling["default"]
+        sd = None if sd == 1.0 else sd
+        model_loras_A.append(m_layer.mlp.down_proj.lora_A.default.weight)
+        vllm_loras_A .append(v_layer.mlp.down_proj.lora_a_stacked[0])
+        model_loras_B.append( m_layer.mlp.down_proj.lora_B.default.weight)
+        vllm_loras_B .append((v_layer.mlp.down_proj.lora_b_stacked[0], sd,))
+    pass
+
+    # Check all shapes
+    for model_lora_A, vllm_lora_A in zip(model_loras_A, vllm_loras_A):
+        assert(model_lora_A.squeeze().shape == vllm_lora_A.squeeze().shape)
+    for model_lora_B, (vllm_lora_B, s,) in zip(model_loras_B, vllm_loras_B):
+        assert(model_lora_B.squeeze().shape == vllm_lora_B.squeeze().shape)
+    pass
+
+    # Set model items
+    model.model_lora_A = model_lora_A
+    model.model_lora_B = model_lora_B
+    model. vllm_lora_A = vllm_lora_A
+    model. vllm_lora_B = vllm_lora_B
+    return
+pass
+
+
+def load_lora_directly(model):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Load LoRAs directly from model into vLLM internal LoRAs
+    model_loras_A = model.model_loras_A
+    model_loras_B = model.model_loras_B
+    vllm_lora_A   = model.  vllm_lora_A
+    vllm_lora_B   = model.  vllm_lora_B
+
+    for model_lora_A, vllm_lora_A in zip(model_loras_A, vllm_loras_A):
+        vllm_lora_A.copy_(model_lora_A, non_blocking = True)
+    pass
+
+    # Must also scale B with scaling since vLLM does this
+    for model_lora_B, (vllm_lora_B, s) in zip(model_loras_B, vllm_loras_B):
+        vllm_lora_B.copy_(model_lora_B, non_blocking = True)
+        if s is not None: vllm_lora_B *= s
+    pass
+pass
+
+
 def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, **kwargs):
     # All Unsloth Zoo code licensed under LGPLv3
     # Cannot just use llm.generate or will OOM - split into batches
