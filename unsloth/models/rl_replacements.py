@@ -108,7 +108,6 @@ def _sft_trainer_compute_loss(self, model, inputs, return_outputs = False, num_i
         return_outputs = return_outputs,
         num_items_in_batch = num_items_in_batch,
     )
-    print(loss, outputs)
     return (loss, outputs) if return_outputs else loss
 pass
 
