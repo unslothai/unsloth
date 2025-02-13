@@ -115,6 +115,7 @@ def sft_trainer_compute_loss(function_name, function):
     if  function_name != "compute_loss": return function
 
     function = inspect.getsource(_sft_trainer_compute_loss)
+    function = function.replace("def _sft_trainer_compute_loss", "def compute_loss")
     return function
 pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
