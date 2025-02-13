@@ -1209,7 +1209,7 @@ def load_lora(model, save_directory, load_tensors = True):
         # del outputs
         # vllm_lora_already_loaded(model)
         print("###", LORA_REQUEST_ID)
-        vllm_lora_already_loaded(model):
+        vllm_lora_already_loaded(model)
             # model.saved_vllm_lora_request = lora_request
     else:
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
