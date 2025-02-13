@@ -946,6 +946,12 @@ def load_vllm(
         f"Unsloth: vLLM's KV Cache can use up to {round(memory_left_for_kv_cache_gb, 2)} GB. Also swap space = {swap_space} GB."
     )
 
+    # Get device as well
+    device = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+    if not "," in device: device = device + ","
+    device = device.split(",")[0]
+    device = f"cuda:{device}"
+
     engine_args = dict(
         model                  = model_name,
         gpu_memory_utilization = actual_gpu_memory_utilization,
@@ -972,9 +978,11 @@ def load_vllm(
         compilation_config     = compilation_config, # 0, 1, 2, 3
         enforce_eager          = enforce_eager,
         swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
+        device                 = device,
     )
 
-    # Keep trying until success!
+    # Keep trying until success (2 times)
+    trials = 0
     while True:
         try:
             if use_async:
@@ -986,12 +994,16 @@ def load_vllm(
             pass
             break
         except Exception as error:
+            trials += 1
             # Cleanup
             for _ in range(3):
                 gc.collect()
                 torch.cuda.empty_cache()
             pass
             error = str(error)
+            if trials >= 2:
+                raise RuntimeError(error)
+            
             if "gpu_memory_utilization" in error or "memory" in error:
                 approx_max_num_seqs = int(approx_max_num_seqs * 0.75)
                 engine_args["max_num_seqs"] = approx_max_num_seqs
@@ -1049,8 +1061,129 @@ def get_peft_config(save_directory):
 pass
 
 
+def vllm_lora_already_loaded(model):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Check if LoRA is loaded - if not, we should load the first one
+    m = model.vllm_engine.llm_engine.model_executor.driver_worker.model_runner
+    lora_cache = m.lora_manager._adapter_manager._active_adapters.cache
+
+    layers = m.model.model.layers
+    v_layer = layers[0]
+    print(lora_cache, v_layer.self_attn.qkv_proj.lora_a_stacked[0].data_ptr())
+    return len(lora_cache) != 0
+pass
+
+
+def prepare_vllm_lora_loading(model):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Get all vLLM LoRAs
+    assert(hasattr(model, "vllm_engine"))
+
+    # Must split into 2 lists since B is scaled in vLLM
+    model_loras_A, model_loras_B = [], []
+    vllm_loras_A,  vllm_loras_B  = [], []
+    vllm_model = model.vllm_engine.llm_engine.model_executor.driver_worker.model_runner.model
+    
+    # Go through all layers!
+    for v_layer, m_layer in zip(vllm_model .model.layers, model.model.model.layers):
+        model_loras_A.append(m_layer.self_attn.q_proj.lora_A.default.weight)
+        model_loras_A.append(m_layer.self_attn.k_proj.lora_A.default.weight)
+        model_loras_A.append(m_layer.self_attn.v_proj.lora_A.default.weight)
+        vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[0])
+        vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[1])
+        vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[2])
+
+        sq = m_layer.self_attn.q_proj.scaling["default"]
+        sk = m_layer.self_attn.k_proj.scaling["default"]
+        sv = m_layer.self_attn.v_proj.scaling["default"]
+        sq = None if sq == 1.0 else sq
+        sk = None if sk == 1.0 else sk
+        sv = None if sv == 1.0 else sv
+        model_loras_B.append( m_layer.self_attn.q_proj.lora_B.default.weight)
+        model_loras_B.append( m_layer.self_attn.k_proj.lora_B.default.weight)
+        model_loras_B.append( m_layer.self_attn.v_proj.lora_B.default.weight)
+        vllm_loras_B .append((v_layer.self_attn.qkv_proj.lora_b_stacked[0], sq,))
+        vllm_loras_B .append((v_layer.self_attn.qkv_proj.lora_b_stacked[1], sk,))
+        vllm_loras_B .append((v_layer.self_attn.qkv_proj.lora_b_stacked[2], sv,))
+
+        so = m_layer.self_attn.o_proj.scaling["default"]
+        so = None if so == 1.0 else so
+        model_loras_A.append(m_layer.self_attn.o_proj.lora_A.default.weight)
+        vllm_loras_A .append(v_layer.self_attn.o_proj.lora_a_stacked[0])
+        model_loras_B.append( m_layer.self_attn.o_proj.lora_B.default.weight)
+        vllm_loras_B .append((v_layer.self_attn.o_proj.lora_b_stacked[0], so,))
+
+        model_loras_A.append(m_layer.mlp.gate_proj.lora_A.default.weight)
+        model_loras_A.append(m_layer.mlp.gate_proj.lora_A.default.weight)
+        vllm_loras_A .append(v_layer.mlp.gate_up_proj.lora_a_stacked[0])
+        vllm_loras_A .append(v_layer.mlp.gate_up_proj.lora_a_stacked[1])
+
+        sg = m_layer.mlp.gate_proj.scaling["default"]
+        su = m_layer.mlp.  up_proj.scaling["default"]
+        sg = None if sg == 1.0 else sg
+        su = None if su == 1.0 else su
+        model_loras_B.append( m_layer.mlp.gate_proj.lora_B.default.weight)
+        model_loras_B.append( m_layer.mlp.gate_proj.lora_B.default.weight)
+        vllm_loras_B .append((v_layer.mlp.gate_up_proj.lora_b_stacked[0], sg,))
+        vllm_loras_B .append((v_layer.mlp.gate_up_proj.lora_b_stacked[1], su,))
+
+        sd = m_layer.mlp.down_proj.scaling["default"]
+        sd = None if sd == 1.0 else sd
+        model_loras_A.append(m_layer.mlp.down_proj.lora_A.default.weight)
+        vllm_loras_A .append(v_layer.mlp.down_proj.lora_a_stacked[0])
+        model_loras_B.append( m_layer.mlp.down_proj.lora_B.default.weight)
+        vllm_loras_B .append((v_layer.mlp.down_proj.lora_b_stacked[0], sd,))
+    pass
+
+    # Check all shapes
+    for model_lora_A, vllm_lora_A in zip(model_loras_A, vllm_loras_A):
+        assert(model_lora_A.squeeze().shape == vllm_lora_A.squeeze().shape)
+    for model_lora_B, (vllm_lora_B, s,) in zip(model_loras_B, vllm_loras_B):
+        assert(model_lora_B.squeeze().shape == vllm_lora_B.squeeze().shape)
+    pass
+
+    # Set model items
+    model.model_loras_A = model_loras_A
+    model.model_loras_B = model_loras_B
+    model. vllm_loras_A = vllm_loras_A
+    model. vllm_loras_B = vllm_loras_B
+    return
+pass
+
+
+def load_lora_directly(model):
+    # All Unsloth Zoo code licensed under LGPLv3
+    # Load LoRAs directly from model into vLLM internal LoRAs
+    model_loras_A = model.model_loras_A
+    model_loras_B = model.model_loras_B
+    vllm_loras_A  = model. vllm_loras_A
+    vllm_loras_B  = model. vllm_loras_B
+
+    for model_lora_A, vllm_lora_A in zip(model_loras_A, vllm_loras_A):
+        vllm_lora_A.copy_(model_lora_A, non_blocking = True)
+    pass
+
+    # Must also scale B with scaling since vLLM does this
+    for model_lora_B, (vllm_lora_B, s) in zip(model_loras_B, vllm_loras_B):
+        vllm_lora_B.copy_(model_lora_B, non_blocking = True)
+        if s is not None: vllm_lora_B *= s
+    pass
+pass
+
+
 @torch.inference_mode
 def load_lora(model, save_directory, load_tensors = True):
+    # vllm_lora_already_loaded(model)
+    # Check internally if model has hot loaded LoRAs
+    # if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
+    #     if not hasattr(model, "model_loras_A"):
+    #         # Prepare vLLM for LoRA direct loading!
+    #         prepare_vllm_lora_loading(model)
+    #     pass
+    #     load_lora_directly(model)
+    #     return model.saved_vllm_lora_request
+    # pass
+
     # All Unsloth Zoo code licensed under LGPLv3
     global LORA_REQUEST_ID
     if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
@@ -1065,23 +1198,28 @@ def load_lora(model, save_directory, load_tensors = True):
     pass
 
     from vllm.lora.request import LoRARequest
-
     if load_tensors:
         # We extract it directly from the model's state_dict
         peft_config = get_peft_config(save_directory)
         state_dict = model.state_dict()
         state_dict = {k.replace(".default", ""):v for k, v in state_dict.items() if ".lora_A." in k or ".lora_B." in k}
 
+        # vllm_lora_already_loaded(model)
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, lora_tensors = state_dict, lora_config = peft_config)
+        # Warm up LoRA
+        # vllm_lora_already_loaded(model)
+        # outputs = model.vllm_engine.generate(["Hi!"], use_tqdm = False, lora_request = lora_request)
+        # del outputs
+        # vllm_lora_already_loaded(model)
+        # print("###", LORA_REQUEST_ID)
+        # vllm_lora_already_loaded(model)
+            # model.saved_vllm_lora_request = lora_request
     else:
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
-    
-    LORA_REQUEST_ID += 1
-    if LORA_REQUEST_ID % 300 == 0:
-        # Free some VRAM and RAM every 300 saves
-        gc.collect()
-        torch.cuda.empty_cache()
     pass
+    # vllm_lora_already_loaded(model)
+
+    LORA_REQUEST_ID += 1
     # Set model's current LoRA adapater
     # model.vllm_engine.vllm_lora_request = lora_request
     return lora_request
