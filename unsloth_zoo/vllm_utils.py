@@ -1169,6 +1169,13 @@ pass
 
 @torch.inference_mode
 def load_lora(model, save_directory, load_tensors = True):
+    # Check internally if model has hot loaded LoRAs
+    if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
+        print("============")
+        load_lora_directly(model)
+        return model.saved_vllm_lora_request
+    pass
+    
     # All Unsloth Zoo code licensed under LGPLv3
     global LORA_REQUEST_ID
     if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
@@ -1180,13 +1187,6 @@ def load_lora(model, save_directory, load_tensors = True):
             model.peft_config["default"].save_pretrained(save_directory)
         else:
             raise OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
-    pass
-
-    # Check internally if model has hot loaded LoRAs
-    if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
-        print("============")
-        load_lora_directly(model)
-        return model.saved_vllm_lora_request
     pass
 
     # Prepare vLLM for LoRA direct loading!
