@@ -1172,14 +1172,14 @@ pass
 def load_lora(model, save_directory, load_tensors = True):
     # Check internally if model has hot loaded LoRAs
     print(vllm_lora_already_loaded(model))
-    if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
-        if not hasattr(model, "model_loras_A"):
-            # Prepare vLLM for LoRA direct loading!
-            prepare_vllm_lora_loading(model)
-        pass
-        load_lora_directly(model)
-        return model.saved_vllm_lora_request
-    pass
+    # if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
+    #     if not hasattr(model, "model_loras_A"):
+    #         # Prepare vLLM for LoRA direct loading!
+    #         prepare_vllm_lora_loading(model)
+    #     pass
+    #     load_lora_directly(model)
+    #     return model.saved_vllm_lora_request
+    # pass
 
     # All Unsloth Zoo code licensed under LGPLv3
     global LORA_REQUEST_ID
