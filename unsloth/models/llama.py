@@ -448,20 +448,28 @@ def LlamaAttention_fast_forward(
         A = flash_attn_func(Q, K, V, causal = True)
     else:
         # Grouped query attention
-        if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        if SDPA_HAS_GQA:
+            # Needs (batch_size, n_heads, seq_len, head_dim)
+            # is_casual and attention_mask must not be both set!
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False, enable_gqa = n_groups != 1)
+            # Go back to (batch_size, seq_len, n_heads, head_dim)
+            A = A.transpose(1, 2)#.contiguous()
+        else:
+            if n_groups != 1:
+                K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+                V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+                K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+                V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            pass
+            # Must be contiguous or else results are False!
+            # https://github.com/pytorch/pytorch/issues/112577
+            Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+            # Needs (batch_size, n_heads, seq_len, head_dim)
+            # is_casual and attention_mask must not be both set!
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+            # Go back to (batch_size, seq_len, n_heads, head_dim)
+            A = A.transpose(1, 2).contiguous()
         pass
-        # Must be contiguous or else results are False!
-        # https://github.com/pytorch/pytorch/issues/112577
-        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
-        # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2).contiguous()
     pass
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
@@ -1153,7 +1161,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-        
+
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
