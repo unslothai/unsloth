@@ -153,10 +153,10 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
     # Set attention_mask to boolean
-    function = function.replace(
-        "attention_mask=attention_mask",
-        "attention_mask=attention_mask.to(torch.bool)"
-    )
+    # function = function.replace(
+    #     "attention_mask=attention_mask",
+    #     "attention_mask=attention_mask.to(torch.bool)"
+    # )
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
