@@ -18,6 +18,7 @@ __all__ = [
 ]
 
 import re
+import inspect
 from collections import defaultdict
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS  = defaultdict(list)
@@ -99,20 +100,21 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
 
 
 # Ignore mean_token_accuracy since it needs logits
+# We override it directly with our version
+def _sft_trainer_compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
+    (loss, outputs) = super().compute_loss(
+        model,
+        inputs,
+        return_outputs = return_outputs,
+        num_items_in_batch = num_items_in_batch,
+    )
+    return (loss, outputs) if return_outputs else loss
+pass
+
 def sft_trainer_compute_loss(function_name, function):
     if  function_name != "compute_loss": return function
 
-    # .*? matches first match. .+? matches final match.
-    replacer = re.findall(
-        r"\.compute_loss\(.*?\)",
-        function,
-        flags = re.MULTILINE | re.DOTALL,
-    )
-    if len(replacer) != 0:
-        replacer = replacer[0]
-        returner = "\n" + " "*8 + "return (loss, outputs) if return_outputs else loss"
-        function = function.replace(replacer, replacer + returner)
-    pass
+    function = inspect.getsource(_sft_trainer_compute_loss)
     return function
 pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
