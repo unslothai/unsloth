@@ -375,6 +375,7 @@ def LlamaAttention_fast_forward(
         del self.RH_Q
         del self.attention
     pass
+    print(attention_mask)
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -449,7 +450,6 @@ def LlamaAttention_fast_forward(
     else:
         # Grouped query attention
         if SDPA_HAS_GQA:
-            print("=====================")
             # Needs (batch_size, n_heads, seq_len, head_dim)
             # is_casual and attention_mask must not be both set!
             A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False, enable_gqa = n_groups != 1)
