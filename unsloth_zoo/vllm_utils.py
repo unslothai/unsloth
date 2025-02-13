@@ -1067,7 +1067,7 @@ def vllm_lora_already_loaded(model):
     m = model.vllm_engine.llm_engine.model_executor.driver_worker.model_runner
     lora_cache = m.lora_manager._adapter_manager._active_adapters.cache
 
-    layers = m.model.mode.layers
+    layers = m.model.model.layers
     v_layer = layers[0]
     print(lora_cache, v_layer.self_attn.qkv_proj.lora_a_stacked[0].data_ptr())
     return len(lora_cache) != 0
