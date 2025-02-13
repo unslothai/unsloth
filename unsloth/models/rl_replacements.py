@@ -168,12 +168,12 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     )
     if len(original) != 0:
         spaces, original = original[0]
-        spaces = len(spaces) + 4
+        spaces = len(spaces)
         replacer = \
         "if not hasattr(self, '_autocast_dtype'):\n" + \
-        " "*spaces + "self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16\n" + \
-        " "*spaces + "with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):\n" + \
-        " "*spaces + original
+        " "*(spaces + 4) + "self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16\n" + \
+        " "*(spaces + 0) + "with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):\n" + \
+        " "*(spaces + 4) + original
         function = function.replace(original, replacer)
     pass
     return function
