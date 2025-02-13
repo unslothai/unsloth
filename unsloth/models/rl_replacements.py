@@ -169,7 +169,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if len(original) != 0:
         original = original[0]
         replacer = \
-        " "*4 + "with torch.amp.autocast(device_type = 'cuda', "\
+        "with torch.amp.autocast(device_type = 'cuda', "\
         "dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "\
         "if not torch.is_autocast_enabled('cuda') else nullcontext():\n" + \
         " "*8 + original
