@@ -707,7 +707,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
+    elif attention_mask is not None and self.training:
         attention_mask = None
         padding_mask = None
     else:
@@ -723,6 +723,7 @@ def LlamaModel_fast_forward(
             past_key_values_length,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
+        attention_mask = attention_mask.to(torch.bool)
     pass
 
     hidden_states = inputs_embeds
