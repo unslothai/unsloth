@@ -142,7 +142,7 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
     if  function_name != "_move_model_to_vllm": return function
 
     # .*? matches first match. .+? matches final match.
-    function = "def _move_model_to_vllm(self, *args, **kwargs): return None\n"
-    return function.find("def") * " " + function
+    replacement = "def _move_model_to_vllm(self, *args, **kwargs): return None\n"
+    return " "*function.find("def") + replacement
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
