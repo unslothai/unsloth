@@ -1170,7 +1170,7 @@ pass
 
 @torch.inference_mode
 def load_lora(model, save_directory, load_tensors = True):
-    print(vllm_lora_already_loaded(model))
+    vllm_lora_already_loaded(model)
     # Check internally if model has hot loaded LoRAs
     if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
         if not hasattr(model, "model_loras_A"):
@@ -1201,13 +1201,19 @@ def load_lora(model, save_directory, load_tensors = True):
         state_dict = model.state_dict()
         state_dict = {k.replace(".default", ""):v for k, v in state_dict.items() if ".lora_A." in k or ".lora_B." in k}
 
+        vllm_lora_already_loaded(model)
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, lora_tensors = state_dict, lora_config = peft_config)
+        # Warm up LoRA
+        vllm_lora_already_loaded(model)
+        outputs = model.vllm_engine.generate(["Hi!"], use_tqdm = False, lora_request = lora_request)
+        del outputs
+        vllm_lora_already_loaded(model)
         if vllm_lora_already_loaded(model):
             model.saved_vllm_lora_request = lora_request
     else:
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
     pass
-    print(vllm_lora_already_loaded(model))
+    vllm_lora_already_loaded(model)
 
     LORA_REQUEST_ID += 1
     # Set model's current LoRA adapater
