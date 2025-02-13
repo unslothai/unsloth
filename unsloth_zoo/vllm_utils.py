@@ -1171,7 +1171,6 @@ pass
 @torch.inference_mode
 def load_lora(model, save_directory, load_tensors = True):
     # Check internally if model has hot loaded LoRAs
-    print(vllm_lora_already_loaded(model))
     # if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
     #     if not hasattr(model, "model_loras_A"):
     #         # Prepare vLLM for LoRA direct loading!
@@ -1206,6 +1205,7 @@ def load_lora(model, save_directory, load_tensors = True):
     else:
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
     pass
+    print(vllm_lora_already_loaded(model))
 
     LORA_REQUEST_ID += 1
     # Set model's current LoRA adapater
