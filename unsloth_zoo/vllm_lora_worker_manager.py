@@ -86,7 +86,6 @@ class WorkerLoRAManager(AbstractWorkerManager):
             model = self._adapter_manager.model
             supported_lora_modules = model.supported_lora_modules
             packed_modules_mapping = model.packed_modules_mapping
-            print(packed_modules_mapping)
             expected_lora_modules: List[str] = []
             for module in supported_lora_modules:
                 if module in packed_modules_mapping:
@@ -244,7 +243,6 @@ class LRUCacheWorkerLoRAManager(WorkerLoRAManager):
             self.add_adapter(lora)
 
     def add_adapter(self, lora_request: LoRARequest) -> bool:
-        print(self.list_adapters())
         if lora_request.lora_int_id not in self.list_adapters():
             # Load the new adapter first to ensure it is actually valid, before
             # evicting any existing adapters.
