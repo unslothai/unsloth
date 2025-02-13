@@ -86,7 +86,6 @@ class WorkerLoRAManager(AbstractWorkerManager):
             model = self._adapter_manager.model
             supported_lora_modules = model.supported_lora_modules
             packed_modules_mapping = model.packed_modules_mapping
-            print(packed_modules_mapping)
             expected_lora_modules: List[str] = []
             for module in supported_lora_modules:
                 if module in packed_modules_mapping:
@@ -265,4 +264,5 @@ class LRUCacheWorkerLoRAManager(WorkerLoRAManager):
             loaded = self._adapter_manager.get_adapter(
                 lora_request.lora_int_id) is not None
         self._adapter_manager.activate_adapter(lora_request.lora_int_id)
+        print(loaded)
         return loaded
