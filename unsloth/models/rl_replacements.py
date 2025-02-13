@@ -146,3 +146,17 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
     return " "*function.find("def") + replacement
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
+
+
+# Edit _get_per_token_logps
+def grpo_trainer__get_per_token_logps(function_name, function):
+    if  function_name != "_get_per_token_logps": return function
+
+    # Set attention_mask to boolean
+    function = function.replace(
+        "attention_mask=attention_mask",
+        "attention_mask=attention_mask.to(torch.bool)"
+    )
+    return function
+pass
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
