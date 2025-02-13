@@ -1189,7 +1189,7 @@ def PeftModelForCausalLM_fast_forward(
     num_logits_to_keep=0,
     **kwargs,
 ):
-    a = self.base_model(
+    return self.base_model(
         input_ids=input_ids,
         causal_mask=causal_mask,
         attention_mask=attention_mask,
@@ -1201,7 +1201,6 @@ def PeftModelForCausalLM_fast_forward(
         num_logits_to_keep=num_logits_to_keep,
         **kwargs,
     )
-    print(a)
 pass
 
 
