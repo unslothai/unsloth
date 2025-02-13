@@ -1139,10 +1139,10 @@ def prepare_vllm_lora_loading(model):
     pass
 
     # Set model items
-    model.model_lora_A = model_lora_A
-    model.model_lora_B = model_lora_B
-    model. vllm_lora_A = vllm_lora_A
-    model. vllm_lora_B = vllm_lora_B
+    model.model_loras_A = model_loras_A
+    model.model_loras_B = model_loras_B
+    model. vllm_loras_A = vllm_loras_A
+    model. vllm_loras_B = vllm_loras_B
     return
 pass
 
@@ -1152,8 +1152,8 @@ def load_lora_directly(model):
     # Load LoRAs directly from model into vLLM internal LoRAs
     model_loras_A = model.model_loras_A
     model_loras_B = model.model_loras_B
-    vllm_lora_A   = model.  vllm_lora_A
-    vllm_lora_B   = model.  vllm_lora_B
+    vllm_loras_A  = model. vllm_loras_A
+    vllm_loras_B  = model. vllm_loras_B
 
     for model_lora_A, vllm_lora_A in zip(model_loras_A, vllm_loras_A):
         vllm_lora_A.copy_(model_lora_A, non_blocking = True)
