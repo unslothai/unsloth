@@ -1066,6 +1066,7 @@ def vllm_lora_already_loaded(model):
     # Check if LoRA is loaded - if not, we should load the first one
     m = model.vllm_engine.llm_engine.model_executor.driver_worker.model_runner
     lora_cache = m.lora_manager._adapter_manager._active_adapters.cache
+    print(lora_cache)
     return len(lora_cache) != 0
 pass
 
@@ -1170,14 +1171,15 @@ pass
 @torch.inference_mode
 def load_lora(model, save_directory, load_tensors = True):
     # Check internally if model has hot loaded LoRAs
-    # if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
-    #     if not hasattr(model, "model_loras_A"):
-    #         # Prepare vLLM for LoRA direct loading!
-    #         prepare_vllm_lora_loading(model)
-    #     pass
-    #     load_lora_directly(model)
-    #     return model.saved_vllm_lora_request
-    # pass
+    print(vllm_lora_already_loaded(model))
+    if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
+        if not hasattr(model, "model_loras_A"):
+            # Prepare vLLM for LoRA direct loading!
+            prepare_vllm_lora_loading(model)
+        pass
+        load_lora_directly(model)
+        return model.saved_vllm_lora_request
+    pass
 
     # All Unsloth Zoo code licensed under LGPLv3
     global LORA_REQUEST_ID
