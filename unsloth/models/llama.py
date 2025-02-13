@@ -15,6 +15,7 @@
 import torch
 import gc
 import math
+from functools import partial
 from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import __version__
@@ -447,20 +448,28 @@ def LlamaAttention_fast_forward(
         A = flash_attn_func(Q, K, V, causal = True)
     else:
         # Grouped query attention
-        if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        if SDPA_HAS_GQA:
+            # Needs (batch_size, n_heads, seq_len, head_dim)
+            # is_casual and attention_mask must not be both set!
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False, enable_gqa = n_groups != 1)
+            # Go back to (batch_size, seq_len, n_heads, head_dim)
+            A = A.transpose(1, 2)#.contiguous()
+        else:
+            if n_groups != 1:
+                K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+                V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+                K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+                V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            pass
+            # Must be contiguous or else results are False!
+            # https://github.com/pytorch/pytorch/issues/112577
+            Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+            # Needs (batch_size, n_heads, seq_len, head_dim)
+            # is_casual and attention_mask must not be both set!
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+            # Go back to (batch_size, seq_len, n_heads, head_dim)
+            A = A.transpose(1, 2).contiguous()
         pass
-        # Must be contiguous or else results are False!
-        # https://github.com/pytorch/pytorch/issues/112577
-        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
-        # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2).contiguous()
     pass
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
@@ -699,6 +708,7 @@ def LlamaModel_fast_forward(
     if attention_mask is None:
         padding_mask = None
     elif self.training:
+    # elif attention_mask is not None and self.training:
         attention_mask = None
         padding_mask = None
     else:
@@ -714,6 +724,7 @@ def LlamaModel_fast_forward(
             past_key_values_length,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
+        attention_mask = attention_mask.to(torch.bool)
     pass
 
     hidden_states = inputs_embeds
@@ -1802,8 +1813,6 @@ class FastLlamaModel:
             model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
-
-            from functools import partial
             model.fast_generate_batches = partial(generate_batches, model.vllm_engine)
         pass
         # Return old flag
@@ -1952,13 +1961,13 @@ class FastLlamaModel:
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save max_seq_length
-        model.max_seq_length = max_position_embeddings
+        model.max_seq_length = max_seq_length
         internal_model = model
         while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_position_embeddings
+            internal_model.max_seq_length = max_seq_length
             internal_model = internal_model.model
         pass
-        internal_model.max_seq_length = max_position_embeddings
+        internal_model.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
@@ -2146,8 +2155,6 @@ class FastLlamaModel:
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora"   in signature
-        
-        assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
             logger.warning_once(
@@ -2632,6 +2639,10 @@ class FastLlamaModel:
             gc.collect()
             torch.cuda.empty_cache()
         pass
+
+        # Add for_inference and for_training
+        model.for_training  = partial(FastLlamaModel.for_training,  model)
+        model.for_inference = partial(FastLlamaModel.for_inference, model)
         return model
     pass
 
@@ -2739,3 +2750,5 @@ class FastLlamaModel:
     pass
 pass
 
+from .rl import PatchFastRL
+PatchFastRL(FastLanguageModel = FastLlamaModel)
