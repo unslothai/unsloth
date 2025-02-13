@@ -375,7 +375,6 @@ def LlamaAttention_fast_forward(
         del self.RH_Q
         del self.attention
     pass
-    print(attention_mask)
 
     bsz, q_len, _ = hidden_states.size()
 
@@ -709,7 +708,7 @@ def LlamaModel_fast_forward(
     if attention_mask is None:
         padding_mask = None
     elif self.training:
-        attention_mask = None
+        # attention_mask = None
         padding_mask = None
     else:
         # if 0 in attention_mask:
