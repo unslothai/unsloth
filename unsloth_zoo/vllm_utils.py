@@ -1061,46 +1061,7 @@ def get_peft_config(save_directory):
 pass
 
 
-@torch.inference_mode
-def load_lora(model, save_directory, load_tensors = True):
-    # All Unsloth Zoo code licensed under LGPLv3
-    global LORA_REQUEST_ID
-    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
-
-    # Check if path exists
-    if not os.path.exists(save_directory) or LORA_REQUEST_ID == 0:
-        if load_tensors:
-            # We need to save and load the config file once!
-            model.peft_config["default"].save_pretrained(save_directory)
-        else:
-            raise OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
-    pass
-
-    from vllm.lora.request import LoRARequest
-
-    if load_tensors:
-        # We extract it directly from the model's state_dict
-        peft_config = get_peft_config(save_directory)
-        state_dict = model.state_dict()
-        state_dict = {k.replace(".default", ""):v for k, v in state_dict.items() if ".lora_A." in k or ".lora_B." in k}
-
-        lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, lora_tensors = state_dict, lora_config = peft_config)
-    else:
-        lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
-    
-    LORA_REQUEST_ID += 1
-    if LORA_REQUEST_ID % 300 == 0:
-        # Free some VRAM and RAM every 300 saves
-        gc.collect()
-        torch.cuda.empty_cache()
-    pass
-    # Set model's current LoRA adapater
-    # model.vllm_engine.vllm_lora_request = lora_request
-    return lora_request
-pass
-
-
-def check_vllm_lora_loaded(model):
+def vllm_lora_already_loaded(model):
     # All Unsloth Zoo code licensed under LGPLv3
     # Check if LoRA is loaded - if not, we should load the first one
     m = model.vllm_engine.llm_engine.model_executor.driver_worker.model_runner
@@ -1109,7 +1070,6 @@ def check_vllm_lora_loaded(model):
 pass
 
 
-@torch.inference_mode
 def prepare_vllm_lora_loading(model):
     # All Unsloth Zoo code licensed under LGPLv3
     # Get all vLLM LoRAs
@@ -1204,6 +1164,51 @@ def load_lora_directly(model):
         vllm_lora_B.copy_(model_lora_B, non_blocking = True)
         if s is not None: vllm_lora_B *= s
     pass
+pass
+
+
+@torch.inference_mode
+def load_lora(model, save_directory, load_tensors = True):
+    # All Unsloth Zoo code licensed under LGPLv3
+    global LORA_REQUEST_ID
+    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
+
+    # Check if path exists
+    if not os.path.exists(save_directory) or LORA_REQUEST_ID == 0:
+        if load_tensors:
+            # We need to save and load the config file once!
+            model.peft_config["default"].save_pretrained(save_directory)
+        else:
+            raise OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
+    pass
+
+    # Check internally if model has hot loaded LoRAs
+    if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
+        print("============")
+        load_lora_directly(model)
+        return model.saved_vllm_lora_request
+    pass
+
+    # Prepare vLLM for LoRA direct loading!
+    prepare_vllm_lora_loading(model)
+
+    from vllm.lora.request import LoRARequest
+    if load_tensors:
+        # We extract it directly from the model's state_dict
+        peft_config = get_peft_config(save_directory)
+        state_dict = model.state_dict()
+        state_dict = {k.replace(".default", ""):v for k, v in state_dict.items() if ".lora_A." in k or ".lora_B." in k}
+
+        lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, lora_tensors = state_dict, lora_config = peft_config)
+        model.saved_vllm_lora_request = lora_request
+    else:
+        lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, save_directory)
+    pass
+
+    LORA_REQUEST_ID += 1
+    # Set model's current LoRA adapater
+    # model.vllm_engine.vllm_lora_request = lora_request
+    return lora_request
 pass
 
 
