@@ -16,6 +16,7 @@ __all__ = [
     "RL_EXTRA_ARGS",
     "RL_FUNCTIONS",
     "RL_PRE_ITEMS",
+    "RL_CONFIG_CHANGES",
 ]
 
 import re
@@ -23,9 +24,10 @@ import torch
 import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
-RL_EXTRA_ARGS = defaultdict(list)
-RL_FUNCTIONS  = defaultdict(list)
-RL_PRE_ITEMS  = defaultdict(list)
+RL_EXTRA_ARGS     = defaultdict(list)
+RL_FUNCTIONS      = defaultdict(list)
+RL_PRE_ITEMS      = defaultdict(list)
+RL_CONFIG_CHANGES = defaultdict(list)
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -242,3 +244,19 @@ def grpo_trainer_compute_loss(function_name, function):
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
+
+# https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L356
+# TRL warns if batch size is not a multiple of num_generations -> fix this.
+def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
+    if "multiple of num_generations" not in RLTrainer_source: return ""
+    if "num_generations" not in RLConfig_source: return ""
+
+    check_batch_size = \
+    "div = per_device_train_batch_size // num_generations\n"\
+    "if div * num_generations != per_device_train_batch_size:\n"\
+    "    print('Unsloth: We know expect `per_device_train_batch_size` to be a multiple of `num_generations`.\\n'\\"\
+    "          'We will change the batch size of ' + per_device_train_batch_size + ' to the `num_generations` of ' + num_generations')\n"\
+    "    per_device_train_batch_size = num_generations\n"
+    return check_batch_size
+pass
+RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_batch_size)
