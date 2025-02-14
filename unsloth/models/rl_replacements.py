@@ -212,14 +212,14 @@ def _grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta):
     loss_i = -(loss_i - beta * kl_i)
 
     mask = mask.to(torch.float32)
-    n_mask = mask.sum(1)
-    loss_per_reward = (loss_i * mask).sum(1) / n_mask
+    n_mask_per_reward = mask.sum(1)
+    loss_per_reward = (loss_i * mask).sum(1) / n_mask_per_reward
     loss = loss_per_reward.mean()
     
     # Get metrics as well which are folded
     with torch.inference_mode():
-        completion_length = n_mask.mean()
-        mean_kl_per_reward = (kl_i * mask).sum(1) / n_mask
+        completion_length = n_mask_per_reward.mean()
+        mean_kl_per_reward = (kl_i * mask).sum(1) / n_mask_per_reward
         mean_kl = mean_kl_per_reward.mean()
     pass
     return loss, completion_length, mean_kl
