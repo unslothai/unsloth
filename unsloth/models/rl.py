@@ -86,7 +86,7 @@ pass
 
 # https://github.com/huggingface/trl/blob/main/trl/trainer/utils.py#L1674
 @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
-def _selective_log_softmax(logits, index):
+def selective_log_softmax(logits, index):
     logits = logits.to(torch.float32)
     selected_logits = torch.gather(logits, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
     # loop to reduce peak mem consumption
@@ -94,10 +94,6 @@ def _selective_log_softmax(logits, index):
     logsumexp_values = torch.logsumexp(logits, dim = -1)
     per_token_logps = selected_logits - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
     return per_token_logps
-pass
-
-def selective_log_softmax(logits, index):
-    return _selective_log_softmax(logits, index)
 pass
 
 
@@ -423,10 +419,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     pass
 
     # Selective log softmax
-    selective_log_softmax_code = \
-        inspect.getsource(_selective_log_softmax) + "\n" + \
-        inspect.getsource(selective_log_softmax) + "\n"
-
+    selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
