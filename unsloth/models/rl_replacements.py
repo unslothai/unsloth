@@ -19,6 +19,7 @@ __all__ = [
 ]
 
 import re
+import torch
 import inspect
 from collections import defaultdict
 RL_EXTRA_ARGS = defaultdict(list)
