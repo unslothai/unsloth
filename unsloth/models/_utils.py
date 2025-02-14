@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.2.4"
+__version__ = "2025.2.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -131,6 +131,7 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
+    __slots__ = "text",
     def __init__(self, text): self.text = text
     def filter(self, x): return not (self.text in x.getMessage())
 pass
@@ -138,6 +139,8 @@ pass
 # The speedups for torchdynamo mostly come wih GPU Ampere or higher and which is not detected here.
 from transformers.training_args import logger as transformers_training_args_logger
 transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
+# torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
+transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
 del transformers_training_args_logger
 
 # Using the default loss: `ForCausalLMLoss`.

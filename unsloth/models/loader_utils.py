@@ -58,6 +58,11 @@ def __get_model_name(
 
     elif load_in_4bit and SUPPORTS_FOURBIT and lower_model_name in FLOAT_TO_INT_MAPPER:
 
+        # Support returning original full -bnb-4bit name if specified specifically
+        # since we'll map it to the dynamic version instead
+        if lower_model_name.endswith("-bnb-4bit"):
+            return lower_model_name
+        
         new_model_name = FLOAT_TO_INT_MAPPER[lower_model_name]
         # logger.warning_once(
         #     f"Unsloth: You passed in `{model_name}` and `load_in_4bit = True`.\n"\
