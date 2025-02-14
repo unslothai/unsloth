@@ -1215,8 +1215,15 @@ def save_to_gguf(
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This might take 20 minutes...")
             final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
 
-            command = f"./{quantize_location} {full_precision_location} "\
+            # Removed ./ in existing command and renamed the variable to temp_command before ./ check
+            temp_command = f"{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
+            
+            # Performing check if ./ exists else add
+            if(temp_command[0:2]=='./'):
+                command=temp_command
+            else:
+                command="./"+temp_command               
             
             try_execute([command,], force_complete = True)
 
