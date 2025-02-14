@@ -1052,7 +1052,6 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
-            print(1055, input_ids)
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
@@ -1065,10 +1064,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
-            print(1068)
         pass
         hidden_states = outputs[0]
-        print(1071)
 
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
@@ -1085,8 +1082,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             # < 1024 Normal Unsloth uses less VRAM!
             if bsz*q_len <= 1024: RETURN_LOGITS = True
-
-            print(1089)
             
             if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
 
@@ -1098,8 +1093,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                     num_items_in_batch = n_items,
                     logit_softcapping  = logit_softcapping,
                 )
-
-                print(1102, loss)
                 if not return_dict:
                     output = (logits,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
@@ -1113,7 +1106,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 )
                 return output
             pass
-            print(1116, hidden_states.dtype, hidden_states.shape)
             logits = self.lm_head(hidden_states.to(dtype))
         pass
 
@@ -1123,7 +1115,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
         pass
-        print(1126)
 
         loss = None
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
@@ -1149,7 +1140,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 logit_scaling     = logit_scaling,
                 n_items           = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None),
             )
-            print(1152, loss)
         else:
             if logit_scaling != 0:
                 if logits.requires_grad:
@@ -1174,7 +1164,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-        print(1177, loss, logits.shape, logits.dtype)
+
         return CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
