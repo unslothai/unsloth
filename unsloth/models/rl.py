@@ -29,6 +29,7 @@ from .rl_replacements import (
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
     RL_PRE_ITEMS,
+    RL_CONFIG_CHANGES,
 )
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 
@@ -165,8 +166,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if RLTrainer.__name__.startswith("Unsloth"): return
     if RLConfig .__name__.startswith("Unsloth"): return
 
+    # Get old source
+    old_RLTrainer_source = inspect.getsource(RLTrainer)
+    old_RLConfig_source  = inspect.getsource(RLConfig)
+
     all_imports = dir(trainer)
-    imports = [x for x in all_imports if not x.startswith("_")]
+    # imports = [x for x in all_imports if not x.startswith("_")]
+    # Fix _deprecate_arguments not getting imported
+    imports = all_imports
 
     # Get default arguments
     EMPTY = inspect.Parameter.empty
@@ -379,6 +386,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    from multiprocessing import cpu_count\n"\
         "    dataset_num_proc = cpu_count()\n"
         extra_args += num_proc_check
+    pass
+
+    # Edit config with anything extra
+    if trainer_file in RL_CONFIG_CHANGES:
+        process_extra_args = RL_CONFIG_CHANGES[trainer_file]
+        for process_extra_arg in process_extra_args:
+            extra_args += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
     pass
 
     # Edit report_to and default it to nothing if max_steps is like 60
