@@ -101,23 +101,20 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
 
 # Ignore mean_token_accuracy since it needs logits
 # We override it directly with our version
-def _sft_trainer_compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
-    (loss, outputs) = super().compute_loss(
-        model,
-        inputs,
-        return_outputs = return_outputs,
-        num_items_in_batch = num_items_in_batch,
-    )
-    return (loss, outputs) if return_outputs else loss
-pass
-
 def sft_trainer_compute_loss(function_name, function):
     if  function_name != "compute_loss": return function
 
-    function = inspect.getsource(_sft_trainer_compute_loss)
-    function = function.replace("def _sft_trainer_compute_loss", "def compute_loss")
-    function = function.split("\n")
-    function = "\n".join(" "*4+x for x in function)
+    def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
+        (loss, outputs) = super().compute_loss(
+            model,
+            inputs,
+            return_outputs = return_outputs,
+            num_items_in_batch = num_items_in_batch,
+        )
+        return (loss, outputs) if return_outputs else loss
+    pass
+
+    function = inspect.getsource(compute_loss)
     return function
 pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
