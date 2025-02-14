@@ -1052,6 +1052,7 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
+            print(1055, input_ids)
             outputs = self.model(
                 input_ids=input_ids,
                 causal_mask=causal_mask,
@@ -1064,6 +1065,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
+            print(1068)
         pass
         hidden_states = outputs[0]
 
