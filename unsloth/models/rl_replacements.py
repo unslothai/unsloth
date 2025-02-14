@@ -195,7 +195,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
 
 # Custom compiled GRPO loss - creates 3 Triton kernels
-@torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
+# @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
 def _grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta):
     old_logits = old_logits.to(torch.float32)
     new_logits = new_logits.to(torch.float32)
