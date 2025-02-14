@@ -44,6 +44,7 @@ __all__ = [
     "save_to_gguf",
     "patch_saving_functions",
     "create_huggingface_repo",
+    "export_model_to_local",
 ]
 
 # llama.cpp specific targets - all takes 90s. Below takes 60s
@@ -1025,69 +1026,6 @@ def save_to_gguf(
         )
     pass
 
-    # Determine whether the system already has llama.cpp installed and the scripts are executable
-    quantize_location = get_executable(["llama-quantize", "quantize"])
-    convert_location  = get_executable(["convert-hf-to-gguf.py", "convert_hf_to_gguf.py"])
-    
-    error = 0
-    if quantize_location is not None and convert_location is not None:
-        print("Unsloth: llama.cpp found in the system. We shall skip installation.")
-    else:
-        print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
-        if _run_installer is not None:
-            _run_installer, IS_CMAKE = _run_installer
-
-            error = _run_installer.wait()
-            # Check if successful
-            if error != 0:
-                print(f"Unsloth: llama.cpp error code = {error}.")
-                install_llama_cpp_old(-10)
-            pass
-
-            if IS_CMAKE:
-                # CMAKE needs to do some extra steps
-                print("Unsloth: CMAKE detected. Finalizing some steps for installation.")
-
-                check = os.system("cp llama.cpp/build/bin/llama-* llama.cpp")
-                if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-                check = os.system("rm -rf llama.cpp/build")
-                if check != 0: raise RuntimeError("Failed compiling llama.cpp. Please report this ASAP!")
-            pass
-        else:
-            error = 0
-            install_llama_cpp_blocking()
-        pass
-
-        # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
-        # and llama.cpp/main changed to llama.cpp/llama-cli
-        # See https://github.com/ggerganov/llama.cpp/pull/7809
-        quantize_location = None
-        if os.path.exists("llama.cpp/quantize"):
-            quantize_location = "llama.cpp/quantize"
-        elif os.path.exists("llama.cpp/llama-quantize"):
-            quantize_location = "llama.cpp/llama-quantize"
-        else:
-            raise RuntimeError(
-                "Unsloth: The file 'llama.cpp/llama-quantize' or 'llama.cpp/quantize' does not exist.\n"\
-                "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
-            )
-        pass
-
-        # See https://github.com/unslothai/unsloth/pull/730
-        # Filenames changed again!
-        convert_location = None
-        if os.path.exists("llama.cpp/convert-hf-to-gguf.py"):
-            convert_location = "llama.cpp/convert-hf-to-gguf.py"
-        elif os.path.exists("llama.cpp/convert_hf_to_gguf.py"):
-            convert_location = "llama.cpp/convert_hf_to_gguf.py"
-        else:
-            raise RuntimeError(
-                "Unsloth: The file 'llama.cpp/convert-hf-to-gguf.py' or 'llama.cpp/convert_hf_to_gguf.py' does not exist.\n"\
-                "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
-            )
-        pass
-    pass
-
     # Determine maximum first_conversion state
     if   first_conversion == "f32"  : strength = 3
     elif first_conversion == "f16"  : strength = 2
@@ -1315,7 +1253,7 @@ def unsloth_push_to_hub_merged(
     safe_serialization   : bool = True,
     revision             : str = None,
     commit_description   : str = "Upload model trained with Unsloth 2x faster",
-    tags                 : Optional[List[str]] = None,
+    tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.75,
 ):
@@ -1823,6 +1761,8 @@ def unsloth_push_to_hub_gguf(
         "q4_0"    : "Original quant method, 4-bit.",
         "q4_1"    : "Higher accuracy than q4_0 but not as high as q5_0. However has quicker inference than q5 models.",
         "q4_k_s"  : "Uses Q4_K for all tensors",
+        "q4_k"    : "alias for q4_k_m",
+        "q5_k"    : "alias for q5_k_m",
         "q5_0"    : "Higher accuracy, higher resource usage and slower inference.",
         "q5_1"    : "Even higher accuracy, resource usage and slower inference.",
         "q5_k_s"  : "Uses Q5_K for all tensors",
@@ -2347,3 +2287,27 @@ def patch_saving_functions(model, vision = False):
     pass
     return model
 pass
+
+def export_model_to_local(model, tokenizer, save_directory, drive_directory):
+    """
+    Export a fine-tuned model from Colab to your local machine.
+
+    Args:
+        model: The fine-tuned model to be exported.
+        tokenizer: The tokenizer associated with the model.
+        save_directory: The directory where the model will be saved in Colab.
+        drive_directory: The directory in Google Drive where the model will be saved.
+    """
+    # Save the model in Colab
+    model.save_pretrained(save_directory)
+    tokenizer.save_pretrained(save_directory)
+
+    # Mount Google Drive
+    from google.colab import drive
+    drive.mount('/content/drive')
+
+    # Copy the model files to Google Drive
+    import shutil
+    shutil.copytree(save_directory, drive_directory)
+
+    print(f"Model saved to {drive_directory} in Google Drive. You can now download it to your local machine.")
