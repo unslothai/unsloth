@@ -105,13 +105,13 @@ def sft_trainer_compute_loss(function_name, function):
     if  function_name != "compute_loss": return function
 
     def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
-        (loss, outputs) = super().compute_loss(
+        outputs = super().compute_loss(
             model,
             inputs,
             return_outputs = return_outputs,
             num_items_in_batch = num_items_in_batch,
         )
-        return (loss, outputs) if return_outputs else loss
+        return outputs
     pass
 
     function = inspect.getsource(compute_loss)
