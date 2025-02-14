@@ -171,9 +171,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     old_RLConfig_source  = inspect.getsource(RLConfig)
 
     all_imports = dir(trainer)
-    # imports = [x for x in all_imports if not x.startswith("_")]
-    # Fix _deprecate_arguments not getting imported
-    imports = all_imports
+    # Fix _deprecate_arguments not getting imported so stop __ but not _
+    imports = [x for x in all_imports if not x.startswith("__")]
 
     # Get default arguments
     EMPTY = inspect.Parameter.empty
