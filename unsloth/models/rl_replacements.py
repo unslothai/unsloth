@@ -196,7 +196,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
 # Custom compiled GRPO loss - creates 3 Triton kernels
 @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
-def _grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta):
+def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages):
     old_logits = old_logits.to(torch.float32)
     new_logits = new_logits.to(torch.float32)
     input_ids  = input_ids.unsqueeze(-1)
@@ -224,11 +224,6 @@ def _grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta):
     pass
     return loss, completion_length, mean_kl
 pass
-def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta):
-    loss, completion_length, mean_kl = _grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta)
-    return loss, completion_length.item(), mean_kl.item()
-pass
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource((_grpo_compute_loss)))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource((grpo_compute_loss)))
 
 
@@ -247,7 +242,7 @@ def grpo_trainer_compute_loss(function_name, function):
         # attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         attention_mask = None
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-        
+
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
 
         # Compute the KL divergence between the model and the reference model
@@ -261,15 +256,15 @@ def grpo_trainer_compute_loss(function_name, function):
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         input_ids = input_ids[:, -logits_to_keep:]
         loss, completion_length, mean_kl = grpo_compute_loss(
-            ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta,
+            ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
         )
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
-        self._metrics["completion_length"].append(completion_length)
+        self._metrics["completion_length"].append(completion_length.item())
 
         # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
-        self._metrics["kl"].append(mean_kl)
+        self._metrics["kl"].append(mean_kl.item())
         return loss
     pass
 
