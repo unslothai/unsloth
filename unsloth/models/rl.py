@@ -26,7 +26,16 @@ from unsloth_zoo.logging_utils import PatchRLStatistics
 from .rl_replacements import (
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
+    RL_PRE_ITEMS,
 )
+
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}
 
 def PatchRL(FastLanguageModel):
 
@@ -74,6 +83,23 @@ def PatchRL(FastLanguageModel):
 pass
 
 
+# https://github.com/huggingface/trl/blob/main/trl/trainer/utils.py#L1674
+@torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
+def _selective_log_softmax(logits, index):
+    logits = logits.to(torch.float32)
+    selected_logits = torch.gather(logits, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+    # loop to reduce peak mem consumption
+    # logsumexp_values = torch.stack([torch.logsumexp(lg, dim=-1) for lg in logits])
+    logsumexp_values = torch.logsumexp(logits, dim = -1)
+    per_token_logps = selected_logits - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
+    return per_token_logps
+pass
+
+def selective_log_softmax(logits, index):
+    return _selective_log_softmax(logits, index)
+pass
+
+
 RLTrainer_replacement = '''
 import os
 from typing import *
@@ -81,6 +107,17 @@ from dataclasses import dataclass, field
 from packaging.version import Version
 import torch
 from contextlib import nullcontext
+from torch.nn import functional as F
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}
+
+{selective_log_softmax_code}
+{RL_pre}
 
 @dataclass
 class Unsloth{RLConfig_name}({RLConfig_name}):
@@ -377,6 +414,19 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     __RLTrainer_doc__ = eval(f"trl.trainer.{RLTrainer_name}").__doc__
     __RLConfig_doc__  = eval(f"trl.trainer.{RLConfig_name}") .__doc__
 
+    # Get all pre-modules
+    if RLTrainer_name in RL_PRE_ITEMS:
+        RL_pre = "\n".join(RL_PRE_ITEMS)
+    else:
+        RL_pre = ""
+    pass
+
+    # Selective log softmax
+    selective_log_softmax_code = \
+        inspect.getsource(_selective_log_softmax) + "\n" + \
+        inspect.getsource(selective_log_softmax) + "\n"
+
+    # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
         __RLTrainer_doc__    = __RLTrainer_doc__,
@@ -394,6 +444,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         RLTrainer_extras     = RLTrainer_extras,
         RLTrainer_post       = RLTrainer_post,
+        RL_pre               = RL_pre,
+
+        selective_log_softmax_code = selective_log_softmax_code,
     )
 
     # Create new function
@@ -402,7 +455,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source,
         f"trl.trainer.{trainer_file}",
         imports,
-        overwrite = False,
+        overwrite = True,
     )
     
     # Patch Trainer
