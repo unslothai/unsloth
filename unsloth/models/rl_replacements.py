@@ -22,6 +22,7 @@ import re
 import torch
 import inspect
 from collections import defaultdict
+from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 RL_EXTRA_ARGS = defaultdict(list)
 RL_FUNCTIONS  = defaultdict(list)
 RL_PRE_ITEMS  = defaultdict(list)
@@ -193,45 +194,14 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
-
-# Custom compiled GRPO loss - creates 3 Triton kernels
-@torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
-def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages):
-    old_logits = old_logits.to(torch.float32)
-    new_logits = new_logits.to(torch.float32)
-    input_ids  = input_ids.unsqueeze(-1)
-
-    # x_i - logsumexp(x_i)
-    old_x = torch.gather(old_logits, dim = -1, index = input_ids).squeeze(-1)
-    new_x = torch.gather(new_logits, dim = -1, index = input_ids).squeeze(-1)
-    old = old_x - torch.logsumexp(old_logits, dim = -1)
-    new = new_x - torch.logsumexp(new_logits, dim = -1)
-
-    kl_i = torch.exp(old - new) - (old - new) - 1.0
-    loss_i = torch.exp(new - new.detach()) * advantages.unsqueeze(1)
-    loss_i = -(loss_i - beta * kl_i)
-
-    mask = mask.to(torch.float32)
-    n_mask_per_reward = mask.sum(1)
-    loss_per_reward = (loss_i * mask).sum(1) / n_mask_per_reward
-    loss = loss_per_reward.mean()
-    
-    # Get metrics as well which are folded
-    with torch.inference_mode():
-        completion_length = n_mask_per_reward.mean()
-        mean_kl_per_reward = (kl_i * mask).sum(1) / n_mask_per_reward
-        mean_kl = mean_kl_per_reward.mean()
-    pass
-    return loss, completion_length, mean_kl
-pass
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource((grpo_compute_loss)))
-
+grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer_compute_loss(function_name, function):
     if  function_name != "compute_loss": return function
 
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+    def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
         # Compute the per-token log probabilities for the model
