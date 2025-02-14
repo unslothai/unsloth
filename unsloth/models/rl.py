@@ -417,7 +417,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Get all pre-modules
     if RLTrainer_name in RL_PRE_ITEMS:
-        RL_pre = "\n".join(RL_PRE_ITEMS)
+        RL_pre = "\n".join(RL_PRE_ITEMS[RLTrainer_name])
     else:
         RL_pre = ""
     pass
