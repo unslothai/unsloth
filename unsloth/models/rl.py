@@ -109,13 +109,13 @@ from packaging.version import Version
 import torch
 from contextlib import nullcontext
 from torch.nn import functional as F
-torch_compile_options = {
+torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : True,
     "shape_padding"     : True,
     "trace.enabled"     : False,
     "triton.cudagraphs" : False,
-}
+}}
 
 {selective_log_softmax_code}
 {RL_pre}
