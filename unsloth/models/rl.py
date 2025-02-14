@@ -225,9 +225,14 @@ def PatchRL(FastLanguageModel):
     unwrap = "unwrap_model_for_generation"
     _get_reward = "get_reward"
     for trainer in trainers:
-        if hasattr(eval(f"trl.trainer.{trainer}"), unwrap):
-            exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
-            exec(f"trl.trainer.{trainer}.{_get_reward} = unsloth_{_get_reward}")
+        try: current_trainer = eval(f"trl.trainer.{trainer}")
+        except: continue
+        if hasattr(current_trainer, unwrap):
+            try: exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
+            except: continue
+        if hasattr(current_trainer, _get_reward):
+            try: exec(f"trl.trainer.{trainer}.{_get_reward} = unsloth_{_get_reward}")
+            except: continue
     exec(f"Trainer.prediction_step=unsloth_prediction_step")
     pass
 pass
