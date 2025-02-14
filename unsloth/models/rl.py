@@ -566,8 +566,8 @@ pass
 
 
 def PatchFastRL(algorithm = None, FastLanguageModel = None):
-    return
-    # if FastLanguageModel is not None: PatchRL(FastLanguageModel)
-    # patch_trl_rl_trainers()
-    # if algorithm is not None: PatchRLStatistics(algorithm)
+    if FastLanguageModel is not None: PatchRL(FastLanguageModel)
+    patch_trl_rl_trainers()
+    if type(algorithm) is str and algorithm.islower():
+        PatchRLStatistics(algorithm)
 pass
