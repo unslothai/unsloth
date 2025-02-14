@@ -195,7 +195,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
 
 # Custom compiled GRPO loss - creates 3 Triton kernels
-# @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
+@torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
 def _grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta):
     old_logits = old_logits.to(torch.float32)
     new_logits = new_logits.to(torch.float32)
@@ -247,7 +247,7 @@ def grpo_trainer_compute_loss(function_name, function):
         # attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         attention_mask = None
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-
+        
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
 
         # Compute the KL divergence between the model and the reference model
@@ -259,7 +259,7 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-
+        input_ids = input_ids[:, -logits_to_keep:]
         loss, completion_length, mean_kl = grpo_compute_loss(
             ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta,
         )
