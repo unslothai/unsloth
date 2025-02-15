@@ -30,6 +30,7 @@ from .rl_replacements import (
     RL_FUNCTIONS,
     RL_PRE_ITEMS,
     RL_CONFIG_CHANGES,
+    RL_METRICS_CHANGES,
 )
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 
@@ -310,10 +311,20 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_post += neftune_check
     pass
 
+    # Edit optional metrics
+    other_metrics_processor = ""
+    if trainer_file in RL_METRICS_CHANGES:
+        process_extra_args = RL_METRICS_CHANGES[trainer_file]
+        for process_extra_arg in process_extra_args:
+            other_metrics_processor += process_extra_arg(call_args, extra_args)
+    pass
+
     # Add statistics as well!
     extra_args += \
+        "other_metrics = []\n"\
+        f"{other_metrics_processor}\n"\
         "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
-        f"PatchRLStatistics('{trainer_file}')\n"
+        f"PatchRLStatistics('{trainer_file}', other_metrics)\n"
 
     # Patch optional args
     if trainer_file in RL_EXTRA_ARGS:
