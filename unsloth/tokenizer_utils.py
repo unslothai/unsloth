@@ -259,6 +259,7 @@ pass
 
 def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     # Get eos_token, bos_token etc
+    if not hasattr(slow_tokenizer, "all_special_tokens"): return True
     dir_names = dir(slow_tokenizer)
     special_tokens = list(filter(None, (
         getattr(slow_tokenizer, x) for x in dir_names
@@ -503,12 +504,14 @@ def _load_correct_tokenizer(
             cache_dir         = cache_dir,
         )
     except:
-        pass
+        slow_tokenizer = None
         # print(
         #     f"Unsloth: {tokenizer_name} has no tokenizer.model file.\n"\
         #     "Just informing you about this - this is not a critical error."
         # )
     pass
+    # Unsure why this occurs!
+    if type(slow_tokenizer) is bool: slow_tokenizer = None
 
     fast_tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name,
