@@ -270,6 +270,7 @@ def grpo_trainer_metrics(RLTrainer_source, RLConfig_source):
 
     log_metrics = \
     "if not isinstance(reward_funcs, list): _reward_funcs = [reward_funcs]\n"\
+    "else: _reward_funcs = reward_funcs\n"\
     "for reward_func in _reward_funcs:\n"\
     "    try:\n"\
     "        reward_func_name = reward_func.__name__\n"\
