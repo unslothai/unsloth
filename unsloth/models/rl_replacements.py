@@ -15,14 +15,27 @@
 __all__ = [
     "RL_EXTRA_ARGS",
     "RL_FUNCTIONS",
+    "RL_PRE_ITEMS",
+    "RL_CONFIG_CHANGES",
 ]
 
 import re
+import torch
 import inspect
 from collections import defaultdict
-RL_EXTRA_ARGS = defaultdict(list)
-RL_FUNCTIONS  = defaultdict(list)
+from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+RL_EXTRA_ARGS     = defaultdict(list)
+RL_FUNCTIONS      = defaultdict(list)
+RL_PRE_ITEMS      = defaultdict(list)
+RL_CONFIG_CHANGES = defaultdict(list)
 
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}
 
 # Check untrained tokens
 def sft_trainer_fix_untraiend_tokens(call_args, extra_args):
@@ -161,23 +174,89 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
-    # Edit model to autocast it
-    # .*? matches first match. .+? matches final match.
-    original = re.findall(
-        r"\n([ ]{4,})(logits = model\(.*?\))",
-        function,
-        flags = re.MULTILINE | re.DOTALL,
-    )
-    if len(original) != 0:
-        spaces, original = original[0]
-        spaces = len(spaces)
-        replacer = \
-        "if not hasattr(self, '_autocast_dtype'):\n" + \
-        " "*(spaces + 4) + "self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16\n" + \
-        " "*(spaces + 0) + "with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):\n" + \
-        " "*(spaces + 4) + original
-        function = function.replace(original, replacer)
+    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
+        if not hasattr(self, '_autocast_dtype'):
+            self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
+        with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
+            # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+            logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
+            logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+
+            input_ids = input_ids[:, -logits_to_keep:]
+            # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
+            # See https://github.com/huggingface/trl/issues/2770
+            logits = logits[:, -logits_to_keep:]
+            return logits
+            # return selective_log_softmax(logits, input_ids)  #  compute logprobs for the input tokens
+        pass
     pass
+
+    function = inspect.getsource(_get_per_token_logps)
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
+
+grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
+
+# Edit _get_per_token_logps to handle mixed precision
+def grpo_trainer_compute_loss(function_name, function):
+    if  function_name != "compute_loss": return function
+
+    def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
+        if return_outputs:
+            raise ValueError("The GRPOTrainer does not support returning outputs")
+        # Compute the per-token log probabilities for the model
+
+        prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+        completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+        input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        # attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+        attention_mask = None
+        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
+
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+
+        # Compute the KL divergence between the model and the reference model
+        ref_per_token_logps = inputs["ref_per_token_logps"]
+        # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
+
+        # x - x.detach() allows for preserving gradients from x
+        advantages = inputs["advantages"]
+        # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
+        # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
+        # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
+        input_ids = input_ids[:, -logits_to_keep:]
+        loss, completion_length, mean_kl = grpo_compute_loss(
+            ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
+        )
+        # Log the metrics
+        # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
+        self._metrics["completion_length"].append(completion_length.item())
+
+        # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
+        # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
+        self._metrics["kl"].append(mean_kl.item())
+        return loss
+    pass
+
+    function = inspect.getsource(compute_loss)
+    return function
+pass
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
+
+# https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L356
+# TRL warns if batch size is not a multiple of num_generations -> fix this.
+def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
+    if "divisible by the number of generations" not in RLTrainer_source: return ""
+    if "num_generations" not in RLConfig_source: return ""
+
+    check_batch_size = \
+    "div = per_device_train_batch_size // num_generations\n"\
+    "if div * num_generations != per_device_train_batch_size:\n"\
+    "    print('Unsloth: We know expect `per_device_train_batch_size` to be a multiple of `num_generations`.\\n"\
+               "We will change the batch size of ' + str(per_device_train_batch_size) + ' to the `num_generations` of ' + str(num_generations))\n"\
+    "    per_device_train_batch_size = num_generations\n"
+    return check_batch_size
+pass
+RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_batch_size)
