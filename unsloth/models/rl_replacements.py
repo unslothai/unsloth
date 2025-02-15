@@ -17,6 +17,7 @@ __all__ = [
     "RL_FUNCTIONS",
     "RL_PRE_ITEMS",
     "RL_CONFIG_CHANGES",
+    "RL_METRICS_CHANGES",
 ]
 
 import re
@@ -24,10 +25,11 @@ import torch
 import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
-RL_EXTRA_ARGS     = defaultdict(list)
-RL_FUNCTIONS      = defaultdict(list)
-RL_PRE_ITEMS      = defaultdict(list)
-RL_CONFIG_CHANGES = defaultdict(list)
+RL_EXTRA_ARGS      = defaultdict(list)
+RL_FUNCTIONS       = defaultdict(list)
+RL_PRE_ITEMS       = defaultdict(list)
+RL_CONFIG_CHANGES  = defaultdict(list)
+RL_METRICS_CHANGES = defaultdict(list)
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -260,3 +262,20 @@ def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
     return check_batch_size
 pass
 RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_batch_size)
+
+
+# Add other reward function names
+def grpo_trainer_metrics(RLTrainer_source, RLConfig_source):
+    if "reward_funcs" not in RLTrainer_source: return ""
+
+    log_metrics = \
+    "if not isinstance(reward_funcs, list): _reward_funcs = [reward_funcs]\n"\
+    "else: _reward_funcs = reward_funcs\n"\
+    "for reward_func in _reward_funcs:\n"\
+    "    try:\n"\
+    "        reward_func_name = reward_func.__name__\n"\
+    "        other_metrics.append(f'rewards/{reward_func_name}')\n"\
+    "    except: pass\n"
+    return log_metrics
+pass
+RL_METRICS_CHANGES["grpo_trainer"].append(grpo_trainer_metrics)
