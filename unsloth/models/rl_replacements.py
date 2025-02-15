@@ -29,7 +29,7 @@ RL_EXTRA_ARGS      = defaultdict(list)
 RL_FUNCTIONS       = defaultdict(list)
 RL_PRE_ITEMS       = defaultdict(list)
 RL_CONFIG_CHANGES  = defaultdict(list)
-RL_METRICS_CHANGES = dict()
+RL_METRICS_CHANGES = defaultdict(list)
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
