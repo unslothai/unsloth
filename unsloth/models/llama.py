@@ -1605,7 +1605,6 @@ original_for_causal_lm_forward  = LlamaForCausalLM.forward
 original_peft_model_for_causal_lm_forward = PeftModelForCausalLM.forward
 import transformers.models.llama.modeling_llama
 original_LLamaRotaryEmbedding =  transformers.models.llama.modeling_llama.LlamaRotaryEmbedding 
-original_LLamaLinearScalingRotaryEmbedding = transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding
 
 class FastLlamaModel:
     def set_functions():
@@ -1617,7 +1616,6 @@ class FastLlamaModel:
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
         transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
-        transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
 
     def reset_functions():
         LlamaAttention      .forward = original_attention_forward
@@ -1628,7 +1626,6 @@ class FastLlamaModel:
         LlamaForCausalLM    .forward = original_for_causal_lm_forward
         PeftModelForCausalLM.forward = original_peft_model_for_causal_lm_forward
         transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = original_LLamaRotaryEmbedding 
-        transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = original_LLamaLinearScalingRotaryEmbedding
     
     @staticmethod
     def pre_patch():
