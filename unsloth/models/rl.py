@@ -21,12 +21,25 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
+import torch
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.logging_utils import PatchRLStatistics
+from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from .rl_replacements import (
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
+    RL_PRE_ITEMS,
+    RL_CONFIG_CHANGES,
 )
+selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
+
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}
 
 def PatchRL(FastLanguageModel):
 
@@ -81,6 +94,17 @@ from dataclasses import dataclass, field
 from packaging.version import Version
 import torch
 from contextlib import nullcontext
+from torch.nn import functional as F
+torch_compile_options = {{
+    "epilogue_fusion"   : True,
+    "max_autotune"      : True,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}}
+
+{selective_log_softmax_code}
+{RL_pre}
 
 @dataclass
 class Unsloth{RLConfig_name}({RLConfig_name}):
@@ -142,8 +166,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if RLTrainer.__name__.startswith("Unsloth"): return
     if RLConfig .__name__.startswith("Unsloth"): return
 
+    # Get old source
+    old_RLTrainer_source = inspect.getsource(RLTrainer)
+    old_RLConfig_source  = inspect.getsource(RLConfig)
+
     all_imports = dir(trainer)
-    imports = [x for x in all_imports if not x.startswith("_")]
+    # Fix _deprecate_arguments not getting imported so stop __ but not _
+    imports = [x for x in all_imports if not x.startswith("__")]
 
     # Get default arguments
     EMPTY = inspect.Parameter.empty
@@ -358,6 +387,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += num_proc_check
     pass
 
+    # Edit config with anything extra
+    if trainer_file in RL_CONFIG_CHANGES:
+        process_extra_args = RL_CONFIG_CHANGES[trainer_file]
+        for process_extra_arg in process_extra_args:
+            extra_args += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
+    pass
+
     # Edit report_to and default it to nothing if max_steps is like 60
 
     # Create RLConfig args
@@ -377,6 +413,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     __RLTrainer_doc__ = eval(f"trl.trainer.{RLTrainer_name}").__doc__
     __RLConfig_doc__  = eval(f"trl.trainer.{RLConfig_name}") .__doc__
 
+    # Get all pre-modules
+    if trainer_file in RL_PRE_ITEMS:
+        RL_pre = "\n".join(RL_PRE_ITEMS[trainer_file])
+    else:
+        RL_pre = ""
+    pass
+
+    # Selective log softmax
+    selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+
+    # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
         __RLTrainer_doc__    = __RLTrainer_doc__,
@@ -394,6 +441,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         RLTrainer_extras     = RLTrainer_extras,
         RLTrainer_post       = RLTrainer_post,
+        RL_pre               = RL_pre,
+
+        selective_log_softmax_code = selective_log_softmax_code,
     )
 
     # Create new function
@@ -402,7 +452,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source,
         f"trl.trainer.{trainer_file}",
         imports,
-        overwrite = False,
+        overwrite = True,
     )
     
     # Patch Trainer
