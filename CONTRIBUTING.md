@@ -24,6 +24,9 @@ Your support extends beyond code:
 - Share how Unsloth powers your projects.  
 - Star our repository to show your appreciation.  
 
+## Note
+We have added a new section in the `README.md` under "✨ Finetune for Free" titled "Exporting Models from Colab to Local Machine" with detailed steps. Please refer to it for guidance on exporting models from Colab to your local machine.
+
 Finally, please be mindful of our [Code of Conduct](https://github.com/unslothai/unsloth/tree/main/unsloth/CODE_OF_CONDUCT.md) to ensure a welcoming and inclusive environment for everyone.  
 
 Thank you so much for reading and we hope you have lots of fun using Unsloth! 🦥
