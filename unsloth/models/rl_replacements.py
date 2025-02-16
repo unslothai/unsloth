@@ -40,7 +40,7 @@ torch_compile_options = {
 }
 
 # Check untrained tokens
-def sft_trainer_fix_untraiend_tokens(call_args, extra_args):
+def sft_trainer_fix_untrained_tokens(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_tokenizer = \
         "IGNORED_TOKENIZER_NAMES = os.environ.get('UNSLOTH_IGNORED_TOKENIZER_NAMES', '').split('\\n')\n"\
@@ -52,7 +52,7 @@ def sft_trainer_fix_untraiend_tokens(call_args, extra_args):
         return fix_tokenizer
     return ""
 pass
-RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untraiend_tokens)
+RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
 
 
 # Remove DPO columns which might randomnly be tokenized
