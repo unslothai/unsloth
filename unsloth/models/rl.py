@@ -422,7 +422,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Create full module
     exec(f"from trl.trainer import ({RLTrainer_name}, {RLConfig_name},)")
     __RLTrainer_doc__ = eval(f"trl.trainer.{RLTrainer_name}").__doc__
+    if __RLTrainer_doc__ is None: __RLTrainer_doc__ = ""
     __RLConfig_doc__  = eval(f"trl.trainer.{RLConfig_name}") .__doc__
+    if __RLConfig_doc__ is None: __RLConfig_doc__ = ""
 
     # Get all pre-modules
     if trainer_file in RL_PRE_ITEMS:
@@ -458,7 +460,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
 
     # Remove multiple doc strings
-    if RLTrainer_source.count(__RLTrainer_doc__) == 2:
+    if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
     pass
 
