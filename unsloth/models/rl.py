@@ -558,7 +558,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
     changed = {"__init__" : (old_init, init,)}
     edit_functions = RL_FUNCTIONS.get(trainer_file, [])
-    remover = []
 
     for function in functions:
         if not hasattr(RLTrainer, function): continue
@@ -602,9 +601,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         )
 
         # Skip if no changes done
-        if source == original_source:
-            remover.append(original_source)
-            continue
+        if source == original_source: continue
 
         # Find all imports
         imports += [x for x in all_imports if not x.startswith("_") and x in source]
@@ -620,11 +617,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         old, new = changed[function]
         RLTrainer_source = RLTrainer_source.replace(old, new)
     pass
-
-    # Remove non editted functions
-    # for remove in remover:
-    #     RLTrainer_source = RLTrainer_source.replace(remove, "")
-    # pass
 
     RLTrainer_source = RLTrainer_source.replace(
         f"class {RLTrainer_name}", f"class _Unsloth{RLTrainer_name}", 1
