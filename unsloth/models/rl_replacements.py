@@ -188,8 +188,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
             logits = logits[:, -logits_to_keep:]
-            # return logits
-            return selective_log_softmax(logits, input_ids)  #  compute logprobs for the input tokens
+            return logits
+            # return selective_log_softmax(logits, input_ids)  #  compute logprobs for the input tokens
         pass
     pass
 
@@ -198,8 +198,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
-# grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
-# RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
+grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer_compute_loss(function_name, function):
@@ -245,7 +245,7 @@ def grpo_trainer_compute_loss(function_name, function):
     function = inspect.getsource(compute_loss)
     return function
 pass
-# RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
 
 # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L356
 # TRL warns if batch size is not a multiple of num_generations -> fix this.
