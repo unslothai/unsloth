@@ -112,12 +112,12 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     """
     {__RLConfig_doc__}
     """
-    sampling_params: Optional[Any] = field(
+    vllm_sampling_params: Optional[Any] = field(
         default = None,
         metadata = {{'help': 'vLLM SamplingParams'}},
     )
     def __init__({RLConfig_arguments},
-        sampling_params = None,
+        vllm_sampling_params = None,
         **kwargs,
     ):
 {RLConfig_extra_args}
