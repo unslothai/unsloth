@@ -622,9 +622,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     pass
 
     # Remove non editted functions
-    for remove in remover:
-        RLTrainer_source = RLTrainer_source.replace(remove, "")
-    pass
+    # for remove in remover:
+    #     RLTrainer_source = RLTrainer_source.replace(remove, "")
+    # pass
 
     RLTrainer_source = RLTrainer_source.replace(
         f"class {RLTrainer_name}", f"class _Unsloth{RLTrainer_name}", 1
