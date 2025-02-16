@@ -457,6 +457,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         selective_log_softmax_code = selective_log_softmax_code,
     )
 
+    # Remove multiple doc strings
+    if RLTrainer_source.count(__RLTrainer_doc__) == 2:
+        RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
+    pass
+
     # Create new function
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
@@ -618,14 +623,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
     RLTrainer_source = RLTrainer_source.replace(
         f"class {RLTrainer_name}", f"class _Unsloth{RLTrainer_name}", 1
-    )
-
-    # Get rid of docs since we repeated it
-    RLTrainer_source = re.sub(
-        rf"class _Unsloth{RLTrainer_name}(.*?:).+?def __init__\(",
-        rf"class _Unsloth{RLTrainer_name}\1\n    def __init__(",
-        RLTrainer_source,
-        flags = re.MULTILINE | re.DOTALL,
     )
     return RLTrainer_source
 pass
