@@ -535,8 +535,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params # Add spaces
             new_vllm_part = \
                 f"\n{' '*8}if {args}.use_vllm:\n{sampling_params} "\
-                f"if getattr(args, 'sampling_params', None) is None else "\
-                f"getattr(args, 'sampling_params', None)\n{' '*8}else:\n"
+                f"if getattr(args, 'vllm_sampling_params', None) is None else "\
+                f"getattr(args, 'vllm_sampling_params', None)\n{' '*8}else:\n"
             init = init.replace(vllm_part, new_vllm_part)
         pass
     pass
