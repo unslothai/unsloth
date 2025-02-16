@@ -464,6 +464,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
     pass
 
+    # Remove multiple newlines
+    RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
+
     # Create new function
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
