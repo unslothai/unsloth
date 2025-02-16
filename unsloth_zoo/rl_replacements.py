@@ -50,7 +50,7 @@ def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages)
     old_logits = old_logits.to(torch.float32)
     new_logits = new_logits.to(torch.float32)
     input_ids  = input_ids.unsqueeze(-1)
-
+    
     # x_i - logsumexp(x_i)
     old_x = torch.gather(old_logits, dim = -1, index = input_ids).squeeze(-1)
     new_x = torch.gather(new_logits, dim = -1, index = input_ids).squeeze(-1)
