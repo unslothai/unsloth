@@ -239,7 +239,7 @@ def grpo_trainer_compute_loss(function_name, function):
             if RL_REPLACEMENTS["count"] == 10: raise
         else: RL_REPLACEMENTS["count"] = 1
         RL_REPLACEMENTS["data"] = (
-            ref_per_token_logps, per_token_logps, _input_ids, completion_mask, self.beta, advantages,
+            ref_per_token_logps, per_token_logps.detach(), _input_ids, completion_mask, self.beta, advantages,
             loss, completion_length, mean_kl, completion_ids, _logits_to_keep,
         )
         # Log the metrics
