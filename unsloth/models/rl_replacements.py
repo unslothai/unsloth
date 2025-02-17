@@ -235,11 +235,11 @@ def grpo_trainer_compute_loss(function_name, function):
         from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
         if "count" in RL_REPLACEMENTS:
             RL_REPLACEMENTS["count"] += 1
-            if RL_REPLACEMENTS["count"] == 10: raise
+            if RL_REPLACEMENTS["count"] == 20: raise
         else: RL_REPLACEMENTS["count"] = 1
         RL_REPLACEMENTS["data"] = (
             ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
-            loss, completion_length, mean_kl,
+            loss, completion_length, mean_kl, completion_ids,
         )
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
