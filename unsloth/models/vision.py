@@ -123,9 +123,6 @@ class FastBaseVisionModel:
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
-        # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
-        pre_check = check_nvidia()
-
         bnb_config = None
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
@@ -154,8 +151,6 @@ class FastBaseVisionModel:
         )
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
-        # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
-        post_check = check_nvidia()
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name

@@ -25,7 +25,6 @@ __all__ = [
     "__version__",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
-    "PRE_CHECK",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
@@ -37,7 +36,7 @@ __all__ = [
     "torch_compile_options",
     "patch_linear_scaling",
     "patch_llama_rope_scaling",
-    "check_nvidia",
+    "check_if_nvidia_is_installed",
     "create_boolean_mask",
     "torch_amp_custom_fwd",
     "torch_amp_custom_bwd",
@@ -957,20 +956,13 @@ def patch_llama_rope_scaling(
     return init_name, function
 pass
 
-
-def check_nvidia():
-    # Unsloth doesn't work yet on AMD devices - we're working on it!
-    output = np.array([0,])
-    try:
-        output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
-        output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
-        output = np.array([int(x.decode('utf-8'))/1024 for x in output])
-    except:
-        if not torch.cuda.is_available():
-            raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")    
-    return output
+def check_if_nvidia_is_installed():
+    if not torch.cuda.is_available():
+        raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
 pass
-PRE_CHECK = check_nvidia()
+
+# We check if Nvidia is installer since we only support Nvidia for now.
+check_if_nvidia_is_installed()
 
 
 def create_boolean_mask(n = 4096, sliding_window = 2048):
