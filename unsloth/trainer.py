@@ -14,7 +14,7 @@
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, Any
 from functools import wraps
 
 import trl
@@ -29,6 +29,7 @@ from unsloth_zoo.vision_utils import (
 )
 from packaging.version import Version
 import dataclasses
+import torch
 
 __all__ = [
     "UnslothTrainingArguments",
@@ -66,6 +67,7 @@ try:
 except:
     from transformers import TrainingArguments
 pass
+
 @dataclass
 class UnslothTrainingArguments(TrainingArguments):
     embedding_learning_rate : Optional[float] = field(
@@ -135,6 +137,60 @@ class UnslothTrainer(SFTTrainer):
         pass
         return self.optimizer
     pass
+
+    def train_on_responses_only(self, batch: Dict[str, Any]) -> torch.Tensor:
+        """
+        Train only on the completion part of the input for VLMs.
+        Args:
+            batch: A dictionary containing "input_ids", "attention_mask", and optionally "pixel_values".
+        Returns:
+            loss: The computed loss for the completion part.
+        """
+        # Extract inputs
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        pixel_values = batch.get("pixel_values", None)  # Handle text-only inputs
+
+        # Forward pass
+        if pixel_values is not None:
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, pixel_values=pixel_values)
+        else:
+            outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+
+        # Compute loss only on the completion part
+        # Assuming the completion starts at a specific token (e.g., after the prompt)
+        completion_start_index = self._find_completion_start(input_ids)
+        logits = outputs.logits[:, completion_start_index:, :]
+        labels = input_ids[:, completion_start_index:]
+
+        loss = self._compute_loss(logits, labels)
+        return loss
+
+    def _find_completion_start(self, input_ids: torch.Tensor) -> int:
+        """
+        Find the index where the completion starts in the input_ids.
+        Args:
+            input_ids: The input token IDs.
+        Returns:
+            The index where the completion starts.
+        """
+        # Example: Find the first occurrence of a specific token (e.g., end of prompt)
+        prompt_end_token = self.tokenizer.eos_token_id
+        completion_start_index = (input_ids == prompt_end_token).nonzero()[0, 1].item()
+        return completion_start_index
+
+    def _compute_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the loss for the completion part.
+        Args:
+            logits: The model's logits.
+            labels: The target labels.
+        Returns:
+            The computed loss.
+        """
+        loss_fn = torch.nn.CrossEntropyLoss()
+        loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
+        return loss
 pass
 
 # From `trl>=0.13.0`, they changed how to pass several params to the trainer
