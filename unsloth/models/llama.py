@@ -1030,6 +1030,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         num_logits_to_keep: Optional[int] = 0,
+        logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
@@ -1053,16 +1054,16 @@ def CausalLM_fast_forward(fast_forward_inference):
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
             outputs = self.model(
-                input_ids=input_ids,
-                causal_mask=causal_mask,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                inputs_embeds=inputs_embeds,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
+                input_ids = input_ids,
+                causal_mask = causal_mask,
+                attention_mask = attention_mask,
+                position_ids = position_ids,
+                past_key_values = past_key_values,
+                inputs_embeds = inputs_embeds,
+                use_cache = use_cache,
+                output_attentions = output_attentions,
+                output_hidden_states = output_hidden_states,
+                return_dict = return_dict,
             )
         pass
         hidden_states = outputs[0]
@@ -1072,6 +1073,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
+        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
 
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
@@ -1180,28 +1182,30 @@ pass
 @torch._disable_dynamo
 def PeftModelForCausalLM_fast_forward(
     self,
-    input_ids=None,
-    causal_mask=None,
-    attention_mask=None,
-    inputs_embeds=None,
-    labels=None,
-    output_attentions=None,
-    output_hidden_states=None,
-    return_dict=None,
-    task_ids=None,
-    num_logits_to_keep=0,
+    input_ids = None,
+    causal_mask = None,
+    attention_mask = None,
+    inputs_embeds = None,
+    labels = None,
+    output_attentions = None,
+    output_hidden_states = None,
+    return_dict = None,
+    task_ids = None,
+    num_logits_to_keep = 0,
+    logits_to_keep = 0,
     **kwargs,
 ):
     return self.base_model(
-        input_ids=input_ids,
-        causal_mask=causal_mask,
-        attention_mask=attention_mask,
-        inputs_embeds=inputs_embeds,
-        labels=labels,
-        output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
-        return_dict=return_dict,
-        num_logits_to_keep=num_logits_to_keep,
+        input_ids = input_ids,
+        causal_mask = causal_mask,
+        attention_mask = attention_mask,
+        inputs_embeds = inputs_embeds,
+        labels = labels,
+        output_attentions = output_attentions,
+        output_hidden_states = output_hidden_states,
+        return_dict = return_dict,
+        num_logits_to_keep = num_logits_to_keep,
+        logits_to_keep = logits_to_keep,
         **kwargs,
     )
 pass
