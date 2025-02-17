@@ -700,6 +700,7 @@ def LlamaModel_fast_forward(
         elif inputs_requires_grad:
             inputs_embeds.requires_grad_(False)
         pass
+        attention_mask = attention_mask[:,:self.max_seq_length] # Must resize!
         inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
