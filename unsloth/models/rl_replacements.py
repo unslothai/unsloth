@@ -235,7 +235,7 @@ def grpo_trainer_compute_loss(function_name, function):
         from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
         if "count" in RL_REPLACEMENTS:
             RL_REPLACEMENTS["count"] += 1
-            if RL_REPLACEMENTS["count"] == 20: raise
+            if RL_REPLACEMENTS["count"] == 10: raise
         else: RL_REPLACEMENTS["count"] = 1
         RL_REPLACEMENTS["data"] = (
             ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
