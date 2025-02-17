@@ -233,11 +233,11 @@ def grpo_trainer_compute_loss(function_name, function):
         loss, completion_length, mean_kl = grpo_compute_loss(
             ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
         )
+        from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
         RL_REPLACEMENTS["data"] = (
             ref_per_token_logps.detach(), per_token_logps.detach(), _input_ids, completion_mask, self.beta, advantages,
             loss.detach(), completion_length, mean_kl, completion_ids, _logits_to_keep,
         )
-        from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
         if "count" in RL_REPLACEMENTS:
             RL_REPLACEMENTS["count"] += 1
             if RL_REPLACEMENTS["count"] == 10: raise
