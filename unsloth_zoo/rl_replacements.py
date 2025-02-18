@@ -109,15 +109,13 @@ def grpo_accumulated_loss(
                 old_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
                 old_logits = old_logits.logits[:, :-1, :]
             pass
-
-            with torch.enable_grad():
-                new_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
-                new_logits = new_logits.logits[:, :-1, :]
-        
-                _loss, _completion_length, _mean_kl = grpo_compute_loss(
-                    old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages, bsz,
-                )
-            pass
+            
+            new_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
+            new_logits = new_logits.logits[:, :-1, :]
+    
+            _loss, _completion_length, _mean_kl = grpo_compute_loss(
+                old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages, bsz,
+            )
         pass
         loss              += _loss.detach()
         completion_length += _completion_length.detach()
