@@ -123,9 +123,6 @@ def grpo_accumulated_loss(
         if ga > 1: _loss = _loss / ga
         trainer.accelerator.backward(_loss)
     pass
-    completion_length = completion_length.item()
-    mean_kl           = mean_kl.item()
-    loss              = loss.item()
 
     # Dummy loss to trick downstream gradients
     dummy_loss = torch.tensor(loss, dtype = torch.float32, device = "cuda")
