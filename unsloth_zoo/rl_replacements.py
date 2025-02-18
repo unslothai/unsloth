@@ -104,18 +104,20 @@ def grpo_accumulated_loss(
         _completion_input_ids = _input_ids[:, -logits_to_keep:]
         _advantages = advantages[batch_id]
 
-        with torch.inference_mode(), trainer.accelerator.unwrap_model(trainer.model, keep_fp32_wrapper = False).disable_adapter():
-            old_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
-            old_logits = old_logits.logits[:, :-1, :]
-        pass
+        with torch.amp.autocast(device_type = "cuda", dtype = mixed_dtype):
+            with torch.inference_mode(), trainer.accelerator.unwrap_model(trainer.model, keep_fp32_wrapper = False).disable_adapter():
+                old_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
+                old_logits = old_logits.logits[:, :-1, :]
+            pass
 
-        with torch.enable_grad(), torch.amp.autocast(device_type = "cuda", dtype = mixed_dtype):
-            new_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
-            new_logits = new_logits.logits[:, :-1, :]
-    
-            _loss, _completion_length, _mean_kl = grpo_compute_loss(
-                old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages, bsz,
-            )
+            with torch.enable_grad():
+                new_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
+                new_logits = new_logits.logits[:, :-1, :]
+        
+                _loss, _completion_length, _mean_kl = grpo_compute_loss(
+                    old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages, bsz,
+                )
+            pass
         pass
         loss              += _loss.detach()
         completion_length += _completion_length.detach()
