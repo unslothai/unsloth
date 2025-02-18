@@ -50,6 +50,7 @@ RL_REPLACEMENTS["selective_log_softmax"] = selective_log_softmax
 # Custom compiled GRPO loss - creates 3 Triton kernels
 @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
 def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages, bsz):
+    # All Unsloth Zoo code licensed under LGPLv3
     old_logits = old_logits.to(torch.float32)
     new_logits = new_logits.to(torch.float32)
     input_ids  = input_ids.unsqueeze(-1)
@@ -88,6 +89,7 @@ def grpo_accumulated_loss(
     advantages,
     n_chunks = 1,
 ):
+    # All Unsloth Zoo code licensed under LGPLv3
     bsz, qlen = input_ids.shape
     ga = trainer.args.gradient_accumulation_steps
     n_chunks = max(min(bsz, n_chunks), 1)
@@ -98,6 +100,8 @@ def grpo_accumulated_loss(
     mean_kl           = torch.zeros(1, dtype = torch.float32, device = "cuda")
     mixed_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
     
+    losses = []
+
     for batch_id in batch_ids:
         _completion_mask = completion_mask[batch_id]
         _input_ids = input_ids[batch_id]
@@ -109,24 +113,26 @@ def grpo_accumulated_loss(
                 old_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
                 old_logits = old_logits.logits[:, :-1, :]
             pass
-            
+
             new_logits = trainer.model(input_ids = _input_ids, logits_to_keep = logits_to_keep + 1)
             new_logits = new_logits.logits[:, :-1, :]
     
             _loss, _completion_length, _mean_kl = grpo_compute_loss(
                 old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages, bsz,
             )
+            losses.append(_loss)
         pass
-        loss              += _loss.detach()
+        # loss              += _loss.detach()
         completion_length += _completion_length.detach()
         mean_kl           += _mean_kl.detach()
-        if ga > 1: _loss = _loss / ga
-        trainer.accelerator.backward(_loss)
+        # if ga > 1: _loss = _loss / ga
+        # trainer.accelerator.backward(_loss)
     pass
 
     # Dummy loss to trick downstream gradients
-    dummy_loss = loss.clone().detach()
-    dummy_loss.requires_grad_(True)
+    # dummy_loss = loss.clone().detach()
+    # dummy_loss.requires_grad_(True)
+    dummy_loss = torch.stack(losses)
     return dummy_loss, completion_length, mean_kl
 pass
 RL_REPLACEMENTS["grpo_accumulated_loss"] = grpo_accumulated_loss
