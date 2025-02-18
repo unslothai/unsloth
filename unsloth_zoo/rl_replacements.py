@@ -49,7 +49,7 @@ RL_REPLACEMENTS["selective_log_softmax"] = selective_log_softmax
 
 # Custom compiled GRPO loss - creates 3 Triton kernels
 @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
-def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages, bsz):
+def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages):
     # All Unsloth Zoo code licensed under LGPLv3
     old_logits = old_logits.to(torch.float32)
     new_logits = new_logits.to(torch.float32)
@@ -68,13 +68,13 @@ def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages,
     mask = mask.to(torch.float32)
     n_mask_per_reward = mask.sum(1)
     loss_per_reward = (loss_i * mask).sum(1) / n_mask_per_reward
-    loss = loss_per_reward.sum() / bsz #.mean()
+    loss = loss_per_reward.mean()
     
     # Get metrics as well which are folded
     with torch.inference_mode():
-        completion_length = n_mask_per_reward.sum() / bsz #.mean()
+        completion_length = n_mask_per_reward.mean()
         mean_kl_per_reward = (kl_i * mask).sum(1) / n_mask_per_reward
-        mean_kl = mean_kl_per_reward.sum() / bsz #.mean()
+        mean_kl = mean_kl_per_reward.mean()
     pass
     return loss, completion_length, mean_kl
 pass
@@ -94,8 +94,6 @@ def grpo_accumulated_loss(
     ga = trainer.args.gradient_accumulation_steps
     n_chunks = max(min(bsz, n_chunks), 1)
     batch_ids = np.array_split(torch.arange(bsz), n_chunks)
-    # for param in trainer.model.parameters(): param.grad = None
-    loss              = torch.zeros(1, dtype = torch.float32, device = "cuda")
     completion_length = torch.zeros(1, dtype = torch.float32, device = "cuda")
     mean_kl           = torch.zeros(1, dtype = torch.float32, device = "cuda")
     mixed_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
@@ -118,22 +116,18 @@ def grpo_accumulated_loss(
             new_logits = new_logits.logits[:, :-1, :]
     
             _loss, _completion_length, _mean_kl = grpo_compute_loss(
-                old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages, bsz,
+                old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages,
             )
             losses.append(_loss)
         pass
-        # loss              += _loss.detach()
         completion_length += _completion_length.detach()
         mean_kl           += _mean_kl.detach()
-        # if ga > 1: _loss = _loss / ga
-        # trainer.accelerator.backward(_loss)
     pass
 
-    # Dummy loss to trick downstream gradients
-    # dummy_loss = loss.clone().detach()
-    # dummy_loss.requires_grad_(True)
-    dummy_loss = torch.stack(losses).sum()
-    return dummy_loss, completion_length, mean_kl
+    completion_length = completion_length.mean()
+    mean_kl           = mean_kl.mean()
+    loss = torch.stack(losses).sum()
+    return loss, completion_length, mean_kl
 pass
 RL_REPLACEMENTS["grpo_accumulated_loss"] = grpo_accumulated_loss
 
