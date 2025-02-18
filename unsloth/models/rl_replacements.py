@@ -239,7 +239,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages, bsz,
             )
         else:
-            print(self.args.unsloth_num_chunks, end = ",")
+            print(int(self.args.unsloth_num_chunks), end = ",")
             loss, completion_length, mean_kl = grpo_accumulated_loss(
                 self, _input_ids, logits_to_keep, completion_mask, advantages,
                 n_chunks = self.args.unsloth_num_chunks,
