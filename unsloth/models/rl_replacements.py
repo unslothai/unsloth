@@ -234,9 +234,9 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         input_ids = input_ids[:, -logits_to_keep:]
-        if per_token_logps is not None:
+        if False:#per_token_logps is not None:
             loss, completion_length, mean_kl = grpo_compute_loss(
-                ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages, bsz,
+                ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
             )
         else:
             loss, completion_length, mean_kl = grpo_accumulated_loss(
