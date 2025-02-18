@@ -123,7 +123,7 @@ def grpo_accumulated_loss(
             losses            .append(_loss)
         pass
     pass
-
+    print(torch.stack(losses))
     completion_length = torch.stack(completion_lengths).mean()
     mean_kl           = torch.stack(mean_kls)          .mean()
     loss              = torch.stack(losses)            .mean()
