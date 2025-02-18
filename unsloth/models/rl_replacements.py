@@ -177,7 +177,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-        return None
+        if self.args.unsloth_num_chunks != 1: return None
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
@@ -240,7 +240,8 @@ def grpo_trainer_compute_loss(function_name, function):
             )
         else:
             loss, completion_length, mean_kl = grpo_accumulated_loss(
-                self, _input_ids, logits_to_keep, completion_mask, advantages, n_chunks = 2,
+                self, _input_ids, logits_to_keep, completion_mask, advantages,
+                n_chunks = self.args.unsloth_num_chunks,
             )
         
         # Log the metrics
