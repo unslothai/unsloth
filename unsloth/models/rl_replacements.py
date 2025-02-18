@@ -177,7 +177,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-        return None
+        # return None
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
@@ -234,13 +234,13 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         input_ids = input_ids[:, -logits_to_keep:]
-        # loss, completion_length, mean_kl = grpo_compute_loss(
-        #     ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages, bsz,
-        # )
-        accumulated_loss, accumulated_completion_length, accumulated_mean_kl = grpo_accumulated_loss(
-            self, _input_ids, logits_to_keep, completion_mask, advantages, n_chunks = 2,
+        loss, completion_length, mean_kl = grpo_compute_loss(
+            ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages, bsz,
         )
-        loss, completion_length, mean_kl = accumulated_loss, accumulated_completion_length, accumulated_mean_kl
+        # accumulated_loss, accumulated_completion_length, accumulated_mean_kl = grpo_accumulated_loss(
+        #     self, _input_ids, logits_to_keep, completion_mask, advantages, n_chunks = 2,
+        # )
+        # loss, completion_length, mean_kl = accumulated_loss, accumulated_completion_length, accumulated_mean_kl
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
         self._metrics["completion_length"].append(completion_length.item())
