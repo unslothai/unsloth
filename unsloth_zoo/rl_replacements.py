@@ -125,7 +125,7 @@ def grpo_accumulated_loss(
     pass
 
     # Dummy loss to trick downstream gradients
-    dummy_loss = torch.tensor(loss, dtype = torch.float32, device = "cuda")
+    dummy_loss = loss.clone().detach()
     dummy_loss.requires_grad_(True)
     return dummy_loss, completion_length, mean_kl
 pass
