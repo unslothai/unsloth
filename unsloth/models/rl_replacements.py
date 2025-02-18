@@ -198,7 +198,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
-grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
+grpo_compute_loss     = RL_REPLACEMENTS["grpo_compute_loss"]
+grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 
 # Edit _get_per_token_logps to handle mixed precision
@@ -213,6 +214,7 @@ def grpo_trainer_compute_loss(function_name, function):
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        bsz, qlen = input_ids.shape
         # attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         attention_mask = None
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
@@ -233,6 +235,13 @@ def grpo_trainer_compute_loss(function_name, function):
         loss, completion_length, mean_kl = grpo_compute_loss(
             ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
         )
+        accumulated_loss, accumulated_completion_length, accumulated_mean_kl = grpo_accumulated_loss(
+            self, input_ids, logits_to_keep, completion_mask, advantages, n_chunks = 1,
+        )
+        print("loss", loss, accumulated_loss)
+        print("completion_length", completion_length, accumulated_completion_length)
+        print("mean_kl", mean_kl, accumulated_mean_kl)
+
         from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
         RL_REPLACEMENTS["data"] = (
             ref_per_token_logps.detach(), per_token_logps.detach(), _input_ids, completion_mask, self.beta, advantages,
