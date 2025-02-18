@@ -442,6 +442,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Selective log softmax
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
 
+    # Trainer kwargs
+    comma = "" if RLTrainer_call_args.endswith(",") else ","
+    unsloth_extra_args = comma + \
+        "vllm_sampling_params = vllm_sampling_params,\n"\
+        "unsloth_num_chunks = unsloth_num_chunks, **kwargs"
+
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
@@ -449,7 +455,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_arguments  = RLTrainer_arguments,
         RLTrainer_extra_args = RLTrainer_extra_args,
         RLTrainer_call_args  = RLTrainer_call_args,
-        RLTrainer_kwargs     = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0:],
+        RLTrainer_kwargs     = unsloth_extra_args,
 
         RLConfig_name        = RLConfig_name,
         __RLConfig_doc__     = __RLConfig_doc__,
