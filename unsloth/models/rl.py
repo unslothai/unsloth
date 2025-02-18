@@ -128,6 +128,8 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
+        self.vllm_sampling_params = vllm_sampling_params
+        self.unsloth_num_chunks = unsloth_num_chunks
 pass
 
 {RLTrainer_extras}
