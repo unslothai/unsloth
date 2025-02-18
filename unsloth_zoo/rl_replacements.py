@@ -68,7 +68,7 @@ def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages)
     mask = mask.to(torch.float32)
     n_mask_per_reward = mask.sum(1)
     loss_per_reward = (loss_i * mask).sum(1) / n_mask_per_reward
-    loss = loss_per_reward.mean()
+    loss = loss_per_reward#.mean()
     
     # Get metrics as well which are folded
     with torch.inference_mode():
@@ -126,7 +126,7 @@ def grpo_accumulated_loss(
 
     completion_length = completion_length.mean()
     mean_kl           = mean_kl.mean()
-    loss = torch.stack(losses).sum()
+    loss = torch.stack(losses).mean()
     return loss, completion_length, mean_kl
 pass
 RL_REPLACEMENTS["grpo_accumulated_loss"] = grpo_accumulated_loss
