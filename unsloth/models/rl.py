@@ -94,6 +94,7 @@ from typing import *
 from dataclasses import dataclass, field
 from packaging.version import Version
 import torch
+import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
 torch_compile_options = {{
