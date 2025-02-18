@@ -114,7 +114,7 @@ def grpo_accumulated_loss(
             new_logits = new_logits.logits[:, :-1, :]
     
             _loss, _completion_length, _mean_kl = grpo_compute_loss(
-                old_logits, new_logits, _completion_input_ids, _completion_mask, beta, _advantages, bsz,
+                old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages, bsz,
             )
         pass
         loss              += _loss.detach()
