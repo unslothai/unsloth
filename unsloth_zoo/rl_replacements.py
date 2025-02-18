@@ -92,7 +92,7 @@ def grpo_accumulated_loss(
     ga = trainer.args.gradient_accumulation_steps
     n_chunks = max(min(bsz, n_chunks), 1)
     batch_ids = np.array_split(torch.arange(bsz), n_chunks)
-    for param in model.parameters(): param.grad = None
+    # for param in trainer.model.parameters(): param.grad = None
     loss              = torch.zeros(1, dtype = torch.float32, device = "cuda")
     completion_length = torch.zeros(1, dtype = torch.float32, device = "cuda")
     mean_kl           = torch.zeros(1, dtype = torch.float32, device = "cuda")
