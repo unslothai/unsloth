@@ -72,9 +72,9 @@ def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages)
     
     # Get metrics as well which are folded
     with torch.inference_mode():
-        completion_length = n_mask_per_reward.mean()
+        completion_length = n_mask_per_reward#.mean()
         mean_kl_per_reward = (kl_i * mask).sum(1) / n_mask_per_reward
-        mean_kl = mean_kl_per_reward.mean()
+        mean_kl = mean_kl_per_reward#.mean()
     pass
     return loss, completion_length, mean_kl
 pass
@@ -94,11 +94,11 @@ def grpo_accumulated_loss(
     ga = trainer.args.gradient_accumulation_steps
     n_chunks = max(min(bsz, n_chunks), 1)
     batch_ids = np.array_split(torch.arange(bsz), n_chunks)
-    completion_length = torch.zeros(1, dtype = torch.float32, device = "cuda")
-    mean_kl           = torch.zeros(1, dtype = torch.float32, device = "cuda")
     mixed_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
     
     losses = []
+    completion_lengths = []
+    mean_kls = []
 
     for batch_id in batch_ids:
         _completion_mask = completion_mask[batch_id]
@@ -118,15 +118,15 @@ def grpo_accumulated_loss(
             _loss, _completion_length, _mean_kl = grpo_compute_loss(
                 old_logits, new_logits, _completion_input_ids, _completion_mask, trainer.beta, _advantages,
             )
-            losses.append(_loss)
+            completion_lengths.append(_completion_length)
+            mean_kls          .append(_mean_kl)
+            losses            .append(_loss)
         pass
-        completion_length += _completion_length.detach()
-        mean_kl           += _mean_kl.detach()
     pass
 
-    completion_length = completion_length.mean()
-    mean_kl           = mean_kl.mean()
-    loss = torch.stack(losses).mean()
+    completion_length = torch.stack(completion_lengths).mean()
+    mean_kl           = torch.stack(mean_kls)          .mean()
+    loss              = torch.stack(losses)            .mean()
     return loss, completion_length, mean_kl
 pass
 RL_REPLACEMENTS["grpo_accumulated_loss"] = grpo_accumulated_loss
