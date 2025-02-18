@@ -122,8 +122,8 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         metadata = {{'help': 'Chunk size to reduce memory usage'}},
     )
     def __init__({RLConfig_arguments},
-        vllm_sampling_params = vllm_sampling_params,
-        unsloth_num_chunks = unsloth_num_chunks,
+        vllm_sampling_params = None,
+        unsloth_num_chunks = 1,
         **kwargs,
     ):
 {RLConfig_extra_args}
