@@ -132,7 +132,7 @@ def grpo_accumulated_loss(
     # Dummy loss to trick downstream gradients
     # dummy_loss = loss.clone().detach()
     # dummy_loss.requires_grad_(True)
-    dummy_loss = torch.stack(losses)
+    dummy_loss = torch.stack(losses).sum()
     return dummy_loss, completion_length, mean_kl
 pass
 RL_REPLACEMENTS["grpo_accumulated_loss"] = grpo_accumulated_loss
