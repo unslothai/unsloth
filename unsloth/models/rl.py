@@ -519,7 +519,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             replacer = replacer[0]
             vllm_setter = "\n" + " "*8 + \
             "if hasattr(model, 'vllm_engine') and "\
-            "getattr(args, 'use_vllm') and getattr(args, 'use_vllm', False): "\
+            "hasattr(trainer.args, 'use_vllm') and (getattr(trainer.args, 'use_vllm', False) == False): "\
             "args.use_vllm = True\n"
             init = init.replace(replacer, replacer + vllm_setter)
         pass
