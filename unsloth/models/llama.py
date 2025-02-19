@@ -1076,6 +1076,19 @@ def CausalLM_fast_forward(fast_forward_inference):
         dtype = lm_head.dtype
         num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
 
+        # Output last hidden states without logits if asked
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+            if num_logits_to_keep != 0:
+                hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+            return CausalLMOutputWithPast(
+                loss = None,
+                logits = hidden_states,
+                past_key_values = outputs.past_key_values,
+                hidden_states = outputs.hidden_states,
+                attentions=  outputs.attentions,
+            )
+        pass
+
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
             logits = logits.unsqueeze(0).unsqueeze(0)
@@ -1169,11 +1182,11 @@ def CausalLM_fast_forward(fast_forward_inference):
             return (loss,) + output if loss is not None else output
 
         return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+            loss = loss,
+            logits = logits,
+            past_key_values = outputs.past_key_values,
+            hidden_states = outputs.hidden_states,
+            attentions=  outputs.attentions,
         )
     pass
     return _CausalLM_fast_forward
