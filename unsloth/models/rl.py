@@ -127,12 +127,12 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         metadata = {{'help': 'vLLM SamplingParams'}},
     )
     unsloth_num_chunks : Optional[int] = field(
-        default = 1,
-        metadata = {{'help': 'Chunk size to reduce memory usage'}},
+        default = -1,
+        metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
-        unsloth_num_chunks = 1,
+        unsloth_num_chunks = -1,
         **kwargs,
     ):
 {RLConfig_extra_args}
