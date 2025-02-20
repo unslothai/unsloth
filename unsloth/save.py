@@ -31,10 +31,14 @@ from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
 try:
-    from huggingface_hub.utils import get_token
+    from huggingface_hub import get_token
 except:
-    # Old HF Hub versions <= 0.0.25
-    from huggingface_hub.utils._token import get_token
+    try:
+        from huggingface_hub.utils import get_token
+    except:
+        # For older versions of huggingface_hub
+        from huggingface_hub.utils._token import get_token
+    pass
 pass
 from pathlib import Path
 
