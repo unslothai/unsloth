@@ -205,7 +205,7 @@ def grpo_accumulated_loss(
     completion_input_ids = input_ids[:, -logits_to_keep:]
     lm_head = trainer.model.get_output_embeddings().weight
 
-    n_mini_chunks = 6
+    n_mini_chunks = 1
     input_ids_chunks = torch.chunk(input_ids, chunks = n_mini_chunks, dim = 0)
     completion_input_ids_chunks = torch.chunk(completion_input_ids, chunks = n_mini_chunks, dim = 0)
     completion_mask_chunks = torch.chunk(completion_mask, chunks = n_mini_chunks, dim = 0)
