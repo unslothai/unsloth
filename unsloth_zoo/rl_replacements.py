@@ -99,7 +99,7 @@ RL_REPLACEMENTS["grpo_compute_loss"] = grpo_compute_loss
 class UnslothEfficientGRPO(torch.autograd.Function):
     # All Unsloth Zoo code licensed under LGPLv3
     @staticmethod
-    def forward(ctx, _new_hidden_states, _old_hidden_states, lm_head, _input_ids, _mask, _advantages, beta, scaler = None, n_chunks = 1, mini_gradient_accumulation_steps = 1):
+    def forward(ctx, _new_hidden_states, _old_hidden_states, lm_head, _input_ids, _mask, _advantages, beta, scaler = None, n_chunks = 1):
         def compute_loss(new_hidden_states, old_hidden_states, input_ids, mask, advantages, scaling):
             new_logits = torch.matmul(new_hidden_states, lm_head.t())
             new_logits = new_logits[:, :-1, :] # exclude the last logit: it corresponds to the next token pred
@@ -108,8 +108,6 @@ class UnslothEfficientGRPO(torch.autograd.Function):
             loss, completion_length, mean_kl = grpo_compute_loss(
                 old_logits, new_logits, input_ids, mask, beta, advantages,
             )
-            # Account for mini gradient accumulation
-            loss = loss / mini_gradient_accumulation_steps
             # Scale loss if needed for mixed precision training
             scaled_loss = loss * scaling
             # Must add .loss.detach otherwise autograd uses 2x VRAM
@@ -182,7 +180,7 @@ class UnslothEfficientGRPO(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output, dcompletion_length, dmean_kl):
         (grad_input,) = ctx.saved_tensors
-        return (grad_input, None, None, None, None, None, None, None, None, None,)
+        return (grad_input, None, None, None, None, None, None, None, None,)
     pass
 pass
 RL_REPLACEMENTS["UnslothEfficientGRPO"] = UnslothEfficientGRPO
@@ -209,55 +207,31 @@ def grpo_accumulated_loss(
     completion_input_ids = input_ids[:, -logits_to_keep:]
     lm_head = trainer.model.get_output_embeddings().weight
 
-    device = lm_head.device
-    mini_gradient_accumulation_steps = 6
-    mini_ga = mini_gradient_accumulation_steps
-    completion_input_ids_chunks = torch.chunk(completion_input_ids, chunks = mini_ga, dim = 0)
-    input_ids_chunks  = torch.chunk(input_ids, chunks = mini_ga, dim = 0)
-    completion_mask_chunks  = torch.chunk(completion_mask, chunks = mini_ga, dim = 0)
-    advantages_chunks = torch.chunk(advantages,         chunks = mini_ga, dim = 0)
-
-    accumulated_loss              = torch.zeros(1, device = device)
-    accumulated_completion_length = torch.zeros(1, device = device)
-    accumulated_mean_kl           = torch.zeros(1, device = device)
-
     with torch.amp.autocast(device_type = "cuda", dtype = mixed_dtype):
-
-        for (completion_input_ids_j, input_ids_j, completion_mask_j, advantages_j) in \
-            zip(completion_input_ids_chunks, input_ids_chunks, completion_mask_chunks, advantages_chunks):
-            
-            with torch.inference_mode(), trainer.accelerator.unwrap_model(trainer.model, keep_fp32_wrapper = False).disable_adapter():
-                old_hidden_states = trainer.model(input_ids = input_ids_j, logits_to_keep = logits_to_keep + 1).logits
-            pass
-
-            new_hidden_states = trainer.model(input_ids = input_ids_j, logits_to_keep = logits_to_keep + 1).logits
-            
-            loss, completion_length, mean_kl = UnslothEfficientGRPO.apply(
-                new_hidden_states, old_hidden_states, lm_head,
-                completion_input_ids_j, completion_mask_j, advantages_j, trainer.beta,
-                trainer.accelerator.scaler,
-                n_chunks,
-                mini_gradient_accumulation_steps,
-            )
-
-            # return loss, completion_length, mean_kl
-            accumulated_loss             .add_(loss)
-            accumulated_completion_length.add_(completion_length)
-            accumulated_mean_kl          .add_(mean_kl)
-            continue
-
-            # Old non efficient code path
-            new_logits = torch.matmul(new_hidden_states, lm_head.t())
-            new_logits = new_logits[:, :-1, :] # exclude the last logit: it corresponds to the next token pred
-            old_logits = torch.matmul(old_hidden_states, lm_head.t())
-            old_logits = old_logits[:, :-1, :] # exclude the last logit: it corresponds to the next token pred
-            loss, completion_length, mean_kl = grpo_compute_loss(
-                old_logits, new_logits, completion_input_ids, completion_mask, trainer.beta, advantages,
-            )
-            return loss, completion_length, mean_kl
+        with torch.inference_mode(), trainer.accelerator.unwrap_model(trainer.model, keep_fp32_wrapper = False).disable_adapter():
+            old_hidden_states = trainer.model(input_ids = input_ids, logits_to_keep = logits_to_keep + 1).logits
         pass
+
+        new_hidden_states = trainer.model(input_ids = input_ids, logits_to_keep = logits_to_keep + 1).logits
+        
+        loss, completion_length, mean_kl = UnslothEfficientGRPO.apply(
+            new_hidden_states, old_hidden_states, lm_head,
+            completion_input_ids, completion_mask, advantages, trainer.beta,
+            trainer.accelerator.scaler,
+            n_chunks, 
+        )
+        return loss, completion_length, mean_kl
+
+        # Old non efficient code path
+        new_logits = torch.matmul(new_hidden_states, lm_head.t())
+        new_logits = new_logits[:, :-1, :] # exclude the last logit: it corresponds to the next token pred
+        old_logits = torch.matmul(old_hidden_states, lm_head.t())
+        old_logits = old_logits[:, :-1, :] # exclude the last logit: it corresponds to the next token pred
+        loss, completion_length, mean_kl = grpo_compute_loss(
+            old_logits, new_logits, completion_input_ids, completion_mask, trainer.beta, advantages,
+        )
+        return loss, completion_length, mean_kl
     pass
-    return accumulated_loss, accumulated_completion_length, accumulated_mean_kl
 pass
 RL_REPLACEMENTS["grpo_accumulated_loss"] = grpo_accumulated_loss
 
