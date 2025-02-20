@@ -143,6 +143,11 @@ transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
 del transformers_training_args_logger
 
+# No label_names provided for model class
+from transformers.trainer import logger as transformers_trainer_logger
+transformers_trainer_logger.addFilter(HideLoggingMessage("No label_names"))
+del transformers_trainer_logger
+
 # Using the default loss: `ForCausalLMLoss`.
 try:
     from transformers.modeling_utils import logger as transformers_modeling_utils_logger
