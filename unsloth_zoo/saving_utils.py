@@ -50,10 +50,14 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 
 import torch
 try:
-    from huggingface_hub.utils import get_token
+    from huggingface_hub import get_token
 except:
-    # Old HF Hub versions <= 0.0.25
-    from huggingface_hub.utils._token import get_token
+    try:
+        from huggingface_hub.utils import get_token
+    except:
+        # For older versions of huggingface_hub
+        from huggingface_hub.utils._token import get_token
+    pass
 pass
 from transformers.modeling_utils import PushToHubMixin
 import json
