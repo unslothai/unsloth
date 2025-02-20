@@ -450,7 +450,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     pass
 
     # Check if SamplingParams is in there
-    if "SamplingParams" in RLTrainer_source:
+    if "SamplingParams" in old_RLTrainer_source:
         RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
     pass
     
