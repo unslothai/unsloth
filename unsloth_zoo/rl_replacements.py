@@ -61,9 +61,10 @@ def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages)
     new = new_x - torch.logsumexp(new_logits, dim = -1)
 
     kl_i = torch.exp(old - new) - (old - new) - 1.0
+    kl_i = torch.exp(new) * kl_i
     # Must detach - otherwise gradients are not propagated correctly!
     # exp(x - x) == 1
-    loss_i = torch.exp(new) * advantages.unsqueeze(1)
+    loss_i = torch.exp(new - new.detach()) * advantages.unsqueeze(1)
     loss_i = -(loss_i - beta * kl_i)
 
     mask = mask.to(torch.float32)
