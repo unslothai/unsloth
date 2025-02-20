@@ -31,10 +31,14 @@ from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
 try:
-    from huggingface_hub.utils import get_token
+    from huggingface_hub import get_token
 except:
-    # Old HF Hub versions <= 0.0.25
-    from huggingface_hub.utils._token import get_token
+    try:
+        from huggingface_hub.utils import get_token
+    except:
+        # For older versions of huggingface_hub
+        from huggingface_hub.utils._token import get_token
+    pass
 pass
 from pathlib import Path
 
@@ -254,7 +258,7 @@ def unsloth_save_model(
     # First check for a token!
     if push_to_hub:
         from huggingface_hub import whoami
-        try: 
+        try:
             username = whoami(token = token)["name"]
         except:
             raise RuntimeError(
@@ -385,7 +389,7 @@ def unsloth_save_model(
     else:
         internal_model = model
     pass
-        
+
     # Cannot be converted properly!
     if (save_method == "merged_4bit") or (save_method == "lora") or (
         not hasattr(model, "model") or \
@@ -481,7 +485,7 @@ def unsloth_save_model(
         gb_found = re.match("([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
         mb_found = re.match("([0-9]{1,})[\s]{0,}MB", max_shard_size, flags = re.IGNORECASE)
         if   gb_found: sharded_ram_usage = int(gb_found.group(1)) * 1024 * 1024 * 1024
-        elif mb_found: sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024 
+        elif mb_found: sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024
     elif type(max_shard_size) is int:
         sharded_ram_usage = sharded_ram_usage
     pass
@@ -612,7 +616,7 @@ def unsloth_save_model(
     # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
     save_pretrained_settings["state_dict"] = state_dict
-    
+
     # commit_description does not seem to work?
     what_to_delete = ("use_temp_dir", "commit_message", "create_pr", "revision", "commit_description", "tags",) \
         if not push_to_hub else \
@@ -665,7 +669,7 @@ def unsloth_save_model(
 
         # Revert back padding side
         tokenizer.padding_side = old_padding_side
-            
+
         print(" Done.")
     else:
         print()
@@ -877,10 +881,15 @@ def install_llama_cpp_old(version = -10):
     pass
 
     # Check if successful
-    if not os.path.exists("llama.cpp/quantize") and not os.path.exists("llama.cpp/llama-quantize"):
+    if not (
+        os.path.exists("llama.cpp/llama-quantize.exe") or
+        os.path.exists("llama.cpp/llama-quantize") or
+        os.path.exists("llama.cpp/quantize.exe") or
+        os.path.exists("llama.cpp/quantize")
+    ):
         raise RuntimeError(
             "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
-            "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+            "But we expect this file to exist! Maybe the llama.cpp developers changed the name or check extension of the llama-quantize file."
         )
     pass
 pass
@@ -957,7 +966,7 @@ def save_to_gguf(
     else:
         raise TypeError("Unsloth: quantization_method can only be a string or a list of strings")
     pass
-    
+
     # Check if bfloat16 is supported
     if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
         logger.warning(
@@ -973,7 +982,7 @@ def save_to_gguf(
     pass
 
     # Check I quants
-    for quant_method in quantization_method: 
+    for quant_method in quantization_method:
         if quant_method.startswith("iq2"):
             raise RuntimeError("Unsloth: Currently iq2 type quantizations aren't supported yet - sorry!")
     pass
@@ -1026,9 +1035,9 @@ def save_to_gguf(
     pass
 
     # Determine whether the system already has llama.cpp installed and the scripts are executable
-    quantize_location = get_executable(["llama-quantize", "quantize"])
+    quantize_location = get_executable(["llama-quantize", "quantize", "llama-quantize.exe", "quantize.exe"])
     convert_location  = get_executable(["convert-hf-to-gguf.py", "convert_hf_to_gguf.py"])
-    
+
     error = 0
     if quantize_location is not None and convert_location is not None:
         print("Unsloth: llama.cpp found in the system. We shall skip installation.")
@@ -1062,14 +1071,18 @@ def save_to_gguf(
         # and llama.cpp/main changed to llama.cpp/llama-cli
         # See https://github.com/ggerganov/llama.cpp/pull/7809
         quantize_location = None
-        if os.path.exists("llama.cpp/quantize"):
+        if os.path.exists("llama.cpp/quantize.exe"):
+            quantize_location = "llama.cpp/quantize.exe"
+        elif os.path.exists("llama.cpp/quantize"):
             quantize_location = "llama.cpp/quantize"
+        elif os.path.exists("llama.cpp/llama-quantize.exe"):
+            quantize_location = "llama.cpp/llama-quantize.exe"
         elif os.path.exists("llama.cpp/llama-quantize"):
             quantize_location = "llama.cpp/llama-quantize"
         else:
             raise RuntimeError(
-                "Unsloth: The file 'llama.cpp/llama-quantize' or 'llama.cpp/quantize' does not exist.\n"\
-                "But we expect this file to exist! Maybe the llama.cpp developers changed the name?"
+                "Unsloth: The file ('llama.cpp/llama-quantize' or 'llama.cpp/llama-quantize.exe' if you are on Windows WSL) or 'llama.cpp/quantize' does not exist.\n"\
+                "But we expect this file to exist! Maybe the llama.cpp developers changed the name or check extension of the llama-quantize file."
             )
         pass
 
@@ -1150,7 +1163,7 @@ def save_to_gguf(
     # Concurrency from https://rentry.org/llama-cpp-conversions#merging-loras-into-a-model
 
     final_location = str((Path(model_directory) / f"unsloth.{first_conversion.upper()}.gguf").absolute())
-    
+
     print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion} GGUF format.\n"\
           f"The output location will be {final_location}\n"\
           "This might take 3 minutes...")
@@ -1217,7 +1230,7 @@ def save_to_gguf(
 
             command = f"./{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
-            
+
             try_execute([command,], force_complete = True)
 
             # Check if quantization succeeded!
@@ -1378,7 +1391,7 @@ def _determine_username(save_directory, old_username, token):
     save_directory = save_directory.lstrip("./")
     if "/" not in save_directory:
         from huggingface_hub import whoami
-        try: 
+        try:
             username = whoami(token = token)["name"]
             if type(old_username) is str and username != old_username:
                 username = old_username
@@ -1412,7 +1425,7 @@ def create_huggingface_repo(
             repo_type = "model",
             exist_ok  = False,
             private   = private,
-        ) 
+        )
 
         # Create model card
         from huggingface_hub import ModelCard
@@ -1453,7 +1466,7 @@ def upload_to_huggingface(
             repo_type = "model",
             exist_ok  = False,
             private   = private,
-        ) 
+        )
 
         # Create model card
         from huggingface_hub import ModelCard
@@ -1527,7 +1540,7 @@ def fix_tokenizer_bos_token(tokenizer):
     # Check if BOS added already, then warn
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
-    
+
     if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
         if chat_template is not None and \
             (
@@ -1546,7 +1559,7 @@ def fix_tokenizer_bos_token(tokenizer):
             new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
             # Remove {{bos_token +
             new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\+[\s]{0,}", "", new_chat_template)
-            
+
             tokenizer.chat_template = new_chat_template
 
         pass
@@ -1580,7 +1593,7 @@ def create_ollama_modelfile(tokenizer, gguf_location):
     modelfile = modelfile\
         .replace(FILE_LOCATION_REPLACER, "{__FILE_LOCATION__}")\
         .replace(EOS_TOKEN_REPLACER,     "{__EOS_TOKEN__}")
-    
+
     if "__EOS_TOKEN__" in modelfile:
         modelfile = modelfile.format(
             __FILE_LOCATION__  = gguf_location,
@@ -1591,7 +1604,7 @@ def create_ollama_modelfile(tokenizer, gguf_location):
             __FILE_LOCATION__  = gguf_location,
         )
     pass
-    
+
     modelfile = modelfile\
         .replace("⚫@✅#🦥", "{")\
         .replace("⚡@🦥#⛵", "}")\
@@ -1733,7 +1746,7 @@ def unsloth_save_pretrained_gguf(
 
     # Save to GGUF
     all_file_locations, want_full_precision = save_to_gguf(
-        model_type, model_dtype, is_sentencepiece_model, 
+        model_type, model_dtype, is_sentencepiece_model,
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
@@ -1911,7 +1924,7 @@ def unsloth_push_to_hub_gguf(
 
     # Save to GGUF
     all_file_locations, want_full_precision = save_to_gguf(
-        model_type, model_dtype, is_sentencepiece_model, 
+        model_type, model_dtype, is_sentencepiece_model,
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
@@ -1928,7 +1941,7 @@ def unsloth_push_to_hub_gguf(
 
     # If not needing full precision, skip the first
     if not want_full_precision: all_file_locations = all_file_locations[1:]
-    
+
     for file_location in all_file_locations:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
         username = upload_to_huggingface(
@@ -2044,8 +2057,8 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
 
 def unsloth_convert_lora_to_ggml_and_save_locally(
     self,
-    save_directory: str, # Added parameter for the folder name 
-    tokenizer, 
+    save_directory: str, # Added parameter for the folder name
+    tokenizer,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
 ):
@@ -2162,7 +2175,7 @@ def unsloth_generic_save_pretrained_merged(
     tags                 : List[str] = None,
     temporary_location   : str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage : float = 0.75,
-):   
+):
     """
         Same as .push_to_hub(...) except 4bit weights are auto
         converted to float16 with as few overhead as possible.
