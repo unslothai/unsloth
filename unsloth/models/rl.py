@@ -481,7 +481,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_source,
         f"trl.trainer.{trainer_file}",
         imports,
-        overwrite = False,
+        overwrite = True,
     )
     
     # Patch Trainer
@@ -547,6 +547,13 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         )
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
+
+            # Fix guided_decoding
+            sampling_params = sampling_params.replace(
+                "guided_decoding=guided_decoding,",
+                'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '\
+                'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None',
+            )
             # Replace with our vLLM engine
             sampling_params = \
                 " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
