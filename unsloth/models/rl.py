@@ -137,7 +137,6 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
-        assert(hasattr(vllm_sampling_params, '_set_kwargs'))
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
 pass
