@@ -449,12 +449,12 @@ def LlamaAttention_fast_forward(
     else:
         # Grouped query attention
         if SDPA_HAS_GQA:
-            print(attention_mask)
             # Needs (batch_size, n_heads, seq_len, head_dim)
             # is_casual and attention_mask must not be both set!
+            Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
             A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False, enable_gqa = n_groups != 1)
             # Go back to (batch_size, seq_len, n_heads, head_dim)
-            A = A.transpose(1, 2)#.contiguous()
+            A = A.transpose(1, 2).contiguous()
         else:
             if n_groups != 1:
                 K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
