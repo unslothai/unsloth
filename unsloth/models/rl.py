@@ -575,7 +575,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
             # Add extra arguments to SamplingParams
             extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams())), '_set_kwargs', {})"
-            sampling_params = sampling_params.replace(")", "," + extra + "," + ")")
+            # Backwards replace
+            to_replace = "," + extra + "," + ")"
+            sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
             # Strip multiple commas
             sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
