@@ -247,7 +247,7 @@ def LlamaAttention_fast_forward_inference(
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
-    if True:
+    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -266,7 +266,10 @@ def LlamaAttention_fast_forward_inference(
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
         A = torch_matmul(A, Vnn, out = Qn)
     else:
-        A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
+        if SDPA_HAS_GQA:
+            A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False, enable_gqa = True)
+        else:
+            A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
     pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
@@ -448,10 +451,9 @@ def LlamaAttention_fast_forward(
         if SDPA_HAS_GQA:
             # Needs (batch_size, n_heads, seq_len, head_dim)
             # is_casual and attention_mask must not be both set!
-            Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
             A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False, enable_gqa = n_groups != 1)
             # Go back to (batch_size, seq_len, n_heads, head_dim)
-            A = A.transpose(1, 2).contiguous()
+            A = A.transpose(1, 2)#.contiguous()
         else:
             if n_groups != 1:
                 K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
@@ -723,8 +725,8 @@ def LlamaModel_fast_forward(
             past_key_values_length,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(torch.bool)
+        # if attention_mask is not None:
+        #     attention_mask = attention_mask.to(torch.bool)
     pass
 
     hidden_states = inputs_embeds
