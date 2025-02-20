@@ -20,4 +20,4 @@ from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
 from .dpo     import PatchDPOTrainer, PatchKTOTrainer
 from ._utils  import is_bfloat16_supported
-from .rl      import PatchFastRL
+from .rl      import PatchFastRL, vLLMSamplingParams
