@@ -56,6 +56,8 @@ except:
     from huggingface_hub.utils._token import get_token
 pass
 from transformers.modeling_utils import PushToHubMixin
+import json
+from pathlib import Path
 import tempfile
 
 
@@ -483,6 +485,21 @@ def prepare_saving(
 pass
 
 
+def _remove_quantization_config(config_path: Path):
+    assert config_path.exists(), "Given config does not exist"
+    with open(config_path, "r") as f:
+        config = json.load(f)
+    if "quantization_config" in config:
+        # Remove the quantization_config field
+        del config["quantization_config"]
+    else:
+        # No-op
+        return
+    # Overwrite the config file
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=4)
+
+
 @torch.inference_mode
 def merge_and_overwrite_lora(
     get_model_name,
@@ -559,16 +576,28 @@ def merge_and_overwrite_lora(
         save_directory = save_directory,
         state_dict = {},
     )
+    # Remove the quantization_config in the config.json file if it exists,
+    # as we are exporting the model in 16-bit format.
+    _remove_quantization_config(config_path=Path(save_directory) / "config.json")
+
     if push_to_hub: upload_items()
 
+    safe_tensor_index_files = ["model.safetensors.index.json"] if len(safetensors_list) > 1 else []
     if not low_disk_space_usage:
         # Download all safetensors in 1 go!
+        print(f"Downloading safetensors for {model_name}...")
         snapshot_download(
-            repo_id = model_name,
-            local_dir = save_directory,
-            allow_patterns  = safetensors_list,
+            repo_id=model_name,
+            local_dir=save_directory,
+            allow_patterns=safe_tensor_index_files + safetensors_list,
         )
-    pass
+    elif safe_tensor_index_files:
+        print(f"Downloading safetensors index for {model_name}...")
+        snapshot_download(
+            repo_id=model_name,
+            local_dir=save_directory,
+            allow_patterns=["model.safetensors.index.json"],
+        )
     for filename in ProgressBar(safetensors_list, desc = "Unsloth: Merging weights into 16bit"):
         if low_disk_space_usage:
             hf_hub_download(
@@ -669,7 +698,7 @@ def incremental_save_pretrained(
         new_for_loop = for_loop[:first_newline] + \
             for_loop[first_newline:] + \
             " "*spaces + \
-            re.sub(r"[ ]{8,}", "", 
+            re.sub(r"[ ]{8,}", "",
                    _PUSHING_CODE.format(
                        repo_id = repo_id,
                        revision = revision,
