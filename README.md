@@ -98,9 +98,16 @@ We tested using the Alpaca  Dataset, a batch size of 2, gradient accumulation st
 
 ## 💾 Installation Instructions
 
-For stable releases, use `pip install unsloth`. We recommend `pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"` for most installations though.
+Simply use pip install on Linux machines. Windows instructions are below.
+<div id="user-content-toc">
+  <ul align="center" style="list-style: none;">
+    <summary>
+      <h1><code>pip install unsloth</code></h1>
+    </summary>
+  </ul>
+</div>
 
-### Conda Installation
+### Conda Installation (Optional)
 `⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. We support `python=3.10,3.11,3.12`.
 ```bash
 conda create --name unsloth_env \
@@ -110,8 +117,7 @@ conda create --name unsloth_env \
     -y
 conda activate unsloth_env
 
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-pip install --no-deps trl peft accelerate bitsandbytes
+pip install unsloth
 ```
 
 <details>
