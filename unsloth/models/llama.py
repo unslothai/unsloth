@@ -725,6 +725,7 @@ def LlamaModel_fast_forward(
             past_key_values_length,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
+        # Must NOT convert to bool - weirdly this causes stuff to error out!
         # if attention_mask is not None:
         #     attention_mask = attention_mask.to(torch.bool)
     pass
