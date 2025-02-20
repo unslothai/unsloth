@@ -14,6 +14,7 @@
 
 __all__ = [
     "PatchFastRL",
+    "vLLMSamplingParams",
 ]
 
 import torch
