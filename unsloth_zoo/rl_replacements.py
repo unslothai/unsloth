@@ -180,12 +180,13 @@ def grpo_accumulated_loss(
     logits_to_keep,
     completion_mask,
     advantages,
-    n_chunks = 1,
+    n_chunks = -1,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     bsz, qlen = input_ids.shape
     # Find closest multiple
     factors = [i for i in range(1, bsz + 1) if bsz % i == 0]
+    if n_chunks == -1: n_chunks = bsz
     n_chunks = factors[min(np.searchsorted(factors, n_chunks), len(factors)-1)]
 
     mixed_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
