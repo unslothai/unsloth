@@ -210,6 +210,7 @@ except:
 pass
 
 from .models import *
+from .rl import vLLMSamplingParams
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
