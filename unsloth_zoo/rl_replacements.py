@@ -171,6 +171,7 @@ class UnslothEfficientGRPO(torch.autograd.Function):
         return (grad_input, None, None, None, None, None, None, None, None,)
     pass
 pass
+RL_REPLACEMENTS["UnslothEfficientGRPO"] = UnslothEfficientGRPO
 
 
 def grpo_accumulated_loss(
