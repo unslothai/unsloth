@@ -93,7 +93,7 @@ class UnslothEfficientGRPO(torch.autograd.Function):
             new_logits = new_logits[:, :-1, :] # exclude the last logit: it corresponds to the next token pred
             old_logits = torch.matmul(old_hidden_states, lm_head.t())
             old_logits = old_logits[:, :-1, :] # exclude the last logit: it corresponds to the next token pred
-            loss, completion_length, mean_kl = _grpo_compute_loss(
+            loss, completion_length, mean_kl = grpo_compute_loss(
                 old_logits, new_logits, input_ids, mask, beta, advantages,
             )
             # Scale loss if needed for mixed precision training
