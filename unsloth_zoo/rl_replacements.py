@@ -75,7 +75,7 @@ def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages)
 
     mask = mask.to(torch.float32)
     n_mask_per_reward = mask.sum(1)
-    loss_per_reward = (loss_i * mask).sum(1) / n_mask_per_reward
+    loss_per_reward = (loss_i * mask).sum() / mask.sum()
     loss = loss_per_reward.mean()
     
     # Get metrics as well which are folded
