@@ -44,6 +44,7 @@ torch_compile_options = {
 
 
 def vLLMSamplingParams(**kwargs):
+    from vllm import SamplingParams
     sampling_params = SamplingParams(**kwargs)
     sampling_params._set_kwargs = kwargs
     return sampling_params
