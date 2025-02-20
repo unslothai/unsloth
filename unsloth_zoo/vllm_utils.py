@@ -947,10 +947,7 @@ def load_vllm(
     )
 
     # Get device as well
-    device = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-    if not "," in device: device = device + ","
-    device = device.split(",")[0]
-    device = f"cuda:{device}"
+    device = "cuda:0"
 
     engine_args = dict(
         model                  = model_name,
