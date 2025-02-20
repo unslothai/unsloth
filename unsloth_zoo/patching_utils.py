@@ -82,9 +82,18 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         DEBUGGING = " with debugging"
         os.environ["TORCHDYNAMO_VERBOSE"] = "1"
         os.environ["TORCHINDUCTOR_FORCE_DISABLE_CACHES"] = "1"
-        os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs,compiled_autograd_verbose"
+        # os.environ["TORCH_LOGS"] = "dynamo,graph_breaks,recompiles,graph_code,aot_joint_graph,aot_graphs,compiled_autograd_verbose"
         os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
-        torch._logging.set_logs(dynamo = logging.DEBUG, inductor = logging.DEBUG)
+        torch._logging.set_logs(
+            dynamo = logging.WARN,
+            inductor = logging.WARN,
+            graph_breaks = True,
+            recompiles = True,
+            recompiles_verbose = True,
+            compiled_autograd_verbose = True,
+            aot_joint_graph = True,
+            aot_graphs = True,
+        )
         torch._dynamo.config.verbose = True
     else:
         DEBUGGING = ""

@@ -50,10 +50,14 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 
 import torch
 try:
-    from huggingface_hub.utils import get_token
+    from huggingface_hub import get_token
 except:
-    # Old HF Hub versions <= 0.0.25
-    from huggingface_hub.utils._token import get_token
+    try:
+        from huggingface_hub.utils import get_token
+    except:
+        # For older versions of huggingface_hub
+        from huggingface_hub.utils._token import get_token
+    pass
 pass
 from transformers.modeling_utils import PushToHubMixin
 import json
@@ -497,7 +501,8 @@ def _remove_quantization_config(config_path: Path):
         return
     # Overwrite the config file
     with open(config_path, "w") as f:
-        json.dump(config, f, indent=4)
+        json.dump(config, f, indent = 4)
+pass
 
 
 @torch.inference_mode
@@ -578,7 +583,7 @@ def merge_and_overwrite_lora(
     )
     # Remove the quantization_config in the config.json file if it exists,
     # as we are exporting the model in 16-bit format.
-    _remove_quantization_config(config_path=Path(save_directory) / "config.json")
+    _remove_quantization_config(config_path = Path(save_directory) / "config.json")
 
     if push_to_hub: upload_items()
 
@@ -587,16 +592,16 @@ def merge_and_overwrite_lora(
         # Download all safetensors in 1 go!
         print(f"Downloading safetensors for {model_name}...")
         snapshot_download(
-            repo_id=model_name,
-            local_dir=save_directory,
-            allow_patterns=safe_tensor_index_files + safetensors_list,
+            repo_id = model_name,
+            local_dir = save_directory,
+            allow_patterns = safe_tensor_index_files + safetensors_list,
         )
     elif safe_tensor_index_files:
         print(f"Downloading safetensors index for {model_name}...")
         snapshot_download(
-            repo_id=model_name,
-            local_dir=save_directory,
-            allow_patterns=["model.safetensors.index.json"],
+            repo_id = model_name,
+            local_dir = save_directory,
+            allow_patterns = ["model.safetensors.index.json"],
         )
     for filename in ProgressBar(safetensors_list, desc = "Unsloth: Merging weights into 16bit"):
         if low_disk_space_usage:
