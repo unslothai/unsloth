@@ -251,7 +251,7 @@ def grpo_accumulated_loss(
             # loss, completion_length, mean_kl = grpo_compute_loss(
             #     old_logits, new_logits, completion_input_ids, completion_mask, trainer.beta, advantages,
             # )
-            return loss, completion_length, mean_kl
+            # return loss, completion_length, mean_kl
         pass
     pass
 pass
