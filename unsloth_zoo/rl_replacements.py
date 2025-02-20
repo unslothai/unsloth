@@ -231,8 +231,8 @@ def grpo_accumulated_loss(
                 new_hidden_states, old_hidden_states, lm_head,
                 completion_input_ids_chunk, completion_mask_chunk, advantages_chunk, trainer.beta,
                 trainer.accelerator.scaler,
-                n_mini_chunks,
                 n_chunks,
+                n_mini_chunks,
             )
             # return loss, completion_length, mean_kl
             accumulated_loss             .add_(loss)
@@ -240,7 +240,7 @@ def grpo_accumulated_loss(
             accumulated_mean_kl          .add_(mean_kl)
         pass
     pass
-    return loss, completion_length, mean_kl
+    return accumulated_loss, accumulated_completion_length, accumulated_mean_kl
 
     # Old non efficient code path
     # new_logits = torch.matmul(new_hidden_states, lm_head.t())
