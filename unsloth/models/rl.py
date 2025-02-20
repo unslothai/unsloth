@@ -36,11 +36,18 @@ selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
-    "max_autotune"      : True,
+    "max_autotune"      : False, # Disable Triton mm kernels
     "shape_padding"     : True,
     "trace.enabled"     : False,
     "triton.cudagraphs" : False,
 }
+
+
+def vLLMSamplingParams(**kwargs):
+    sampling_params = SamplingParams(**kwargs)
+    sampling_params._set_kwargs = kwargs
+    return sampling_params
+pass
 
 def PatchRL(FastLanguageModel):
 
@@ -99,7 +106,7 @@ from contextlib import nullcontext
 from torch.nn import functional as F
 torch_compile_options = {{
     "epilogue_fusion"   : True,
-    "max_autotune"      : True,
+    "max_autotune"      : False,
     "shape_padding"     : True,
     "trace.enabled"     : False,
     "triton.cudagraphs" : False,
@@ -128,6 +135,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
+        assert(hasattr(vllm_sampling_params, '_set_kwargs'))
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
 pass
@@ -441,6 +449,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RL_pre = ""
     pass
 
+    # Check if SamplingParams is in there
+    if "SamplingParams" in RLTrainer_source:
+        RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
+    pass
+    
     # Selective log softmax
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
 
@@ -559,10 +572,17 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             sampling_params = \
                 " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
                 sampling_params # Add spaces
+
+            # Add extra arguments to SamplingParams
+            extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams())), '_set_kwargs', {})"
+            sampling_params = sampling_params.replace(")", "," + extra + "," + ")")
+            # Strip multiple commas
+            sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
+
             new_vllm_part = \
-                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params} "\
-                f"if getattr(args, 'vllm_sampling_params', None) is None else "\
-                f"getattr(args, 'vllm_sampling_params', None)\n{' '*8}else:\n"
+                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
+                f"\n{' '*8}else:\n"
+
             init = init.replace(vllm_part, new_vllm_part)
         pass
     pass
