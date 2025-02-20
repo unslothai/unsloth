@@ -551,6 +551,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             # Fix guided_decoding
             sampling_params = sampling_params.replace(
                 "guided_decoding=guided_decoding,",
+                'guided_decoding='\
                 'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '\
                 'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None',
             )
