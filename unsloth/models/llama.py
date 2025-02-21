@@ -15,6 +15,7 @@
 import torch
 import gc
 import math
+from functools import partial
 from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import __version__
@@ -447,20 +448,28 @@ def LlamaAttention_fast_forward(
         A = flash_attn_func(Q, K, V, causal = True)
     else:
         # Grouped query attention
-        if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
-            V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+        if SDPA_HAS_GQA:
+            # Needs (batch_size, n_heads, seq_len, head_dim)
+            # is_casual and attention_mask must not be both set!
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False, enable_gqa = n_groups != 1)
+            # Go back to (batch_size, seq_len, n_heads, head_dim)
+            A = A.transpose(1, 2)#.contiguous()
+        else:
+            if n_groups != 1:
+                K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+                V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+                K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
+                V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
+            pass
+            # Must be contiguous or else results are False!
+            # https://github.com/pytorch/pytorch/issues/112577
+            Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
+            # Needs (batch_size, n_heads, seq_len, head_dim)
+            # is_casual and attention_mask must not be both set!
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+            # Go back to (batch_size, seq_len, n_heads, head_dim)
+            A = A.transpose(1, 2).contiguous()
         pass
-        # Must be contiguous or else results are False!
-        # https://github.com/pytorch/pytorch/issues/112577
-        Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
-        # Needs (batch_size, n_heads, seq_len, head_dim)
-        # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
-        # Go back to (batch_size, seq_len, n_heads, head_dim)
-        A = A.transpose(1, 2).contiguous()
     pass
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
@@ -691,6 +700,7 @@ def LlamaModel_fast_forward(
         elif inputs_requires_grad:
             inputs_embeds.requires_grad_(False)
         pass
+        attention_mask = attention_mask[:,:self.max_seq_length] # Must resize!
         inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
@@ -699,6 +709,7 @@ def LlamaModel_fast_forward(
     if attention_mask is None:
         padding_mask = None
     elif self.training:
+    # elif attention_mask is None:
         attention_mask = None
         padding_mask = None
     else:
@@ -714,6 +725,9 @@ def LlamaModel_fast_forward(
             past_key_values_length,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
+        # Must NOT convert to bool - weirdly this causes stuff to error out!
+        # if attention_mask is not None:
+        #     attention_mask = attention_mask.to(torch.bool)
     pass
 
     hidden_states = inputs_embeds
@@ -762,9 +776,12 @@ def LlamaModel_fast_forward(
             self.SWA_mask = True
             self.GA_mask  = False
         elif attention_mask is not None:
-
             # Fixes https://github.com/unslothai/unsloth/issues/853
             # Unsloth needs a 2D mask, not a [2, 1, n, n] mask!
+
+            # https://github.com/pytorch/pytorch/issues/103749
+            # Need to convert to float and not using bool
+            attention_mask = (1.0 - attention_mask.float()) * torch.finfo(inputs_embeds.dtype).min
             dynamic_SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
@@ -1018,6 +1035,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         num_logits_to_keep: Optional[int] = 0,
+        logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         
@@ -1041,16 +1059,16 @@ def CausalLM_fast_forward(fast_forward_inference):
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
             outputs = self.model(
-                input_ids=input_ids,
-                causal_mask=causal_mask,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                inputs_embeds=inputs_embeds,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
+                input_ids = input_ids,
+                causal_mask = causal_mask,
+                attention_mask = attention_mask,
+                position_ids = position_ids,
+                past_key_values = past_key_values,
+                inputs_embeds = inputs_embeds,
+                use_cache = use_cache,
+                output_attentions = output_attentions,
+                output_hidden_states = output_hidden_states,
+                return_dict = return_dict,
             )
         pass
         hidden_states = outputs[0]
@@ -1060,6 +1078,20 @@ def CausalLM_fast_forward(fast_forward_inference):
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
+        num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
+
+        # Output last hidden states without logits if asked
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+            if num_logits_to_keep != 0:
+                hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+            return CausalLMOutputWithPast(
+                loss = None,
+                logits = hidden_states,
+                past_key_values = outputs.past_key_values,
+                hidden_states = outputs.hidden_states,
+                attentions=  outputs.attentions,
+            )
+        pass
 
         if bsz == 1 and q_len == 1:
             logits = torch.mv(lm_head, hidden_states.ravel().to(dtype))
@@ -1154,11 +1186,11 @@ def CausalLM_fast_forward(fast_forward_inference):
             return (loss,) + output if loss is not None else output
 
         return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
+            loss = loss,
+            logits = logits,
+            past_key_values = outputs.past_key_values,
+            hidden_states = outputs.hidden_states,
+            attentions=  outputs.attentions,
         )
     pass
     return _CausalLM_fast_forward
@@ -1168,28 +1200,30 @@ pass
 @torch._disable_dynamo
 def PeftModelForCausalLM_fast_forward(
     self,
-    input_ids=None,
-    causal_mask=None,
-    attention_mask=None,
-    inputs_embeds=None,
-    labels=None,
-    output_attentions=None,
-    output_hidden_states=None,
-    return_dict=None,
-    task_ids=None,
-    num_logits_to_keep=0,
+    input_ids = None,
+    causal_mask = None,
+    attention_mask = None,
+    inputs_embeds = None,
+    labels = None,
+    output_attentions = None,
+    output_hidden_states = None,
+    return_dict = None,
+    task_ids = None,
+    num_logits_to_keep = 0,
+    logits_to_keep = 0,
     **kwargs,
 ):
     return self.base_model(
-        input_ids=input_ids,
-        causal_mask=causal_mask,
-        attention_mask=attention_mask,
-        inputs_embeds=inputs_embeds,
-        labels=labels,
-        output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
-        return_dict=return_dict,
-        num_logits_to_keep=num_logits_to_keep,
+        input_ids = input_ids,
+        causal_mask = causal_mask,
+        attention_mask = attention_mask,
+        inputs_embeds = inputs_embeds,
+        labels = labels,
+        output_attentions = output_attentions,
+        output_hidden_states = output_hidden_states,
+        return_dict = return_dict,
+        num_logits_to_keep = num_logits_to_keep,
+        logits_to_keep = logits_to_keep,
         **kwargs,
     )
 pass
@@ -1682,9 +1716,9 @@ class FastLlamaModel:
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
-        elif dtype == torch.float16 and SUPPORTS_BFLOAT16:
-            logger.warning_once("Device supports bfloat16 but you selected float16. Will change to bfloat16.")
-            dtype = torch.bfloat16
+        # elif dtype == torch.float16 and SUPPORTS_BFLOAT16:
+        #     logger.warning_once("Device supports bfloat16 but you selected float16. Will change to bfloat16.")
+        #     dtype = torch.bfloat16
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
@@ -1802,8 +1836,6 @@ class FastLlamaModel:
             model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
-
-            from functools import partial
             model.fast_generate_batches = partial(generate_batches, model.vllm_engine)
         pass
         # Return old flag
@@ -1952,13 +1984,13 @@ class FastLlamaModel:
         Trainer._inner_training_loop = _fast_inner_training_loop
 
         # Save max_seq_length
-        model.max_seq_length = max_position_embeddings
+        model.max_seq_length = max_seq_length
         internal_model = model
         while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_position_embeddings
+            internal_model.max_seq_length = max_seq_length
             internal_model = internal_model.model
         pass
-        internal_model.max_seq_length = max_position_embeddings
+        internal_model.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
@@ -2146,8 +2178,6 @@ class FastLlamaModel:
         signature = str(inspect.signature(LoraConfig))
         SUPPORTS_LOFTQ  = "loftq_config" in signature
         SUPPORTS_RSLORA = "use_rslora"   in signature
-        
-        assert(max_seq_length <= model.max_seq_length)
 
         if lora_dropout != 0:
             logger.warning_once(
@@ -2632,6 +2662,10 @@ class FastLlamaModel:
             gc.collect()
             torch.cuda.empty_cache()
         pass
+
+        # Add for_inference and for_training
+        model.for_training  = partial(FastLlamaModel.for_training,  model)
+        model.for_inference = partial(FastLlamaModel.for_inference, model)
         return model
     pass
 
@@ -2739,3 +2773,5 @@ class FastLlamaModel:
     pass
 pass
 
+from .rl import PatchFastRL
+PatchFastRL(FastLanguageModel = FastLlamaModel)

@@ -59,6 +59,7 @@ IGNORED_TOKENIZER_NAMES = frozenset(
     [x.lower() for x in IGNORED_TOKENIZER_NAMES] + \
     [x.lower()+"-bnb-4bit" for x in IGNORED_TOKENIZER_NAMES]
 )
+os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
@@ -258,6 +259,7 @@ pass
 
 def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     # Get eos_token, bos_token etc
+    if not hasattr(slow_tokenizer, "all_special_tokens"): return True
     dir_names = dir(slow_tokenizer)
     special_tokens = list(filter(None, (
         getattr(slow_tokenizer, x) for x in dir_names
@@ -502,12 +504,14 @@ def _load_correct_tokenizer(
             cache_dir         = cache_dir,
         )
     except:
-        pass
+        slow_tokenizer = None
         # print(
         #     f"Unsloth: {tokenizer_name} has no tokenizer.model file.\n"\
         #     "Just informing you about this - this is not a critical error."
         # )
     pass
+    # Unsure why this occurs!
+    if type(slow_tokenizer) is bool: slow_tokenizer = None
 
     fast_tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name,
@@ -907,44 +911,25 @@ except:
 pass
 
 
-def patch_trl_tokenizer_processing_class(trainer_name):
-    # New TRL removes tokenizer!
-    # We return it back!
-    exec(f"from trl import {trainer_name}", globals())
-    if str(eval(f"{trainer_name}").__name__).startswith("Unsloth"): return None
-    parameters = eval(f"inspect.signature({trainer_name}).parameters")
-    if "tokenizer" in parameters: return None
-
-    args = {
-        key : \
-            value.default \
-            if type(value.default) is not str else \
-            f"'{value.default}'" \
-        for key, value in parameters.items()
-    }
-    args["tokenizer"] = None
-    new_args = args.copy()
-    del new_args["tokenizer"]
-    del new_args["processing_class"]
-    new_args = ",\n".join(f"{' '*12}{key} = {key}" for key in new_args) + \
-        f",\n{' '*12}processing_class = tokenizer if tokenizer else processing_class"
-    args = ",\n".join(f"{' '*8}{key} = {value}" for key, value in args.items())
-    args = f"def __init__(\n" + f"{' '*8}self,\n" + args + "):"
-    args += f"\n{' '*8}\n{' '*8}super().__init__(\n{new_args}\n{' '*8})"
-    new_class = f"""class Unsloth{trainer_name}({trainer_name}):\n{' '*4}{args}\n"""
-    return new_class
-pass
-
-
 def patch_sft_trainer_tokenizer():
     """
         Patches the trainer with changes
     """
-    for function_name, replacer in (
-        ("_prepare_non_packed_dataloader", "def tokenize(element):",),
+    try:
+        sft_trainer = eval(f"trl.trainer.sft_trainer.SFTTrainer")
+    except:
+        return
+    all_imports = dir(trl.trainer.sft_trainer)
+
+    for (function_name, replacer,) in (
+        # ("_prepare_non_packed_dataloader", "def tokenize(element):",),
+        ("_prepare_non_packed_dataloader", None,),
+        ("_prepare_dataset", None,),
         # ("_prepare_packed_dataloader", "if dataset_text_field is not None",),
     ):
-        function = getsource(eval(f"trl.trainer.sft_trainer.SFTTrainer.{function_name}"))
+        if not hasattr(sft_trainer, function_name): continue
+
+        function = getsource(eval(f"sft_trainer.{function_name}"))
         where = function.find("def")
         function = function.split("\n")
         function = "\n".join(x[where:] for x in function)
@@ -953,20 +938,41 @@ def patch_sft_trainer_tokenizer():
         "\n"\
         "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
         "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
+        "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"\
         "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"\
         "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"\
         "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
         "chat_template = '' if chat_template is None else chat_template\n"\
         "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
         "if getattr(tokenizer, 'bos_token', None) is not None else False\n"\
-        "add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
+        "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"\
+        "    from functools import partial\n"\
+        "    tokenizer = partial(tokenizer, add_special_tokens = False)\n"\
+        "    processing_class = tokenizer\n"\
+        "else:\n"\
+        "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n\n"
 
         check_text = check_text.split("\n")
         check_text = "\n".join(" "*where + x for x in check_text)
+        check_text = check_text.rstrip() + "\n"
 
-        function = function.replace(replacer, check_text + replacer)
-        exec(function, globals())
+        if replacer is None:
+            # .*? matches first match. .+? matches final match.
+            replacer = re.findall(
+                f"def {function_name}\(.*?\).*?\:\n",
+                function,
+                flags = re.MULTILINE | re.DOTALL,
+            )
+            if len(replacer) == 0: continue
+            replacer = replacer[0]
+            function = function.replace(replacer, replacer + check_text)
+        else:
+            function = function.replace(replacer, check_text + replacer)
+        pass
 
+        x = [x for x in all_imports if x in function]
+        exec(f"from trl.trainer.sft_trainer import ({','.join(x)})", locals())
+        exec(function, locals(), globals())
         exec(f"trl.trainer.sft_trainer.SFTTrainer.{function_name} = {function_name}", globals())
     pass
 
@@ -1053,16 +1059,5 @@ def patch_sft_trainer_tokenizer():
     pass
 pass
 
-# Fix TRL trainers with removed tokenizer args (got replaced with processing_class)
-for trainer_name in ("SFTTrainer", "DPOTrainer", "KTOTrainer"):
-    trainer_text = patch_trl_tokenizer_processing_class(trainer_name)
-    if trainer_text is None: continue
-    try:
-        exec(trainer_text, globals())
-    except:
-        raise RuntimeError(f"Unsloth: Please file a bug report! Error patching {trainer_name}")
-    exec(f"trl.trainer.{trainer_name} = Unsloth{trainer_name}", globals())
-pass
-
-# FInally patch TRL tokenizer things
-patch_sft_trainer_tokenizer()
+# Finally patch TRL tokenizer things -> moved to RL
+# patch_sft_trainer_tokenizer()

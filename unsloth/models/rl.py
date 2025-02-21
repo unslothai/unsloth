@@ -14,32 +14,42 @@
 
 __all__ = [
     "PatchFastRL",
+    "vLLMSamplingParams",
 ]
 
-METRICS_MOVE_TO_END = [
-    "nll",
-    "aux",
-    "beta",
-    "alpha",
-]
 import torch
-try:
-    from transformers.utils.notebook import (
-        IntervalStrategy,
-        NotebookTrainingTracker,
-        NotebookProgressCallback,
-    )
-    HAS_NOTEBOOK = True
-except:
-    HAS_NOTEBOOK = False
-pass
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
-import functools
+import torch
 from unsloth_zoo.compiler import create_new_function
+from unsloth_zoo.logging_utils import PatchRLStatistics
+from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+from .rl_replacements import (
+    RL_EXTRA_ARGS,
+    RL_FUNCTIONS,
+    RL_PRE_ITEMS,
+    RL_CONFIG_CHANGES,
+    RL_METRICS_CHANGES,
+)
+selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : False, # Disable Triton mm kernels
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}
+
+
+def vLLMSamplingParams(**kwargs):
+    from vllm import SamplingParams
+    sampling_params = SamplingParams(**kwargs)
+    sampling_params._set_kwargs = kwargs
+    return sampling_params
+pass
 
 def PatchRL(FastLanguageModel):
 
@@ -78,266 +88,527 @@ def PatchRL(FastLanguageModel):
     trainers = [x for x in trainers if x.endswith("_trainer")]
     unwrap = "unwrap_model_for_generation"
     for trainer in trainers:
-        if hasattr(eval(f"trl.trainer.{trainer}"), unwrap):
-            exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
+        try: current_trainer = eval(f"trl.trainer.{trainer}")
+        except: continue
+        if hasattr(current_trainer, unwrap):
+            try: exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
+            except: continue
     pass
 pass
 
 
-def NotebookProgressCallback_on_train_begin(Trainer_metrics):
-    def _NotebookProgressCallback_on_train_begin(self, args, state, control, **kwargs):
-        self.first_column = "Epoch" if args.eval_strategy == IntervalStrategy.EPOCH else "Step"
-        self.training_loss = 0
-        self.last_log = 0
-        column_names = [self.first_column] + ["Training Loss"]
-        if args.eval_strategy != IntervalStrategy.NO:
-            column_names.append("Validation Loss")
-        column_names += [x.replace("/", " / ") for x in Trainer_metrics]
-        self.training_tracker = NotebookTrainingTracker(state.max_steps, column_names)
-    pass
-    return _NotebookProgressCallback_on_train_begin
+RLTrainer_replacement = '''
+import os
+from typing import *
+from dataclasses import dataclass, field
+from packaging.version import Version
+import torch
+import numpy as np
+from contextlib import nullcontext
+from torch.nn import functional as F
+torch_compile_options = {{
+    "epilogue_fusion"   : True,
+    "max_autotune"      : False,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}}
+
+{selective_log_softmax_code}
+{RL_pre}
+
+@dataclass
+class Unsloth{RLConfig_name}({RLConfig_name}):
+    """
+    {__RLConfig_doc__}
+    """
+    vllm_sampling_params: Optional[Any] = field(
+        default = None,
+        metadata = {{'help': 'vLLM SamplingParams'}},
+    )
+    unsloth_num_chunks : Optional[int] = field(
+        default = -1,
+        metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
+    )
+    def __init__({RLConfig_arguments},
+        vllm_sampling_params = None,
+        unsloth_num_chunks = -1,
+        **kwargs,
+    ):
+{RLConfig_extra_args}
+        super().__init__({RLConfig_call_args}{RLConfig_kwargs})
+        self.vllm_sampling_params = vllm_sampling_params
+        self.unsloth_num_chunks = unsloth_num_chunks
 pass
 
+{RLTrainer_extras}
 
-def NotebookProgressCallback_on_log(Trainer_metrics):
-    def _NotebookProgressCallback_on_log(self, args, state, control, logs=None, **kwargs):
-        # Only for when there is no evaluation
-        if args.eval_strategy == IntervalStrategy.NO and "loss" in logs:
-            values = {"Training Loss": logs["loss"]}
-            for metric in Trainer_metrics:
-                # Sometimes metric is not inside logs
-                try: values[metric.replace("/", " / ")] = logs[metric]
-                except: pass
-            pass
-            # First column is necessarily Step since we're not in epoch eval strategy
-            values["Step"] = state.global_step
-            self.training_tracker.write_line(values)
-        pass
-    pass
-    return _NotebookProgressCallback_on_log
+class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
+    """
+    {__RLTrainer_doc__}
+    """
+    def __init__({RLTrainer_arguments},
+        **kwargs
+    ):
+        if args is None: args = Unsloth{RLConfig_name}()
+{RLTrainer_extra_args}
+        super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
+{RLTrainer_post}
 pass
-
-
-def NotebookTrainingTracker_write_line(Trainer_metrics):
-    set_Trainer_metrics = set(Trainer_metrics)
-    def _NotebookTrainingTracker_write_line(self, values):
-        """
-        Write the values in the inner table.
-
-        Args:
-            values (`Dict[str, float]`): The values to display.
-        """
-        if self.inner_table is None:
-            self.inner_table = [list(values.keys()), list(values.values())]
-        else:
-            columns = self.inner_table[0]
-            new_values = {}
-            for key, value in values.items():
-                lowered = key.lower()
-                if lowered in set_Trainer_metrics:
-                    new_values[lowered.replace("/", " / ")] = value
-                else:
-                    new_values[key] = value
-            pass
-            values = new_values
-
-            self.inner_table[0] = columns
-            if len(self.inner_table) > 1:
-                last_values = self.inner_table[-1]
-                first_column = self.inner_table[0][0]
-                if last_values[0] != values[first_column]:
-                    # write new line
-                    self.inner_table.append([values[c] if c in values else "No Log" for c in columns])
-                else:
-                    # update last line
-                    new_values = values
-                    for c in columns:
-                        if c not in new_values.keys():
-                            new_values[c] = last_values[columns.index(c)]
-                    self.inner_table[-1] = [new_values[c] for c in columns]
-            else:
-                # Edit for evaluation purposes
-                self.inner_table.append([values[c] if c in values else 0 for c in columns])
-            pass
-        pass
-    pass
-    return _NotebookTrainingTracker_write_line
-pass
-
-
-def _PatchRLStatistics(metrics, algorithm):
-    if HAS_NOTEBOOK:
-        if len(metrics) == 0:
-            raise RuntimeError(f"Unsloth: RL statistics for {algorithm} failed with no metrics seen?")
-        from transformers.trainer import is_in_notebook
-        if is_in_notebook():
-            # Patch DPO notebook printing
-            NotebookTrainingTracker.write_line = NotebookTrainingTracker_write_line(metrics)
-            from transformers.trainer import DEFAULT_PROGRESS_CALLBACK
-            DEFAULT_PROGRESS_CALLBACK.on_train_begin = NotebookProgressCallback_on_train_begin(metrics)
-            DEFAULT_PROGRESS_CALLBACK.on_log         = NotebookProgressCallback_on_log(metrics)
-        pass
-    pass
-pass
-
-
-@functools.cache
-def get_trl_metrics():
-    # Gets metrics so we can output them in notebooks
-
-    import trl.trainer
-    trainers = dir(trl.trainer)
-    trainers = [x for x in trainers if x.endswith("_trainer")]
-    filepath = inspect.getfile(trl.trainer)
-    filepath = os.path.split(filepath)[0]
-
-    all_metrics = dict()
-    for trainer in trainers:
-        filename = os.path.join(filepath, f"{trainer}.py")
-        if not os.path.exists(filename): continue
-        with open(filename, "r") as file: file = file.read()
-
-        # Get metrics['kl'] or stats['kl']
-        metrics = re.findall(r"metrics\[[\"\']([^\"\']{1,})[\"\']\]", file)
-        stats = re.findall(r"stats\[[\"\']([^\"\']{1,})[\"\']\]", file)
-        metrics = metrics + stats
-
-        # Get optional f-strings
-        metrics_f = re.findall(r"metrics\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
-        stats_f = re.findall(r"stats\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
-        metrics_f = metrics_f + stats_f
-        # Filter out prefixes if seen
-        # metrics[f"{prefix}rewards/chosen"]
-        left_prefix = 'prefix = "eval_" if train_eval == "eval" else ""' in file
-        if left_prefix: metrics += metrics_f
-
-        # Move all eval_ things to the end and reward to the front
-        beginning = []
-        middle = []
-        end = []
-        for x in metrics:
-            lowered = x.lower()
-            if "reward" in lowered:
-                beginning.append(x)
-            elif x.lower().startswith("eval"):
-                end.append(x)
-            else:
-                # Check if we want to move to the end
-                moved = False
-                for move_end in METRICS_MOVE_TO_END:
-                    if move_end in lowered:
-                        end.append(x)
-                        moved = True
-                        break
-                if not moved:
-                    middle.append(x)
-            pass
-        pass
-        metrics = beginning + middle + end
-
-        all_metrics[trainer[:trainer.find("_")].upper()] = metrics
-    pass
-    return all_metrics
-pass
-
-
-def PatchRLStatistics(algorithm = "GRPO"):
-    # Get notebook statistics columns to show up
-    algorithm = algorithm.upper()
-    all_metrics = get_trl_metrics()
-    if algorithm not in all_metrics:
-        print(
-            f"Unsloth for {algorithm.upper()} is not yet implemented! Just ignore this function.\n"\
-            f"We support: `{list(all_metrics.keys())}`"
-        )
-    pass
-    _PatchRLStatistics(all_metrics[algorithm], algorithm)
-pass
-
+'''
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
     import trl
     import trl.trainer
-
-    trainer = eval(f"trl.trainer.{trainer_file}")
-    name = [x for x in dir(trainer) if x.endswith("Trainer") and x != "Trainer" and trainer_file.split("_")[0] in x.lower()]
-    assert(len(name) == 1)
-    RLTrainer_name = name[0]
-    RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
-
     try:
-        __init__ = inspect.getsource(RLTrainer.__init__)
-    except:
-        # Already patched most likely!
+        trainer = eval(f"trl.trainer.{trainer_file}")
+    except Exception as error:
         return
-    old__init__ = __init__
+    
+    # Get SFTTrainer and SFTConfig names
+    name   = [x for x in dir(trainer) if x.endswith("Trainer") and x != "Trainer" and trainer_file.split("_")[0] in x.lower()]
+    config = [x for x in dir(trainer) if x.endswith("Config")  and x != "Config"  and trainer_file.split("_")[0] in x.lower()]
+    if len(name)   != 1: return
+    if len(config) != 1: return
+
+    # Get SFTTrainer, SFTConfig
+    RLTrainer_name = name[0]
+    RLConfig_name  = config[0]
+    try: RLTrainer = eval(f"trl.trainer.{trainer_file}.{RLTrainer_name}")
+    except: return
+    try: RLConfig  = eval(f"trl.trainer.{trainer_file}.{RLConfig_name}" )
+    except: return
+
+    # Check name
+    if RLTrainer.__name__.startswith("Unsloth"): return
+    if RLConfig .__name__.startswith("Unsloth"): return
+
+    # Get old source
+    old_RLTrainer_source = inspect.getsource(RLTrainer)
+    old_RLConfig_source  = inspect.getsource(RLConfig)
+
     all_imports = dir(trainer)
-    assert("Union" in all_imports)
-    imports = [x for x in all_imports if not x.startswith("_")]
-    imports += ["Trainer"]
+    # Fix _deprecate_arguments not getting imported so stop __ but not _
+    imports = [x for x in all_imports if not x.startswith("__")]
 
-    spaces = __init__.find("def")
-    __init__ = __init__.split("\n")
-    __init__ = "\n".join(x[spaces:] for x in __init__)
+    # Get default arguments
+    EMPTY = inspect.Parameter.empty
+    processed = []
+    for RLobject in [RLTrainer, RLConfig]:
+        parameters = inspect.signature(RLobject.__init__).parameters
+        types = (bool, type(None), int, float, str,)
+        arguments = ["self"]
+        call_args = []
+        for k, v in parameters.items():
+            if k == "self": continue
+            v = v.default
+            if v == "\n": v = re.escape("\n")
+            if v is EMPTY: arguments.append(k)
+            elif type(v) is str:   arguments.append(f"{k} = '{v}'")
+            elif type(v) in types: arguments.append(f"{k} = {v}")
+            else: continue
+            call_args.append(f"{k} = {k}")
+        pass
+        arguments = f"\n{' '*8}" + f",\n{' '*8}".join(arguments)
+        call_args = f"\n{' '*12}" + f",\n{' '*12}".join(call_args)
+        processed.append((arguments, call_args,))
+    pass
 
-    # Replace vLLM sections since we already have it done!
-    vllm_part = re.findall(
-        r"(\n[\s]{4}"\
-        r"if (self|args)\.use_vllm\:.+?"\
-        r"\n[\s]{4,}"\
-        "else:\n)",
-        __init__,
-        flags = re.MULTILINE | re.DOTALL,
+    # Process RLTrainer first
+    arguments, call_args = processed[0]
+    RLTrainer_post = ""
+
+    # Add tokenizer if not seen
+    if "tokenizer" not in parameters and "processing_class" in parameters:
+        arguments += f",\n{' '*8}tokenizer = None"
+        call_args = call_args.replace(
+            "processing_class = processing_class",
+            "processing_class = tokenizer if tokenizer is not None else processing_class",
+        )
+    pass
+
+    # Edit bf16, fp16 by checking model's torch_dtype directly
+    extra_args = ""
+    if "args" in call_args and "model" in call_args:
+        mixed_precision = \
+        "use_bf16 = getattr(args, 'bf16', False)\n"\
+        "use_fp16 = getattr(args, 'fp16', False)\n"\
+        "dtype = getattr(model.config, 'torch_dtype', None)\n"\
+        "if dtype is None: dtype = model.get_input_embeddings().dtype\n"\
+        "from unsloth_zoo.utils import _get_dtype\n"\
+        "dtype = _get_dtype(dtype)\n"\
+        "float16 = dtype == torch.float16\n"\
+        "if float16 and use_bf16: raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"\
+        "if not float16 and use_fp16: raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"\
+        "if not use_bf16 and not use_fp16:\n"\
+        "    args.fp16 = float16\n"\
+        "    args.bf16 = not float16\n"\
+        "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
+        extra_args += mixed_precision
+    pass
+
+    # Check if per_device_eval_batch_size (default 8) bigger than bsz
+    # Also use FP16 / BF16 evaluation
+    if "args" in call_args:
+        # Check eval_dataset first
+        if "eval_dataset" in call_args:
+            check_eval_dataset = \
+            "if getattr(args, 'eval_dataset', None) is not None and "\
+            "getattr(args, 'eval_strategy', 'no') == 'no':\n"\
+            "    args.eval_strategy = 'steps'\n"\
+            "    if getattr(args, 'eval_steps', None) is None: args.eval_steps = 0.1\n"
+            extra_args += check_eval_dataset
+        pass
+
+        # Check if gradient accumulation bug fix is applied
+        check_ga = \
+        "ga_steps = getattr(args, 'gradient_accumulation_steps', None)\n"\
+        "if ga_steps is not None and ga_steps > 1:\n"\
+        "    from transformers import __version__ as transformers_version\n"\
+        "    if Version(transformers_version) <= Version('4.45.2'):\n"\
+        "        print('**** Unsloth: Please use our fixed gradient_accumulation_steps by updating transformers, TRL and Unsloth!\\n'\n"\
+        "              '`pip install --upgrade --no-cache-dir --force-reinstall --no-deps unsloth transformers trl unsloth_zoo`')\n"
+        extra_args += check_ga
+
+        eval_changes = \
+        "if getattr(args, 'eval_strategy', 'no') != 'no':\n"\
+        "    eval_bsz = getattr(args, 'per_device_eval_batch_size', 8)\n"\
+        "    if eval_bsz == 8 and args.per_device_train_batch_size < eval_bsz: args.per_device_eval_batch_size = args.per_device_train_batch_size\n"\
+        "    if getattr(args, 'eval_accumulation_steps', None) is None and ga_steps is not None: args.eval_accumulation_steps = ga_steps\n"\
+        "fp16_full_eval = getattr(args, 'fp16_full_eval', False)\n"\
+        "bf16_full_eval = getattr(args, 'bf16_full_eval', False)\n"\
+        "if args.fp16 and bf16_full_eval: args.bf16_full_eval = False; args.fp16_full_eval = True\n"\
+        "if args.bf16 and fp16_full_eval: args.bf16_full_eval = True; args.fp16_full_eval = False\n"\
+        "if not bf16_full_eval and not fp16_full_eval: args.bf16_full_eval = args.bf16; args.fp16_full_eval = args.fp16\n"
+        extra_args += eval_changes
+    pass
+
+    # Check max_seq_length
+    if "model" in call_args:
+        length_check = \
+        "if 'max_seq_length' not in locals() and not hasattr(args, 'max_seq_length'):\n"\
+        "    pass\n"\
+        "else:\n"\
+        "    model_max_seq_length = getattr(model, 'max_seq_length', None)\n"\
+        "    args_max_seq_length  = getattr(args,  'max_seq_length', None)\n"\
+        "    if args_max_seq_length is None and model_max_seq_length is not None:\n"\
+        "        max_seq_length = model.max_seq_length\n"\
+        "        if hasattr(args, 'max_seq_length'): args.max_seq_length = max_seq_length\n"
+        "    elif args_max_seq_length is not None and model_max_seq_length is not None:\n"\
+        "        if args_max_seq_length > model_max_seq_length:\n"\
+        "            print('Unsloth: You set `max_seq_length` as ' + str(args_max_seq_length) + ' but \n"\
+        "                   the maximum the model supports is ' + str(model_max_seq_length) + '. We shall reduce it.')\n"\
+        "            args.max_seq_length = model_max_seq_length\n"
+        extra_args += length_check
+    pass
+
+    # Enable for training and move padding side of tokenizer to right
+    if "model" in call_args:
+        training_check = \
+        "if model is not None and hasattr(model, 'for_training'):\n"\
+        "    model.for_training()\n"\
+        "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"\
+        "if 'processing_class' in locals():\n"\
+        "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"\
+        "    if hasattr(processing_class, 'tokenizer') and hasattr(processing_class.tokenizer, 'padding_side'): "\
+        "processing_class.tokenizer.padding_side = 'right'\n"
+        extra_args += training_check
+    pass
+
+    # Check NEFTune
+    if "model" in call_args:
+        neftune_check = \
+        "if hasattr(self, 'neftune_hook_handle'):\n"\
+        "    self.neftune_hook_handle.remove()\n"\
+        "    if hasattr(self, 'neftune_hook_handle'): del self.neftune_hook_handle\n"\
+        "if getattr(args, 'neftune_noise_alpha', None) is not None:\n"\
+        "    model.get_input_embeddings().neftune_noise_alpha = self.neftune_noise_alpha\n"\
+        "pass\n"
+        RLTrainer_post += neftune_check
+    pass
+
+    # Edit optional metrics
+    other_metrics_processor = ""
+    if trainer_file in RL_METRICS_CHANGES:
+        process_extra_args = RL_METRICS_CHANGES[trainer_file]
+        for process_extra_arg in process_extra_args:
+            other_metrics_processor += process_extra_arg(call_args, extra_args)
+    pass
+
+    # Add statistics as well!
+    extra_args += \
+        "other_metrics = []\n"\
+        f"{other_metrics_processor}\n"\
+        "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
+        f"PatchRLStatistics('{trainer_file}', other_metrics)\n"
+
+    # Patch optional args
+    if trainer_file in RL_EXTRA_ARGS:
+        process_extra_args = RL_EXTRA_ARGS[trainer_file]
+        for process_extra_arg in process_extra_args:
+            extra_args += process_extra_arg(call_args, extra_args)
+    pass
+
+    # Create RLTrainer args
+    extra_args = extra_args.split("\n")
+    extra_args = "\n".join(" "*8 + x for x in extra_args)
+    RLTrainer_post = RLTrainer_post.split("\n")
+    RLTrainer_post = "\n".join(" "*8 + x for x in RLTrainer_post)
+    RLTrainer_arguments  = arguments
+    RLTrainer_extra_args = extra_args
+    RLTrainer_call_args  = call_args
+
+    # Fix RLConfig next
+    arguments, call_args = processed[1]
+    extra_args = ""
+
+    # Edit GA / bsz and weight_decay
+    replacements = {
+        "output_dir"                  : None,
+        "logging_nan_inf_filter"      : False,
+        "per_device_train_batch_size" : 4,
+        "gradient_accumulation_steps" : 2,
+        "weight_decay"                : 0.01,
+        "warmup_ratio"                : 0.1,
+        "seed"                        : 3407,
+        "optim"                       : "adamw_8bit",
+        "learning_rate"               : 5e-05,
+        "per_device_eval_batch_size"  : 4,
+        "eval_accumulation_steps"     : 2,
+        "torch_empty_cache_steps"     : 250,
+        "logging_steps"               : 1,
+    }
+    for k, v in replacements.items():
+        x = f"{k}( = [^,\n]{{1,}})?,\n"
+        y = f"'{v}'" if type(v) is str else f"{v}"
+        y = f"{k} = {y},\n"
+        arguments = re.sub(x, y, arguments)
+    pass
+
+    # Warn on too large or too small learning rate
+    if " learning_rate" in call_args:
+        learning_rate_check = \
+        "if learning_rate < 1e-7: raise FloatingPointError(f'Unsloth: Your learning rate of `{learning_rate}` is too small and less than 1e-7! "\
+        "Consider increasing it, otherwise gradient updates will be close to 0!')\n"\
+        "if learning_rate > 1: raise OverflowError(f'Unsloth: Your learning rate of `{learning_rate}` is way too larger > 1! "\
+        "Consider decreasing it to 1e-1, otherwise gradient updates will explode!')\n"
+        extra_args += learning_rate_check
+    pass
+
+    # Add output_dir saving
+    if "output_dir" in call_args:
+        # Default checks
+        saving_check = \
+        "if output_dir is None and save_strategy == 'steps' and save_steps == 500:\n"\
+        "    output_dir = 'unsloth_training_checkpoints'\n"\
+        "    save_strategy = 'no'\n"
+        extra_args += saving_check
+    pass
+
+    # Edit dataset_num_proc
+    if "dataset_num_proc" in call_args:
+        num_proc_check = \
+        "if dataset_num_proc is None:\n"\
+        "    from multiprocessing import cpu_count\n"\
+        "    dataset_num_proc = cpu_count()\n"
+        extra_args += num_proc_check
+    pass
+
+    # Edit config with anything extra
+    if trainer_file in RL_CONFIG_CHANGES:
+        process_extra_args = RL_CONFIG_CHANGES[trainer_file]
+        for process_extra_arg in process_extra_args:
+            extra_args += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
+    pass
+
+    # Edit report_to and default it to nothing if max_steps is like 60
+
+    # Create RLConfig args
+    extra_args = extra_args.split("\n")
+    extra_args = "\n".join(" "*8 + x for x in extra_args)
+    RLConfig_arguments  = arguments
+    RLConfig_extra_args = extra_args
+    RLConfig_call_args  = call_args
+
+    # Patch vLLM and other functions
+    RLTrainer_extras = patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports)
+    if RLTrainer_extras is None:
+        RLTrainer_extras = f"_Unsloth{RLTrainer_name} = {RLTrainer_name}"
+
+    # Create full module
+    exec(f"from trl.trainer import ({RLTrainer_name}, {RLConfig_name},)")
+    __RLTrainer_doc__ = eval(f"trl.trainer.{RLTrainer_name}").__doc__
+    if __RLTrainer_doc__ is None: __RLTrainer_doc__ = ""
+    __RLConfig_doc__  = eval(f"trl.trainer.{RLConfig_name}") .__doc__
+    if __RLConfig_doc__ is None: __RLConfig_doc__ = ""
+
+    # Get all pre-modules
+    if trainer_file in RL_PRE_ITEMS:
+        RL_pre = "\n".join(RL_PRE_ITEMS[trainer_file])
+    else:
+        RL_pre = ""
+    pass
+
+    # Check if SamplingParams is in there
+    if "SamplingParams" in old_RLTrainer_source:
+        RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
+    pass
+    
+    # Selective log softmax
+    selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+
+    # Get final source code
+    RLTrainer_source = RLTrainer_replacement.format(
+        RLTrainer_name       = RLTrainer_name,
+        __RLTrainer_doc__    = __RLTrainer_doc__,
+        RLTrainer_arguments  = RLTrainer_arguments,
+        RLTrainer_extra_args = RLTrainer_extra_args,
+        RLTrainer_call_args  = RLTrainer_call_args,
+        RLTrainer_kwargs     = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0:],
+
+        RLConfig_name        = RLConfig_name,
+        __RLConfig_doc__     = __RLConfig_doc__,
+        RLConfig_arguments   = RLConfig_arguments,
+        RLConfig_extra_args  = RLConfig_extra_args,
+        RLConfig_call_args   = RLConfig_call_args,
+        RLConfig_kwargs      = ",**kwargs"[1 if RLConfig_call_args .endswith(",") else 0:],
+
+        RLTrainer_extras     = RLTrainer_extras,
+        RLTrainer_post       = RLTrainer_post,
+        RL_pre               = RL_pre,
+
+        selective_log_softmax_code = selective_log_softmax_code,
     )
-    if (len(vllm_part) != 1): return
 
-    vllm_part, args = vllm_part[0][0], vllm_part[0][1]
-    # Strip all comments
-    new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
+    # Remove multiple doc strings
+    if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
+        RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
+    pass
 
-    # Get SamplingParams
-    sampling_params = re.findall(
-        r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}"\
-        r"SamplingParams\(.+?\))",
-        new_vllm_part,
-        flags = re.MULTILINE | re.DOTALL,
+    # Remove multiple newlines
+    RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
+
+    # Create new function
+    created_module = create_new_function(
+        f"Unsloth{RLTrainer_name}",
+        RLTrainer_source,
+        f"trl.trainer.{trainer_file}",
+        imports,
+        overwrite = True,
     )
-    if len(sampling_params) != 1: return
+    
+    # Patch Trainer
+    exec(f"trl.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
+    exec(f"trl.trainer.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
+    exec(f"trl.trainer.{trainer_file}.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
+    
+    # Patch Config
+    exec(f"trl.{RLConfig_name} = created_module.Unsloth{RLConfig_name}", locals(), globals())
+    exec(f"trl.trainer.{RLConfig_name} = created_module.Unsloth{RLConfig_name}", locals(), globals())
+    exec(f"trl.trainer.{trainer_file}.{RLConfig_name} = created_module.Unsloth{RLConfig_name}", locals(), globals())
+pass
 
-    sampling_params = sampling_params[0]
-    # Replace with our vLLM engine
-    sampling_params = \
-        " "*8 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
-        sampling_params # Add spaces
-    new_vllm_part = f"\n    if {args}.use_vllm:\n{sampling_params}\n    else:\n"
-    __init__ = __init__.replace(vllm_part, new_vllm_part)
+
+def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
+    init = inspect.getsource(RLTrainer.__init__)
+    old_init = init
 
     # Remove peft_config
-    __init__ = __init__.replace("elif peft_config is None:", "elif False:")
-    __init__ = __init__.replace("elif peft_config is not None:", "elif False:")
-    __init__ = __init__.replace("if peft_config is None:", "if False:")
-    __init__ = __init__.replace("if peft_config is not None:", "if False:")
-    __init__ = __init__.replace("get_peft_model(model, peft_config)", "model")
+    init = init.replace("elif peft_config is None:", "elif False:")
+    init = init.replace("elif peft_config is not None:", "elif False:")
+    init = init.replace("if peft_config is None:", "if False:")
+    init = init.replace("if peft_config is not None:", "if False:")
+    init = init.replace("get_peft_model(model, peft_config)", "model")
 
-    # Add spaces back into __init__
-    __init__ = __init__.split("\n")
-    __init__ = "\n".join(' '*spaces + x for x in __init__)
+    # Set use_vllm if not set
+    if "args.use_vllm" in init and "model" in init and "args" in init:
+        # .*? matches first match. .+? matches final match.
+        replacer = re.findall(
+            "def __init__\(.*?\).*?\:\n",
+            init,
+            flags = re.MULTILINE | re.DOTALL,
+        )
+        if len(replacer) != 0:
+            replacer = replacer[0]
+            vllm_setter = "\n" + " "*8 + \
+            "if hasattr(model, 'vllm_engine') and "\
+            "hasattr(args, 'use_vllm') and (getattr(args, 'use_vllm', False) == False): "\
+            "args.use_vllm = True\n"
+            init = init.replace(replacer, replacer + vllm_setter)
+        pass
+    pass
+
+    vllm_part = re.findall(
+        r"(\n[\s]{8}"\
+        r"if (self|args)\.use_vllm\:.*?"\
+        r"\n[\s]{8}"\
+        "else:\n)",
+        init,
+        flags = re.MULTILINE | re.DOTALL,
+    )
+    if len(vllm_part) == 1:
+        vllm_part, args = vllm_part[0][0], vllm_part[0][1]
+        # Strip all comments
+        new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
+
+        # Get SamplingParams
+        sampling_params = re.findall(
+            r"\n[\s]{4,}(self\.[^\s]{1,}[\s]{0,}\=[\s]{0,}"\
+            r"SamplingParams\(.+?\))",
+            new_vllm_part,
+            flags = re.MULTILINE | re.DOTALL,
+        )
+        if len(sampling_params) == 1:
+            sampling_params = sampling_params[0]
+
+            # Fix guided_decoding
+            sampling_params = sampling_params.replace(
+                "guided_decoding=guided_decoding,",
+                'guided_decoding='\
+                'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '\
+                'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None,',
+            )
+            # Replace with our vLLM engine
+            sampling_params = \
+                " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
+                sampling_params # Add spaces
+
+            # Add extra arguments to SamplingParams
+            extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
+            # Backwards replace
+            to_replace = "," + extra + "," + ")"
+            sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
+            # Strip multiple commas
+            sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
+
+            new_vllm_part = \
+                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
+                f"\n{' '*8}else:\n"
+
+            init = init.replace(vllm_part, new_vllm_part)
+        pass
+    pass
 
     # Search for vLLM calling in all child functions
     functions = dir(RLTrainer)
     RLTrainer_source = inspect.getsource(RLTrainer)
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
-    changed = {"__init__" : (old__init__, __init__,)}
+    changed = {"__init__" : (old_init, init,)}
+    edit_functions = RL_FUNCTIONS.get(trainer_file, [])
+
     for function in functions:
         if not hasattr(RLTrainer, function): continue
         fx = getattr(RLTrainer, function)
-        try:
-            source = inspect.getsource(fx)
-        except:
-            continue
+        try: source = inspect.getsource(fx)
+        except: continue
         original_source = source
+
+        # Check for function
+        for edit_function in edit_functions:
+            source = edit_function(function, source)
+        pass
 
         # llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         source = re.sub(
@@ -385,23 +656,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         old, new = changed[function]
         RLTrainer_source = RLTrainer_source.replace(old, new)
     pass
+
     RLTrainer_source = RLTrainer_source.replace(
-        f"class {RLTrainer_name}", f"class Unsloth{RLTrainer_name}", 1
+        f"class {RLTrainer_name}", f"class _Unsloth{RLTrainer_name}", 1
     )
-
-    # Create new class in compiled cache and import it
-    module = create_new_function(
-        RLTrainer_name,
-        RLTrainer_source,
-        f"trl.trainer.{trainer_file}",
-        imports,
-    )
-
-    # Patch over modules
-    exec(f"trl.{RLTrainer_name} = module.Unsloth{RLTrainer_name}", locals(), globals())
-    exec(f"trl.trainer.{RLTrainer_name} = module.Unsloth{RLTrainer_name}", locals(), globals())
-    exec(f"trl.trainer.{trainer_file}.{RLTrainer_name} = module.Unsloth{RLTrainer_name}", locals(), globals())
-    return module
+    return RLTrainer_source
 pass
 
 
@@ -416,8 +675,9 @@ def patch_trl_rl_trainers():
 pass
 
 
-def PatchFastRL(algorithm = "GRPO", FastLanguageModel = None):
+def PatchFastRL(algorithm = None, FastLanguageModel = None):
     if FastLanguageModel is not None: PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
-    PatchRLStatistics(algorithm)
+    if type(algorithm) is str and algorithm.islower():
+        PatchRLStatistics(algorithm)
 pass
