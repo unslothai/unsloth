@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.2.14"
+__version__ = "2025.2.15"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -142,6 +142,11 @@ transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 # torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
 transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
 del transformers_training_args_logger
+
+# No label_names provided for model class
+from transformers.trainer import logger as transformers_trainer_logger
+transformers_trainer_logger.addFilter(HideLoggingMessage("No label_names"))
+del transformers_trainer_logger
 
 # Using the default loss: `ForCausalLMLoss`.
 try:
