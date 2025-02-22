@@ -73,7 +73,12 @@ pass
 from triton import __version__ as triton_version
 HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
-
+HAS_FLEX_ATTENTION = False
+try:
+    from torch.nn.attention.flex_attention import flex_attention
+    HAS_FLEX_ATTENTION = True
+except:
+    pass
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -419,7 +424,16 @@ def LlamaAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
+    if HAS_FLEX_ATTENTION and attention_mask is None:
+        def causal_score_mod(score, b, h, q_idx, kv_idx):
+            return torch.where(q_idx >= kv_idx, score, -float("inf"))
+        A = flex_attention(
+            Q, K, V,
+            score_mod=causal_score_mod,
+            block_mask=block_mask,
+            enable_gqa=n_groups != 1,
+        ).transpose(1, 2)#.contiguous()
+    elif (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
