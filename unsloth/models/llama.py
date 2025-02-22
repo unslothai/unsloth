@@ -430,7 +430,6 @@ def LlamaAttention_fast_forward(
         A = flex_attention(
             Q, K, V,
             score_mod=causal_score_mod,
-            block_mask=block_mask,
             enable_gqa=n_groups != 1,
         ).transpose(1, 2)#.contiguous()
     elif (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
