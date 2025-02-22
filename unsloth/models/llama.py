@@ -2087,8 +2087,6 @@ class FastLlamaModel:
             vllm_fast_generate = model.fast_generate
             vllm_fast_generate_batches = model.fast_generate_batches
 
-            import pdb; pdb.set_trace()
-
             if modules_to_save is not None:
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with training embeddings or lm_head.")
 
