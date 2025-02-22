@@ -40,7 +40,7 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - Click [here](https://docs.unsloth.ai/) for detailed documentation for Unsloth.
 
 ## 🦥 Unsloth.ai News
-- 📣 NEW! Introducing [Reasoning](https://unsloth.ai/blog/r1-reasoning) in Unsloth. You can now reproduce DeepSeek-R1's "aha" moment with just 7GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
+- 📣 NEW! Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. You can now reproduce DeepSeek-R1's "aha" moment with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 NEW! [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - the most powerful open reasoning models with Llama & Qwen distillations. Run or fine-tune them now! More details: [unsloth.ai/blog/deepseek-r1](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
 - 📣 NEW! [Phi-4](https://unsloth.ai/blog/phi4) by Microsoft is now supported. We also [fixed bugs](https://unsloth.ai/blog/phi4) in Phi-4 and [uploaded GGUFs, 4-bit](https://huggingface.co/collections/unsloth/phi-4-all-versions-677eecf93784e61afe762afa). Try the [Phi-4 Colab notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Phi_4-Conversational.ipynb)
 - 📣 NEW! [Llama 3.3 (70B)](https://huggingface.co/collections/unsloth/llama-33-all-versions-67535d7d994794b9d7cf5e9f), Meta's latest model is supported.
