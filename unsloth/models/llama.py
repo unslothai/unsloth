@@ -426,7 +426,7 @@ def LlamaAttention_fast_forward(
     # Attention module
     if HAS_FLEX_ATTENTION and attention_mask is None:
         def causal_score_mod(score, b, h, q_idx, kv_idx):
-            return torch.where(q_idx >= kv_idx, score, -float("inf"))
+            return torch.where(q_idx >= kv_idx, score, float("-inf"))
         A = flex_attention(
             Q, K, V,
             score_mod=causal_score_mod,
