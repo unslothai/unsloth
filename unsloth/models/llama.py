@@ -428,10 +428,10 @@ def LlamaAttention_fast_forward(
         def causal_score_mod(score, b, h, q_idx, kv_idx):
             return torch.where(q_idx >= kv_idx, score, float("-inf"))
         A = flex_attention(
-            Q, K, V,
-            score_mod=causal_score_mod,
-            enable_gqa=n_groups != 1,
-        ).transpose(1, 2)#.contiguous()
+                Q, K, V,
+                score_mod=causal_score_mod,
+                enable_gqa=n_groups != 1,
+            ).transpose(1, 2)#.contiguous()
     elif (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
