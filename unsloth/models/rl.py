@@ -116,12 +116,18 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = None,
         metadata = {{'help': 'vLLM SamplingParams'}},
     )
+    max_image_size: Optional[Tuple[int, int]] = field(
+         default = None,
+         metadata = {{'help': 'Maximum image size (width, height) for resizing images.'}},
+    )
     def __init__({RLConfig_arguments},
+        max_image_size = None,
         sampling_params = None,
         **kwargs,
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
+        self.max_image_size = max_image_size
 pass
 
 {RLTrainer_extras}
@@ -135,10 +141,12 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
     ):
         if args is None: args = Unsloth{RLConfig_name}()
 {RLTrainer_extra_args}
+        {resize_logic}
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
 {RLTrainer_post}
 pass
 '''
+
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
@@ -434,6 +442,51 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Selective log softmax
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
 
+
+    # Patch trainer to accept max_image_size arg to avoid OOM errors
+    resize_logic = \
+        '''
+        if data_collator is not None and "UnslothVisionDataCollator" in str(type(data_collator)):
+            from PIL import Image
+            if getattr(args, 'max_image_size', None) is not None:
+                max_w, max_h = args.max_image_size
+                print(f"Unsloth: Resizing images with maximum dimensions {max_w}x{max_h}")
+
+                def resize_nested_image(example):
+                    for message in example.get('messages', []):
+                        for content in message.get('content', []):
+                            if content.get('type') == 'image':
+                                image_obj = content.get('image')
+                                if image_obj is not None:
+                                    try:
+                                        img = Image.open(image_obj) if isinstance(image_obj, str) else image_obj
+                                        orig_w, orig_h = img.size
+                                        if orig_w > max_w or orig_h > max_h:
+                                            # Calculate the scaling factor while preserving aspect ratio.
+                                            scale = min(max_w / orig_w, max_h / orig_h)
+                                            new_w = int(orig_w * scale)
+                                            new_h = int(orig_h * scale)
+                                            resized_img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                                            content['image'] = resized_img
+                                    except Exception as e:
+                                        print(f"Failed to process image: {e}")
+                    return example
+                def process_dataset(dataset):
+                    if isinstance(dataset, list):
+                        return [resize_nested_image(example) for example in dataset]
+                    elif hasattr(dataset, 'column_names') and "image" in dataset.column_names:
+                        return dataset.map(resize_nested_image)
+                    return dataset
+                    
+                if train_dataset is not None:
+                    train_dataset = process_dataset(train_dataset)
+                if eval_dataset is not None:
+                    eval_dataset = process_dataset(eval_dataset)
+            else:
+                print("Unsloth: max_image_size not provided; skipping image resizing.")
+        '''
+
+
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
@@ -455,6 +508,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RL_pre               = RL_pre,
 
         selective_log_softmax_code = selective_log_softmax_code,
+
+        resize_logic = resize_logic
     )
 
     # Create new function
