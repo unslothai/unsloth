@@ -190,10 +190,34 @@ x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
 
-### Windows Installation
+## Windows Installation
 
 To run Unsloth directly on Windows:
-- Install Triton from this Windows fork and follow the instructions: https://github.com/woct0rdho/triton-windows (be aware that the Windows fork requires PyTorch >= 2.4 and CUDA 12)
+### Step 1: NVIDIA Video Driver
+
+You should install the latest version of your GPUs driver. You can download drivers here:
+ - [NVIDIA GPU Drive Download](https://www.nvidia.com/Download/index.aspx)
+
+### Step 2: Visual Studio C++
+
+You will need Visual Studio, with C++ installed. By default, C++ is not installed with Visual Studio, so make sure you select all of the C++ options. Also select options for Windows 10/11 SDK.
+ - [Visual Studio Community Edition](https://visualstudio.microsoft.com/vs/community/)
+
+### Step 3: CUDA Toolkit
+
+ - [Download CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit-archive)
+
+### Step 4: Install PyTorch 
+
+You will need the correct version of PyTorch that is compatibile with your CUDA drivers, so make sure to select them carefully
+ - [Install PyTorch](https://pytorch.org/get-started/locally/)
+
+### Step 5: Install Unsloth
+```python
+pip install unsloth
+```
+
+### Side note
 - In the SFTTrainer, set `dataset_num_proc=1` to avoid a crashing issue:
 ```python
 trainer = SFTTrainer(
@@ -211,6 +235,7 @@ For **advanced installation instructions** or if you see weird errors during ins
 3. Install `xformers` manually. You can try installing `vllm` and seeing if `vllm` succeeds. Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs.
 4. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 
 5. Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
+6. Look around in [Unsloth Windows Support](https://github.com/orgs/community/discussions/152302) discussions group to see if your problem has been reported by someone else.
 
 ## 📜 [Documentation](https://docs.unsloth.ai)
 - Go to our official [Documentation](https://docs.unsloth.ai) for saving to GGUF, checkpointing, evaluation and more!
