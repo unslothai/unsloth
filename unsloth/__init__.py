@@ -17,6 +17,27 @@ from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
 
+# Check if modules that need patching are already imported
+critical_modules = ['trl', 'transformers', 'peft']
+already_imported = [mod for mod in critical_modules if mod in sys.modules]
+
+# This check is critical because Unsloth optimizes these libraries by modifying
+# their code at import time. If they're imported first, the original (slower, 
+# more memory-intensive) implementations will be used instead of Unsloth's
+# optimized versions, potentially causing OOM errors or slower training.
+
+if already_imported:
+    # stacklevel=2 makes warning point to user's import line rather than this library code,
+    # showing them exactly where to fix the import order in their script
+    warnings.warn(
+        f"WARNING: Unsloth should be imported before {', '.join(already_imported)} "
+        f"to ensure all optimizations are applied. Your code may run slower or encounter "
+        f"memory issues without these optimizations.\n\n"
+        f"Please restructure your imports with 'import unsloth' at the top of your file.",
+        stacklevel = 2,
+    )
+pass
+
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
