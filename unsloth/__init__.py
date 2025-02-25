@@ -34,7 +34,7 @@ if already_imported:
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
         f"memory issues without these optimizations.\n\n"
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
-        stacklevel=2
+        stacklevel = 2,
     )
 pass
 
