@@ -35,6 +35,7 @@ except:
     MistralSdpaAttention   = MistralAttention
     MistralFlashAttention2 = MistralAttention
 pass
+from unsloth_zoo.utils import Version, _get_dtype
 
 
 def MistralAttention_fast_forward(
@@ -287,6 +288,7 @@ def MistralForCausalLM_fast_forward(
         pass
         logits = self.lm_head(hidden_states.to(lm_head.dtype))
     pass
+    logits = logits.to(_get_dtype(self.config.torch_dtype))
 
     loss = None
     if labels is not None:
