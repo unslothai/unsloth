@@ -257,7 +257,6 @@ def MistralForCausalLM_fast_forward(
     elif num_logits_to_keep != 0:
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
     else:
-        # --- mirror the llama.py functionality
         RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
         # < 1024 Normal Unsloth uses less VRAM!
         if bsz * q_len <= 1024: RETURN_LOGITS = True
