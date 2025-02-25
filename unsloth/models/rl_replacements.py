@@ -247,14 +247,19 @@ def grpo_trainer_compute_loss(function_name, function):
                 n_chunks = self.args.unsloth_num_chunks,
             )
 
-        mode = "eval" if self.control.should_evaluate else "train"
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
-        self._metrics[mode]["completion_length"].append(completion_length.item())
 
         # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
-        self._metrics[mode]["kl"].append(mean_kl.item())
+
+        if "train" in self._metrics:
+            mode = "eval" if self.control.should_evaluate else "train"
+            self._metrics[mode]["completion_length"].append(completion_length.item())
+            self._metrics[mode]["kl"].append(mean_kl.item())
+        else:
+            self._metrics["completion_length"].append(completion_length.item())
+            self._metrics["kl"].append(mean_kl.item())
         return loss
     pass
 
