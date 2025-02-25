@@ -17,9 +17,6 @@ from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
 
-# unsloth/__init__.py
-# (Add this near the top, after other essential imports)
-
 # Check if modules that need patching are already imported
 critical_modules = ['trl', 'transformers', 'peft']
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
