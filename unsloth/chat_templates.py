@@ -2121,7 +2121,7 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
         gguf_tokens = "".join(datas)
 
         # Now extract GGUF tokenization attempt
-        gguf_tokenized = re.findall("([\\d]{1,}) \\-\\> \'([^\\']{1,})\'", gguf_tokens, flags = re.MULTILINE)
+        gguf_tokenized = re.findall(r"([\d]{1,}) \-\> \'([^\']{1,})\'", gguf_tokens, flags = re.MULTILINE)
         gguf_tokenized = [(int(x[0]), x[1],) for x in gguf_tokenized]
         input_ids = tokenizer(prompt).input_ids
 

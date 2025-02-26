@@ -1592,9 +1592,9 @@ class FastLlamaModel:
 
         statistics = \
            f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.\n"\
-           f"   \\\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
-           f"O^O/ \\_/ \\    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
-           f"\\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
+           f"   {chr(92)}{chr(92)}   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+           f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
+           f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
 
@@ -1745,11 +1745,11 @@ class FastLlamaModel:
         pass
         exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
 
-        start = re.search('logger\\.info\\([\"\'].+?Running training', inner_training_loop).span(0)[0]
+        start = re.search(r'logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
         end = inner_training_loop.find("\n\n", start)
         original_debug = inner_training_loop[start:end]
-        spaces = re.search('\n([\\s\\t]{1,})', original_debug).group(0)[1:]
-        front_spaces = re.match('([\\s\\t]{1,})', inner_training_loop).group(0)
+        spaces = re.search(r'\n([\s\t]{1,})', original_debug).group(0)[1:]
+        front_spaces = re.match(r'([\s\t]{1,})', inner_training_loop).group(0)
 
         # Cannot use \\ since it will cause a SyntaxWarning in Python 3.12
         # Instead use chr(92) == \\
