@@ -1888,11 +1888,11 @@ class FastLlamaModel:
         pass
         exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
 
-        start = re.search('logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
+        start = re.search(r'logger\.info\([\"\'].+?Running training', inner_training_loop).span(0)[0]
         end = inner_training_loop.find("\n\n", start)
         original_debug = inner_training_loop[start:end]
-        spaces = re.search('\n([\s\t]{1,})', original_debug).group(0)[1:]
-        front_spaces = re.match('([\s\t]{1,})', inner_training_loop).group(0)
+        spaces = re.search(r'\n([\s\t]{1,})', original_debug).group(0)[1:]
+        front_spaces = re.match(r'([\s\t]{1,})', inner_training_loop).group(0)
 
         # Cannot use \\ since it will cause a SyntaxWarning in Python 3.12
         # Instead use chr(92) == \\
