@@ -952,7 +952,7 @@ def load_vllm(
     # Prefix Caching fails for V100, Titan X CUDA Compute Capability 7.0
     # See https://github.com/huggingface/trl/issues/2798
     major_version, minor_version = torch.cuda.get_device_capability()
-    if major_version == 7 and minor_version < 5:
+    if (major_version < 7) or (major_version == 7 and minor_version < 5):
         print("Unsloth: Your GPU does not support prefix caching - will disable!")
         enable_prefix_caching = False
     pass
