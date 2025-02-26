@@ -589,7 +589,7 @@ if Version(peft_version) < Version("0.12.0"):
         spaces = len(re.match(r"[\s]{1,}", source).group(0))
         lines = source.split("\n")
         source = "\n".join(x[spaces:] for x in lines)
-        source = re.sub("([^\.])nn\.", r"\1torch.nn.", source)
+        source = re.sub(r"([^\.])nn\.", r"\1torch.nn.", source)
         source = source.replace("def update_layer", "def LoraLayer_update_layer")
         exec(source, globals())
 
@@ -852,7 +852,7 @@ def patch_linear_scaling(
         scaled_rope_function = scaled_rope_module.__name__,
     )
     rotary_emb = re.findall(
-        "self.rotary_emb = .+?\)", function,
+        r"self\.rotary\_emb \= .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
     if len(rotary_emb) == 0:
@@ -952,7 +952,7 @@ def patch_llama_rope_scaling(
             (longrope_module if longrope_module is not None else rope_module).__name__
     )
     rotary_emb = re.findall(
-        "self.rotary_emb = .+?\)", function,
+        r"self\.rotary\_emb \= .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
     if len(rotary_emb) == 0: return None, function

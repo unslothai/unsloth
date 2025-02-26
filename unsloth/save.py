@@ -482,8 +482,8 @@ def unsloth_save_model(
     max_ram = psutil.virtual_memory().available
     sharded_ram_usage = 5 * 1024 * 1024 * 1024
     if type(max_shard_size) is str:
-        gb_found = re.match("([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
-        mb_found = re.match("([0-9]{1,})[\s]{0,}MB", max_shard_size, flags = re.IGNORECASE)
+        gb_found = re.match(r"([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
+        mb_found = re.match(r"([0-9]{1,})[\s]{0,}MB", max_shard_size, flags = re.IGNORECASE)
         if   gb_found: sharded_ram_usage = int(gb_found.group(1)) * 1024 * 1024 * 1024
         elif mb_found: sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024
     elif type(max_shard_size) is int:
@@ -1017,9 +1017,9 @@ def save_to_gguf(
 
     print_info = \
         f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
-        f"   \\\   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
-        f"O^O/ \_/ \\    [1] Converting HF to GGUF 16bits might take 3 minutes.\n"\
-        f"\        /    [2] Converting GGUF 16bits to {quantization_method} might take 10 minutes each.\n"\
+        f"   {chr(92)}{chr(92)}   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
+        f"O^O/ {chr(92)}_/ {chr(92)}    [1] Converting HF to GGUF 16bits might take 3 minutes.\n"\
+        f"{chr(92)}        /    [2] Converting GGUF 16bits to {quantization_method} might take 10 minutes each.\n"\
         f' "-____-"     In total, you will have to wait at least 16 minutes.\n'
     print(print_info)
 
