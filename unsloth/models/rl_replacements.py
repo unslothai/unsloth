@@ -101,7 +101,7 @@ def sft_trainer_prepare_dataset(function_name, function):
 
     # .*? matches first match. .+? matches final match.
     replacer = re.findall(
-        r"def {function_name}\(.*?\).*?\:\n",
+        r"def " + function_name + r"\(.*?\).*?\:\n",
         function,
         flags = re.MULTILINE | re.DOTALL,
     )
