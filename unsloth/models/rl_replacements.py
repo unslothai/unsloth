@@ -93,7 +93,7 @@ def sft_trainer_prepare_dataset(function_name, function):
     "    tokenizer = partial(tokenizer, add_special_tokens = False)\n"\
     "    processing_class = tokenizer\n"\
     "else:\n"\
-    "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n"
+    "    add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
 
     check_text = check_text.split("\n")
     check_text = "\n".join(" "*8 + x for x in check_text)
@@ -101,7 +101,7 @@ def sft_trainer_prepare_dataset(function_name, function):
 
     # .*? matches first match. .+? matches final match.
     replacer = re.findall(
-        r"def {function_name}\(.*?\).*?\:\n",
+        r"def " + function_name + r"\(.*?\).*?\:\n",
         function,
         flags = re.MULTILINE | re.DOTALL,
     )
