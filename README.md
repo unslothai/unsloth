@@ -275,11 +275,14 @@ trainer.train()
 # (4) Customized chat templates
 ```
 
-<a name="DPO"></a>
-## DPO + GRPO Support
-DPO (Direct Preference Optimization), PPO, Reward Modelling all seem to work as per 3rd party independent testing from [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory). We have a preliminary Google Colab notebook for reproducing Zephyr on Tesla T4 here: [notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
+<a name="RL"></a>
+## 💡 Reinforcement Learning
+RL including DPO, GRPO, PPO, Reward Modelling, Online DPO all work with Unsloth. We're in 🤗Hugging Face's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)! List of RL notebooks:
 
-We're in 🤗Hugging Face's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
+- ORPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3_(8B)-ORPO.ipynb)
+- DPO Zephyr notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Zephyr_(7B)-DPO.ipynb)
+- KTO notebook: [Link](https://colab.research.google.com/drive/1a2b3c4d5e6f7g8h9i0j)
+- SimPO notebook: [Link](https://colab.research.google.com/drive/1a2b3c4d5e6f7g8h9i0j)
 
 <details>
   <summary>Click for DPO code</summary>
