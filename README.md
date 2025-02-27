@@ -175,9 +175,25 @@ You should install the latest version of your GPUs driver. You can download driv
  - [NVIDIA GPU Drive Download](https://www.nvidia.com/Download/index.aspx)
 
 ### Step 2: Visual Studio C++
-
 You will need Visual Studio, with C++ installed. By default, C++ is not installed with Visual Studio, so make sure you select all of the C++ options. Also select options for Windows 10/11 SDK.
- - [Visual Studio Community Edition](https://visualstudio.microsoft.com/vs/community/)
+  - [Visual Studio Community Edition](https://visualstudio.microsoft.com/vs/community/)
+<table>
+  <tr>
+    <td>
+      <img src="https://github.com/user-attachments/assets/d3e6ca95-85bb-442a-8c6f-81944300598e" alt="VSCode C++ Ref Image" width="400" height="350"/>
+    </td>
+    <td>
+      <div align="center">
+        <h1>Steps to configure VS C++</h1>
+      </div>
+      <ol>
+        <li>Launch the Installer downloaded from the link above.</li>
+        <li>In the installer, navigate to Individual components and select all the options mentioned in the image.</li>
+        <li>Click on install now.</li>
+      </ol>
+    </td>
+  </tr>
+</table>
 
 ### Step 3: CUDA Toolkit
 
