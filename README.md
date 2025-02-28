@@ -168,8 +168,48 @@ x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
 
-### Windows Installation
+## Windows Installation
+### Step 1: NVIDIA Video Driver
 
+You should install the latest version of your GPUs driver. You can download drivers here:
+ - [NVIDIA GPU Drive Download](https://www.nvidia.com/Download/index.aspx)
+
+### Step 2: Visual Studio C++
+You will need Visual Studio, with C++ installed. By default, C++ is not installed with Visual Studio, so make sure you select all of the C++ options. Also select options for Windows 10/11 SDK.
+  - [Visual Studio Community Edition](https://visualstudio.microsoft.com/vs/community/)
+<table>
+  <tr>
+    <td>
+      <img src="https://github.com/user-attachments/assets/d3e6ca95-85bb-442a-8c6f-81944300598e" alt="VSCode C++ Ref Image" width="400" height="350"/>
+    </td>
+    <td>
+      <div align="center">
+        <h1>Steps to configure VS C++</h1>
+      </div>
+      <ol>
+        <li>Launch the Installer downloaded from the link above.</li>
+        <li>In the installer, navigate to Individual components and select all the options mentioned in the image.</li>
+        <li>Click on install now.</li>
+      </ol>
+    </td>
+  </tr>
+</table>
+
+### Step 3: CUDA Toolkit
+
+ - [Download CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit-archive)
+
+### Step 4: Install PyTorch 
+
+You will need the correct version of PyTorch that is compatibile with your CUDA drivers, so make sure to select them carefully
+ - [Install PyTorch](https://pytorch.org/get-started/locally/)
+
+### Step 5: Install Unsloth
+```python
+pip install "unsloth[windows] @ git+https://github.com/unslothai/unsloth.git"
+```
+
+### Side note
 To run Unsloth directly on Windows:
 - Install Triton from this Windows fork and follow the instructions: https://github.com/woct0rdho/triton-windows (be aware that the Windows fork requires PyTorch >= 2.4 and CUDA 12)
 - In the SFTTrainer, set `dataset_num_proc=1` to avoid a crashing issue:
