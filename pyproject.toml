@@ -33,10 +33,32 @@ exclude = ["images*"]
 
 [project.optional-dependencies]
 triton = [
-    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post5/triton-3.1.0-cp39-cp39-win_amd64.whl ; python_version=='3.9' and platform_system == 'Windows'",
-    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post5/triton-3.1.0-cp310-cp310-win_amd64.whl ; python_version=='3.10' and platform_system == 'Windows'",
-    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post5/triton-3.1.0-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
-    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.1.0-windows.post5/triton-3.1.0-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
+    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp39-cp39-win_amd64.whl ; python_version=='3.9' and platform_system == 'Windows'",
+    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp310-cp310-win_amd64.whl ; python_version=='3.10' and platform_system == 'Windows'",
+    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
+    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'"
+]
+
+windows=[
+    "unsloth_zoo>=2025.2.7",
+    "packaging",
+    "tyro",
+    "transformers>=4.46.1,!=4.47.0",
+    "datasets>=2.16.0",
+    "sentencepiece>=0.2.0",
+    "tqdm",
+    "psutil",
+    "wheel>=0.42.0",
+    "numpy",
+    "accelerate>=0.34.1",
+    "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,!=0.15.0",
+    "peft>=0.7.1,!=0.11.0",
+    "protobuf<4.0.0",
+    "huggingface_hub",
+    "hf_transfer",
+    "unsloth[triton]",
+    "bitsandbytes>=0.41.1 ; platform_system == 'Windows'",
+    "xformers>=0.0.22.post7 ; platform_system == 'Windows'",
 ]
 huggingface = [
     "unsloth_zoo>=2025.2.7",
