@@ -1739,7 +1739,7 @@ def unsloth_save_pretrained_gguf(
         print("Downloading surgery file...")
         file = requests.get("https://raw.githubusercontent.com/ggml-org/llama.cpp/master/examples/llava/qwen2_vl_surgery.py").text
         with open("surgery.py", "w") as f: f.write(file)
-        perform_surgery = f"python qwen2_vl_surgery.py {new_save_directory}"
+        perform_surgery = f"python surgery.py {new_save_directory}"
         try_execute([perform_surgery], force_complete=True)
         os.remove("surgery.py")
     # Use old chat template if the bos is removed
@@ -1932,7 +1932,7 @@ def unsloth_push_to_hub_gguf(
         print("Downloading surgery file...")
         file = requests.get("https://raw.githubusercontent.com/ggml-org/llama.cpp/master/examples/llava/qwen2_vl_surgery.py").text
         with open("surgery.py", "w") as f: f.write(file)
-        perform_surgery = f"python qwen2_vl_surgery.py {new_save_directory}"
+        perform_surgery = f"python surgery.py {new_save_directory}"
         try_execute([perform_surgery], force_complete=True)
         os.remove("surgery.py")
     # Use old chat template if the bos is removed
