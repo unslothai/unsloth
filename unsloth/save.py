@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from PIL import Image
+import requests
 from unsloth_zoo.utils import Version
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
@@ -1554,9 +1555,9 @@ def fix_tokenizer_bos_token(tokenizer):
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
     try:
-        tokenized_output = tokenizer("A")
-    except:
         tokenized_output = tokenizer(images = [Image.new('RGB', (224, 224), color=(0, 0, 0))], text="A")
+    except:
+        tokenized_output = tokenizer("A")
 
     if tokenized_output.input_ids[0] == getattr(tokenizer, "bos_token_id", None):
         if chat_template is not None and \
@@ -1735,8 +1736,12 @@ def unsloth_save_pretrained_gguf(
         pass
     pass
     if(check_for_qwen2_vl(self)):
+        print("Downloading surgery file...")
+        file = requests.get("https://raw.githubusercontent.com/ggml-org/llama.cpp/master/examples/llava/qwen2_vl_surgery.py").text
+        with open("surgery.py", "w") as f: f.write(file)
         perform_surgery = f"python qwen2_vl_surgery.py {new_save_directory}"
         try_execute([perform_surgery], force_complete=True)
+        os.remove("surgery.py")
     # Use old chat template if the bos is removed
     if fix_bos_token:
         tokenizer.chat_template = old_chat_template
@@ -1924,8 +1929,12 @@ def unsloth_push_to_hub_gguf(
         pass
     pass
     if(check_for_qwen2_vl(self)):
+        print("Downloading surgery file...")
+        file = requests.get("https://raw.githubusercontent.com/ggml-org/llama.cpp/master/examples/llava/qwen2_vl_surgery.py").text
+        with open("surgery.py", "w") as f: f.write(file)
         perform_surgery = f"python qwen2_vl_surgery.py {new_save_directory}"
         try_execute([perform_surgery], force_complete=True)
+        os.remove("surgery.py")
     # Use old chat template if the bos is removed
     if fix_bos_token:
         tokenizer.chat_template = old_chat_template
