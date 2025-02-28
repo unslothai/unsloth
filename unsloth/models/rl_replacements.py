@@ -40,7 +40,7 @@ torch_compile_options = {
 }
 
 # Check untrained tokens
-def sft_trainer_fix_untraiend_tokens(call_args, extra_args):
+def sft_trainer_fix_untrained_tokens(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_tokenizer = \
         "IGNORED_TOKENIZER_NAMES = os.environ.get('UNSLOTH_IGNORED_TOKENIZER_NAMES', '').split('\\n')\n"\
@@ -52,7 +52,7 @@ def sft_trainer_fix_untraiend_tokens(call_args, extra_args):
         return fix_tokenizer
     return ""
 pass
-RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untraiend_tokens)
+RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
 
 
 # Remove DPO columns which might randomnly be tokenized
@@ -93,7 +93,7 @@ def sft_trainer_prepare_dataset(function_name, function):
     "    tokenizer = partial(tokenizer, add_special_tokens = False)\n"\
     "    processing_class = tokenizer\n"\
     "else:\n"\
-    "    add_special_tokens = False if has_bos_token_already else add_special_tokens\n"
+    "    add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
 
     check_text = check_text.split("\n")
     check_text = "\n".join(" "*8 + x for x in check_text)
@@ -101,7 +101,7 @@ def sft_trainer_prepare_dataset(function_name, function):
 
     # .*? matches first match. .+? matches final match.
     replacer = re.findall(
-        r"def {function_name}\(.*?\).*?\:\n",
+        r"def " + function_name + r"\(.*?\).*?\:\n",
         function,
         flags = re.MULTILINE | re.DOTALL,
     )
@@ -165,9 +165,10 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 def grpo_trainer__move_model_to_vllm(function_name, function):
     if  function_name != "_move_model_to_vllm": return function
 
-    # .*? matches first match. .+? matches final match.
-    replacement = "def _move_model_to_vllm(self, *args, **kwargs): return None\n"
-    return " "*function.find("def") + replacement
+    def _move_model_to_vllm(self, *args, **kwargs): return None
+
+    function = inspect.getsource(_move_model_to_vllm)
+    return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 
@@ -177,6 +178,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
+        return None # Unsloth efficient GRPO
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
@@ -198,8 +200,12 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
-grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
+grpo_compute_loss     = RL_REPLACEMENTS["grpo_compute_loss"]
+UnslothEfficientGRPO  = RL_REPLACEMENTS["UnslothEfficientGRPO"]
+grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer_compute_loss(function_name, function):
@@ -213,10 +219,12 @@ def grpo_trainer_compute_loss(function_name, function):
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        bsz, qlen = input_ids.shape
         # attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         attention_mask = None
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-
+        _input_ids = input_ids
+        _logits_to_keep = logits_to_keep
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
 
         # Compute the KL divergence between the model and the reference model
@@ -229,16 +237,29 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         input_ids = input_ids[:, -logits_to_keep:]
-        loss, completion_length, mean_kl = grpo_compute_loss(
-            ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
-        )
+        if False:#per_token_logps is not None:
+            loss, completion_length, mean_kl = grpo_compute_loss(
+                ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
+            )
+        else:
+            loss, completion_length, mean_kl = grpo_accumulated_loss(
+                self, _input_ids, logits_to_keep, completion_mask, advantages,
+                n_chunks = self.args.unsloth_num_chunks,
+            )
+
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
-        self._metrics["completion_length"].append(completion_length.item())
 
         # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
-        self._metrics["kl"].append(mean_kl.item())
+
+        if "train" in self._metrics:
+            mode = "eval" if self.control.should_evaluate else "train"
+            self._metrics[mode]["completion_length"].append(completion_length.item())
+            self._metrics[mode]["kl"].append(mean_kl.item())
+        else:
+            self._metrics["completion_length"].append(completion_length.item())
+            self._metrics["kl"].append(mean_kl.item())
         return loss
     pass
 
@@ -256,7 +277,7 @@ def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
     check_batch_size = \
     "div = per_device_train_batch_size // num_generations\n"\
     "if div * num_generations != per_device_train_batch_size:\n"\
-    "    print('Unsloth: We know expect `per_device_train_batch_size` to be a multiple of `num_generations`.\\n"\
+    "    print('Unsloth: We now expect `per_device_train_batch_size` to be a multiple of `num_generations`.\\n"\
                "We will change the batch size of ' + str(per_device_train_batch_size) + ' to the `num_generations` of ' + str(num_generations))\n"\
     "    per_device_train_batch_size = num_generations\n"
     return check_batch_size

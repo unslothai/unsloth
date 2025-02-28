@@ -14,6 +14,7 @@
 
 __all__ = [
     "PatchFastRL",
+    "vLLMSamplingParams",
 ]
 
 import torch
@@ -36,11 +37,19 @@ selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
-    "max_autotune"      : True,
+    "max_autotune"      : False, # Disable Triton mm kernels
     "shape_padding"     : True,
     "trace.enabled"     : False,
     "triton.cudagraphs" : False,
 }
+
+
+def vLLMSamplingParams(**kwargs):
+    from vllm import SamplingParams
+    sampling_params = SamplingParams(**kwargs)
+    sampling_params._set_kwargs = kwargs
+    return sampling_params
+pass
 
 def PatchRL(FastLanguageModel):
 
@@ -94,11 +103,12 @@ from typing import *
 from dataclasses import dataclass, field
 from packaging.version import Version
 import torch
+import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
 torch_compile_options = {{
     "epilogue_fusion"   : True,
-    "max_autotune"      : True,
+    "max_autotune"      : False,
     "shape_padding"     : True,
     "trace.enabled"     : False,
     "triton.cudagraphs" : False,
@@ -112,10 +122,11 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     """
     {__RLConfig_doc__}
     """
-    sampling_params: Optional[Any] = field(
+    vllm_sampling_params: Optional[Any] = field(
         default = None,
         metadata = {{'help': 'vLLM SamplingParams'}},
     )
+
     max_image_size: Optional[Tuple[int, int]] = field(
          default = None,
          metadata = {{'help': 'Maximum image size (width, height) for resizing images.'}},
@@ -123,11 +134,20 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
     def __init__({RLConfig_arguments},
         max_image_size = None,
         sampling_params = None,
+    unsloth_num_chunks : Optional[int] = field(
+        default = -1,
+        metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
+    )
+    def __init__({RLConfig_arguments},
+        vllm_sampling_params = None,
+        unsloth_num_chunks = -1,
         **kwargs,
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.max_image_size = max_image_size
+        self.vllm_sampling_params = vllm_sampling_params
+        self.unsloth_num_chunks = unsloth_num_chunks
 pass
 
 {RLTrainer_extras}
@@ -430,7 +450,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Create full module
     exec(f"from trl.trainer import ({RLTrainer_name}, {RLConfig_name},)")
     __RLTrainer_doc__ = eval(f"trl.trainer.{RLTrainer_name}").__doc__
+    if __RLTrainer_doc__ is None: __RLTrainer_doc__ = ""
     __RLConfig_doc__  = eval(f"trl.trainer.{RLConfig_name}") .__doc__
+    if __RLConfig_doc__ is None: __RLConfig_doc__ = ""
 
     # Get all pre-modules
     if trainer_file in RL_PRE_ITEMS:
@@ -439,6 +461,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RL_pre = ""
     pass
 
+    # Check if SamplingParams is in there
+    if "SamplingParams" in old_RLTrainer_source:
+        RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
+    pass
+    
     # Selective log softmax
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
 
@@ -512,6 +539,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         resize_logic = resize_logic
     )
 
+    # Remove multiple doc strings
+    if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
+        RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
+    pass
+
+    # Remove multiple newlines
+    RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
+
     # Create new function
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
@@ -556,7 +591,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             replacer = replacer[0]
             vllm_setter = "\n" + " "*8 + \
             "if hasattr(model, 'vllm_engine') and "\
-            "getattr(args, 'use_vllm') and getattr(args, 'use_vllm', False): "\
+            "hasattr(args, 'use_vllm') and (getattr(args, 'use_vllm', False) == False): "\
             "args.use_vllm = True\n"
             init = init.replace(replacer, replacer + vllm_setter)
         pass
@@ -584,14 +619,31 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         )
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
+
+            # Fix guided_decoding
+            sampling_params = sampling_params.replace(
+                "guided_decoding=guided_decoding,",
+                'guided_decoding='\
+                'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '\
+                'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None,',
+            )
             # Replace with our vLLM engine
             sampling_params = \
                 " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
                 sampling_params # Add spaces
+
+            # Add extra arguments to SamplingParams
+            extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
+            # Backwards replace
+            to_replace = "," + extra + "," + ")"
+            sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
+            # Strip multiple commas
+            sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
+
             new_vllm_part = \
-                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params} "\
-                f"if getattr(args, 'sampling_params', None) is None else "\
-                f"getattr(args, 'sampling_params', None)\n{' '*8}else:\n"
+                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
+                f"\n{' '*8}else:\n"
+
             init = init.replace(vllm_part, new_vllm_part)
         pass
     pass
@@ -662,6 +714,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         old, new = changed[function]
         RLTrainer_source = RLTrainer_source.replace(old, new)
     pass
+
     RLTrainer_source = RLTrainer_source.replace(
         f"class {RLTrainer_name}", f"class _Unsloth{RLTrainer_name}", 1
     )
