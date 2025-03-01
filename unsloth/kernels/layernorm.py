@@ -49,6 +49,7 @@ def layernorm_forward(
     b_row = tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     mean_X  = tl.sum(X_row,   axis = 0) / n_cols
+    # (X[0] - mean) == -mean so we need to mask it out
     XX = tl.where(mask, X_row - mean_X, 0)
     row_var = tl.sum(XX * XX, axis = 0) / n_cols
     inv_var = tl.math.rsqrt(row_var + eps)
