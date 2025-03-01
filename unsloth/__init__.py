@@ -46,25 +46,6 @@ pass
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
-if "CUDA_VISIBLE_DEVICES" in os.environ:
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    devices = os.environ["CUDA_VISIBLE_DEVICES"]
-    # Check if there are multiple cuda devices set in env
-    if not devices.isdigit():
-        first_id = devices.split(",")[0]
-        warnings.warn(
-            f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {devices} \n"\
-            "Unsloth currently does not support multi GPU setups - but we are working on it!\n"\
-            "Multiple CUDA devices detected but we require a single device.\n"\
-            f"We will override CUDA_VISIBLE_DEVICES to first device: {first_id}."
-        )
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(first_id)
-else:
-    # warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-pass
-
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
