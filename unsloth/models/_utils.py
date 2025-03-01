@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.2.15"
+__version__ = "2025.3.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -25,7 +25,6 @@ __all__ = [
     "__version__",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
-    "PRE_CHECK",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
@@ -37,7 +36,6 @@ __all__ = [
     "torch_compile_options",
     "patch_linear_scaling",
     "patch_llama_rope_scaling",
-    "check_nvidia",
     "create_boolean_mask",
     "torch_amp_custom_fwd",
     "torch_amp_custom_bwd",
@@ -589,7 +587,7 @@ if Version(peft_version) < Version("0.12.0"):
         spaces = len(re.match(r"[\s]{1,}", source).group(0))
         lines = source.split("\n")
         source = "\n".join(x[spaces:] for x in lines)
-        source = re.sub("([^\.])nn\.", r"\1torch.nn.", source)
+        source = re.sub(r"([^\.])nn\.", r"\1torch.nn.", source)
         source = source.replace("def update_layer", "def LoraLayer_update_layer")
         exec(source, globals())
 
@@ -703,9 +701,7 @@ pass
 # =============================================
 # Fixes Bitsandbytes to remove missing warnings
 from transformers.utils.quantization_config import BitsAndBytesConfig, QuantizationMethod
-from inspect import getsource
-from accelerate.utils.dataclasses import DistributedType
-BitsAndBytesConfig__init__ = getsource(BitsAndBytesConfig.__init__)
+BitsAndBytesConfig__init__ = inspect.getsource(BitsAndBytesConfig.__init__)
 BitsAndBytesConfig__init__ = re.sub(
     r"if[\s]{1,}kwargs\:[\s]{1,}.+?\n",
     "",
@@ -719,27 +715,29 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
     "__init__",
     "_BitsAndBytesConfig__init__",
 )
-
-def _prepare_backend(
-    self, cpu = False, sagemaker_dp = False, backend: str = None,
-) -> tuple[str, DistributedType]:
-    return None, DistributedType.NO
-pass
-import accelerate.state
-accelerate.state.PartialState._prepare_backend = _prepare_backend
-
-import accelerate.accelerator
-prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
-prepare = prepare.split("\n")
-spaces = prepare[0].find("def")
-prepare = "\n".join(x[spaces:] for x in prepare)
-x = "for obj in args:"
-s = " "*spaces
-prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
-exec(prepare, globals())
-accelerate.accelerator.Accelerator.prepare = prepare
-
 exec(BitsAndBytesConfig__init__, globals())
+
+if torch.cuda.device_count() == 1:
+    from accelerate.utils.dataclasses import DistributedType
+    def _prepare_backend(
+        self, cpu = False, sagemaker_dp = False, backend: str = None,
+    ) -> tuple[str, DistributedType]:
+        return None, DistributedType.NO
+    pass
+    import accelerate.state
+    accelerate.state.PartialState._prepare_backend = _prepare_backend
+
+    import accelerate.accelerator
+    prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
+    prepare = prepare.split("\n")
+    spaces = prepare[0].find("def")
+    prepare = "\n".join(x[spaces:] for x in prepare)
+    x = "for obj in args:"
+    s = " "*spaces
+    prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
+    exec(prepare, globals())
+    accelerate.accelerator.Accelerator.prepare = prepare
+pass
 
 import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
@@ -852,7 +850,7 @@ def patch_linear_scaling(
         scaled_rope_function = scaled_rope_module.__name__,
     )
     rotary_emb = re.findall(
-        "self.rotary_emb = .+?\)", function,
+        r"self\.rotary\_emb \= .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
     if len(rotary_emb) == 0:
@@ -952,7 +950,7 @@ def patch_llama_rope_scaling(
             (longrope_module if longrope_module is not None else rope_module).__name__
     )
     rotary_emb = re.findall(
-        "self.rotary_emb = .+?\)", function,
+        r"self\.rotary\_emb \= .+?\)", function,
         flags = re.DOTALL | re.MULTILINE,
     )
     if len(rotary_emb) == 0: return None, function
@@ -961,21 +959,6 @@ def patch_llama_rope_scaling(
     function = exec_code + "\n\n" + function
     return init_name, function
 pass
-
-
-def check_nvidia():
-    # Unsloth doesn't work yet on AMD devices - we're working on it!
-    output = np.array([0,])
-    try:
-        output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
-        output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
-        output = np.array([int(x.decode('utf-8'))/1024 for x in output])
-    except:
-        if not torch.cuda.is_available():
-            raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")    
-    return output
-pass
-PRE_CHECK = check_nvidia()
 
 
 def create_boolean_mask(n = 4096, sliding_window = 2048):
@@ -1122,8 +1105,6 @@ def patch_gradient_accumulation_fix(Trainer):
     items_in_trainer = dir(transformers.trainer)
     good_items = []
     for item in items_in_trainer:
-        # TODO: Support Deepspeed
-        if item.startswith(("deepspeed", "xm", "met", "smp")): continue
         if item in function: good_items.append(item)
     pass
     exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
