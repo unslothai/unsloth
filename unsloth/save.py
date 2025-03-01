@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from PIL import Image
+import requests
 from unsloth_zoo.utils import Version
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
@@ -52,7 +54,6 @@ __all__ = [
 
 # llama.cpp specific targets - all takes 90s. Below takes 60s
 LLAMA_CPP_TARGETS = ["llama-quantize", "llama-export-lora", "llama-cli",]
-
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT  = "\nCOLAB_"  in keynames
@@ -101,6 +102,17 @@ ALLOWED_QUANTS = \
     # "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
 }
+
+def check_for_qwen2_vl(model):
+    try:
+        if("Qwen2" in str(type(model)) and ("VL" in str(type(model)) or "Vision" in str(type(model)))):
+            return True
+        elif("Qwen2" in str(type(model.base_model.model)) and ("VL" in str(type(model.base_model.model)) or "Vision" in str(type(model.base_model.model)))):
+            return True
+        return False
+    except:
+        return False
+pass
 
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
@@ -1535,13 +1547,19 @@ def upload_to_huggingface(
     return username
 pass
 
-
 def fix_tokenizer_bos_token(tokenizer):
-    # Check if BOS added already, then warn
+    """
+    Fix tokenizer BOS token and handle image input.
+    Returns: (bool, str) - (whether BOS token needs fixing, original chat template)
+    """
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
+    try:
+        tokenized_output = tokenizer(images = [Image.new('RGB', (224, 224), color=(0, 0, 0))], text="A")
+    except:
+        tokenized_output = tokenizer("A")
 
-    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+    if tokenized_output.input_ids[0] == getattr(tokenizer, "bos_token_id", None):
         if chat_template is not None and \
             (
                 tokenizer.bos_token in chat_template or \
@@ -1551,13 +1569,13 @@ def fix_tokenizer_bos_token(tokenizer):
 
             fix_bos_token = True
             logger.warning(
-                "Unsloth: ##### The current model auto adds a BOS token.\n"\
+                "Unsloth: ##### The current model auto adds a BOS token.\n"
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
 
-            # Remove {{bos_token}}
-            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template)
-            # Remove {{bos_token +
+            # Remove BOS token patterns
+            new_chat_template = chat_template
+            new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", new_chat_template)
             new_chat_template = re.sub(r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\+[\s]{0,}", "", new_chat_template)
 
             tokenizer.chat_template = new_chat_template
@@ -1667,7 +1685,6 @@ def unsloth_save_pretrained_gguf(
     """
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
-
     arguments = dict(locals())
     arguments["model"]        = self
     arguments["tokenizer"]    = tokenizer
@@ -1676,13 +1693,10 @@ def unsloth_save_pretrained_gguf(
     del arguments["self"]
     del arguments["quantization_method"]
     del arguments["first_conversion"]
-
     # Fix tokenizer adding an extra BOS token at the front
     fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
-
     # Non blocking install GGUF first
     if not os.path.exists("llama.cpp"):
-
         if IS_KAGGLE_ENVIRONMENT:
             # Kaggle is weird - no blocking installs, and no CUDA?
             python_install = install_python_non_blocking(["gguf", "protobuf"])
@@ -1721,7 +1735,13 @@ def unsloth_save_pretrained_gguf(
             pass
         pass
     pass
-
+    if(check_for_qwen2_vl(self)):
+        print("Downloading surgery file...")
+        file = requests.get("https://raw.githubusercontent.com/ggml-org/llama.cpp/master/examples/llava/qwen2_vl_surgery.py").text
+        with open("surgery.py", "w") as f: f.write(file)
+        perform_surgery = f"python surgery.py {new_save_directory}"
+        try_execute([perform_surgery], force_complete=True)
+        os.remove("surgery.py")
     # Use old chat template if the bos is removed
     if fix_bos_token:
         tokenizer.chat_template = old_chat_template
@@ -1741,14 +1761,23 @@ def unsloth_save_pretrained_gguf(
     else:
         raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
     pass
-
-    is_sentencepiece_model = check_if_sentencepiece_model(self)
+    if(check_for_qwen2_vl(self)):
+        is_sentencepiece_model = False
+    else:
+        is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
     all_file_locations, want_full_precision = save_to_gguf(
         model_type, model_dtype, is_sentencepiece_model,
         new_save_directory, quantization_method, first_conversion, makefile,
     )
+
+    if(check_for_qwen2_vl(self)):
+        print("\nTo run this model you will need to download mmproject file from these links: \n\
+            for 2B-Model: https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF \n\
+            for 7B-Model: https://huggingface.co/second-state/Qwen2-VL-7B-Instruct-GGUF \n\
+            and for inferencing the model use the following code:\n\
+            ./bin/llama-qwen2vl-cli  -m models/qwen2_vl_model.gguf --mmproj qwen2-vl-mmproj-file.gguf -p 'user prompt' --image 'data/path-to/image.jpg' -ngl 33 -n 512")
 
     # Save Ollama modelfile
     modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
@@ -1899,7 +1928,13 @@ def unsloth_push_to_hub_gguf(
             pass
         pass
     pass
-
+    if(check_for_qwen2_vl(self)):
+        print("Downloading surgery file...")
+        file = requests.get("https://raw.githubusercontent.com/ggml-org/llama.cpp/master/examples/llava/qwen2_vl_surgery.py").text
+        with open("surgery.py", "w") as f: f.write(file)
+        perform_surgery = f"python surgery.py {new_save_directory}"
+        try_execute([perform_surgery], force_complete=True)
+        os.remove("surgery.py")
     # Use old chat template if the bos is removed
     if fix_bos_token:
         tokenizer.chat_template = old_chat_template
@@ -1920,7 +1955,10 @@ def unsloth_push_to_hub_gguf(
         raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
     pass
 
-    is_sentencepiece_model = check_if_sentencepiece_model(self)
+    if(check_for_qwen2_vl(self)):
+        is_sentencepiece_model = False
+    else:
+        is_sentencepiece_model = check_if_sentencepiece_model(self)
 
     # Save to GGUF
     all_file_locations, want_full_precision = save_to_gguf(
@@ -1970,6 +2008,12 @@ def unsloth_push_to_hub_gguf(
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
+    if(check_for_qwen2_vl(self)):
+        print("\nTo run this model you will need to download mmproject file from these links: \n\
+            for 2B-Model: https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF \n\
+            for 7B-Model: https://huggingface.co/second-state/Qwen2-VL-7B-Instruct-GGUF \n\
+            and for inferencing the model use the following code:\n\
+            ./bin/llama-qwen2vl-cli  -m models/qwen2_vl_model.gguf --mmproj qwen2-vl-mmproj-file.gguf -p 'user prompt' --image 'data/path-to/image.jpg' -ngl 33 -n 512")
 pass
 
 # Corrected function to save LoRA to a custom directory
@@ -2352,11 +2396,15 @@ def patch_saving_functions(model, vision = False):
             model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
         pass
     else:
-        # Vision only 1 option
         model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,     model)
         model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged, model)
-        model.push_to_hub_gguf       = types.MethodType(not_implemented_save,                   model)
-        model.save_pretrained_gguf   = types.MethodType(not_implemented_save,                   model)
+
+        if(check_for_qwen2_vl(model)):
+            model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,               model)
+            model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,           model)
+        else:
+            model.push_to_hub_gguf       = types.MethodType(not_implemented_save,                   model)
+            model.save_pretrained_gguf   = types.MethodType(not_implemented_save,                   model)
     pass
     return model
 pass
