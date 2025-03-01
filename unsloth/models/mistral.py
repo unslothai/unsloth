@@ -235,6 +235,14 @@ def MistralForCausalLM_fast_forward(
 
     hidden_states = outputs[0]
 
+    bsz, q_len, hd = hidden_states.shape
+    lm_head = self.lm_head.weight
+    lm_head_device = lm_head.device
+    
+    # Move items to same device as lm_head
+    hidden_states = hidden_states.to(lm_head_device)
+    if labels is not None: labels = labels.to(lm_head_device)
+
     # If we are in GRPO mode, return raw hidden states
     if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
         num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
@@ -249,8 +257,6 @@ def MistralForCausalLM_fast_forward(
         )
     pass
 
-    bsz, q_len, hd = hidden_states.shape
-    lm_head = self.lm_head.weight
     if bsz == 1 and q_len == 1:
         logits = torch.mv(lm_head, hidden_states.ravel().to(lm_head.dtype))
         logits = logits.unsqueeze(0).unsqueeze(0)
@@ -292,12 +298,14 @@ def MistralForCausalLM_fast_forward(
     loss = None
     if labels is not None:
         shift_logits = logits
-        if not hasattr(self, "extra_ignored_labels"):
-            # Fixes https://github.com/unslothai/unsloth/issues/10
-            self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
-        pass
-
-        shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+        # if not hasattr(self, "extra_ignored_labels"):
+        #     # Fixes https://github.com/unslothai/unsloth/issues/10
+        #     self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
+        # pass
+        # shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+        shift_labels = torch.empty_like(labels)
+        shift_labels[..., :-1] = labels[..., 1:]
+        shift_labels[..., -1] = -100
         loss = fast_cross_entropy_loss(
             logits  = shift_logits,
             labels  = shift_labels,
