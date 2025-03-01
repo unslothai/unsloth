@@ -1880,10 +1880,7 @@ class FastLlamaModel:
         except:
             raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
         pass
-
-        if ((post_check - pre_check) >= 1).sum() > 1:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
-
+        
         import transformers.trainer
         items_in_trainer = dir(transformers.trainer)
         good_items = []
