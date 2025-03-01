@@ -465,7 +465,8 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     if A is not None:
         # LoRA is enabled
         A, B = A.t(), B.t()
-        out = torch_addmm(X @ A.to(dtype), B.to(dtype), alpha = s, beta = 1.0, out = out)
+        XA = torch_matmul(X, A.to(dtype))
+        out.addmm_(XA, B.to(dtype), alpha = s)
         # out += (X @ A.to(dtype)) @ (s * B.to(dtype))
     pass
     
