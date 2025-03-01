@@ -25,7 +25,6 @@ __all__ = [
     "__version__",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
-    "PRE_CHECK",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
