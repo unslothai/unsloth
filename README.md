@@ -169,6 +169,8 @@ print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://git
 ```
 
 ## Windows Installation
+> [!warning]
+> Python 3.13 does not support Unsloth. Use 3.12, 3.11 or 3.10
 ### Step 1: NVIDIA Video Driver
 
 You should install the latest version of your GPUs driver. You can download drivers here:
