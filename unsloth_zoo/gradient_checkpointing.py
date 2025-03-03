@@ -481,6 +481,8 @@ class UnslothCheckpointFunction(torch.autograd.Function):
             global EXTRA_STREAM
             buffer = GPU_BUFFER[:new_size].view(shape)
             x = CPU_BUFFERS[CPU_INDEX][:new_size].view(shape)
+            if buffer.device != torch.cuda.current_device():
+                print("#########", buffer.device, torch.cuda.current_device())
 
             # See https://pytorch.org/docs/stable/notes/cuda.html#cuda-streams
             EXTRA_STREAM.wait_stream(MAIN_STREAM)
