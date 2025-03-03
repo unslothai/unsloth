@@ -15,7 +15,11 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, triton_tanh
+from .utils import (
+    calculate_settings,
+    triton_tanh,
+    torch_cuda_device,
+)
 
 
 @triton.jit
@@ -43,7 +47,8 @@ def geglu_exact_forward_kernel(gate, up):
     n_elements = gate.numel()
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = "cuda:0")
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    _exact_forward_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE = 1024,)
+    with torch_cuda_device(gate.device):
+        _exact_forward_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE = 1024,)
     return out
 pass
 
@@ -99,7 +104,8 @@ def geglu_exact_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    _exact_backward_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
+    with torch_cuda_device(e.device):
+        _exact_backward_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
     return DW, e, g
 pass
 
@@ -135,7 +141,8 @@ def geglu_approx_forward_kernel(gate, up):
     n_elements = gate.numel()
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = "cuda:0")
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    _approx_forward_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE = 1024,)
+    with torch_cuda_device(gate.device):
+        _approx_forward_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE = 1024,)
     return out
 pass
 
@@ -198,6 +205,7 @@ def geglu_approx_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    _approx_backward_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
+    with torch_cuda_device(e.device):
+        _approx_backward_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
     return DW, e, g
 pass

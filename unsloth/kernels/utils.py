@@ -27,6 +27,7 @@ else:
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 pass
+torch_cuda_device = torch.cuda.device
 
 
 # tl.math.tanh now is libdevice.tanh
