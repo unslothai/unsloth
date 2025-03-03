@@ -48,7 +48,8 @@ pass
 
 
 def is_main_process():
-    return torch.dist.is_initialized() and torch.dist.get_rank() == 0
+    is_distributed = torch.dist.is_initialized()
+    return (not is_distributed) or (is_distributed and torch.dist.get_rank() == 0)
 pass
 
 
