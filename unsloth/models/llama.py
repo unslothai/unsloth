@@ -18,6 +18,7 @@ import math
 from functools import partial
 from typing import Optional, Tuple, List, Union
 from ._utils import *
+from ._utils import patch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
@@ -850,27 +851,14 @@ def LlamaModel_fast_forward(
                 mask = self. GA_mask if use_static_mask else dynamic_GA_mask
         pass
 
-        if offloaded_gradient_checkpointing:
-            hidden_states = Unsloth_Offloaded_Gradient_Checkpointer.apply(
-                decoder_layer,
-                hidden_states,
-                mask,
-                attention_mask,
-                position_ids,
-                past_key_values,
-                output_attentions,
-                use_cache,
-                None,
-                position_embeddings,
-            )[0]
-
-        elif gradient_checkpointing:
+        if gradient_checkpointing:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
                 return custom_forward
             pass
 
+            print(torch.utils.checkpoint.checkpoint)
             layer_outputs = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(decoder_layer),
                 hidden_states,
@@ -2033,6 +2021,9 @@ class FastLlamaModel:
         **kwargs,
     ):
         transformers_set_seed(random_state)
+
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing(dtype = model.get_input_embeddings().weight.dtype)
 
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
