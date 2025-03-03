@@ -590,6 +590,7 @@ from torch.utils.checkpoint import (
     ContextManager,
     _DEFAULT_DETERMINISM_MODE,
     _checkpoint_without_reentrant_generator,
+    noop_context_fn,
 )
 @torch._disable_dynamo
 def unsloth_checkpoint(
@@ -759,7 +760,7 @@ def patch_unsloth_smart_gradient_checkpointing(dtype = None):
         initialize_unsloth_gradient_checkpointing(dtype)
         torch.utils.checkpoint._old_CheckpointFunction = torch.utils.checkpoint.CheckpointFunction
         torch.utils.checkpoint.CheckpointFunction = UnslothCheckpointFunction
-    
+
     if torch.utils.checkpoint.checkpoint.__name__ != "unsloth_checkpoint":
         torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint
         torch.utils.checkpoint.checkpoint = unsloth_checkpoint
