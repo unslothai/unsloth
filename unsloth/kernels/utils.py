@@ -460,8 +460,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     else:
         reshape = False
     pass
-
-    print(X.device, W.device, torch.cuda.current_device())
+    
     out = torch_matmul(X, W, out = out)
     if W_quant is not None: del W
 
