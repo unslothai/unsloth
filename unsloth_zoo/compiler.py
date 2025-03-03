@@ -266,7 +266,7 @@ def create_new_function(
             sys.modules[module_name] = new_module
             spec.loader.exec_module(new_module)
 
-            time.sleep(0.2 + trial)
+            time.sleep(0.01 + trial*0.01)
             continue
         pass
     pass
