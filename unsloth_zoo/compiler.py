@@ -33,7 +33,7 @@ import types
 import time
 import logging
 import sys
-from .utils import Version
+from .utils import Version, is_main_process
 import triton
 from .peft_utils import get_lora_layer_modules
 
@@ -238,25 +238,34 @@ def create_new_function(
     # new_source = new_source.replace("super()", "super(type(self), self)")
 
     # Check location
-    if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
-        os.makedirs(UNSLOTH_COMPILE_LOCATION)
+    if is_main_process():
+        if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
+            os.makedirs(UNSLOTH_COMPILE_LOCATION)
 
-    # Write function
-    location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
-    function_location = location
-    if overwrite or not os.path.isfile(function_location):
-        with open(function_location, "wb", buffering = 0) as file:
-            file.write(new_source.encode("utf-8"))
-            file.flush()
-            os.fsync(file.fileno())
+        # Write function
+        location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
+        function_location = location
+        if overwrite or not os.path.isfile(function_location):
+            with open(function_location, "wb", buffering = 0) as file:
+                file.write(new_source.encode("utf-8"))
+                file.flush()
+                os.fsync(file.fileno())
+            pass
         pass
+    else:
+        # Wait until file is created
+        location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
+        function_location = location
+        if overwrite or not os.path.isfile(function_location):
+            while not os.path.isfile(function_location): continue
     pass
 
     # Try loading new module
     new_module = None
-    for trial in range(3):
+    while True:
         try:
             new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
+            break
         except:
             # Instead use sys modules for dynamic loading
             module_name = f"unsloth_cache_{name}"
@@ -266,8 +275,7 @@ def create_new_function(
             sys.modules[module_name] = new_module
             spec.loader.exec_module(new_module)
 
-            time.sleep(0.01 + trial*0.01)
-            continue
+            time.sleep(0.01)
         pass
     pass
     if new_module is None:
