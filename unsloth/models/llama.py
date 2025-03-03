@@ -385,6 +385,7 @@ def LlamaAttention_fast_forward(
     head_dim   = self.head_dim
     assert(n_kv_heads * n_groups == n_heads)
 
+    print(hidden_states.device, torch.cuda.current_device())
     Q, K, V = self.apply_qkv(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads,    head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
