@@ -49,7 +49,8 @@ def layernorm_forward(
     b_row = tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     mean_X  = tl.sum(X_row,   axis = 0) / n_cols
-    XX      = X_row - mean_X
+    # (X[0] - mean) == -mean so we need to mask it out
+    XX = tl.where(mask, X_row - mean_X, 0)
     row_var = tl.sum(XX * XX, axis = 0) / n_cols
     inv_var = tl.math.rsqrt(row_var + eps)
     tl.store (r, inv_var)
@@ -105,10 +106,10 @@ class Fast_Layernorm(torch.autograd.Function):
         X = X.view(-1, dim)
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-
-        Y  = torch.empty((n_rows, n_cols), dtype = X.dtype, device = "cuda:0")
-        r  = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
-        mu = torch.empty(n_rows, dtype = torch.float32, device = "cuda:0")
+        device = X.device
+        Y  = torch.empty((n_rows, n_cols), dtype = X.dtype, device = device)
+        r  = torch.empty(n_rows, dtype = torch.float32, device = device)
+        mu = torch.empty(n_rows, dtype = torch.float32, device = device)
 
         layernorm_forward[(n_rows,)](
             Y, Y.stride(0),
