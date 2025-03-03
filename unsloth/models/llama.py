@@ -857,8 +857,7 @@ def LlamaModel_fast_forward(
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
                 return custom_forward
             pass
-
-            print(torch.utils.checkpoint.checkpoint)
+            
             layer_outputs = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(decoder_layer),
                 hidden_states,
