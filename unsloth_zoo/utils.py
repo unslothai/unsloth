@@ -17,6 +17,7 @@
 __all__ = [
     "Version",
     "_get_dtype",
+    "is_main_process",
 ]
 
 from packaging.version import Version as TrueVersion
@@ -44,6 +45,13 @@ def _get_dtype(dtype):
     if type(dtype) is torch.dtype: return dtype
     return None
 pass
+
+
+def is_main_process():
+    is_distributed = torch.distributed.is_initialized()
+    return (not is_distributed) or (is_distributed and torch.distributed.get_rank() == 0)
+pass
+
 
 # Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
