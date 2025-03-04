@@ -212,6 +212,7 @@ except:
 pass
 
 from .models import *
+from .models import __version__
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
