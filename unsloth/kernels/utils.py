@@ -473,7 +473,7 @@ pass
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
     dtype = X.dtype
     W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
-    
+
     if X.dim() == 3:
         batch, seq_len, d = X.shape
         X = X.view(-1, X.shape[-1])
