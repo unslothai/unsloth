@@ -28,7 +28,6 @@ else:
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 pass
-torch_cuda_device = torch.cuda.device
 
 
 # tl.math.tanh now is libdevice.tanh
@@ -70,10 +69,10 @@ HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
 get_ptr = bnb.functional.get_ptr
 
 if torch.cuda.device_count() > 1:
-    def _cuda_device_of(a: torch_Tensor): return torch.cuda.device_of(a)
+    torch_cuda_device = torch.cuda.device
 else:
     from contextlib import nullcontext
-    def _cuda_device_of(a: torch_Tensor): return nullcontext()
+    def torch_cuda_device(device): return nullcontext()
 pass
 _cuda_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
 c_void_p = ctypes.c_void_p
@@ -215,10 +214,10 @@ if HAS_CUDA_STREAM:
 
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
-        with _cuda_device_of(absmax):
+        with torch_cuda_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
-                ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), _get_tensor_stream(absmax),
+                ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), CUDA_STREAM
             )
             out_absmax += offset
 
@@ -226,7 +225,7 @@ if HAS_CUDA_STREAM:
             fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
                  cdequantize_blockwise_bf16_nf4
             fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
-               ctypes_c_int(blocksize), ctypes_c_int(out.numel()), _get_tensor_stream(absmax),)
+               ctypes_c_int(blocksize), ctypes_c_int(out.numel()), CUDA_STREAM,)
         pass
         # Careful returning transposed data
         is_transposed = (True if W.shape[0] == 1 else False)
