@@ -445,7 +445,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                             print("Unsloth: Will smartly offload gradients to save VRAM!")
                             USE_UNSLOTH_GC = False
                     else:
-                        ctx._saved_metadata = (None, None, None, None, None,)
+                        ctx._saved_metadata = (None, None, None, None, None, None,)
                         tensor_inputs.append(arg)
                     pass
                 else:
