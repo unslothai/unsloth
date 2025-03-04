@@ -230,7 +230,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
 
     # We instead check for repeated vectors
     lm_head_where = torch.where(indicator_untrained1)[0]
-    lm_head_bad = lm_head_matrix[lm_head_where]
+    lm_head_bad = lm_head_matrix[lm_head_where.to(lm_head_matrix.device)]
     lm_head_bad = lm_head_bad.cpu().float().numpy().round(3)
     from collections import Counter
     counter = Counter()
