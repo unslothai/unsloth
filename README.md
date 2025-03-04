@@ -232,10 +232,8 @@ print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://git
 
 ```python
 from unsloth import FastLanguageModel 
-from unsloth import is_bfloat16_supported
 import torch
-from trl import SFTTrainer
-from transformers import TrainingArguments
+from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
 max_seq_length = 2048 # Supports RoPE Scaling interally, so choose any!
 # Get LAION dataset
@@ -244,21 +242,28 @@ dataset = load_dataset("json", data_files = {"train" : url}, split = "train")
 
 # 4bit pre quantized models we support for 4x faster downloading + no OOMs.
 fourbit_models = [
-    "unsloth/mistral-7b-v0.3-bnb-4bit",      # New Mistral v3 2x faster!
+    "unsloth/Meta-Llama-3.1-8B-bnb-4bit",      # Llama-3.1 2x faster
+    "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
+    "unsloth/Meta-Llama-3.1-70B-bnb-4bit",
+    "unsloth/Meta-Llama-3.1-405B-bnb-4bit",    # 4bit for 405b!
+    "unsloth/Mistral-Small-Instruct-2409",     # Mistral 22b 2x faster!
     "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
-    "unsloth/llama-3-8b-bnb-4bit",           # Llama-3 15 trillion tokens model 2x faster!
-    "unsloth/llama-3-8b-Instruct-bnb-4bit",
-    "unsloth/llama-3-70b-bnb-4bit",
-    "unsloth/Phi-3-mini-4k-instruct",        # Phi-3 2x faster!
+    "unsloth/Phi-3.5-mini-instruct",           # Phi-3.5 2x faster!
     "unsloth/Phi-3-medium-4k-instruct",
-    "unsloth/mistral-7b-bnb-4bit",
-    "unsloth/gemma-7b-bnb-4bit",             # Gemma 2.2x faster!
+    "unsloth/gemma-2-9b-bnb-4bit",
+    "unsloth/gemma-2-27b-bnb-4bit",            # Gemma 2x faster!
+
+    "unsloth/Llama-3.2-1B-bnb-4bit",           # NEW! Llama 3.2 models
+    "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+    "unsloth/Llama-3.2-3B-bnb-4bit",
+    "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
+
+    "unsloth/Llama-3.3-70B-Instruct-bnb-4bit" # NEW! Llama 3.3 70B!
 ] # More models at https://huggingface.co/unsloth
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/llama-3-8b-bnb-4bit",
+    model_name = "unsloth/Llama-3.2-1B",
     max_seq_length = max_seq_length,
-    dtype = None,
     load_in_4bit = True,
 )
 
@@ -282,16 +287,14 @@ model = FastLanguageModel.get_peft_model(
 trainer = SFTTrainer(
     model = model,
     train_dataset = dataset,
-    dataset_text_field = "text",
-    max_seq_length = max_seq_length,
     tokenizer = tokenizer,
-    args = TrainingArguments(
+    args = SFTConfig(
+        dataset_text_field = "text",
+        max_seq_length = max_seq_length,
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
         warmup_steps = 10,
         max_steps = 60,
-        fp16 = not is_bfloat16_supported(),
-        bf16 = is_bfloat16_supported(),
         logging_steps = 1,
         output_dir = "outputs",
         optim = "adamw_8bit",
@@ -323,17 +326,14 @@ RL including DPO, GRPO, PPO, Reward Modelling, Online DPO all work with Unsloth.
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0" # Optional set GPU device ID
 
-from unsloth import FastLanguageModel, PatchDPOTrainer
-from unsloth import is_bfloat16_supported
-PatchDPOTrainer()
+from unsloth import FastLanguageModel
 import torch
-from transformers import TrainingArguments
-from trl import DPOTrainer
+from trl import DPOTrainer, DPOConfig
+max_seq_length = 2048
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/zephyr-sft-bnb-4bit",
     max_seq_length = max_seq_length,
-    dtype = None,
     load_in_4bit = True,
 )
 
@@ -355,24 +355,22 @@ model = FastLanguageModel.get_peft_model(
 dpo_trainer = DPOTrainer(
     model = model,
     ref_model = None,
-    args = TrainingArguments(
+    train_dataset = YOUR_DATASET_HERE,
+    # eval_dataset = YOUR_DATASET_HERE,
+    tokenizer = tokenizer,
+    args = DPOConfig(
         per_device_train_batch_size = 4,
         gradient_accumulation_steps = 8,
         warmup_ratio = 0.1,
         num_train_epochs = 3,
-        fp16 = not is_bfloat16_supported(),
-        bf16 = is_bfloat16_supported(),
         logging_steps = 1,
         optim = "adamw_8bit",
         seed = 42,
         output_dir = "outputs",
+        max_length = 1024,
+        max_prompt_length = 512,
+        beta = 0.1,
     ),
-    beta = 0.1,
-    train_dataset = YOUR_DATASET_HERE,
-    # eval_dataset = YOUR_DATASET_HERE,
-    tokenizer = tokenizer,
-    max_length = 1024,
-    max_prompt_length = 512,
 )
 dpo_trainer.train()
 ```
