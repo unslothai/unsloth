@@ -138,7 +138,7 @@ def get_lora_parameters_bias(proj):
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
-        return W, getattr(W, "quant_state", None), None, None, None, bias
+        return W, getattr(W, "quant_state", None), None, None, None, base_layer.bias
     pass
 
     adapter = getattr(proj, "active_adapters", None)
