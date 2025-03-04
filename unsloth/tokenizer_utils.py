@@ -1047,9 +1047,3 @@ pass
 
 # Finally patch TRL tokenizer things -> moved to RL
 # patch_sft_trainer_tokenizer()
-
-# Temporary measure to stop tokenizing data twice
-if hasattr(trl, "data_utils"):
-    def maybe_apply_chat_template(example, *args, **kwargs): return example
-    trl.data_utils.maybe_apply_chat_template = maybe_apply_chat_template
-pass
