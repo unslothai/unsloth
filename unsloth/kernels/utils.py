@@ -337,19 +337,21 @@ if HAS_CUDA_STREAM:
         ldc = ctypes_c_int32(ldc)
 
         df = torch.empty(absmax.shape, dtype = torch.float32, device = device)
-        cdequantize_blockwise_fp32(
-            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
-            ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), CUDA_STREAM,
-        )
-        df += offset
-        absmax = df
+        with torch_cuda_device(device):
+            cdequantize_blockwise_fp32(
+                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
+                ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), CUDA_STREAM,
+            )
+            df += offset
+            absmax = df
 
-        fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
-            cgemm_4bit_inference_naive_bf16
+            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
+                cgemm_4bit_inference_naive_bf16
 
-        blocksize = ctypes_c_int32(blocksize)
-        fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
-           lda, ldb, ldc, blocksize, CUDA_STREAM,)
+            blocksize = ctypes_c_int32(blocksize)
+            fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
+               lda, ldb, ldc, blocksize, CUDA_STREAM,)
+        pass
 
         return out
     pass
@@ -470,7 +472,7 @@ pass
 
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
     dtype = X.dtype
-    W = fast_dequantize(W.t(), W_quant, use_global_buffer = False)
+    W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
     
     if X.dim() == 3:
         batch, seq_len, d = X.shape
