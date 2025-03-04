@@ -1,18 +1,16 @@
-# Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import torch
 from transformers import (
@@ -98,9 +96,9 @@ class FastBaseVisionModel:
 
         statistics = \
            f"==((====))==  Unsloth {__version__}: Fast {model_types[0].title()} vision patching. Transformers: {transformers_version}.\n"\
-           f"   \\\   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
-           f"O^O/ \_/ \\    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
-           f"\        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
+           f"   {chr(92)}{chr(92)}   /|    GPU: {gpu_stats.name}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+           f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
+           f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free Apache license: http://github.com/unslothai/unsloth'
         print(statistics)
 
@@ -122,9 +120,6 @@ class FastBaseVisionModel:
             dtype = torch.float16
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
-
-        # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
-        pre_check = check_nvidia()
 
         bnb_config = None
         if load_in_4bit:
@@ -154,8 +149,6 @@ class FastBaseVisionModel:
         )
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
-        # We currently only support NVIDIA GPUs - AMD / Intel is a work in progress!
-        post_check = check_nvidia()
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
