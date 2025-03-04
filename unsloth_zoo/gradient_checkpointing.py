@@ -285,10 +285,10 @@ pass
 
 global CPU_BUFFERS
 global CPU_INDEX
-global GPU_BUFFER
+global GPU_BUFFERS
 global BACKWARD_PASS
-global EXTRA_STREAM
-global MAIN_STREAM
+global EXTRA_STREAMS
+global MAIN_STREAMS
 global MINIMUM_SIZE
 global USE_UNSLOTH_GC
 global LAST_GC_INDEX
@@ -302,10 +302,10 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
     # All Unsloth Zoo code licensed under LGPLv3
     global CPU_BUFFERS
     global CPU_INDEX
-    global GPU_BUFFER
+    global GPU_BUFFERS
     global BACKWARD_PASS
-    global EXTRA_STREAM
-    global MAIN_STREAM
+    global EXTRA_STREAMS
+    global MAIN_STREAMS
     global MINIMUM_SIZE
     global USE_UNSLOTH_GC
     global LAST_GC_INDEX
@@ -325,10 +325,13 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
         CPU_BUFFERS.append(x)
     pass
 
-    GPU_BUFFER = torch.empty(2*256*2048, dtype = dtype, device = "cuda")
+    # Allocate buffers to how many GPUs
+    n_gpus = torch.cuda.device_count()
+    GPU_BUFFERS = tuple([torch.empty(2*256*2048, dtype = dtype, device = f"cuda:{i}") for i in range(n_gpus)])
+
     BACKWARD_PASS = True
-    EXTRA_STREAM = torch.cuda.Stream()
-    MAIN_STREAM = torch.cuda.default_stream(torch.device("cuda"))
+    EXTRA_STREAMS = tuple([torch.cuda.Stream() for i in range(n_gpus)])
+    MAIN_STREAM = tuple([torch.cuda.default_stream(torch.device(f"cuda:{i}")) for i in range(n_gpus)])
 
     # Minimum size to enable Unsloth GC is 2MB -> 32 layers = 64MB
     n_bytes = torch.finfo(dtype).bits // 8
@@ -400,10 +403,15 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                     if new_size > MINIMUM_SIZE and CURRENT_GC_INDEX != LAST_GC_INDEX:
                         use_gpu_buffer = True
                         global CPU_BUFFERS
-                        global GPU_BUFFER
+                        global GPU_BUFFERS
                         global BACKWARD_PASS
-                        global EXTRA_STREAM
-                        global MAIN_STREAM
+                        global EXTRA_STREAMS
+                        global MAIN_STREAMS
+                        device = arg.device
+                        device_index = device.index
+                        GPU_BUFFER   = GPU_BUFFERS  [device_index]
+                        MAIN_STREAM  = MAIN_STREAMS [device_index]
+                        EXTRA_STREAM = EXTRA_STREAMS[device_index]
 
                         # Handle interrupted training runs
                         if BACKWARD_PASS:
@@ -428,7 +436,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                         with torch_cuda_stream(EXTRA_STREAM):
                             x.copy_(arg, non_blocking = True)
 
-                        ctx._saved_metadata = (new_size, shape, CPU_INDEX,)
+                        ctx._saved_metadata = (new_size, shape, CPU_INDEX, device_index, MAIN_STREAM, EXTRA_STREAM,)
                         CPU_INDEX += 1
                         tensor_inputs.append(None)
 
@@ -437,7 +445,7 @@ class UnslothCheckpointFunction(torch.autograd.Function):
                             print("Unsloth: Will smartly offload gradients to save VRAM!")
                             USE_UNSLOTH_GC = False
                     else:
-                        ctx._saved_metadata = (None, None, None,)
+                        ctx._saved_metadata = (None, None, None, None, None,)
                         tensor_inputs.append(arg)
                     pass
                 else:
@@ -477,12 +485,10 @@ class UnslothCheckpointFunction(torch.autograd.Function):
         tensor_indices = ctx.tensor_indices
         tensors = ctx.saved_tensors
 
-        new_size, shape, CPU_INDEX = ctx._saved_metadata
+        new_size, shape, CPU_INDEX, device_index, MAIN_STREAM, EXTRA_STREAM = ctx._saved_metadata
         if CPU_INDEX is not None:
             global GPU_BUFFER
-            global MAIN_STREAM
-            global EXTRA_STREAM
-            buffer = GPU_BUFFER[:new_size].view(shape)
+            buffer = GPU_BUFFERS[device_index][:new_size].view(shape)
             x = CPU_BUFFERS[CPU_INDEX][:new_size].view(shape)
 
             # See https://pytorch.org/docs/stable/notes/cuda.html#cuda-streams
@@ -774,9 +780,11 @@ def unpatch_unsloth_smart_gradient_checkpointing():
 
         torch.utils.checkpoint.CheckpointFunction = torch.utils.checkpoint._old_CheckpointFunction
         global CPU_BUFFERS
-        global GPU_BUFFER
+        global GPU_BUFFERS
         for i in range(len(CPU_BUFFERS)): CPU_BUFFERS[i] = None
-        GPU_BUFFER = None
+        for i in range(len(GPU_BUFFERS)): GPU_BUFFERS[i] = None
+        CPU_BUFFERS = None
+        GPU_BUFFERS = None
 
     if (torch.utils.checkpoint.checkpoint.__name__ == "unsloth_checkpoint") and \
         hasattr(torch.utils, "_old_checkpoint"):
