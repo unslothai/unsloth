@@ -230,7 +230,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
 
     # We instead check for repeated vectors
     lm_head_where = torch.where(indicator_untrained1)[0]
-    lm_head_bad = lm_head_matrix[lm_head_where]
+    lm_head_bad = lm_head_matrix[lm_head_where.to(lm_head_matrix.device)]
     lm_head_bad = lm_head_bad.cpu().float().numpy().round(3)
     from collections import Counter
     counter = Counter()
@@ -246,8 +246,8 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     indicator_untrained2[final_bad_lm_head] = True
 
     # Combine both checks
-    indicator_untrained = indicator_untrained1 & indicator_untrained2
-    
+    indicator_untrained = indicator_untrained1.to("cpu") & indicator_untrained2.to("cpu")
+
     # Remove pad token and other important token possibilities
     special_tokens = (
         "bos_token",
