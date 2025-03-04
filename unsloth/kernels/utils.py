@@ -459,9 +459,6 @@ pass
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
     dtype = X.dtype
     W = fast_dequantize(W.t(), W_quant, use_global_buffer = False)
-    print(W)
-    if X.device != W.device:
-        print(X.device, W.device, torch.cuda.current_device())
     
     if X.dim() == 3:
         batch, seq_len, d = X.shape
