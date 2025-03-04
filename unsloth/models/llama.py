@@ -759,14 +759,9 @@ def LlamaModel_fast_forward(
 
     # Check checkpointing method
     gradient_checkpointing = False
-    offloaded_gradient_checkpointing = False
 
     if (self.gradient_checkpointing and self.training and not use_cache):
-
         gradient_checkpointing = True
-
-        if output_attentions is False and hasattr(self, "_offloaded_gradient_checkpointing"):
-            offloaded_gradient_checkpointing = True
     pass
 
     # Gemma2 has alternating SWA and global attn
@@ -1975,9 +1970,14 @@ class FastLlamaModel:
         internal_model = model
         while hasattr(internal_model, "model"):
             internal_model._saved_temp_tokenizer = tokenizer
+            # Also set is_loaded_in_8bit to disable incorrect DDP
+            internal_model.is_loaded_in_8bit = True
+
             internal_model = internal_model.model
         pass
         internal_model._saved_temp_tokenizer = tokenizer
+        # Also set is_loaded_in_8bit to disable incorrect DDP
+        internal_model.is_loaded_in_8bit = True
 
         # For transformers > 4.47.1, we need to add rotary_emb to all attention layers
         if IS_ATTENTION_REFACTOR or hasattr(model.model, "rotary_emb"):
@@ -2387,11 +2387,15 @@ class FastLlamaModel:
             if hasattr(internal_model, "_saved_temp_tokenizer"):
                 internal_model._saved_temp_tokenizer.padding_side = "right"
             pass
+            # Also set is_loaded_in_8bit to disable incorrect DDP
+            internal_model.is_loaded_in_8bit = True
             internal_model = internal_model.model
         pass
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
         pass
+        # Also set is_loaded_in_8bit to disable incorrect DDP
+        internal_model.is_loaded_in_8bit = True
 
         # Clear deleted GPU items
         for _ in range(3):
