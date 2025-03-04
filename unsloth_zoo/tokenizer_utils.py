@@ -246,8 +246,7 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
     indicator_untrained2[final_bad_lm_head] = True
 
     # Combine both checks
-    indicator_untrained = indicator_untrained1 & indicator_untrained2
-    indicator_untrained = indicator_untrained.to("cpu")
+    indicator_untrained = indicator_untrained1.to("cpu") & indicator_untrained2.to("cpu")
 
     # Remove pad token and other important token possibilities
     special_tokens = (
