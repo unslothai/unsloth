@@ -198,7 +198,7 @@ pass
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.2.6"):
+    if Version(unsloth_zoo_version) < Version("2025.3.1"):
         try:
             os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
         except:
@@ -212,6 +212,7 @@ except:
 pass
 
 from .models import *
+from .models import __version__
 from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
