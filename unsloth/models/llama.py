@@ -1538,6 +1538,7 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
     # Wraps inference with bfloat16 / float16
     @torch.inference_mode
     def _fast_generate(*args, **kwargs):
+        if hasattr(model, "for_inference"): model.for_inference()
 
         if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
             if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
@@ -1602,6 +1603,9 @@ def _wrap_fast_inference(generate, device_type, dtype, model):
         if accelerate_new_send_to_device is not None:
             accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
         pass
+
+        # Return to training state
+        if hasattr(model, "for_training"): model.for_training()
 
         return output
     pass
@@ -2416,6 +2420,9 @@ class FastLlamaModel:
             model.load_lora = partial(load_lora, model)
         pass
 
+        # Add for_inference and for_training
+        model.for_training  = partial(FastLlamaModel.for_training,  model)
+        model.for_inference = partial(FastLlamaModel.for_inference, model)
         return model
     pass
 
