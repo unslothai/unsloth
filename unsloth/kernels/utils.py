@@ -19,6 +19,7 @@ import functools
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
+torch_Tensor = torch.Tensor
 from packaging.version import Version
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
@@ -67,6 +68,18 @@ import ctypes
 # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
 HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
 get_ptr = bnb.functional.get_ptr
+
+if torch.cuda.device_count() > 1:
+    def _cuda_device_of(a: torch_Tensor): return torch.cuda.device_of(a)
+else:
+    from contextlib import nullcontext
+    def _cuda_device_of(a: torch_Tensor): return nullcontext()
+pass
+_cuda_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
+c_void_p = ctypes.c_void_p
+def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+    return c_void_p(_cuda_getCurrentRawStream(tensor.device.index))
+pass
 
 # Get array of CUDA streams and other buffers
 global CUDA_STREAMS
@@ -202,18 +215,19 @@ if HAS_CUDA_STREAM:
 
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
-        cdequantize_blockwise_fp32(
-            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
-            ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), CUDA_STREAM,
-        )
-        out_absmax += offset
+        with _cuda_device_of(absmax):
+            cdequantize_blockwise_fp32(
+                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
+                ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), _get_tensor_stream(absmax),
+            )
+            out_absmax += offset
 
-        # Dequantize W
-        fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
-             cdequantize_blockwise_bf16_nf4
-        fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
-           ctypes_c_int(blocksize), ctypes_c_int(out.numel()), CUDA_STREAM,)
-
+            # Dequantize W
+            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
+                 cdequantize_blockwise_bf16_nf4
+            fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
+               ctypes_c_int(blocksize), ctypes_c_int(out.numel()), _get_tensor_stream(absmax),)
+        pass
         # Careful returning transposed data
         is_transposed = (True if W.shape[0] == 1 else False)
         return out.t() if is_transposed else out
