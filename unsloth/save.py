@@ -17,6 +17,8 @@ from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
+import sys
+import requests
 import torch
 import os
 import shutil
@@ -1612,6 +1614,112 @@ def create_ollama_modelfile(tokenizer, gguf_location):
 
     return modelfile
 pass
+
+def create_ollama_model(
+    username: str, 
+    model_name: str, 
+    tag: str, 
+    modelfile_path: str
+):
+    try:
+        init_check = subprocess.run(
+            ['curl', 'http://localhost:11434'], capture_output=True, text=True,  timeout=3
+        )
+        if init_check.returncode == 0:
+            print(init_check.stdout.strip())
+        else:
+            print("Ollama Server is not Running")
+    except subprocess.TimeoutExpired:
+        return "Ollama Request Timeout"
+
+    process = subprocess.Popen(
+            ['ollama', 'create', f'{username}/{model_name}:{tag}', '-f', f'{modelfile_path}'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
+
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')
+        sys.stdout.flush()
+
+    return_code = process.wait()
+
+    if return_code != 0:
+        print(f"\nMODEL CREATED FAILED WITH RETURN CODE {return_code}")
+    else:
+        print("\nMODEL CREATED SUCCESSFULLY")
+pass
+
+
+def push_to_ollama_hub(username: str, model_name: str, tag: str):
+    try:
+        init_check = subprocess.run(
+            ['curl', 'http://localhost:11434'], capture_output=True, text=True,  timeout=3
+        )
+        if init_check.returncode == 0:
+            print(init_check.stdout.strip())
+        else:
+            print("Ollama Server is not Running")
+    except subprocess.TimeoutExpired:
+        return "Ollama Request Timeout"
+
+    process = subprocess.Popen(
+            ['ollama', 'push', f'{username}/{model_name}:{tag}'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
+
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')
+        sys.stdout.flush()
+
+    return_code = process.wait()
+
+    if return_code != 0:
+        print(f"\nMODEL PUBLISHED FAILED WITH RETURN CODE {return_code}")
+    else:
+        print("\nMODEL PUBLISHED SUCCESSFULLY")
+
+
+def push_to_ollama(
+    tokenizer,
+    gguf_location,
+    username: str,
+    model_name: str,
+    tag: str
+):
+    model_file = create_ollama_modelfile(
+        tokenizer=tokenizer,
+        gguf_location=gguf_location
+    )
+
+    with open(f"Modelfile_{model_name}", "w") as f:
+        f.write(model_file)
+        f.close()
+    
+    create_ollama_model(
+        username=username,
+        model_name=model_name,
+        tag=tag,
+        modelfile_path=f"Modelfile_{model_name}"
+    )
+
+    push_to_ollama_hub(
+        username=username,
+        model_name=model_name,
+        tag=tag
+    )
+
+    print("Succesfully pushed to ollama")
+
+
+
 
 
 def unsloth_save_pretrained_gguf(

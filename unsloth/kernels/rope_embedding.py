@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings
+from .utils import calculate_settings, torch_cuda_device
 ROPE_GROUP_SIZE : int = 4
 
 def _rope_embedding(
@@ -100,16 +100,17 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         div, mod = divmod(n_heads, ROPE_GROUP_SIZE)
         n_groups : int = div + (mod != 0)
 
-        _rope_embedding[(n_rows, n_groups, )](
-              Q,   Q.stride(0),
-            cos, cos.stride(0),
-            sin, sin.stride(0),
-            seq_len,
-            head_dim, n_heads,
-            BACKWARD_PASS = False,
-            BLOCK_SIZE = BLOCK_SIZE,
-            num_warps  = num_warps,
-        )
+        with torch_cuda_device(Q.device):
+            _rope_embedding[(n_rows, n_groups, )](
+                  Q,   Q.stride(0),
+                cos, cos.stride(0),
+                sin, sin.stride(0),
+                seq_len,
+                head_dim, n_heads,
+                BACKWARD_PASS = False,
+                BLOCK_SIZE = BLOCK_SIZE,
+                num_warps  = num_warps,
+            )
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
         ctx.n_groups = n_groups
@@ -134,15 +135,16 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         cos = ctx.cos
         sin = ctx.sin
 
-        _rope_embedding[(n_rows, ctx.n_groups, )](
-            dY,  dY .stride(0),
-            cos, cos.stride(0),
-            sin, sin.stride(0),
-            seq_len, head_dim, n_heads,
-            BACKWARD_PASS = True,
-            BLOCK_SIZE = ctx.BLOCK_SIZE,
-            num_warps  = ctx.num_warps,
-        )
+        with torch_cuda_device(dY.device):
+            _rope_embedding[(n_rows, ctx.n_groups, )](
+                dY,  dY .stride(0),
+                cos, cos.stride(0),
+                sin, sin.stride(0),
+                seq_len, head_dim, n_heads,
+                BACKWARD_PASS = True,
+                BLOCK_SIZE = ctx.BLOCK_SIZE,
+                num_warps  = ctx.num_warps,
+            )
         dY = dY.view(batch, seq_len, n_heads, head_dim)
         return dY, None, None,
     pass

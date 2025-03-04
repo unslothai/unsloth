@@ -40,7 +40,7 @@ triton = [
 ]
 
 windows=[
-    "unsloth_zoo>=2025.2.7",
+    "unsloth_zoo>=2025.3.1",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
@@ -61,7 +61,7 @@ windows=[
     "xformers>=0.0.22.post7 ; platform_system == 'Windows'",
 ]
 huggingface = [
-    "unsloth_zoo>=2025.2.7",
+    "unsloth_zoo>=2025.3.1",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",

@@ -755,7 +755,8 @@ def offload_to_disk(W, model, name, temporary_location : str = "_unsloth_tempora
     filename = os.path.join(file_location, f"{name}.pt")
     W = W.weight if hasattr(W, "weight") else W
     torch.save(W, filename, pickle_module = pickle, pickle_protocol = pickle.HIGHEST_PROTOCOL,)
-    offloaded_W = torch.load(filename, map_location = "cpu", mmap = True)
+    # We must use weights_only = False due to pickling
+    offloaded_W = torch.load(filename, map_location = "cpu", mmap = True, weights_only = False)
     offloaded_W._offloaded_file_location = filename
     return offloaded_W
 pass

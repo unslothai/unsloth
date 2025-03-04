@@ -19,6 +19,7 @@ import functools
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
+torch_Tensor = torch.Tensor
 from packaging.version import Version
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
@@ -67,6 +68,18 @@ import ctypes
 HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
 get_ptr = bnb.functional.get_ptr
 
+if torch.cuda.device_count() > 1:
+    torch_cuda_device = torch.cuda.device
+else:
+    from contextlib import nullcontext
+    def torch_cuda_device(device): return nullcontext()
+pass
+_cuda_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
+c_void_p = ctypes.c_void_p
+def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+    return c_void_p(_cuda_getCurrentRawStream(tensor.device.index))
+pass
+
 # Get array of CUDA streams and other buffers
 global CUDA_STREAMS
 global WEIGHT_BUFFERS
@@ -92,27 +105,29 @@ cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_
 cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
 cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 
-
-def QUANT_STATE(W):
-    return getattr(W, "quant_state", None)
-pass
-
+def QUANT_STATE(W): return getattr(W, "quant_state", None)
 
 def get_lora_parameters(proj):
     # For DPO or disabled adapters
-    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
+    base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
 
-    if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
-        return W, QUANT_STATE(W), None, None, None
+    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+    if getattr(proj, "disable_adapters", True) or proj.merged:
+        return W, getattr(W, "quant_state", None), None, None, None
     pass
 
-    active_adapter = proj.active_adapters[0] if \
-        hasattr(proj, "active_adapters") else proj.active_adapter
-    A = proj.lora_A [active_adapter].weight
-    B = proj.lora_B [active_adapter].weight
-    s = proj.scaling[active_adapter]
-    return W, QUANT_STATE(W), A, B, s
+    adapter = getattr(proj, "active_adapters", None)
+    if adapter is None: adapter = getattr(proj, "active_adapter", ("default"))
+    adapter = adapter[0]
+    
+    return (
+        W,
+        getattr(W, "quant_state", None),
+        proj.lora_A [adapter].weight,
+        proj.lora_B [adapter].weight,
+        proj.scaling[adapter],
+    )
 pass
 
 
@@ -120,19 +135,24 @@ def get_lora_parameters_bias(proj):
     # For DPO or disabled adapters
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
-    bias = base_layer.bias
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
-        return W, QUANT_STATE(W), None, None, None, bias
+        return W, getattr(W, "quant_state", None), None, None, None, bias
     pass
 
-    active_adapter = proj.active_adapters[0] if \
-        getattr(proj, "active_adapters", ) else proj.active_adapter
-    A = proj.lora_A [active_adapter].weight
-    B = proj.lora_B [active_adapter].weight
-    s = proj.scaling[active_adapter]
-    return W, QUANT_STATE(W), A, B, s, bias
+    adapter = getattr(proj, "active_adapters", None)
+    if adapter is None: adapter = getattr(proj, "active_adapter", ("default"))
+    adapter = adapter[0]
+
+    return (
+        W,
+        getattr(W, "quant_state", None),
+        proj.lora_A [adapter].weight,
+        proj.lora_B [adapter].weight,
+        proj.scaling[adapter],
+        base_layer.bias,
+    )
 pass
 
 if HAS_CUDA_STREAM:
@@ -193,18 +213,19 @@ if HAS_CUDA_STREAM:
 
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
-        cdequantize_blockwise_fp32(
-            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
-            ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), CUDA_STREAM,
-        )
-        out_absmax += offset
+        with torch_cuda_device(device):
+            cdequantize_blockwise_fp32(
+                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
+                ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), CUDA_STREAM
+            )
+            out_absmax += offset
 
-        # Dequantize W
-        fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
-             cdequantize_blockwise_bf16_nf4
-        fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
-           ctypes_c_int(blocksize), ctypes_c_int(out.numel()), CUDA_STREAM,)
-
+            # Dequantize W
+            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
+                 cdequantize_blockwise_bf16_nf4
+            fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
+               ctypes_c_int(blocksize), ctypes_c_int(out.numel()), CUDA_STREAM,)
+        pass
         # Careful returning transposed data
         is_transposed = (True if W.shape[0] == 1 else False)
         return out.t() if is_transposed else out
@@ -316,19 +337,21 @@ if HAS_CUDA_STREAM:
         ldc = ctypes_c_int32(ldc)
 
         df = torch.empty(absmax.shape, dtype = torch.float32, device = device)
-        cdequantize_blockwise_fp32(
-            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
-            ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), CUDA_STREAM,
-        )
-        df += offset
-        absmax = df
+        with torch_cuda_device(device):
+            cdequantize_blockwise_fp32(
+                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
+                ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), CUDA_STREAM,
+            )
+            df += offset
+            absmax = df
 
-        fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
-            cgemm_4bit_inference_naive_bf16
+            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
+                cgemm_4bit_inference_naive_bf16
 
-        blocksize = ctypes_c_int32(blocksize)
-        fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
-           lda, ldb, ldc, blocksize, CUDA_STREAM,)
+            blocksize = ctypes_c_int32(blocksize)
+            fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
+               lda, ldb, ldc, blocksize, CUDA_STREAM,)
+        pass
 
         return out
     pass
@@ -458,7 +481,6 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     else:
         reshape = False
     pass
-
     out = torch_matmul(X, W, out = out)
     if W_quant is not None: del W
 

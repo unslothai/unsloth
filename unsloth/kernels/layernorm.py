@@ -16,7 +16,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings
+from .utils import calculate_settings, torch_cuda_device
 from unsloth_zoo.patching_utils import (
     patch_layernorm,
 )
@@ -111,17 +111,18 @@ class Fast_Layernorm(torch.autograd.Function):
         r  = torch.empty(n_rows, dtype = torch.float32, device = device)
         mu = torch.empty(n_rows, dtype = torch.float32, device = device)
 
-        layernorm_forward[(n_rows,)](
-            Y, Y.stride(0),
-            X, X.stride(0),
-            W,
-            b,
-            r,
-            mu,
-            n_cols, eps,
-            BLOCK_SIZE = BLOCK_SIZE,
-            num_warps  = num_warps,
-        )
+        with torch_cuda_device(device):
+            layernorm_forward[(n_rows,)](
+                Y, Y.stride(0),
+                X, X.stride(0),
+                W,
+                b,
+                r,
+                mu,
+                n_cols, eps,
+                BLOCK_SIZE = BLOCK_SIZE,
+                num_warps  = num_warps,
+            )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
@@ -137,17 +138,18 @@ class Fast_Layernorm(torch.autograd.Function):
         X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
 
-        layernorm_backward[(n_rows,)](
-            dY, dY.stride(0),
-            X,  X .stride(0),
-            W,
-            b,
-            r,
-            mu,
-            n_cols, ctx.eps,
-            BLOCK_SIZE = ctx.BLOCK_SIZE,
-            num_warps  = ctx.num_warps,
-        )
+        with torch_cuda_device(dY.device):
+            layernorm_backward[(n_rows,)](
+                dY, dY.stride(0),
+                X,  X .stride(0),
+                W,
+                b,
+                r,
+                mu,
+                n_cols, ctx.eps,
+                BLOCK_SIZE = ctx.BLOCK_SIZE,
+                num_warps  = ctx.num_warps,
+            )
         dX = dY.view(*shape)
         return dX, None, None, None, None
     pass
