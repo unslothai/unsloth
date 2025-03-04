@@ -247,7 +247,8 @@ def fix_untrained_tokens(model, tokenizer, train_dataset, IGNORED_TOKENIZER_NAME
 
     # Combine both checks
     indicator_untrained = indicator_untrained1 & indicator_untrained2
-    
+    indicator_untrained = indicator_untrained.to("cpu")
+
     # Remove pad token and other important token possibilities
     special_tokens = (
         "bos_token",
