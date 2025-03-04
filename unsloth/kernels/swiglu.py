@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings
+from .utils import calculate_settings, torch_cuda_device
 
 
 @triton.jit
@@ -41,9 +41,10 @@ pass
 def swiglu_fg_kernel(e, g):
     batch, seq_len, hd = e.shape
     n_elements = e.numel()
-    h = torch.empty((batch, seq_len, hd), dtype = e.dtype, device = "cuda:0")
+    h = torch.empty((batch, seq_len, hd), dtype = e.dtype, device = e.device)
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    _fg_kernel[grid](e, g, h, n_elements, BLOCK_SIZE = 1024,)
+    with torch_cuda_device(e.device):
+        _fg_kernel[grid](e, g, h, n_elements, BLOCK_SIZE = 1024,)
     return h
 pass
 
@@ -94,6 +95,7 @@ def swiglu_DWf_DW_dfg_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    _DWf_DW_dfg_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
+    with torch_cuda_device(e.device):
+        _DWf_DW_dfg_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
     return DW, e, g
 pass

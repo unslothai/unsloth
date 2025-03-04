@@ -17,6 +17,8 @@ from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
+import sys
+import requests
 import torch
 import os
 import shutil
@@ -482,8 +484,8 @@ def unsloth_save_model(
     max_ram = psutil.virtual_memory().available
     sharded_ram_usage = 5 * 1024 * 1024 * 1024
     if type(max_shard_size) is str:
-        gb_found = re.match("([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
-        mb_found = re.match("([0-9]{1,})[\s]{0,}MB", max_shard_size, flags = re.IGNORECASE)
+        gb_found = re.match(r"([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
+        mb_found = re.match(r"([0-9]{1,})[\s]{0,}MB", max_shard_size, flags = re.IGNORECASE)
         if   gb_found: sharded_ram_usage = int(gb_found.group(1)) * 1024 * 1024 * 1024
         elif mb_found: sharded_ram_usage = int(mb_found.group(1)) * 1024 * 1024
     elif type(max_shard_size) is int:
@@ -1017,9 +1019,9 @@ def save_to_gguf(
 
     print_info = \
         f"==((====))==  Unsloth: Conversion from QLoRA to GGUF information\n"\
-        f"   \\\   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
-        f"O^O/ \_/ \\    [1] Converting HF to GGUF 16bits might take 3 minutes.\n"\
-        f"\        /    [2] Converting GGUF 16bits to {quantization_method} might take 10 minutes each.\n"\
+        f"   {chr(92)}{chr(92)}   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
+        f"O^O/ {chr(92)}_/ {chr(92)}    [1] Converting HF to GGUF 16bits might take 3 minutes.\n"\
+        f"{chr(92)}        /    [2] Converting GGUF 16bits to {quantization_method} might take 10 minutes each.\n"\
         f' "-____-"     In total, you will have to wait at least 16 minutes.\n'
     print(print_info)
 
@@ -1612,6 +1614,112 @@ def create_ollama_modelfile(tokenizer, gguf_location):
 
     return modelfile
 pass
+
+def create_ollama_model(
+    username: str, 
+    model_name: str, 
+    tag: str, 
+    modelfile_path: str
+):
+    try:
+        init_check = subprocess.run(
+            ['curl', 'http://localhost:11434'], capture_output=True, text=True,  timeout=3
+        )
+        if init_check.returncode == 0:
+            print(init_check.stdout.strip())
+        else:
+            print("Ollama Server is not Running")
+    except subprocess.TimeoutExpired:
+        return "Ollama Request Timeout"
+
+    process = subprocess.Popen(
+            ['ollama', 'create', f'{username}/{model_name}:{tag}', '-f', f'{modelfile_path}'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
+
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')
+        sys.stdout.flush()
+
+    return_code = process.wait()
+
+    if return_code != 0:
+        print(f"\nMODEL CREATED FAILED WITH RETURN CODE {return_code}")
+    else:
+        print("\nMODEL CREATED SUCCESSFULLY")
+pass
+
+
+def push_to_ollama_hub(username: str, model_name: str, tag: str):
+    try:
+        init_check = subprocess.run(
+            ['curl', 'http://localhost:11434'], capture_output=True, text=True,  timeout=3
+        )
+        if init_check.returncode == 0:
+            print(init_check.stdout.strip())
+        else:
+            print("Ollama Server is not Running")
+    except subprocess.TimeoutExpired:
+        return "Ollama Request Timeout"
+
+    process = subprocess.Popen(
+            ['ollama', 'push', f'{username}/{model_name}:{tag}'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
+
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')
+        sys.stdout.flush()
+
+    return_code = process.wait()
+
+    if return_code != 0:
+        print(f"\nMODEL PUBLISHED FAILED WITH RETURN CODE {return_code}")
+    else:
+        print("\nMODEL PUBLISHED SUCCESSFULLY")
+
+
+def push_to_ollama(
+    tokenizer,
+    gguf_location,
+    username: str,
+    model_name: str,
+    tag: str
+):
+    model_file = create_ollama_modelfile(
+        tokenizer=tokenizer,
+        gguf_location=gguf_location
+    )
+
+    with open(f"Modelfile_{model_name}", "w") as f:
+        f.write(model_file)
+        f.close()
+    
+    create_ollama_model(
+        username=username,
+        model_name=model_name,
+        tag=tag,
+        modelfile_path=f"Modelfile_{model_name}"
+    )
+
+    push_to_ollama_hub(
+        username=username,
+        model_name=model_name,
+        tag=tag
+    )
+
+    print("Succesfully pushed to ollama")
+
+
+
 
 
 def unsloth_save_pretrained_gguf(
