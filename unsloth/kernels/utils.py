@@ -93,27 +93,29 @@ cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_
 cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
 cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 
-
-def QUANT_STATE(W):
-    return getattr(W, "quant_state", None)
-pass
-
+def QUANT_STATE(W): return getattr(W, "quant_state", None)
 
 def get_lora_parameters(proj):
     # For DPO or disabled adapters
-    base_layer = (proj.base_layer if hasattr(proj, "base_layer") else proj)
+    base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
 
-    if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
-        return W, QUANT_STATE(W), None, None, None
+    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+    if getattr(proj, "disable_adapters", True) or proj.merged:
+        return W, getattr(W, "quant_state", None), None, None, None
     pass
 
-    active_adapter = proj.active_adapters[0] if \
-        hasattr(proj, "active_adapters") else proj.active_adapter
-    A = proj.lora_A [active_adapter].weight
-    B = proj.lora_B [active_adapter].weight
-    s = proj.scaling[active_adapter]
-    return W, QUANT_STATE(W), A, B, s
+    adapter = getattr(proj, "active_adapters", None)
+    if adapter is None: adapter = getattr(proj, "active_adapter", ("default"))
+    adapter = adapter[0]
+    
+    return (
+        W,
+        getattr(W, "quant_state", None),
+        proj.lora_A [adapter].weight,
+        proj.lora_B [adapter].weight,
+        proj.scaling[adapter],
+    )
 pass
 
 
@@ -121,19 +123,24 @@ def get_lora_parameters_bias(proj):
     # For DPO or disabled adapters
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
-    bias = base_layer.bias
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
-        return W, QUANT_STATE(W), None, None, None, bias
+        return W, getattr(W, "quant_state", None), None, None, None, bias
     pass
 
-    active_adapter = proj.active_adapters[0] if \
-        getattr(proj, "active_adapters", ) else proj.active_adapter
-    A = proj.lora_A [active_adapter].weight
-    B = proj.lora_B [active_adapter].weight
-    s = proj.scaling[active_adapter]
-    return W, QUANT_STATE(W), A, B, s, bias
+    adapter = getattr(proj, "active_adapters", None)
+    if adapter is None: adapter = getattr(proj, "active_adapter", ("default"))
+    adapter = adapter[0]
+
+    return (
+        W,
+        getattr(W, "quant_state", None),
+        proj.lora_A [adapter].weight,
+        proj.lora_B [adapter].weight,
+        proj.scaling[adapter],
+        base_layer.bias,
+    )
 pass
 
 if HAS_CUDA_STREAM:
