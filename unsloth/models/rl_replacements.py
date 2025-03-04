@@ -90,9 +90,11 @@ def sft_trainer_prepare_dataset(function_name, function):
     "if getattr(tokenizer, 'bos_token', None) is not None else False\n"\
     "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"\
     "    from functools import partial\n"\
-    "    tokenizer = partial(tokenizer, add_special_tokens = False)\n"\
+    "    tokenizer_call = tokenizer.__call__\n"\
+    "    tokenizer.__call__ = partial(tokenizer_call, add_special_tokens = False)\n"\
     "    processing_class = tokenizer\n"\
     "else:\n"\
+    "    tokenizer_call = None\n"\
     "    add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
 
     check_text = check_text.split("\n")
@@ -109,6 +111,14 @@ def sft_trainer_prepare_dataset(function_name, function):
         replacer = replacer[0]
         function = function.replace(replacer, replacer + check_text)
     pass
+
+    # Return tokenizer's original state
+    return_state = "if tokenizer_call is not None: tokenizer.__call__ = tokenizer_call\n"
+    function = re.sub(
+        r"\n([ ]{4,})(return .*?[\s]{0,})$",
+        rf"\1{return_state}\1\2",
+        function,
+    )
     return function
 pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
