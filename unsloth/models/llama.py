@@ -1535,7 +1535,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 pass
 
 
-@torch.inference_mode
 def unsloth_fast_generate(
     self,
     inputs: Optional[torch.Tensor] = None,
@@ -1577,7 +1576,7 @@ def unsloth_fast_generate(
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
     # Mixed precision autocast
-    with torch.autocast(device_type = "cuda", dtype = dtype):
+    with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
         output = self._old_generate(self, inputs, *args, **kwargs)
     pass
 
@@ -1972,7 +1971,7 @@ class FastLlamaModel:
         # Patch generate
         if model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
-            model.generate = unsloth_fast_generate
+            model.generate = types.MethodType(unsloth_fast_generate, model)
             model.generate.__doc__ = model._old_generate.__doc__
         return model, tokenizer
     pass
@@ -2410,7 +2409,7 @@ class FastLlamaModel:
         # Patch generate
         if model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
-            model.generate = unsloth_fast_generate
+            model.generate = types.MethodType(unsloth_fast_generate, model)
             model.generate.__doc__ = model._old_generate.__doc__
         return model
     pass
