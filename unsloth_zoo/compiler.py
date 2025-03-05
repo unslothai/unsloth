@@ -74,7 +74,6 @@ UNSLOTH_COMPILE_LOCATION_USE_TEMP = False
 try:
     os.makedirs(UNSLOTH_COMPILE_LOCATION, exist_ok = True)
     if not os.path.exists(UNSLOTH_COMPILE_LOCATION): raise
-    raise
 except:
     from tempfile import TemporaryDirectory
     UNSLOTH_COMPILE_LOCATION_USE_TEMP = True
