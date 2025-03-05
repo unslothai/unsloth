@@ -1535,63 +1535,60 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 pass
 
 
-def _wrap_fast_inference(generate_function):
-    @torch.inference_mode
-    def _fast_generate(
-        self,
-        inputs: Optional[torch.Tensor] = None,
-        *args,
-        **kwargs,
-    ):
-        FastLlamaModel.for_inference(self)
+@torch.inference_mode
+def unsloth_fast_generate(
+    self,
+    inputs: Optional[torch.Tensor] = None,
+    *args,
+    **kwargs,
+):
+    FastLlamaModel.for_inference(self)
 
-        dtype = _get_dtype(self.config.torch_dtype)
+    dtype = _get_dtype(self.config.torch_dtype)
 
-        if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
-            if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
-                if kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"] > self.config.max_position_embeddings:
-                    raise ValueError(
-                        f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {model.config.max_position_embeddings}!\n'\
-                        'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
-                    )
-        pass
-
-        # Must patch accelerate for Xformers
-        if accelerate_new_send_to_device is not None:
-            import accelerate.utils.operations
-            accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
-        pass
-
-        # For newer HF
-        kwargs["cache_implementation"] = "dynamic"
-        # For num_logits_to_keep
-        kwargs["num_logits_to_keep"] = 1
-
-        # Remove token_type_ids
-        kwargs.pop("token_type_ids", None)
-
-        # Check pad_token
-        model_eos_token_id = getattr(self.config, "eos_token_id", None)
-        if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
-            model_eos_token_id = model_eos_token_id[0]
-
-        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
-
-        # Mixed precision autocast
-        with torch.autocast(device_type = "cuda", dtype = dtype):
-            output = generate_function(self, inputs, *args, **kwargs)
-        pass
-
-        # Return accelerate back
-        if accelerate_new_send_to_device is not None:
-            accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
-        pass
-
-        FastLlamaModel.for_training(self)
-
-        return output
+    if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
+        if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
+            if kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"] > self.config.max_position_embeddings:
+                raise ValueError(
+                    f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {model.config.max_position_embeddings}!\n'\
+                    'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
+                )
     pass
-    return _fast_generate
+
+    # Must patch accelerate for Xformers
+    if accelerate_new_send_to_device is not None:
+        import accelerate.utils.operations
+        accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+    pass
+
+    # For newer HF
+    kwargs["cache_implementation"] = "dynamic"
+    # For num_logits_to_keep
+    kwargs["num_logits_to_keep"] = 1
+
+    # Remove token_type_ids
+    kwargs.pop("token_type_ids", None)
+
+    # Check pad_token
+    model_eos_token_id = getattr(self.config, "eos_token_id", None)
+    if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
+        model_eos_token_id = model_eos_token_id[0]
+
+    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+
+    # Mixed precision autocast
+    with torch.autocast(device_type = "cuda", dtype = dtype):
+        output = self._old_generate(self, inputs, *args, **kwargs)
+    pass
+
+    # Return accelerate back
+    if accelerate_new_send_to_device is not None:
+        accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
+    pass
+
+    FastLlamaModel.for_training(self)
+
+    return output
 pass
 
 
@@ -1973,9 +1970,9 @@ class FastLlamaModel:
         pass
         
         # Patch generate
-        if model.generate.__name__ != "_fast_generate":
+        if model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
-            model.generate = types.MethodType(_wrap_fast_inference(model._old_generate), model)
+            model.generate = types.MethodType(unsloth_fast_generate, model)
         return model, tokenizer
     pass
 
@@ -2410,9 +2407,9 @@ class FastLlamaModel:
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         
         # Patch generate
-        if model.generate.__name__ != "_fast_generate":
+        if model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
-            model.generate = types.MethodType(_wrap_fast_inference(model._old_generate), model)
+            model.generate = types.MethodType(unsloth_fast_generate, model)
         return model
     pass
 
