@@ -39,8 +39,8 @@ __all__ = [
     "create_boolean_mask",
     "torch_amp_custom_fwd",
     "torch_amp_custom_bwd",
-    "accelerate_old_send_to_device",
-    "accelerate_new_send_to_device",
+    # "accelerate_old_send_to_device",
+    # "accelerate_new_send_to_device",
     "patch_gradient_accumulation_fix",
     "patch_compiling_bitsandbytes",
     "patch_regional_compilation",
@@ -411,25 +411,25 @@ pass
 
 # =============================================
 # Fix new Xformers versions TypeError: Multiple dispatch failed for 'torch._ops.aten.to.dtype_layout'
-accelerate_old_send_to_device = None
-accelerate_new_send_to_device = None
-if xformers_version is not None and Version(xformers_version) >= Version("0.0.27"):
-    import accelerate.utils.operations
-    if hasattr(accelerate.utils.operations, "send_to_device") and \
-        accelerate.utils.operations.send_to_device.__name__ != "_fixed_send_to_device":
-        accelerate_old_send_to_device = accelerate.utils.operations.send_to_device
-        from accelerate.utils.operations import *
-        send_to_device = inspect.getsource(accelerate.utils.operations.send_to_device)
-        send_to_device = re.sub(
-            r"([ ]{4,})return tensor\.to\(device\)",
-            r"\1try: return tensor.to(device)\n\1except: return tensor",
-            send_to_device,
-        ).replace("def send_to_device", "def _fixed_send_to_device")
-        exec(send_to_device)
-        # accelerate.utils.operations.send_to_device = _fixed_send_to_device
-        accelerate_new_send_to_device = _fixed_send_to_device
-    pass
-pass
+# accelerate_old_send_to_device = None
+# accelerate_new_send_to_device = None
+# if xformers_version is not None and Version(xformers_version) >= Version("0.0.27"):
+#     import accelerate.utils.operations
+#     if hasattr(accelerate.utils.operations, "send_to_device") and \
+#         accelerate.utils.operations.send_to_device.__name__ != "_fixed_send_to_device":
+#         accelerate_old_send_to_device = accelerate.utils.operations.send_to_device
+#         from accelerate.utils.operations import *
+#         send_to_device = inspect.getsource(accelerate.utils.operations.send_to_device)
+#         send_to_device = re.sub(
+#             r"([ ]{4,})return tensor\.to\(device\)",
+#             r"\1try: return tensor.to(device)\n\1except: return tensor",
+#             send_to_device,
+#         ).replace("def send_to_device", "def _fixed_send_to_device")
+#         exec(send_to_device)
+#         # accelerate.utils.operations.send_to_device = _fixed_send_to_device
+#         accelerate_new_send_to_device = _fixed_send_to_device
+#     pass
+# pass
 
 # Transformers 4.46 breaks dynamic caching. This is a hack
 import transformers.generation.configuration_utils
