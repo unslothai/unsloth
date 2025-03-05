@@ -2703,7 +2703,10 @@ class FastLlamaModel:
         # Also revert model.generate
         if hasattr(model, "_unwrapped_old_generate"):
             model.generate = model._unwrapped_old_generate
-            del model._unwrapped_old_generate
+            try:
+                delattr(model, "_unwrapped_old_generate")
+            except AttributeError:
+                pass
         pass
 
         # Also re-enable training for embeddings for NEFTune
