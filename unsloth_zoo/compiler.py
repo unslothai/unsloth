@@ -280,6 +280,33 @@ def create_new_function(
             while not os.path.isfile(function_location): continue
     pass
 
+    if not overwrite:
+        # Check versioning
+        file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
+        with open(file_location, "r") as f: f.read()
+
+        rewrite = False
+        if "__UNSLOTH_VERSIONING__" not in f:
+            rewrite = True
+        else:
+            versions = f[:f.find('__UNSLOTH_VERSIONING__')]
+            if versioning[versioning.find('__UNSLOTH_VERSIONING__')] != versions:
+                rewrite = True
+
+        if rewrite:
+            return create_new_function(
+                name = name,
+                new_source = old_new_source,
+                model_location = model_location,
+                functions = functions,
+                prepend = prepend,
+                append = append,
+                overwrite = True,
+                add_torch_compile = add_torch_compile,
+            )
+        pass
+    pass
+
     # Try loading new module
     new_module = None
     trials = 0
@@ -289,36 +316,10 @@ def create_new_function(
             new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
             break
         except:
-            # Instead use sys modules for dynamic loading
             module_name = f"unsloth_cache_{name}"
             file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
 
-            if not overwrite:
-                # Check versioning
-                with open(file_location, "r") as f: f.read()
-
-                rewrite = False
-                if "__UNSLOTH_VERSIONING__" not in f:
-                    rewrite = True
-                else:
-                    versions = f[:f.find('__UNSLOTH_VERSIONING__')]
-                    if versioning[versioning.find('__UNSLOTH_VERSIONING__')] != versions:
-                        rewrite = True
-
-                if rewrite:
-                    return create_new_function(
-                        name = name,
-                        new_source = old_new_source,
-                        model_location = model_location,
-                        functions = functions,
-                        prepend = prepend,
-                        append = append,
-                        overwrite = True,
-                        add_torch_compile = add_torch_compile,
-                    )
-                pass
-            pass
-
+            # Instead use sys modules for dynamic loading
             spec = importlib.util.spec_from_file_location(module_name, file_location)
             new_module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = new_module
