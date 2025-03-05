@@ -72,10 +72,10 @@ UNSLOTH_CREATED_FUNCTIONS = []
 try:
     os.makedirs(UNSLOTH_COMPILE_LOCATION, exist_ok = True)
     if not os.path.exists(UNSLOTH_COMPILE_LOCATION): raise
-    raise
 except:
     from tempfile import TemporaryDirectory
     UNSLOTH_COMPILE_LOCATION = TemporaryDirectory(ignore_cleanup_errors = True).name
+    print(f"Unsloth: We can't create folders, so we used a temporary directory = {UNSLOTH_COMPILE_LOCATION}")
 pass
 
 _license_header = """
