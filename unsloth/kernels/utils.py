@@ -104,6 +104,11 @@ cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_
 cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
 cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
 cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+torch_mm = torch.mm
+torch_mv = torch.mv
+torch_matmul = torch.matmul
+torch_addmm  = torch.addmm
+torch_empty  = torch.empty
 
 def QUANT_STATE(W): return getattr(W, "quant_state", None)
 
@@ -194,8 +199,8 @@ if HAS_CUDA_STREAM:
             WEIGHT_BUFFER = WEIGHT_BUFFERS[device_index]
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
             if WEIGHT_BUFFER is None:
-                WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch.empty(size, dtype = dtype, device = device, requires_grad = False)
-                ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch.empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+                WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(size, dtype = dtype, device = device, requires_grad = False)
+                ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
 
             if size > WEIGHT_BUFFER.numel(): WEIGHT_BUFFER.resize_(size)
             if n_elements_absmax > ABSMAX_BUFFER.numel(): ABSMAX_BUFFER.resize_(n_elements_absmax)
@@ -204,11 +209,11 @@ if HAS_CUDA_STREAM:
             out_absmax = ABSMAX_BUFFER[:n_elements_absmax]
         else:
             if out is None:
-                out = torch.empty(shape, dtype = dtype, device = device, requires_grad = False)
+                out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
             else:
                 assert(out.shape == shape)
                 assert(out.dtype == dtype)
-            out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+            out_absmax = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
         pass
 
         # NF4 dequantization of statistics
@@ -258,11 +263,11 @@ else:
 
         # Create weight matrix
         if out is None:
-            out = torch.empty(shape, dtype = dtype, device = device, requires_grad = False)
+            out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
         else:
             assert(out.shape == shape)
             assert(out.dtype == dtype)
-        out_absmax = torch.empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+        out_absmax = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
 
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
@@ -286,7 +291,7 @@ pass
 
 if HAS_CUDA_STREAM:
     def fast_gemv(X, W, quant_state, out = None):
-        if quant_state is None: return torch.matmul(X, W, out = out)
+        if quant_state is None: return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
         # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
         _, q_len, hd = X.shape
@@ -318,7 +323,7 @@ if HAS_CUDA_STREAM:
         bout = shape[0]
 
         if out is None:
-            out = torch.empty((1, 1, bout,), dtype = dtype, device = device)
+            out = torch_empty((1, 1, bout,), dtype = dtype, device = device)
         # else:
         #     assert(out.shape == (1, 1, bout,))
         # pass
@@ -336,7 +341,7 @@ if HAS_CUDA_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch.empty(absmax.shape, dtype = torch.float32, device = device)
+        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
         with torch_cuda_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
@@ -385,7 +390,7 @@ else:
         device = W.device
 
         if out is None:
-            out = torch.empty((1, 1, bout,), dtype = dtype, device = device)
+            out = torch_empty((1, 1, bout,), dtype = dtype, device = device)
         # else:
         #     assert(out.shape == (1, 1, bout,))
         # pass
@@ -403,7 +408,7 @@ else:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch.empty(absmax.shape, dtype = torch.float32, device = device)
+        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
         cdequantize_blockwise_fp32(
             get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
             ctypes_c_int(blocksize2), ctypes_c_int(df.numel()),
@@ -423,10 +428,6 @@ else:
 pass
 
 
-torch_mm = torch.mm
-torch_mv = torch.mv
-torch_matmul = torch.matmul
-torch_addmm  = torch.addmm
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
