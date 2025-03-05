@@ -438,7 +438,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
-        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
+        W = fast_dequantize(W.t(), W_quant, use_global_buffer = False)
         out = torch_matmul(X, W, out = out)
     pass
 
