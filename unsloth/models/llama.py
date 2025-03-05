@@ -2657,9 +2657,9 @@ class FastLlamaModel:
         pass
         m = model
         while hasattr(m, "model"):
-            _for_inference(m)
+            _for_training(m)
             m = m.model
-        _for_inference(m)
+        _for_training(m)
 
         # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
