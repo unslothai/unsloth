@@ -254,7 +254,7 @@ def create_new_function(
     versioning = '"""\n' + \
         f'{unsloth_zoo_version}\n'\
         f'{unsloth_version}\n'\
-        f'{transformers_version}'\
+        f'{transformers_version}\n'\
         f'{trl_version}\n__UNSLOTH_VERSIONING__' + '"""\n'
 
     # Check location
