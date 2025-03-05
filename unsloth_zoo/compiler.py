@@ -337,7 +337,6 @@ def create_new_function(
         except:
             module_name = f"unsloth_cache_{name}"
             file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
-            print(file_location)
 
             # Instead use sys modules for dynamic loading
             spec = importlib.util.spec_from_file_location(module_name, file_location)
