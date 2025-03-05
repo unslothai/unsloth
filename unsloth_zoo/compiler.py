@@ -72,6 +72,7 @@ UNSLOTH_CREATED_FUNCTIONS = []
 try:
     os.makedirs(UNSLOTH_COMPILE_LOCATION, exist_ok = True)
     if not os.path.exists(UNSLOTH_COMPILE_LOCATION): raise
+    raise
 except:
     from tempfile import TemporaryDirectory
     UNSLOTH_COMPILE_LOCATION = TemporaryDirectory(ignore_cleanup_errors = True).name
@@ -332,6 +333,7 @@ def create_new_function(
         except:
             module_name = f"unsloth_cache_{name}"
             file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
+            print(file_location)
 
             # Instead use sys modules for dynamic loading
             spec = importlib.util.spec_from_file_location(module_name, file_location)
