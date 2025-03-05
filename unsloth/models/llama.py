@@ -1975,7 +1975,7 @@ class FastLlamaModel:
         # Patch generate
         if model.generate.__name__ != "_fast_generate":
             model._old_generate = model.generate
-            model.generate = types.MethodType(_wrap_fast_inference(model._old_generate), model.generate)
+            model.generate = types.MethodType(_wrap_fast_inference(model._old_generate), model)
         return model, tokenizer
     pass
 
@@ -2412,7 +2412,7 @@ class FastLlamaModel:
         # Patch generate
         if model.generate.__name__ != "_fast_generate":
             model._old_generate = model.generate
-            model.generate = types.MethodType(_wrap_fast_inference(model._old_generate), model.generate)
+            model.generate = types.MethodType(_wrap_fast_inference(model._old_generate), model)
         return model
     pass
 
