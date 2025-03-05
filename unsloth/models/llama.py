@@ -1554,10 +1554,10 @@ def unsloth_fast_generate(
     pass
 
     # Must patch accelerate for Xformers
-    if accelerate_new_send_to_device is not None:
-        import accelerate.utils.operations
-        accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
-    pass
+    # if accelerate_new_send_to_device is not None:
+    #     import accelerate.utils.operations
+    #     accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+    # pass
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
@@ -1580,9 +1580,9 @@ def unsloth_fast_generate(
     pass
 
     # Return accelerate back
-    if accelerate_new_send_to_device is not None:
-        accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
-    pass
+    # if accelerate_new_send_to_device is not None:
+    #     accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
+    # pass
 
     FastLlamaModel.for_training(self)
 
