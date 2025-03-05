@@ -255,7 +255,7 @@ def create_new_function(
         f'{unsloth_zoo_version}\n'\
         f'{unsloth_version}\n'\
         f'{transformers_version}'\
-        f'{trl_version}\n__UNSLOTH_VERSIONING__' + '"""'
+        f'{trl_version}\n__UNSLOTH_VERSIONING__' + '"""\n'
 
     # Check location
     if is_main_process():
@@ -281,7 +281,7 @@ def create_new_function(
     pass
 
     if not overwrite:
-        # Check versioning
+        # Check versioning, and overwrite if any packages changed
         file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
         with open(file_location, "r") as f: f = f.read()
 
