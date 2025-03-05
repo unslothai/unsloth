@@ -78,6 +78,20 @@ def sft_trainer_prepare_dataset(function_name, function):
     if  function_name != "_prepare_non_packed_dataloader" and \
         function_name != "_prepare_dataset": return function
 
+    fast_sft_prepare_dataset = RL_REPLACEMENTS.get("sft_prepare_dataset", None)
+    if fast_sft_prepare_dataset is not None:
+        params = inspect.signature(fast_sft_prepare_dataset).parameters.keys()
+        params = ".*?".join(params)
+        matched = re.match(
+            r"[\s]{0,}def _prepare_dataset\(.*?" + params + r".*?\)",
+            function,
+            flags = re.MULTILINE | re.DOTALL,
+        )
+        if matched:
+            # Use fast version!
+            return inspect.getsource(fast_sft_prepare_dataset)
+    pass
+
     check_text = \
     "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
     "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
