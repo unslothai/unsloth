@@ -283,7 +283,7 @@ def create_new_function(
     if not overwrite:
         # Check versioning
         file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
-        with open(file_location, "r") as f: f.read()
+        with open(file_location, "r") as f: f = f.read()
 
         rewrite = False
         if "__UNSLOTH_VERSIONING__" not in f:
