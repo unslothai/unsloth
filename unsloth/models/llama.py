@@ -1537,9 +1537,12 @@ pass
 def _wrap_fast_inference(generate_function):
     # Wraps inference with bfloat16 / float16
     @torch.inference_mode
-    def _fast_generate(self, *args, **kwargs):
-        f"""{getattr(generate_function, '__doc__', 'Unsloth fast generation')}"""
-
+    def _fast_generate(
+        self,
+        inputs: Optional[torch.Tensor] = None,
+        *args,
+        **kwargs,
+    ):
         FastLlamaModel.for_inference(self)
 
         dtype = _get_dtype(self.config.torch_dtype)
@@ -1576,7 +1579,7 @@ def _wrap_fast_inference(generate_function):
 
         # Mixed precision autocast
         with torch.autocast(device_type = "cuda", dtype = dtype):
-            output = generate_function(self, *args, **kwargs)
+            output = generate_function(self, inputs, *args, **kwargs)
         pass
 
         # Return accelerate back
@@ -1588,6 +1591,7 @@ def _wrap_fast_inference(generate_function):
 
         return output
     pass
+    _fast_generate.__doc__ = getattr(generate_function, '__doc__', 'Unsloth fast generation')
     return _fast_generate
 pass
 
