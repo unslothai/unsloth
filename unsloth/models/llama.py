@@ -15,7 +15,7 @@
 import torch
 import gc
 import math
-from functools import partial
+import functools
 from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
@@ -65,6 +65,7 @@ from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
+import types
 try:
     from huggingface_hub.utils import get_token
 except:
@@ -217,14 +218,14 @@ def LlamaAttention_fast_forward_inference(
     RH_Q = self.RH_Q
     RH_Q[:,:,:,:h] = Qn[:,:,:,h:]
     RH_Q[:,:,:,h:] = Qn[:,:,:,:h]
-    torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
+    RH_Q[:,:,:,:h].neg_() # torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
     RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
     RH_K[:,:,:,:h] = Kn[:,:,:,h:]
     RH_K[:,:,:,h:] = Kn[:,:,:,:h]
-    torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
+    RH_K[:,:,:,:h].neg_() #torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
     
@@ -400,19 +401,20 @@ def LlamaAttention_fast_forward(
     else:
         # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
-        rotary_emb.extend_rope_embedding(V, seq_len=kv_seq_len)
+        rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
 
         if position_ids is None:
             # Useful for LongRoPE
             cos, sin = rotary_emb.get_cached(kv_seq_len)
         else:
-            cos, sin = rotary_emb(V, seq_len=kv_seq_len)
+            cos, sin = rotary_emb(V, seq_len = kv_seq_len)
 
-    Q, K = (
-        fast_rope_embedding(Q, K, cos, sin) 
-        if position_ids is None 
-        else inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    )
+    # Q, K = (
+    #     fast_rope_embedding(Q, K, cos, sin)
+    #     if position_ids is None
+    #     else inplace_rope_embedding(Q, K, cos, sin, position_ids)
+    # )
+    Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -924,7 +926,6 @@ def LlamaModel_fast_forward_inference(
     X = X.to(self.config.torch_dtype)
     bsz, q_len, hd = X.shape
     assert(q_len == 1)
-    
     # Get saved buffers to reduce memory movement
     residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
     _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
@@ -1020,7 +1021,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        
         if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
@@ -1069,7 +1069,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if labels is not None: labels = labels.to(lm_head_device)
 
         # Output last hidden states without logits if asked
-        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+        if self.training and os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(
@@ -1534,78 +1534,58 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 pass
 
 
-def _wrap_fast_inference(generate, device_type, dtype, model):
-    # Wraps inference with bfloat16 / float16
-    @torch.inference_mode
-    def _fast_generate(*args, **kwargs):
+def unsloth_fast_generate(
+    self,
+    *args,
+    **kwargs,
+):
+    FastLlamaModel.for_inference(self)
 
-        if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
-            if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
-                if kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"] > model.config.max_position_embeddings:
-                    raise ValueError(
-                        f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {model.config.max_position_embeddings}!\n'\
-                        'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
-                    )
-        pass
+    dtype = _get_dtype(self.config.torch_dtype)
 
-        # Set a flag for generation!
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model._flag_for_generation = True
-            internal_model = internal_model.model
-        pass
-        internal_model._flag_for_generation = True
-
-        # Must patch accelerate for Xformers
-        if accelerate_new_send_to_device is not None:
-            import accelerate.utils.operations
-            accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
-        pass
-
-        # For newer HF
-        kwargs["cache_implementation"] = "dynamic"
-        # For num_logits_to_keep
-        kwargs["num_logits_to_keep"] = 1
-
-        # Remove token_type_ids
-        kwargs.pop("token_type_ids", None)
-
-        # Check pad_token
-        model_eos_token_id = getattr(model.config, "eos_token_id", None)
-        if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
-            model_eos_token_id = model_eos_token_id[0]
-
-        kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
-
-        # Set pad token
-        # old_pad_token_id = getattr(model.config, "pad_token_id", None)
-        # old_eos_token_id = getattr(model.config, "eos_token_id", None)
-        # model.config.pad_token_id = old_eos_token_id
-
-        # Autocasted
-        with torch.autocast(device_type = device_type, dtype = dtype):
-            output = generate(*args, **kwargs)
-        pass
-
-        # Revert
-        # model.config.pad_token_id = old_pad_token_id
-
-        # Unset a flag for generation!
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
-            internal_model = internal_model.model
-        pass
-        if hasattr(internal_model, "_flag_for_generation"): del internal_model._flag_for_generation
-
-        # Return accelerate back
-        if accelerate_new_send_to_device is not None:
-            accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
-        pass
-
-        return output
+    if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
+        if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
+            if kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"] > self.config.max_position_embeddings:
+                raise ValueError(
+                    f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {model.config.max_position_embeddings}!\n'\
+                    'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
+                )
     pass
-    return _fast_generate
+
+    # Must patch accelerate for Xformers
+    # if accelerate_new_send_to_device is not None:
+    #     import accelerate.utils.operations
+    #     accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
+    # pass
+
+    # For newer HF
+    kwargs["cache_implementation"] = "dynamic"
+    # For num_logits_to_keep
+    kwargs["num_logits_to_keep"] = 1
+
+    # Remove token_type_ids
+    kwargs.pop("token_type_ids", None)
+
+    # Check pad_token
+    model_eos_token_id = getattr(self.config, "eos_token_id", None)
+    if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
+        model_eos_token_id = model_eos_token_id[0]
+
+    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+
+    # Mixed precision autocast
+    with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
+        output = self._old_generate(*args, **kwargs)
+    pass
+
+    # Return accelerate back
+    # if accelerate_new_send_to_device is not None:
+    #     accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
+    # pass
+
+    FastLlamaModel.for_training(self)
+
+    return output
 pass
 
 
@@ -1682,8 +1662,12 @@ class FastLlamaModel:
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
+        from importlib.metadata import version as importlib_version
+        try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+        except: vllm_version = ""
+
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"\
            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.cuda.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
@@ -1825,7 +1809,7 @@ class FastLlamaModel:
             model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
-            model.fast_generate_batches = partial(generate_batches, model.vllm_engine)
+            model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
         pass
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
@@ -1986,6 +1970,11 @@ class FastLlamaModel:
                 layer.self_attn.rotary_emb = rotary_emb
         pass
         
+        # Patch generate
+        if model.generate.__name__ != "unsloth_fast_generate":
+            model._old_generate = model.generate
+            unsloth_fast_generate.__doc__ = model._old_generate.__doc__
+            model.generate = types.MethodType(unsloth_fast_generate, model)
         return model, tokenizer
     pass
 
@@ -2410,12 +2399,20 @@ class FastLlamaModel:
             model.fast_generate_batches = vllm_fast_generate_batches
 
             # Also saving and loading LoRA
-            from functools import partial
             from unsloth_zoo.vllm_utils import save_lora, load_lora
-            model.save_lora = partial(save_lora, model)
-            model.load_lora = partial(load_lora, model)
+            model.save_lora = functools.partial(save_lora, model)
+            model.load_lora = functools.partial(load_lora, model)
         pass
 
+        # Add for_inference and for_training
+        model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
+        model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        
+        # Patch generate
+        if model.generate.__name__ != "unsloth_fast_generate":
+            model._old_generate = model.generate
+            unsloth_fast_generate.__doc__ = model._old_generate.__doc__
+            model.generate = types.MethodType(unsloth_fast_generate, model)
         return model
     pass
 
@@ -2486,7 +2483,6 @@ class FastLlamaModel:
         n_mlp = 0
         n_qkv = 0
         n_o   = 0
-        import types
 
         active_adapter = model.active_adapters[0] if \
             hasattr(model, "active_adapters") else model.active_adapter
@@ -2496,9 +2492,8 @@ class FastLlamaModel:
         bias         = model.peft_config[active_adapter].bias
 
         # We also do not inplace edit QKV for Cohere!
-        from functools import partial
         _apply_lora_mlp = \
-            partial(apply_lora_mlp, inplace = False) \
+            functools.partial(apply_lora_mlp, inplace = False) \
             if model_type == "cohere" else \
             apply_lora_mlp
         pass
@@ -2611,52 +2606,30 @@ class FastLlamaModel:
         pass
 
         # Add for_inference and for_training
-        model.for_training  = partial(FastLlamaModel.for_training,  model)
-        model.for_inference = partial(FastLlamaModel.for_inference, model)
+        model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
+        model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         return model
     pass
 
 
     @staticmethod
     def for_inference(model):
-        # if model.config.model_type == "qwen2":
-        #     FastLlamaModel.for_training(model)
-        #     return
-        # pass
+        if not hasattr(model, "parameters"):
+            raise TypeError("Unsloth: I think you're passing a tokenizer, not the model to for_inference!")
 
+        def _for_inference(m):
+            if hasattr(m, "gradient_checkpointing"): m.gradient_checkpointing = False
+            if hasattr(m, "training"): m.training = False
+            # Pad tokenizer to the left
+            if hasattr(m, "_saved_temp_tokenizer"): m._saved_temp_tokenizer.padding_side = "left"
+            # Set a flag for generation!
+            m._flag_for_generation = True
+        pass
         m = model
         while hasattr(m, "model"):
-            if hasattr(m, "gradient_checkpointing"):
-                m.gradient_checkpointing = False
-            if hasattr(m, "training"):
-                m.training = False
-            # Pad tokenizer to the left
-            if hasattr(m, "_saved_temp_tokenizer"):
-                m._saved_temp_tokenizer.padding_side = "left"
+            _for_inference(m)
             m = m.model
-        pass
-        if hasattr(m, "gradient_checkpointing"):
-            m.gradient_checkpointing = False
-        if hasattr(m, "training"):
-            m.training = False
-        # Pad tokenizer to the left
-        if hasattr(m, "_saved_temp_tokenizer"):
-            m._saved_temp_tokenizer.padding_side = "left"
-
-        # Also check if lm_head / embeddings are trained
-        internal_model = model
-        while not hasattr(internal_model, "lm_head"):
-            internal_model = internal_model.model
-        pass
-        lm_head = internal_model.lm_head.weight
-        device_type = lm_head.device.type
-        dtype = _get_dtype(model.config.torch_dtype)
-
-        # Wrap model.generate
-        if model.generate.__name__ != "_fast_generate":
-            model._unwrapped_old_generate = model.generate
-            model.generate = _wrap_fast_inference(model.generate, device_type, dtype, model)
-        pass
+        _for_inference(m)
 
         # Also disable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
@@ -2667,13 +2640,14 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"): embeddings.training = False
         pass
-
         return model
     pass
 
 
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
+        if not hasattr(model, "parameters"):
+            raise TypeError("Unsloth: I think you're passing a tokenizer, not the model to for_training!")
 
         # Delete all fast inference loras
         for param in model.parameters():
@@ -2681,30 +2655,19 @@ class FastLlamaModel:
                 del param._fast_lora
         pass
 
+        def _for_training(m):
+            if hasattr(m, "gradient_checkpointing"): m.gradient_checkpointing = use_gradient_checkpointing
+            if hasattr(m, "training"): m.training = True
+            # Pad tokenizer to the left
+            if hasattr(m, "_saved_temp_tokenizer"): m._saved_temp_tokenizer.padding_side = "right"
+            # Set a flag for generation!
+            if hasattr(m, "_flag_for_generation"): del m._flag_for_generation
+        pass
         m = model
         while hasattr(m, "model"):
-            if hasattr(m, "gradient_checkpointing"):
-                m.gradient_checkpointing = use_gradient_checkpointing
-            if hasattr(m, "training"):
-                m.training = True
-            # Pad tokenizer to the right
-            if hasattr(m, "_saved_temp_tokenizer"):
-                m._saved_temp_tokenizer.padding_side = "right"
+            _for_training(m)
             m = m.model
-        pass
-        if hasattr(m, "gradient_checkpointing"):
-            m.gradient_checkpointing = use_gradient_checkpointing
-        if hasattr(m, "training"):
-            m.training = True
-        # Pad tokenizer to the right
-        if hasattr(m, "_saved_temp_tokenizer"):
-            m._saved_temp_tokenizer.padding_side = "right"
-
-        # Also revert model.generate
-        if hasattr(model, "_unwrapped_old_generate"):
-            model.generate = model._unwrapped_old_generate
-            del model._unwrapped_old_generate
-        pass
+        _for_training(m)
 
         # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
@@ -2715,7 +2678,6 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"): embeddings.training = True
         pass
-
         return model
     pass
 pass
