@@ -257,6 +257,8 @@ def create_new_function(
         f'{transformers_version}\n'\
         f'{trl_version}\n__UNSLOTH_VERSIONING__\n' + '"""\n'
 
+    write_new_source = versioning + new_source
+
     # Check location
     if is_main_process():
         if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
@@ -267,7 +269,7 @@ def create_new_function(
         function_location = location
         if overwrite or not os.path.isfile(function_location):
             with open(function_location, "wb", buffering = 0) as file:
-                file.write((versioning + new_source).encode("utf-8"))
+                file.write(write_new_source.encode("utf-8"))
                 file.flush()
                 os.fsync(file.fileno())
             pass
@@ -280,31 +282,34 @@ def create_new_function(
             while not os.path.isfile(function_location): continue
     pass
 
-    if not overwrite:
-        # Check versioning, and overwrite if any packages changed
-        file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
-        with open(file_location, "r") as f: f = f.read()
+    # Check versioning, and overwrite if any packages changed
+    file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
+    with open(file_location, "r") as f: f = f.read()
 
-        rewrite = False
+    # Check if exactly equivalent:
+    rewrite = False
+    if f != write_new_source:
+        rewrite = True
+        print(1)
+    elif not overwrite:
         if "__UNSLOTH_VERSIONING__" not in f:
             rewrite = True
         else:
             versions = f[:f.find('__UNSLOTH_VERSIONING__')]
             if versioning[:versioning.find('__UNSLOTH_VERSIONING__')] != versions:
                 rewrite = True
-
-        if rewrite:
-            return create_new_function(
-                name = name,
-                new_source = old_new_source,
-                model_location = model_location,
-                functions = functions,
-                prepend = prepend,
-                append = append,
-                overwrite = True,
-                add_torch_compile = add_torch_compile,
-            )
-        pass
+    pass
+    if rewrite:
+        return create_new_function(
+            name = name,
+            new_source = old_new_source,
+            model_location = model_location,
+            functions = functions,
+            prepend = prepend,
+            append = append,
+            overwrite = True,
+            add_torch_compile = add_torch_compile,
+        )
     pass
 
     # Try loading new module
