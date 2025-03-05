@@ -65,6 +65,7 @@ from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
+import types
 try:
     from huggingface_hub.utils import get_token
 except:
@@ -1535,7 +1536,6 @@ pass
 
 
 def _wrap_fast_inference(generate_function):
-    # Wraps inference with bfloat16 / float16
     @torch.inference_mode
     def _fast_generate(
         self,
@@ -1591,7 +1591,6 @@ def _wrap_fast_inference(generate_function):
 
         return output
     pass
-    _fast_generate.__doc__ = getattr(generate_function, '__doc__', 'Unsloth fast generation')
     return _fast_generate
 pass
 
@@ -1974,8 +1973,9 @@ class FastLlamaModel:
         pass
         
         # Patch generate
-        model._old_generate = model.generate
-        model.generate = _wrap_fast_inference(model.generate)
+        if model.generate.__name__ != "_fast_generate":
+            model._old_generate = model.generate
+            model.generate = types.MethodType(_wrap_fast_inference(model._old_generate), model.generate)
         return model, tokenizer
     pass
 
@@ -2412,7 +2412,7 @@ class FastLlamaModel:
         # Patch generate
         if model.generate.__name__ != "_fast_generate":
             model._old_generate = model.generate
-            model.generate = _wrap_fast_inference(model.generate)
+            model.generate = types.MethodType(_wrap_fast_inference(model._old_generate), model.generate)
         return model
     pass
 
@@ -2483,7 +2483,6 @@ class FastLlamaModel:
         n_mlp = 0
         n_qkv = 0
         n_o   = 0
-        import types
 
         active_adapter = model.active_adapters[0] if \
             hasattr(model, "active_adapters") else model.active_adapter
