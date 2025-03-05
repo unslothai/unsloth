@@ -36,6 +36,8 @@ import sys
 from .utils import Version, is_main_process
 import triton
 from .peft_utils import get_lora_layer_modules
+from importlib.metadata import version as importlib_version
+from packaging.version import Version
 
 # Disable some compilations if old versions are seen
 OLD_TORCH_VERSION = Version(torch.__version__) < Version("2.5.0")
@@ -62,10 +64,22 @@ DISABLED_KEYWORDS = [
 global COMBINED_UNSLOTH_NAME
 global UNSLOTH_COMPILE_LOCATION
 global UNSLOTH_CREATED_FUNCTIONS
+global UNSLOTH_COMPILE_LOCATION_USE_TEMP
 COMBINED_UNSLOTH_NAME = "unsloth_compiled_module"
 UNSLOTH_COMPILE_LOCATION = "unsloth_compiled_cache"
 UNSLOTH_CREATED_FUNCTIONS = []
+UNSLOTH_COMPILE_LOCATION_USE_TEMP = False
 
+# Try creating a directory for cache, or else use a temporary folder
+try:
+    os.makedirs(UNSLOTH_COMPILE_LOCATION, exist_ok = True)
+    if not os.path.exists(UNSLOTH_COMPILE_LOCATION): raise
+except:
+    from tempfile import TemporaryDirectory
+    UNSLOTH_COMPILE_LOCATION_USE_TEMP = True
+    UNSLOTH_COMPILE_LOCATION = TemporaryDirectory(ignore_cleanup_errors = True).name
+    print(f"Unsloth: We can't create folders, so as a hack, we used a temporary directory = {UNSLOTH_COMPILE_LOCATION}")
+pass
 
 _license_header = """
 # Unsloth Zoo - Utilities for Unsloth
@@ -210,8 +224,11 @@ def create_new_function(
     add_torch_compile = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
+    old_new_source = new_source
+
     global UNSLOTH_CREATED_FUNCTIONS
     global UNSLOTH_COMPILE_LOCATION
+    global UNSLOTH_COMPILE_LOCATION_USE_TEMP
     if new_source[0] == " ":
         spaces = new_source.find("def")
         new_source = new_source.split("\n")
@@ -237,6 +254,24 @@ def create_new_function(
     # Fix super() Not necessary anymore!
     # new_source = new_source.replace("super()", "super(type(self), self)")
 
+    # Check versioning
+    try: unsloth_zoo_version = importlib_version("unsloth_zoo")
+    except: unsloth_zoo_version = "0"
+    try: unsloth_version = importlib_version("unsloth")
+    except: unsloth_version = "0"
+    try: transformers_version = importlib_version("transformers")
+    except: transformers_version = "0"
+    try: trl_version = importlib_version("trl")
+    except: trl_version = "0"
+
+    versioning = '"""\n' + \
+        f'{unsloth_zoo_version}\n'\
+        f'{unsloth_version}\n'\
+        f'{transformers_version}\n'\
+        f'{trl_version}\n__UNSLOTH_VERSIONING__\n' + '"""\n'
+
+    write_new_source = versioning + new_source
+
     # Check location
     if is_main_process():
         if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
@@ -247,35 +282,72 @@ def create_new_function(
         function_location = location
         if overwrite or not os.path.isfile(function_location):
             with open(function_location, "wb", buffering = 0) as file:
-                file.write(new_source.encode("utf-8"))
+                file.write(write_new_source.encode("utf-8"))
                 file.flush()
                 os.fsync(file.fileno())
             pass
         pass
-    else:
-        # Wait until file is created
-        location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
-        function_location = location
-        if overwrite or not os.path.isfile(function_location):
-            while not os.path.isfile(function_location): continue
+    pass
+    # Wait until file is created
+    file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
+    trials = 0
+    if overwrite or not os.path.isfile(file_location):
+        while not os.path.isfile(file_location):
+            if trials == 1000: raise RuntimeError("Unsloth: Failed to create dynamic compiled modules!")
+            trials += 1
+            time.sleep(0.01)
+    pass
+    # Check versioning, and overwrite if any packages changed
+    with open(file_location, "r") as f: f = f.read()
+
+    # Check if exactly equivalent:
+    rewrite = False
+    if f != write_new_source:
+        rewrite = True
+    elif not overwrite:
+        if "__UNSLOTH_VERSIONING__" not in f:
+            rewrite = True
+        else:
+            versions = f[:f.find('__UNSLOTH_VERSIONING__')]
+            if versioning[:versioning.find('__UNSLOTH_VERSIONING__')] != versions:
+                rewrite = True
+    pass
+    if rewrite:
+        return create_new_function(
+            name = name,
+            new_source = old_new_source,
+            model_location = model_location,
+            functions = functions,
+            prepend = prepend,
+            append = append,
+            overwrite = True,
+            add_torch_compile = add_torch_compile,
+        )
     pass
 
     # Try loading new module
     new_module = None
+    trials = 0
     while True:
+        if trials == 1000: raise RuntimeError("Unsloth: Failed to create dynamic compiled")
         try:
             new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
             break
         except:
-            # Instead use sys modules for dynamic loading
             module_name = f"unsloth_cache_{name}"
             file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
+
+            # Instead use sys modules for dynamic loading
             spec = importlib.util.spec_from_file_location(module_name, file_location)
             new_module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = new_module
             spec.loader.exec_module(new_module)
 
+            # Temp modules can only use dynamic loading
+            if UNSLOTH_COMPILE_LOCATION_USE_TEMP: break
+
             time.sleep(0.01)
+            trials += 1
         pass
     pass
     if new_module is None:
@@ -1454,31 +1526,20 @@ def unsloth_compile_transformers(
 
     all_code = "\n\n".join(final_all_standalone_classes)
 
-    if import_from_cache:
-        try:
-            combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}_{model_type}")
-            import_from_cache = True
-        except:
-            import_from_cache = False
-    else:
-        import_from_cache = False
-    pass
-    if not import_from_cache:
-        try:
-            combined_module = create_new_function(
-                f"{COMBINED_UNSLOTH_NAME}_{model_type}",
-                all_code,
-                model_location,
-                functions,
-                prepend = \
-                    _disabled_sdpa_code + \
-                    f"\ntorch_compile_options = {torch_compile_options}\n" + \
-                    _cross_entropy_code + "\n"
-            )
-        except Exception as exception:
-            raise RuntimeError(exception)
-            combined_module = None
-    pass
+    try:
+        combined_module = create_new_function(
+            f"{COMBINED_UNSLOTH_NAME}_{model_type}",
+            all_code,
+            model_location,
+            functions,
+            prepend = \
+                _disabled_sdpa_code + \
+                f"\ntorch_compile_options = {torch_compile_options}\n" + \
+                _cross_entropy_code + "\n"
+        )
+    except Exception as exception:
+        raise RuntimeError(exception)
+        combined_module = None
 
     if compile_torch_modules and not disable:
 
