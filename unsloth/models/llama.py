@@ -401,19 +401,20 @@ def LlamaAttention_fast_forward(
     else:
         # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
-        rotary_emb.extend_rope_embedding(V, seq_len=kv_seq_len)
+        rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
 
         if position_ids is None:
             # Useful for LongRoPE
             cos, sin = rotary_emb.get_cached(kv_seq_len)
         else:
-            cos, sin = rotary_emb(V, seq_len=kv_seq_len)
+            cos, sin = rotary_emb(V, seq_len = kv_seq_len)
 
     Q, K = (
-        fast_rope_embedding(Q, K, cos, sin) 
-        if position_ids is None 
+        fast_rope_embedding(Q, K, cos, sin)
+        if position_ids is None
         else inplace_rope_embedding(Q, K, cos, sin, position_ids)
     )
+    # Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -1068,7 +1069,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if labels is not None: labels = labels.to(lm_head_device)
 
         # Output last hidden states without logits if asked
-        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+        if model.training and os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(
@@ -1662,11 +1663,11 @@ class FastLlamaModel:
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         from importlib.metadata import version as importlib_version
-        try: vllm_version = importlib_version("vllm")
-        except: vllm_version = "-"
+        try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+        except: vllm_version = ""
 
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}. vLLM: {vllm_version}.\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"\
            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.cuda.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
