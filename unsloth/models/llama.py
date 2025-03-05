@@ -409,12 +409,12 @@ def LlamaAttention_fast_forward(
         else:
             cos, sin = rotary_emb(V, seq_len = kv_seq_len)
 
-    Q, K = (
-        fast_rope_embedding(Q, K, cos, sin)
-        if position_ids is None
-        else inplace_rope_embedding(Q, K, cos, sin, position_ids)
-    )
-    # Q, K = fast_rope_embedding(Q, K, cos, sin)
+    # Q, K = (
+    #     fast_rope_embedding(Q, K, cos, sin)
+    #     if position_ids is None
+    #     else inplace_rope_embedding(Q, K, cos, sin, position_ids)
+    # )
+    Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
