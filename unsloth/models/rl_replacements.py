@@ -89,7 +89,10 @@ def sft_trainer_prepare_dataset(function_name, function):
         )
         if matched:
             # Use fast version!
-            return inspect.getsource(fast_sft_prepare_dataset)
+            function = inspect.getsource(fast_sft_prepare_dataset)
+            function = function.replace("def sft_prepare_dataset", "def _prepare_dataset")
+            return function
+        pass
     pass
 
     check_text = \
