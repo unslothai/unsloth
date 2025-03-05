@@ -256,10 +256,12 @@ def sft_prepare_dataset(
     use_desc = isinstance(dataset, Dataset)
 
     # Get max length
-    max_length = getattr(args, "max_length", 0)
-    if max_length == 0: max_length = getattr(args, "max_seq_length", 0)
+    max_seq_length = getattr(args, "max_length", 0)
+    if max_seq_length == 0: max_seq_length = getattr(args, "max_seq_length", 0)
+    if max_seq_length == 0: max_seq_length = getattr(self, "max_seq_length", 0)
+    if max_seq_length == 0: max_seq_length = getattr(self, "max_seq", 0)
     dataset_text_field = getattr(args, "dataset_text_field", "text")
-    do_truncation = max_length != 0
+    do_truncation = max_seq_length != 0
     do_formatting_func = False
 
     # Check if already tokenized so skip
@@ -301,7 +303,7 @@ def sft_prepare_dataset(
         return processing_class(
             example[dataset_text_field] if not do_formatting_func else formatting_func(example),
             truncation = do_truncation,
-            max_length = max_length,
+            max_length = max_seq_length,
             return_token_type_ids = False,
             add_special_tokens = add_special_tokens,
         )
@@ -312,14 +314,14 @@ def sft_prepare_dataset(
     dataset = dataset.map(_tokenize, batched = True, **map_kwargs)
 
     if packing:
-        if max_length == 0:
-            raise ValueError("When packing is enabled, `max_length` can't be `None`.")
+        if max_seq_length == 0:
+            raise ValueError("When packing is enabled, `max_seq_length` can't be `None`.")
 
         if use_desc: map_kwargs["desc"] = f"Packing {dataset_name} dataset"
         dataset = dataset.select_columns("input_ids").map(
             pack_examples,
             batched = True,
-            fn_kwargs = {"seq_length": args.max_length,},
+            fn_kwargs = {"seq_length": max_seq_length,},
             **map_kwargs,
         )
     return dataset
