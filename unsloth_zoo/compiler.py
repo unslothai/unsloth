@@ -290,7 +290,6 @@ def create_new_function(
     rewrite = False
     if f != write_new_source:
         rewrite = True
-        print(1)
     elif not overwrite:
         if "__UNSLOTH_VERSIONING__" not in f:
             rewrite = True
