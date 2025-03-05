@@ -90,6 +90,8 @@ def sft_trainer_prepare_dataset(function_name, function):
         if matched:
             # Use fast version!
             function = inspect.getsource(fast_sft_prepare_dataset)
+            function = function.split("\n")
+            function = "\n".join(" "*4 + x for x in function)
             function = function.replace("def sft_prepare_dataset", "def _prepare_dataset")
             return function
         pass
