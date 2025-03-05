@@ -75,7 +75,7 @@ try:
 except:
     from tempfile import TemporaryDirectory
     UNSLOTH_COMPILE_LOCATION = TemporaryDirectory(ignore_cleanup_errors = True).name
-    print(f"Unsloth: We can't create folders, so we used a temporary directory = {UNSLOTH_COMPILE_LOCATION}")
+    print(f"Unsloth: We can't create folders, so as a hack, we used a temporary directory = {UNSLOTH_COMPILE_LOCATION}")
 pass
 
 _license_header = """
