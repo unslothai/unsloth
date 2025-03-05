@@ -36,6 +36,8 @@ import sys
 from .utils import Version, is_main_process
 import triton
 from .peft_utils import get_lora_layer_modules
+from importlib.metadata import version as importlib_version
+from packaging.version import Version
 
 # Disable some compilations if old versions are seen
 OLD_TORCH_VERSION = Version(torch.__version__) < Version("2.5.0")
@@ -210,6 +212,8 @@ def create_new_function(
     add_torch_compile = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
+    old_new_source = new_source
+
     global UNSLOTH_CREATED_FUNCTIONS
     global UNSLOTH_COMPILE_LOCATION
     if new_source[0] == " ":
@@ -237,6 +241,22 @@ def create_new_function(
     # Fix super() Not necessary anymore!
     # new_source = new_source.replace("super()", "super(type(self), self)")
 
+    # Check versioning
+    try: unsloth_zoo_version = importlib_version("unsloth_zoo")
+    except: unsloth_zoo_version = "0"
+    try: unsloth_version = importlib_version("unsloth")
+    except: unsloth_version = "0"
+    try: transformers_version = importlib_version("transformers")
+    except: transformers_version = "0"
+    try: trl_version = importlib_version("trl")
+    except: trl_version = "0"
+
+    versioning = '"""\n' + \
+        f'{unsloth_zoo_version}\n'\
+        f'{unsloth_version}\n'\
+        f'{transformers_version}'\
+        f'{trl_version}\n__UNSLOTH_VERSIONING__' + '"""'
+
     # Check location
     if is_main_process():
         if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
@@ -247,7 +267,7 @@ def create_new_function(
         function_location = location
         if overwrite or not os.path.isfile(function_location):
             with open(function_location, "wb", buffering = 0) as file:
-                file.write(new_source.encode("utf-8"))
+                file.write((versioning + new_source).encode("utf-8"))
                 file.flush()
                 os.fsync(file.fileno())
             pass
@@ -262,7 +282,9 @@ def create_new_function(
 
     # Try loading new module
     new_module = None
+    trials = 0
     while True:
+        if trials == 1000: raise RuntimeError("Unsloth: Failed to create dynamic compiled modules!")
         try:
             new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
             break
@@ -270,12 +292,40 @@ def create_new_function(
             # Instead use sys modules for dynamic loading
             module_name = f"unsloth_cache_{name}"
             file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
+
+            if not overwrite:
+                # Check versioning
+                with open(file_location, "r") as f: f.read()
+
+                rewrite = False
+                if "__UNSLOTH_VERSIONING__" not in f:
+                    rewrite = True
+                else:
+                    versions = f[:f.find('__UNSLOTH_VERSIONING__')]
+                    if versioning[versioning.find('__UNSLOTH_VERSIONING__')] != versions:
+                        rewrite = True
+
+                if rewrite:
+                    return create_new_function(
+                        name = name,
+                        new_source = old_new_source,
+                        model_location = model_location,
+                        functions = functions,
+                        prepend = prepend,
+                        append = append,
+                        overwrite = True,
+                        add_torch_compile = add_torch_compile,
+                    )
+                pass
+            pass
+
             spec = importlib.util.spec_from_file_location(module_name, file_location)
             new_module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = new_module
             spec.loader.exec_module(new_module)
 
             time.sleep(0.01)
+            trials += 1
         pass
     pass
     if new_module is None:
