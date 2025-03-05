@@ -1537,7 +1537,6 @@ pass
 
 def unsloth_fast_generate(
     self,
-    inputs: Optional[torch.Tensor] = None,
     *args,
     **kwargs,
 ):
@@ -1577,7 +1576,7 @@ def unsloth_fast_generate(
 
     # Mixed precision autocast
     with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
-        output = self._old_generate(self, inputs, *args, **kwargs)
+        output = self._old_generate(*args, **kwargs)
     pass
 
     # Return accelerate back
@@ -2612,7 +2611,6 @@ class FastLlamaModel:
 
     @staticmethod
     def for_inference(model):
-        m = model
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"): m.gradient_checkpointing = False
             if hasattr(m, "training"): m.training = False
@@ -2621,6 +2619,7 @@ class FastLlamaModel:
             # Set a flag for generation!
             m._flag_for_generation = True
         pass
+        m = model
         while hasattr(m, "model"):
             _for_inference(m)
             m = m.model
@@ -2656,6 +2655,7 @@ class FastLlamaModel:
             # Set a flag for generation!
             if hasattr(m, "_flag_for_generation"): del m._flag_for_generation
         pass
+        m = model
         while hasattr(m, "model"):
             _for_inference(m)
             m = m.model
