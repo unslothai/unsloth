@@ -218,14 +218,14 @@ def LlamaAttention_fast_forward_inference(
     RH_Q = self.RH_Q
     RH_Q[:,:,:,:h] = Qn[:,:,:,h:]
     RH_Q[:,:,:,h:] = Qn[:,:,:,:h]
-    torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
+    RH_Q[:,:,:,:h].neg_() # torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
     RH_K = RH_Q[:,:n_kv_heads,:,:] # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
     RH_K[:,:,:,:h] = Kn[:,:,:,h:]
     RH_K[:,:,:,h:] = Kn[:,:,:,:h]
-    torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
+    RH_K[:,:,:,:h].neg_() #torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
     
@@ -261,7 +261,7 @@ def LlamaAttention_fast_forward_inference(
     # pass
 
     # Attention
-    if True:#bsz == 1:
+    if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
         # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
@@ -943,6 +943,7 @@ def LlamaModel_fast_forward_inference(
             seq_len,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
+        print(attention_mask)
     else:
         attention_mask = None
     pass
