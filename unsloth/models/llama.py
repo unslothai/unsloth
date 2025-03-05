@@ -925,7 +925,6 @@ def LlamaModel_fast_forward_inference(
     X = X.to(self.config.torch_dtype)
     bsz, q_len, hd = X.shape
     assert(q_len == 1)
-    
     # Get saved buffers to reduce memory movement
     residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
     _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
@@ -943,7 +942,6 @@ def LlamaModel_fast_forward_inference(
             seq_len,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
-        print(attention_mask)
     else:
         attention_mask = None
     pass
@@ -1022,7 +1020,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        
         if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
@@ -1664,8 +1661,12 @@ class FastLlamaModel:
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
+        from importlib.metadata import version as importlib_version
+        try: vllm_version = importlib_version("vllm")
+        except: vllm_version = "-"
+
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}. vLLM: {vllm_version}.\n"\
            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.cuda.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
