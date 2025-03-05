@@ -15,7 +15,7 @@
 import torch
 import gc
 import math
-from functools import partial
+import functools
 from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
@@ -1829,7 +1829,7 @@ class FastLlamaModel:
             model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
-            model.fast_generate_batches = partial(generate_batches, model.vllm_engine)
+            model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
         pass
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
@@ -2414,15 +2414,14 @@ class FastLlamaModel:
             model.fast_generate_batches = vllm_fast_generate_batches
 
             # Also saving and loading LoRA
-            from functools import partial
             from unsloth_zoo.vllm_utils import save_lora, load_lora
-            model.save_lora = partial(save_lora, model)
-            model.load_lora = partial(load_lora, model)
+            model.save_lora = functools.partial(save_lora, model)
+            model.load_lora = functools.partial(load_lora, model)
         pass
 
         # Add for_inference and for_training
-        model.for_training  = partial(FastLlamaModel.for_training,  model)
-        model.for_inference = partial(FastLlamaModel.for_inference, model)
+        model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
+        model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         return model
     pass
 
@@ -2503,9 +2502,8 @@ class FastLlamaModel:
         bias         = model.peft_config[active_adapter].bias
 
         # We also do not inplace edit QKV for Cohere!
-        from functools import partial
         _apply_lora_mlp = \
-            partial(apply_lora_mlp, inplace = False) \
+            functools.partial(apply_lora_mlp, inplace = False) \
             if model_type == "cohere" else \
             apply_lora_mlp
         pass
@@ -2618,8 +2616,8 @@ class FastLlamaModel:
         pass
 
         # Add for_inference and for_training
-        model.for_training  = partial(FastLlamaModel.for_training,  model)
-        model.for_inference = partial(FastLlamaModel.for_inference, model)
+        model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
+        model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         return model
     pass
 
