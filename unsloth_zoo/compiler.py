@@ -255,7 +255,7 @@ def create_new_function(
         f'{unsloth_zoo_version}\n'\
         f'{unsloth_version}\n'\
         f'{transformers_version}\n'\
-        f'{trl_version}\n__UNSLOTH_VERSIONING__' + '"""\n'
+        f'{trl_version}\n__UNSLOTH_VERSIONING__\n' + '"""\n'
 
     # Check location
     if is_main_process():
@@ -290,7 +290,7 @@ def create_new_function(
             rewrite = True
         else:
             versions = f[:f.find('__UNSLOTH_VERSIONING__')]
-            if versioning[versioning.find('__UNSLOTH_VERSIONING__')] != versions:
+            if versioning[:versioning.find('__UNSLOTH_VERSIONING__')] != versions:
                 rewrite = True
 
         if rewrite:
