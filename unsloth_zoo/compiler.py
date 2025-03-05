@@ -64,9 +64,11 @@ DISABLED_KEYWORDS = [
 global COMBINED_UNSLOTH_NAME
 global UNSLOTH_COMPILE_LOCATION
 global UNSLOTH_CREATED_FUNCTIONS
+global UNSLOTH_COMPILE_LOCATION_USE_TEMP
 COMBINED_UNSLOTH_NAME = "unsloth_compiled_module"
 UNSLOTH_COMPILE_LOCATION = "unsloth_compiled_cache"
 UNSLOTH_CREATED_FUNCTIONS = []
+UNSLOTH_COMPILE_LOCATION_USE_TEMP = False
 
 # Try creating a directory for cache, or else use a temporary folder
 try:
@@ -75,6 +77,7 @@ try:
     raise
 except:
     from tempfile import TemporaryDirectory
+    UNSLOTH_COMPILE_LOCATION_USE_TEMP = True
     UNSLOTH_COMPILE_LOCATION = TemporaryDirectory(ignore_cleanup_errors = True).name
     print(f"Unsloth: We can't create folders, so as a hack, we used a temporary directory = {UNSLOTH_COMPILE_LOCATION}")
 pass
@@ -226,6 +229,7 @@ def create_new_function(
 
     global UNSLOTH_CREATED_FUNCTIONS
     global UNSLOTH_COMPILE_LOCATION
+    global UNSLOTH_COMPILE_LOCATION_USE_TEMP
     if new_source[0] == " ":
         spaces = new_source.find("def")
         new_source = new_source.split("\n")
@@ -326,7 +330,7 @@ def create_new_function(
     new_module = None
     trials = 0
     while True:
-        if trials == 1000: raise RuntimeError("Unsloth: Failed to create dynamic compiled modules!")
+        if trials == 1000: raise RuntimeError("Unsloth: Failed to create dynamic compiled")
         try:
             new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
             break
@@ -340,6 +344,9 @@ def create_new_function(
             new_module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = new_module
             spec.loader.exec_module(new_module)
+
+            # Temp modules can only use dynamic loading
+            if UNSLOTH_COMPILE_LOCATION_USE_TEMP: break
 
             time.sleep(0.01)
             trials += 1
