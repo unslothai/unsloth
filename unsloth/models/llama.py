@@ -1534,11 +1534,11 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 pass
 
 
-def _wrap_fast_inference(generate):
+def _wrap_fast_inference(generate_function):
     # Wraps inference with bfloat16 / float16
     @torch.inference_mode
     def _fast_generate(self, *args, **kwargs):
-        f"""{getattr(generate, '__doc__', 'Unsloth fast generation')}"""
+        f"""{getattr(generate_function, '__doc__', 'Unsloth fast generation')}"""
 
         FastLlamaModel.for_inference(self)
 
@@ -1576,7 +1576,7 @@ def _wrap_fast_inference(generate):
 
         # Mixed precision autocast
         with torch.autocast(device_type = "cuda", dtype = dtype):
-            output = generate(*args, **kwargs)
+            output = generate_function(self, *args, **kwargs)
         pass
 
         # Return accelerate back
