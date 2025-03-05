@@ -68,6 +68,15 @@ COMBINED_UNSLOTH_NAME = "unsloth_compiled_module"
 UNSLOTH_COMPILE_LOCATION = "unsloth_compiled_cache"
 UNSLOTH_CREATED_FUNCTIONS = []
 
+# Try creating a directory for cache, or else use a temporary folder
+try:
+    os.makedirs(UNSLOTH_COMPILE_LOCATION, exist_ok = True)
+    if not os.path.exists(UNSLOTH_COMPILE_LOCATION): raise
+    raise
+except:
+    from tempfile import TemporaryDirectory
+    UNSLOTH_COMPILE_LOCATION = TemporaryDirectory(ignore_cleanup_errors = True).name
+pass
 
 _license_header = """
 # Unsloth Zoo - Utilities for Unsloth
@@ -1510,31 +1519,20 @@ def unsloth_compile_transformers(
 
     all_code = "\n\n".join(final_all_standalone_classes)
 
-    if import_from_cache:
-        try:
-            combined_module = importlib.import_module(f"{UNSLOTH_COMPILE_LOCATION}.{COMBINED_UNSLOTH_NAME}_{model_type}")
-            import_from_cache = True
-        except:
-            import_from_cache = False
-    else:
-        import_from_cache = False
-    pass
-    if not import_from_cache:
-        try:
-            combined_module = create_new_function(
-                f"{COMBINED_UNSLOTH_NAME}_{model_type}",
-                all_code,
-                model_location,
-                functions,
-                prepend = \
-                    _disabled_sdpa_code + \
-                    f"\ntorch_compile_options = {torch_compile_options}\n" + \
-                    _cross_entropy_code + "\n"
-            )
-        except Exception as exception:
-            raise RuntimeError(exception)
-            combined_module = None
-    pass
+    try:
+        combined_module = create_new_function(
+            f"{COMBINED_UNSLOTH_NAME}_{model_type}",
+            all_code,
+            model_location,
+            functions,
+            prepend = \
+                _disabled_sdpa_code + \
+                f"\ntorch_compile_options = {torch_compile_options}\n" + \
+                _cross_entropy_code + "\n"
+        )
+    except Exception as exception:
+        raise RuntimeError(exception)
+        combined_module = None
 
     if compile_torch_modules and not disable:
 
