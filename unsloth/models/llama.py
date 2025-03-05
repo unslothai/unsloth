@@ -2644,7 +2644,7 @@ class FastLlamaModel:
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
         if not hasattr(model, "parameters"):
-            raise TypeError("Unsloth: I think you're passing a tokenizer, not the model to for_inference!")
+            raise TypeError("Unsloth: I think you're passing a tokenizer, not the model to for_training!")
 
         # Delete all fast inference loras
         for param in model.parameters():
