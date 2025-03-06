@@ -302,15 +302,17 @@ def create_new_function(
 
     # Check if exactly equivalent:
     rewrite = False
-    if f != write_new_source:
-        rewrite = True
-    elif not overwrite:
-        if "__UNSLOTH_VERSIONING__" not in f:
+    if not overwrite:
+        if f != write_new_source:
             rewrite = True
-        else:
-            versions = f[:f.find('__UNSLOTH_VERSIONING__')]
-            if versioning[:versioning.find('__UNSLOTH_VERSIONING__')] != versions:
+        elif not overwrite:
+            if "__UNSLOTH_VERSIONING__" not in f:
                 rewrite = True
+            else:
+                versions = f[:f.find('__UNSLOTH_VERSIONING__')]
+                if versioning[:versioning.find('__UNSLOTH_VERSIONING__')] != versions:
+                    rewrite = True
+        pass
     pass
     if rewrite:
         return create_new_function(
