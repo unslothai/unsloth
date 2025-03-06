@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.5"
+__version__ = "2025.3.6"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1050,7 +1050,10 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
         pass
     pass
 
-    if num_items_in_batch is None:
+    # Get gradient accumulation steps if possible
+    if num_items_in_batch is None and \
+        getattr(self, "args", {}).get("gradient_accumulation_steps", 1) != 1:
+
         name = (model.base_model.model if hasattr(model, "base_model") else model).__class__.__name__
         logger.warning_once(
             f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"\
@@ -1245,10 +1248,11 @@ pass
 # os.environ['UNSLOTH_RETURN_LOGITS'] = '1'
 LOGITS_ERROR_STRING = \
     "Unsloth: Logits are empty from 2024.11 onwards. To get raw logits again, please "\
-    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\n\n'\
-    "import os\n"\
+    'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\n'\
+    "```\nimport os\n"\
     "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\
-    "... trainer.train() ..."
+    "trainer.train()\n```\n"\
+    "No need to restart your console - just add `os.environ['UNSLOTH_RETURN_LOGITS'] = '1'` before trainer.train() and re-run the cell!"
 
 def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
 def return_none(*args, **kwargs): return None
