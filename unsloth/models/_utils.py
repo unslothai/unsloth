@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.6"
+__version__ = "2025.3.7"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1052,8 +1052,7 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
 
     # Get gradient accumulation steps if possible
     if num_items_in_batch is None and \
-        getattr(self, "args", {}).get("gradient_accumulation_steps", 1) != 1:
-
+        getattr(getattr(self, "args", self), "gradient_accumulation_steps", 1) != 1:
         name = (model.base_model.model if hasattr(model, "base_model") else model).__class__.__name__
         logger.warning_once(
             f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"\
