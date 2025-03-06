@@ -49,7 +49,7 @@ pass
 
 def is_main_process():
     is_initialized = torch.distributed.is_initialized()
-    return is_initialized and torch.distributed.get_rank() == 0
+    return (not is_initialized) or (is_initialized and torch.distributed.get_rank() == 0)
 pass
 
 
