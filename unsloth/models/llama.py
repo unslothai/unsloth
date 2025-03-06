@@ -1843,7 +1843,7 @@ class FastLlamaModel:
             else:
                 inner_training_loop = Trainer._original_training_loop
         except:
-            raise RuntimeError('Unsloth currently does not support multi GPU setups - but we are working on it!')
+            raise RuntimeError('Unsloth: Unsuccessfully patched inner_training_loop')
         pass
         
         import transformers.trainer
@@ -1869,7 +1869,7 @@ class FastLlamaModel:
         f"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size:,}\\n"\\
         f' "-____-"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,}/{get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_param_count(model)*100:.2f}% trained)'
         logger.warning(debug_info)
-        import subprocess, re, gc
+        import gc
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
@@ -1897,9 +1897,6 @@ class FastLlamaModel:
             "_inner_training_loop",
             "_fast_inner_training_loop", 1,
         )
-        exec(inner_training_loop, globals())
-
-        Trainer._inner_training_loop = _fast_inner_training_loop
         inner_training_loop = inner_training_loop.replace(
             "is_torch_tpu_available()",
             "False",
