@@ -1353,7 +1353,7 @@ def unsloth_compile_transformers(
     spaces = re.search(r'\n([\s\t]{1,})', original_debug).group(0)[1:]
     front_spaces = re.match(r'([\s\t]{1,})', inner_training_loop).group(0)
 
-    debug_info = """ebug_info = \\
+    debug_info = """debug_info = \\
         f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs used = {len(set(p.device for p in model.parameters()))}\\n"\\
         f"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\n"\\
         f"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\n"\\
