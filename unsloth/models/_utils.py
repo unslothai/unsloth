@@ -1248,7 +1248,8 @@ LOGITS_ERROR_STRING = \
     'set the environment variable `UNSLOTH_RETURN_LOGITS` to `"1" BEFORE starting to train ie before `trainer.train()`. For example:\n\n'\
     "import os\n"\
     "os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"\
-    "... trainer.train() ..."
+    "... trainer.train() ...\n"\
+    "No need to restart your console - just add `os.environ['UNSLOTH_RETURN_LOGITS'] = '1'` before trainer.train() and re-run the cell!"
 
 def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
 def return_none(*args, **kwargs): return None
