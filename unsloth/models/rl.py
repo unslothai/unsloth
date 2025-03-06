@@ -287,7 +287,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Force logits to be produced if preprocess_logits_for_metrics or compute_metrics is used
     if "model" in call_args:
         logits_check = \
-        "_output_logits = False"\
+        "_output_logits = False\n"\
         "if locals().get('compute_metrics', None) is not None: _output_logits = True\n"\
         "if locals().get('preprocess_logits_for_metrics', None) is not None: _output_logits = True\n"\
         "if _output_logits:\n"\
