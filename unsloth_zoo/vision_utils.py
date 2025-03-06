@@ -114,11 +114,17 @@ def smart_resize(
 pass
 
 
-def fetch_image(ele: dict[Union[Tuple[str, str], Image.Image]], size_factor: int = IMAGE_FACTOR) -> Image.Image:
+def fetch_image(
+    ele: dict[Union[Tuple[str, str], Image.Image]],
+    size_factor: int = IMAGE_FACTOR,
+) -> Image.Image:
     if "image" in ele:
         image = ele["image"]
     else:
         image = ele["image_url"]
+        if isinstance(image, dict) and "url" in image:
+            image = image["url"]
+    pass
     image_obj = None
     if isinstance(image, Image.Image):
         image_obj = image
