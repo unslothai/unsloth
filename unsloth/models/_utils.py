@@ -1253,7 +1253,7 @@ LOGITS_ERROR_STRING = \
 
 def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
 def return_none(*args, **kwargs): return None
-class EmptyLogits(torch.Tensor):
+class EmptyLogits(list):
     def __init__(self): return
     def raise_getattr_error(self, attr): return return_none if attr == "to" else raise_logits_error
     __getitem__ = raise_logits_error
