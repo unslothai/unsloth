@@ -284,6 +284,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += eval_changes
     pass
 
+    # Force logits to be produced if preprocess_logits_for_metrics or compute_metrics is used
+    if "model" in call_args:
+        logits_check = \
+        "_output_logits = False\n"\
+        "if locals().get('compute_metrics', None) is not None: _output_logits = True\n"\
+        "if locals().get('preprocess_logits_for_metrics', None) is not None: _output_logits = True\n"\
+        "if _output_logits:\n"\
+        "    os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"
+        extra_args += logits_check
+    pass
+
     # Check max_seq_length
     if "model" in call_args:
         length_check = \
