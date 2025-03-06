@@ -47,9 +47,9 @@ def _get_dtype(dtype):
 pass
 
 
-from accelerate import PartialState
 def is_main_process():
-    return PartialState().is_local_main_process
+    is_initialized = torch.distributed.is_initialized()
+    return is_initialized and torch.distributed.get_rank() == 0
 pass
 
 
