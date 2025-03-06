@@ -1897,8 +1897,6 @@ class FastLlamaModel:
             "_inner_training_loop",
             "_fast_inner_training_loop", 1,
         )
-
-        Trainer._inner_training_loop = _fast_inner_training_loop
         inner_training_loop = inner_training_loop.replace(
             "is_torch_tpu_available()",
             "False",
