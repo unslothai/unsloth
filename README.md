@@ -39,8 +39,16 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - This [continued pretraining notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Mistral_v0.3_(7B)-CPT.ipynb) is for learning another language
 - Click [here](https://docs.unsloth.ai/) for detailed documentation for Unsloth.
 
+## ⚡ Quickstart
+
+- **Install with pip (recommended)** for Linux devices:
+```
+pip install unsloth
+```
+For Windows install instructions, see [here](https://github.com/unslothai/unsloth/edit/main/README.md#windows-installation).
+
 ## 🦥 Unsloth.ai News
-- 📣 NEW! Introducing [Reasoning](https://unsloth.ai/blog/r1-reasoning) in Unsloth. You can now reproduce DeepSeek-R1's "aha" moment with just 7GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
+- 📣 NEW! Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. You can now reproduce DeepSeek-R1's "aha" moment with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 NEW! [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - the most powerful open reasoning models with Llama & Qwen distillations. Run or fine-tune them now! More details: [unsloth.ai/blog/deepseek-r1](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
 - 📣 NEW! [Phi-4](https://unsloth.ai/blog/phi4) by Microsoft is now supported. We also [fixed bugs](https://unsloth.ai/blog/phi4) in Phi-4 and [uploaded GGUFs, 4-bit](https://huggingface.co/collections/unsloth/phi-4-all-versions-677eecf93784e61afe762afa). Try the [Phi-4 Colab notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Phi_4-Conversational.ipynb)
 - 📣 NEW! [Llama 3.3 (70B)](https://huggingface.co/collections/unsloth/llama-33-all-versions-67535d7d994794b9d7cf5e9f), Meta's latest model is supported.
@@ -65,9 +73,8 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 | ------------------------------- | --------------------------------------- |
 | 📚 **Documentation & Wiki**              | [Read Our Docs](https://docs.unsloth.ai) |
 | <img height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/6f/Logo_of_Twitter.svg" />&nbsp; **Twitter (aka X)**              |  [Follow us on X](https://twitter.com/unslothai)|
-| 💾 **Installation**               | [unsloth/README.md](https://github.com/unslothai/unsloth/tree/main#-installation-instructions)|
-| 🥇 **Benchmarking**                   | [Performance Tables](https://github.com/unslothai/unsloth/tree/main#-performance-benchmarking)
-| 🌐 **Released Models**            | [Unsloth Releases](https://docs.unsloth.ai/get-started/all-our-models)|
+| 💾 **Installation**               | [Pip install](https://docs.unsloth.ai/get-started/installing-+-updating)|
+| 🔮 **Our Models**            | [Unsloth Releases](https://docs.unsloth.ai/get-started/all-our-models)|
 | ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
 | <img height="14" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />&nbsp; **Reddit**                    | [Join our Reddit page](https://reddit.com/r/unsloth)|
 
@@ -75,32 +82,64 @@ All notebooks are **beginner friendly**! Add your dataset, click "Run All", and 
 - All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. **Manual backprop engine**.
 - **0% loss in accuracy** - no approximation methods - all exact.
 - No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
-- Works on **Linux** and **Windows** via WSL.
+- Works on **Linux** and **Windows**
 - Supports 4bit and 16bit QLoRA / LoRA finetuning via [bitsandbytes](https://github.com/TimDettmers/bitsandbytes).
-- Open source trains 5x faster - see [Unsloth Pro](https://unsloth.ai/) for up to **30x faster training**!
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" height="50" align="center" />
 
+## 💾 Install Unsloth
+You can also see our documentation for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
 
-## 🥇 Performance Benchmarking
-- For our most detailed benchmarks, read our [Llama 3.3 Blog](https://unsloth.ai/blog/llama3-3).
-- Benchmarking of Unsloth was also conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
+### Pip Installation
+**Install with pip (recommended) for Linux devices:**
+```
+pip install unsloth
+```
+See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip-installation) for advanced pip install instructions.
+### Windows Installation
+> [!warning]
+> Python 3.13 does not support Unsloth. Use 3.12, 3.11 or 3.10
 
-We tested using the Alpaca  Dataset, a batch size of 2, gradient accumulation steps of 4, rank = 32, and applied QLoRA on all linear layers (q, k, v, o, gate, up, down):
-  
-| Model          | VRAM  | 🦥 Unsloth speed | 🦥 VRAM reduction | 🦥 Longer context | 😊 Hugging Face + FA2 |
-|----------------|-------|-----------------|----------------|----------------|--------------------|
-| Llama 3.3 (70B)| 80GB  | 2x              | >75%           | 13x longer     | 1x                 |
-| Llama 3.1 (8B) | 80GB  | 2x              | >70%           | 12x longer     | 1x                 |
+1. **Install NVIDIA Video Driver:**
+  You should install the latest version of your GPUs driver. Download drivers here: [NVIDIA GPU Drive](https://www.nvidia.com/Download/index.aspx).
 
-<br>
+3. **Install Visual Studio C++:**
+   You will need Visual Studio, with C++ installed. By default, C++ is not installed with [Visual Studio](https://visualstudio.microsoft.com/vs/community/), so make sure you select all of the C++ options. Also select options for Windows 10/11 SDK. For more detailed instructions, see [here](https://docs.unsloth.ai/get-started/installing-+-updating).
 
-![](https://i.ibb.co/sJ7RhGG/image-41.png)
+5. **Install CUDA Toolkit:**
+   Follow the instructions to install [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit-archive).
 
-## 💾 Installation Instructions
+6. **Install PyTorch:**
+   You will need the correct version of PyTorch that is compatibile with your CUDA drivers, so make sure to select them carefully.
+   [Install PyTorch](https://pytorch.org/get-started/locally/).
 
-For stable releases, use `pip install unsloth`. We recommend `pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"` for most installations though.
+7. **Install Unsloth:**
+   
+```python
+pip install "unsloth[windows] @ git+https://github.com/unslothai/unsloth.git"
+```
 
-### Conda Installation
+#### Notes
+To run Unsloth directly on Windows:
+- Install Triton from this Windows fork and follow the instructions [here](https://github.com/woct0rdho/triton-windows) (be aware that the Windows fork requires PyTorch >= 2.4 and CUDA 12)
+- In the SFTTrainer, set `dataset_num_proc=1` to avoid a crashing issue:
+```python
+trainer = SFTTrainer(
+    dataset_num_proc=1,
+    ...
+)
+```
+
+#### Advanced/Troubleshooting
+
+For **advanced installation instructions** or if you see weird errors during installations:
+
+1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
+2. Confirm if CUDA is installated correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
+3. Install `xformers` manually. You can try installing `vllm` and seeing if `vllm` succeeds. Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs.
+4. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 
+5. Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
+
+### Conda Installation (Optional)
 `⚠️Only use Conda if you have it. If not, use Pip`. Select either `pytorch-cuda=11.8,12.1` for CUDA 11.8 or CUDA 12.1. We support `python=3.10,3.11,3.12`.
 ```bash
 conda create --name unsloth_env \
@@ -110,8 +149,7 @@ conda create --name unsloth_env \
     -y
 conda activate unsloth_env
 
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-pip install --no-deps trl peft accelerate bitsandbytes
+pip install unsloth
 ```
 
 <details>
@@ -127,7 +165,7 @@ pip install --no-deps trl peft accelerate bitsandbytes
   ```
 </details>
 
-### Pip Installation
+### Advanced Pip Installation
 `⚠️Do **NOT** use this if you have Conda.` Pip is a bit more complex since there are dependency issues. The pip command is different for `torch 2.2,2.3,2.4,2.5` and CUDA versions.
 
 For other torch versions, we support `torch211`, `torch212`, `torch220`, `torch230`, `torch240` and for CUDA versions, we support `cu118` and `cu121` and `cu124`. For Ampere devices (A100, H100, RTX3090) and above, use `cu118-ampere` or `cu121-ampere` or `cu124-ampere`.
@@ -184,26 +222,7 @@ x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
 
-### Windows Installation
-
-To run Unsloth directly on Windows:
-- Install Triton from this Windows fork and follow the instructions: https://github.com/woct0rdho/triton-windows
-- In the SFTTrainer, set `dataset_num_proc=1` to avoid a crashing issue:
-```python
-trainer = SFTTrainer(
-    dataset_num_proc=1,
-    ...
-)
-```
-
-For **advanced installation instructions** or if you see weird errors during installations:
-
-1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
-2. Confirm if CUDA is installated correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
-3. Install `xformers` manually. You can try installing `vllm` and seeing if `vllm` succeeds. Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs.
-4.  Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
-
-## 📜 [Documentation](https://docs.unsloth.ai)
+## 📜 Documentation
 - Go to our official [Documentation](https://docs.unsloth.ai) for saving to GGUF, checkpointing, evaluation and more!
 - We support Huggingface's TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
 - We're in 🤗Hugging Face's official docs! Check out the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
@@ -213,10 +232,8 @@ For **advanced installation instructions** or if you see weird errors during ins
 
 ```python
 from unsloth import FastLanguageModel 
-from unsloth import is_bfloat16_supported
 import torch
-from trl import SFTTrainer
-from transformers import TrainingArguments
+from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
 max_seq_length = 2048 # Supports RoPE Scaling interally, so choose any!
 # Get LAION dataset
@@ -225,21 +242,28 @@ dataset = load_dataset("json", data_files = {"train" : url}, split = "train")
 
 # 4bit pre quantized models we support for 4x faster downloading + no OOMs.
 fourbit_models = [
-    "unsloth/mistral-7b-v0.3-bnb-4bit",      # New Mistral v3 2x faster!
+    "unsloth/Meta-Llama-3.1-8B-bnb-4bit",      # Llama-3.1 2x faster
+    "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
+    "unsloth/Meta-Llama-3.1-70B-bnb-4bit",
+    "unsloth/Meta-Llama-3.1-405B-bnb-4bit",    # 4bit for 405b!
+    "unsloth/Mistral-Small-Instruct-2409",     # Mistral 22b 2x faster!
     "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
-    "unsloth/llama-3-8b-bnb-4bit",           # Llama-3 15 trillion tokens model 2x faster!
-    "unsloth/llama-3-8b-Instruct-bnb-4bit",
-    "unsloth/llama-3-70b-bnb-4bit",
-    "unsloth/Phi-3-mini-4k-instruct",        # Phi-3 2x faster!
+    "unsloth/Phi-3.5-mini-instruct",           # Phi-3.5 2x faster!
     "unsloth/Phi-3-medium-4k-instruct",
-    "unsloth/mistral-7b-bnb-4bit",
-    "unsloth/gemma-7b-bnb-4bit",             # Gemma 2.2x faster!
+    "unsloth/gemma-2-9b-bnb-4bit",
+    "unsloth/gemma-2-27b-bnb-4bit",            # Gemma 2x faster!
+
+    "unsloth/Llama-3.2-1B-bnb-4bit",           # NEW! Llama 3.2 models
+    "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
+    "unsloth/Llama-3.2-3B-bnb-4bit",
+    "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
+
+    "unsloth/Llama-3.3-70B-Instruct-bnb-4bit" # NEW! Llama 3.3 70B!
 ] # More models at https://huggingface.co/unsloth
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/llama-3-8b-bnb-4bit",
+    model_name = "unsloth/Llama-3.2-1B",
     max_seq_length = max_seq_length,
-    dtype = None,
     load_in_4bit = True,
 )
 
@@ -263,16 +287,14 @@ model = FastLanguageModel.get_peft_model(
 trainer = SFTTrainer(
     model = model,
     train_dataset = dataset,
-    dataset_text_field = "text",
-    max_seq_length = max_seq_length,
     tokenizer = tokenizer,
-    args = TrainingArguments(
+    args = SFTConfig(
+        dataset_text_field = "text",
+        max_seq_length = max_seq_length,
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
         warmup_steps = 10,
         max_steps = 60,
-        fp16 = not is_bfloat16_supported(),
-        bf16 = is_bfloat16_supported(),
         logging_steps = 1,
         output_dir = "outputs",
         optim = "adamw_8bit",
@@ -288,27 +310,30 @@ trainer.train()
 # (4) Customized chat templates
 ```
 
-<a name="DPO"></a>
-## DPO Support
-DPO (Direct Preference Optimization), PPO, Reward Modelling all seem to work as per 3rd party independent testing from [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory). We have a preliminary Google Colab notebook for reproducing Zephyr on Tesla T4 here: [notebook](https://colab.research.google.com/drive/15vttTpzzVXv_tJwEk-hIcQ0S9FcEWvwP?usp=sharing).
+<a name="RL"></a>
+## 💡 Reinforcement Learning
+RL including DPO, GRPO, PPO, Reward Modelling, Online DPO all work with Unsloth. We're in 🤗Hugging Face's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)! List of RL notebooks:
 
-We're in 🤗Hugging Face's official docs! We're on the [SFT docs](https://huggingface.co/docs/trl/main/en/sft_trainer#accelerate-fine-tuning-2x-using-unsloth) and the [DPO docs](https://huggingface.co/docs/trl/main/en/dpo_trainer#accelerate-dpo-fine-tuning-using-unsloth)!
+- ORPO notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3_(8B)-ORPO.ipynb)
+- DPO Zephyr notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Zephyr_(7B)-DPO.ipynb)
+- KTO notebook: [Link](https://colab.research.google.com/drive/1a2b3c4d5e6f7g8h9i0j)
+- SimPO notebook: [Link](https://colab.research.google.com/drive/1a2b3c4d5e6f7g8h9i0j)
 
+<details>
+  <summary>Click for DPO code</summary>
+  
 ```python
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0" # Optional set GPU device ID
 
-from unsloth import FastLanguageModel, PatchDPOTrainer
-from unsloth import is_bfloat16_supported
-PatchDPOTrainer()
+from unsloth import FastLanguageModel
 import torch
-from transformers import TrainingArguments
-from trl import DPOTrainer
+from trl import DPOTrainer, DPOConfig
+max_seq_length = 2048
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/zephyr-sft-bnb-4bit",
     max_seq_length = max_seq_length,
-    dtype = None,
     load_in_4bit = True,
 )
 
@@ -330,30 +355,40 @@ model = FastLanguageModel.get_peft_model(
 dpo_trainer = DPOTrainer(
     model = model,
     ref_model = None,
-    args = TrainingArguments(
+    train_dataset = YOUR_DATASET_HERE,
+    # eval_dataset = YOUR_DATASET_HERE,
+    tokenizer = tokenizer,
+    args = DPOConfig(
         per_device_train_batch_size = 4,
         gradient_accumulation_steps = 8,
         warmup_ratio = 0.1,
         num_train_epochs = 3,
-        fp16 = not is_bfloat16_supported(),
-        bf16 = is_bfloat16_supported(),
         logging_steps = 1,
         optim = "adamw_8bit",
         seed = 42,
         output_dir = "outputs",
+        max_length = 1024,
+        max_prompt_length = 512,
+        beta = 0.1,
     ),
-    beta = 0.1,
-    train_dataset = YOUR_DATASET_HERE,
-    # eval_dataset = YOUR_DATASET_HERE,
-    tokenizer = tokenizer,
-    max_length = 1024,
-    max_prompt_length = 512,
 )
 dpo_trainer.train()
 ```
+</details>
 
-## 🥇 Detailed Benchmarking Tables
+## 🥇 Performance Benchmarking
+- For our most detailed benchmarks, read our [Llama 3.3 Blog](https://unsloth.ai/blog/llama3-3).
+- Benchmarking of Unsloth was also conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
+
+We tested using the Alpaca  Dataset, a batch size of 2, gradient accumulation steps of 4, rank = 32, and applied QLoRA on all linear layers (q, k, v, o, gate, up, down):
+  
+| Model          | VRAM  | 🦥 Unsloth speed | 🦥 VRAM reduction | 🦥 Longer context | 😊 Hugging Face + FA2 |
+|----------------|-------|-----------------|----------------|----------------|--------------------|
+| Llama 3.3 (70B)| 80GB  | 2x              | >75%           | 13x longer     | 1x                 |
+| Llama 3.1 (8B) | 80GB  | 2x              | >70%           | 12x longer     | 1x                 |
+
 ### Context length benchmarks
+
 #### Llama 3.1 (8B) max. context length
 We tested Llama 3.1 (8B) Instruct and did 4bit QLoRA on all linear layers (Q, K, V, O, gate, up and down) with rank = 32 with a batch size of 1. We padded all sequences to a certain maximum sequence length to mimic long context finetuning workloads.
 | GPU VRAM | 🦥Unsloth context length | Hugging Face + FA2 |
@@ -392,8 +427,8 @@ You can cite the Unsloth repo as follows:
 ```
 
 ### Thank You to
+- Hugging Face's [TRL library](https://github.com/huggingface/trl) which serves as the basis foundation for Unsloth
 - [Erik](https://github.com/erikwijmans) for his help adding [Apple's ML Cross Entropy](https://github.com/apple/ml-cross-entropy) in Unsloth
 - [HuyNguyen-hust](https://github.com/HuyNguyen-hust) for making [RoPE Embeddings 28% faster](https://github.com/unslothai/unsloth/pull/238)
 - [RandomInternetPreson](https://github.com/RandomInternetPreson) for confirming WSL support
 - [152334H](https://github.com/152334H) for experimental DPO support
-- [atgctg](https://github.com/atgctg) for syntax highlighting

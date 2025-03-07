@@ -24,10 +24,14 @@ from peft import PeftConfig, PeftModel
 from .loader_utils import get_model_name
 import os, contextlib, sys
 try:
-    from huggingface_hub.utils import get_token
+    from huggingface_hub import get_token
 except:
-    # Old HF Hub versions <= 0.0.25
-    from huggingface_hub.utils._token import get_token
+    try:
+        from huggingface_hub.utils import get_token
+    except:
+        # For older versions of huggingface_hub
+        from huggingface_hub.utils._token import get_token
+    pass
 pass
 from huggingface_hub import HfFileSystem
 import importlib.util
@@ -47,7 +51,15 @@ if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
 pass
 import torch
-
+from ._utils import (
+    patch_compiling_bitsandbytes,
+    patch_model_and_tokenizer,
+    prepare_model_for_kbit_training,
+    patch_unsloth_smart_gradient_checkpointing,
+    patch_compiled_autograd,
+    process_vision_info,
+    unsloth_compile_transformers,
+)
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
@@ -75,6 +87,10 @@ class FastLanguageModel(FastLlamaModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
+        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
+
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
@@ -355,15 +371,6 @@ class FastLanguageModel(FastLlamaModel):
 pass
 
 
-from ._utils import (
-    patch_compiling_bitsandbytes,
-    patch_model_and_tokenizer,
-    prepare_model_for_kbit_training,
-    patch_unsloth_smart_gradient_checkpointing,
-    patch_compiled_autograd,
-    process_vision_info,
-    unsloth_compile_transformers,
-)
 from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
@@ -392,6 +399,7 @@ class FastVisionModel(FastBaseVisionModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
+        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
 
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()

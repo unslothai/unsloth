@@ -245,8 +245,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
+        cos = emb.cos().to(device = "cuda", non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = "cuda", non_blocking = True)#, dtype = dtype)
         self.register_buffer("cos_cached", cos, persistent = False)
         self.register_buffer("sin_cached", sin, persistent = False)
     pass
@@ -270,7 +270,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = math.ceil(seq_len / 8192) * 8192
-        self._set_cos_sin_cache(self.current_rope_size, device = "cuda:0", dtype = x.dtype)
+        self._set_cos_sin_cache(self.current_rope_size, device = "cuda", dtype = x.dtype)
     pass
 pass
 
@@ -304,8 +304,8 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = "cuda:0", non_blocking = True)#, dtype = dtype)
+        cos = emb.cos().to(device = "cuda", non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = "cuda", non_blocking = True)#, dtype = dtype)
         self.register_buffer("cos_cached", cos, persistent = False)
         self.register_buffer("sin_cached", sin, persistent = False)
     pass
