@@ -611,6 +611,21 @@ __INT_TO_FLOAT_MAPPER = \
         "open-thoughts/OpenThinker-7B",
         "unsloth/OpenThinker-7B-bnb-4bit",
     ),
+    "unsloth/granite-3.2-2b-instruct-unsloth-bnb-4bit" : (
+        "unsloth/granite-3.2-2b-instruct",
+        "ibm-granite/granite-3.2-2b-instruct",
+        "unsloth/granite-3.2-2b-instruct-bnb-4bit",
+    ),
+    "unsloth/granite-3.2-8b-instruct-unsloth-bnb-4bit" : (
+        "unsloth/granite-3.2-8b-instruct",
+        "ibm-granite/granite-3.2-8b-instruct",
+        "unsloth/granite-3.2-8b-instruct-bnb-4bit",
+    ),
+    "unsloth/QwQ-32B-unsloth-bnb-4bit" : (
+        "unsloth/QwQ-32B",
+        "Qwen/QwQ-32B",
+        "unsloth/QwQ-32B-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
