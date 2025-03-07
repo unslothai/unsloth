@@ -1281,3 +1281,10 @@ for j, function in enumerate(functions):
         try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except: continue
 pass
+
+USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+if USE_MODELSCOPE:
+    if importlib.util.find_spec("modelscope") is None:
+        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
+    pass
+pass
