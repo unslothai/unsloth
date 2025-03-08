@@ -214,7 +214,7 @@ def _get_compile_folder(use_tempfile = False):
         location = os.path.join(tempfile.gettempdir(), UNSLOTH_COMPILE_LOCATION)
         if not os.path.exists(location):
             print(
-                f"Unsloth: We'll be using `{UNSLOTH_COMPILE_LOCATION}` for temporary Unsloth patches."
+                f"Unsloth: We'll be using `{location}` for temporary Unsloth patches."
             )
             os.makedirs(location, exist_ok = True)
     else:
@@ -229,7 +229,7 @@ def _get_compile_folder(use_tempfile = False):
             location = os.path.join(tempfile.gettempdir(), location)
             os.makedirs(location, exist_ok = True)
             print(
-                f"Unsloth: We'll be using `{UNSLOTH_COMPILE_LOCATION}` for temporary Unsloth patches."
+                f"Unsloth: We'll be using `{location}` for temporary Unsloth patches."
             )
     return location, UNSLOTH_COMPILE_USE_TEMP
 pass
