@@ -19,6 +19,7 @@ __all__ = [
     "_get_dtype",
     "is_main_process",
     "is_distributed",
+    "distributed_function",
 ]
 
 from packaging.version import Version as TrueVersion
@@ -56,6 +57,22 @@ pass
 
 def is_distributed():
     return torch.distributed.is_initialized()
+pass
+
+
+def distributed_function(n = 1, function = None, *args, **kwargs):
+    if torch.distributed.is_initialized():
+        if torch.distributed.get_rank() == 0:
+            object_list = function(*args, **kwargs)
+            if n == 1: object_list = [object_list]
+        else:
+            object_list = [None] * n
+        # broadcast_object_list auto blocks so no need for barrier
+        torch.distributed.broadcast_object_list(object_list, src = 0, device = "cpu")
+        if n == 1: result = object_list[0]
+    else:
+        result = function(*args, **kwargs)
+    return result
 pass
 
 # Unsloth Zoo - Utilities for Unsloth

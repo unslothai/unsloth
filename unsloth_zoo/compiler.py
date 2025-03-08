@@ -34,7 +34,12 @@ import time
 import logging
 import tempfile
 import sys
-from .utils import Version, is_main_process, is_distributed
+from .utils import (
+    Version,
+    is_main_process,
+    is_distributed,
+    distributed_function,
+)
 import triton
 from .peft_utils import get_lora_layer_modules
 from importlib.metadata import version as importlib_version
@@ -69,21 +74,6 @@ DISABLED_KEYWORDS = [
     "original_aspect_ratio > current_aspect_ratio",  # Llava NeXT errors out
     "causal_mask[start:end, start:end] = 0", # Pixtral Dynamic slicing on data-dependent value is not supported
 ]
-
-def distributed_function(n = 1, function = None, *args, **kwargs):
-    if torch.distributed.is_initialized():
-        if torch.distributed.get_rank() == 0:
-            object_list = function(*args, **kwargs)
-            if n == 1: object_list = [object_list]
-        else:
-            object_list = [None] * n
-        # broadcast_object_list auto blocks so no need for barrier
-        torch.distributed.broadcast_object_list(object_list, src = 0, device = "cpu")
-        if n == 1: result = object_list[0]
-    else:
-        result = function(*args, **kwargs)
-    return result
-pass
 
 _license_header = """
 # Unsloth Zoo - Utilities for Unsloth
