@@ -313,10 +313,10 @@ def create_new_function(
         if file_source != write_new_source:
             overwrite = True
         elif not overwrite:
-            if "__UNSLOTH_VERSIONING__" not in f:
+            if "__UNSLOTH_VERSIONING__" not in file_source:
                 overwrite = True
             else:
-                versions = f[:f.find('__UNSLOTH_VERSIONING__')]
+                versions = file_source[:file_source.find('__UNSLOTH_VERSIONING__')]
                 if versioning[:versioning.find('__UNSLOTH_VERSIONING__')] != versions:
                     overwrite = True
     pass
