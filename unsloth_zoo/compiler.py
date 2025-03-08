@@ -224,8 +224,10 @@ def _get_compile_folder(use_tempfile = False):
     global UNSLOTH_COMPILE_LOCATION
     global UNSLOTH_COMPILE_USE_TEMP
     if UNSLOTH_COMPILE_USE_TEMP or use_tempfile:
+        UNSLOTH_COMPILE_USE_TEMP = True
         location = os.path.join(tempfile.gettempdir(), UNSLOTH_COMPILE_LOCATION)
         if not os.path.exists(location):
+            print(f"Unsloth: We can't create folders, so as a hack, we used a temporary directory = {location}")
             os.makedirs(location, exist_ok = True)
     else:
         location = UNSLOTH_COMPILE_LOCATION
