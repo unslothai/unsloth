@@ -219,7 +219,7 @@ def _get_compile_folder(use_tempfile = False):
             os.makedirs(location, exist_ok = True)
     else:
         location = UNSLOTH_COMPILE_LOCATION
-        if os.path.exists(location): return location
+        if os.path.exists(location): return location, UNSLOTH_COMPILE_USE_TEMP
         try:
             # Try creating the directory
             os.makedirs(location, exist_ok = True)
@@ -235,8 +235,6 @@ def _get_compile_folder(use_tempfile = False):
 pass
 
 def get_compile_folder(use_tempfile = False):
-    output = distributed_function(2, _get_compile_folder, use_tempfile)
-    print(type(output), len(output))
     location, UNSLOTH_COMPILE_USE_TEMP = distributed_function(2, _get_compile_folder, use_tempfile)
     return location, UNSLOTH_COMPILE_USE_TEMP
 pass
