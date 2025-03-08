@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from PIL import Image
+import requests
 from unsloth_zoo.utils import Version
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
@@ -103,6 +105,17 @@ ALLOWED_QUANTS = \
     # "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
 }
+
+def check_for_qwen2_vl(model):
+    try:
+        if("Qwen2" in str(type(model)) and ("VL" in str(type(model)) or "Vision" in str(type(model)))):
+            return True
+        elif("Qwen2" in str(type(model.base_model.model)) and ("VL" in str(type(model.base_model.model)) or "Vision" in str(type(model.base_model.model)))):
+            return True
+        return False
+    except:
+        return False
+pass
 
 def print_quantization_methods():
     for key, value in ALLOWED_QUANTS.items():
@@ -943,6 +956,17 @@ def get_executable(executables):
     return None
 pass
 
+def save_qwen2_vision_encoder(model_location, d_type):
+    model_dtype = "fp16" if d_type == "float16" else "fp32"
+    print("Running surgery file...")
+    file = requests.get("https://raw.githubusercontent.com/Captain-T2004/unsloth/llava_support_test/unsloth/qwen2_vl_surgery.py").text
+    with open("qwen2_vl_surgery.py", "w") as f: f.write(file)
+    perform_surgery = f"python qwen2_vl_surgery.py {model_location} --data_type {model_dtype} --output_dir {model_location}"
+    try_execute([perform_surgery], force_complete=True)
+    os.remove("qwen2_vl_surgery.py")
+    print(f"Vision Encoder saved to {model_location}")
+    return os.path.join(model_location, f"{model_location.lower()}-vision.gguf")
+pass
 
 def save_to_gguf(
     model_type           : str,
@@ -1542,8 +1566,11 @@ def fix_tokenizer_bos_token(tokenizer):
     # Check if BOS added already, then warn
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
-
-    if (tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
+    try:
+        tokenized_output = tokenizer(text="A", images = [Image.new('RGB', (224, 224), color=(0, 0, 0))])
+    except:
+        tokenized_output = tokenizer("A")
+    if (tokenized_output.input_ids[0] == getattr(tokenizer, "bos_token_id", None)):
         if chat_template is not None and \
             (
                 tokenizer.bos_token in chat_template or \
@@ -1850,7 +1877,11 @@ def unsloth_save_pretrained_gguf(
         raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
     pass
 
-    is_sentencepiece_model = check_if_sentencepiece_model(self)
+    if(check_for_qwen2_vl(self)):
+        is_sentencepiece_model = False
+    else:
+        is_sentencepiece_model = check_if_sentencepiece_model(self)
+    pass
 
     # Save to GGUF
     all_file_locations, want_full_precision = save_to_gguf(
@@ -1858,6 +1889,15 @@ def unsloth_save_pretrained_gguf(
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
+    vision_encoder_file = None
+    if check_for_qwen2_vl(self):
+        # Save the vision encoder and get its file path
+        print(new_save_directory)
+        vision_encoder_file = save_qwen2_vision_encoder(new_save_directory, model_dtype)
+        print("\nTo run this model using llama-qwen2vl-cli \n\
+            ./bin/llama-qwen2vl-cli -m model_file.gguf --mmproj model-mmproj.gguf -p 'user prompt' --image 'data/path-to/image.jpg' -ngl 33 -n 512")
+    pass
+    if vision_encoder_file: all_file_locations.append(vision_encoder_file)
     # Save Ollama modelfile
     modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
     modelfile_location = None
@@ -1878,10 +1918,10 @@ def unsloth_save_pretrained_gguf(
 
     if push_to_hub:
         print("Unsloth: Uploading GGUF to Huggingface Hub...")
-
         # If not needing full precision, skip the first
         if not want_full_precision: all_file_locations = all_file_locations[1:]
 
+        # Upload LLM GGUF files
         for file_location in all_file_locations:
             username = upload_to_huggingface(
                 self, save_directory, token,
@@ -2028,7 +2068,11 @@ def unsloth_push_to_hub_gguf(
         raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
     pass
 
-    is_sentencepiece_model = check_if_sentencepiece_model(self)
+    if(check_for_qwen2_vl(self)):
+        is_sentencepiece_model = False
+    else:
+        is_sentencepiece_model = check_if_sentencepiece_model(self)
+    pass
 
     # Save to GGUF
     all_file_locations, want_full_precision = save_to_gguf(
@@ -2036,6 +2080,14 @@ def unsloth_push_to_hub_gguf(
         new_save_directory, quantization_method, first_conversion, makefile,
     )
 
+    vision_encoder_file = None
+    if check_for_qwen2_vl(self):
+        # Save the vision encoder and get its file path
+        vision_encoder_file = save_qwen2_vision_encoder(new_save_directory, model_dtype)
+        print("\nTo run this model using llama-qwen2vl-cli \n\
+            ./bin/llama-qwen2vl-cli -m model_file.gguf --mmproj model-mmproj.gguf -p 'user prompt' --image 'data/path-to/image.jpg' -ngl 33 -n 512")
+    pass
+    if vision_encoder_file: all_file_locations.append(vision_encoder_file)
     # Save Ollama modelfile
     modelfile = create_ollama_modelfile(tokenizer, all_file_locations[0])
     modelfile_location = None
@@ -2062,7 +2114,6 @@ def unsloth_push_to_hub_gguf(
 
         print(f"Saved GGUF to https://huggingface.co/{link}")
     pass
-
     # Save modelfile
     if modelfile_location is not None:
         username = upload_to_huggingface(
@@ -2463,8 +2514,13 @@ def patch_saving_functions(model, vision = False):
         # Vision only 1 option
         model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,     model)
         model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged, model)
-        model.push_to_hub_gguf       = types.MethodType(not_implemented_save,                   model)
-        model.save_pretrained_gguf   = types.MethodType(not_implemented_save,                   model)
+        if(check_for_qwen2_vl(model)):
+            model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,               model)
+            model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,           model)
+        else:
+            model.push_to_hub_gguf       = types.MethodType(not_implemented_save,                   model)
+            model.save_pretrained_gguf   = types.MethodType(not_implemented_save,                   model)
+        pass
     pass
     return model
 pass
