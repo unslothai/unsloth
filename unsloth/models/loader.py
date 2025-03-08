@@ -383,10 +383,13 @@ from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseVisionModel
+from .vision import FastBaseModel
+from transformers import (
+    AutoModelForVision2Seq,
+    AutoModelForCausalLM,
+)
 
-
-class FastVisionModel(FastBaseVisionModel):
+class FastModel(FastBaseModel):
     @staticmethod
     def from_pretrained(
         model_name                 = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
@@ -413,7 +416,7 @@ class FastVisionModel(FastBaseVisionModel):
         patch_compiling_bitsandbytes()
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
-        
+
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
@@ -427,7 +430,7 @@ class FastVisionModel(FastBaseVisionModel):
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
         was_disabled = are_progress_bars_disabled()
         disable_progress_bars()
-        
+
         autoconfig_error = None
         peft_error = None
         try:
@@ -458,7 +461,7 @@ class FastVisionModel(FastBaseVisionModel):
 
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
-        
+
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
             # Check if folder exists locally
@@ -515,9 +518,12 @@ class FastVisionModel(FastBaseVisionModel):
         if not was_disabled: enable_progress_bars()
 
         do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
-        redirector = sys.stdout if do_logging else open(os.devnull, "w")
+        if do_logging:
+            redirector = contextlib.nullcontext()
+        else:
+            redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
-        with contextlib.redirect_stdout(redirector):
+        with redirector:
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
@@ -547,7 +553,6 @@ class FastVisionModel(FastBaseVisionModel):
                 return_logits           = return_logits,
             )
         pass
-        if do_logging: redirector.close()
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
@@ -559,7 +564,12 @@ class FastVisionModel(FastBaseVisionModel):
             tokenizer_name = None
         pass
 
-        model, tokenizer = FastBaseVisionModel.from_pretrained(
+        # Check if VLM
+        is_vlm = (x.endswith("ForConditionalGeneration") for x in model_config.architectures)
+        is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+
+        model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
             dtype             = _get_dtype(dtype),
@@ -570,6 +580,7 @@ class FastVisionModel(FastBaseVisionModel):
             revision          = revision if not is_peft else None,
             model_types       = model_types,
             tokenizer_name    = tokenizer_name,
+            auto_model        = auto_model,
             *args, **kwargs,
         )
         
@@ -617,8 +628,14 @@ class FastVisionModel(FastBaseVisionModel):
                 trust_remote_code = trust_remote_code,
             )
             # Patch it as well!
-            model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
+            model = FastBaseModel.patch_peft_model(model, use_gradient_checkpointing)
         pass
         return model, tokenizer
     pass
 pass
+
+class FastVisionModel(FastModel):
+    pass
+
+class FastTextModel(FastModel):
+    pass
