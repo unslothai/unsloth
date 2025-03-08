@@ -241,11 +241,11 @@ def _get_compile_folder(use_tempfile = False):
             print(
                 f"Unsloth: We'll be using `{UNSLOTH_COMPILE_LOCATION}` for temporary Unsloth patches.\n"
             )
-    return location
+    return location, UNSLOTH_COMPILE_USE_TEMP
 pass
 
 def get_compile_folder(use_tempfile = False):
-    return distributed_function(1, _get_compile_folder, use_tempfile)
+    return distributed_function(2, _get_compile_folder, use_tempfile)
 pass
 
 def create_new_function(
@@ -260,6 +260,7 @@ def create_new_function(
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     old_new_source = new_source
+    do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
 
     if new_source[0] == " ":
         spaces = new_source.find("def")
@@ -304,7 +305,7 @@ def create_new_function(
     # Write function
     global UNSLOTH_COMPILE_USE_TEMP
     file_source = None
-    compile_folder = get_compile_folder(use_tempfile = False)
+    compile_folder, UNSLOTH_COMPILE_USE_TEMP = get_compile_folder(use_tempfile = False)
     function_location = os.path.join(compile_folder, f"{name}.py")
 
     # Check if file was already created!
@@ -336,16 +337,14 @@ def create_new_function(
     if overwrite or not os.path.isfile(function_location):
         try:
             distributed_function(1, write_file, function_location, write_new_source)
-            with open(function_location, "r") as f: file_source = f.read()
         except Exception as error:
             if UNSLOTH_COMPILE_USE_TEMP:
                 raise RuntimeError(error)
             else:
                 # Failed so instead use a temporary directory
-                compile_folder = get_compile_folder(use_tempfile = True)
+                compile_folder, UNSLOTH_COMPILE_USE_TEMP = get_compile_folder(use_tempfile = True)
                 function_location = os.path.join(compile_folder, f"{name}.py")
                 distributed_function(1, write_file, function_location, write_new_source)
-                with open(function_location, "r") as f: file_source = f.read()
             pass
         pass
     pass
@@ -353,7 +352,8 @@ def create_new_function(
     # Now import modules! Use a tempfile if it fails on the first try!
     old_path = None
     new_module = None
-    try:
+
+    def import_module(compile_folder, name):
         # Add directory to sys.path temporarily if it's not already there
         if compile_folder not in sys.path:
             old_path = list(sys.path)
@@ -363,19 +363,39 @@ def create_new_function(
             sys.path.insert(0, compile_folder)
         # Try standard import
         new_module = importlib.import_module(name)
-    except Exception as e:
-        print(f"Standard import failed for {name}: {e}")
+        return new_module, old_path
+    pass
 
+    try:
+        new_module, old_path = import_module(compile_folder, name)
+    except Exception as e:
+        new_module = None
+        # Try using temp directory instead!
+        if not UNSLOTH_COMPILE_USE_TEMP:
+            compile_folder, UNSLOTH_COMPILE_USE_TEMP = get_compile_folder(use_tempfile = True)
+            function_location = os.path.join(compile_folder, f"{name}.py")
+            distributed_function(1, write_file, function_location, write_new_source)
+            if is_main_process():
+                print(f"Standard import failed for {name}: {e}. Using tempfile instead!")
+            try:
+                new_module, old_path = import_module(compile_folder, name)
+            except Exception as e:
+                new_module = None
+                if is_main_process():
+                    print(f"Standard import failed for {name}: {e}. Using spec.loader.exec_module instead!")
+        pass
         # Fallback to direct module loading
-        try:
-            module_name = f"unsloth_cache_{name}"
-            file_location = os.path.join(compile_folder, name) + ".py"
-            spec = importlib.util.spec_from_file_location(module_name, file_location)
-            new_module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = new_module
-            spec.loader.exec_module(new_module)
-        except Exception as e:
-            print(f"Direct module loading failed for {name}: {e}")
+        if new_module is None:
+            try:
+                module_name = f"unsloth_cache_{name}"
+                file_location = os.path.join(compile_folder, name) + ".py"
+                spec = importlib.util.spec_from_file_location(module_name, file_location)
+                new_module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = new_module
+                spec.loader.exec_module(new_module)
+            except Exception as e:
+                raise RuntimeError(f"Direct module loading failed for {name}: {e}")
+        pass
     finally:
         # Restore original sys.path if we modified it
         if old_path is not None:
