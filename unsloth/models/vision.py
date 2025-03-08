@@ -219,8 +219,8 @@ class FastBaseModel:
         # Patch generate
         if model.generate.__name__ != "unsloth_base_fast_generate":
             model._old_generate = model.generate
+            unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_base_fast_generate, model)
-            model.generate.__doc__ = model._old_generate.__doc__
         return model, tokenizer
     pass
 
@@ -371,8 +371,8 @@ class FastBaseModel:
         # Patch generate
         if model.generate.__name__ != "unsloth_base_fast_generate":
             model._old_generate = model.generate
+            unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_base_fast_generate, model)
-            model.generate.__doc__ = model._old_generate.__doc__
         return model
     pass
 
