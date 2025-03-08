@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from .llama   import FastLlamaModel
-from .loader  import FastLanguageModel, FastVisionModel
+from .loader  import FastLanguageModel, FastVisionModel, FastTextModel, FastModel
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
 from .granite import FastGraniteModel

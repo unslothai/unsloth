@@ -91,7 +91,7 @@ def original_apply_o(self, X):
 pass
 
 from math import sqrt as math_sqrt
-KV_CACHE_INCREMENT = 256 # KV Cache update size
+KV_CACHE_INCREMENT = 512 # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
@@ -1656,6 +1656,13 @@ class FastLlamaModel:
                 "Are you certain you want to do remote code execution?"
             )
         pass
+        if fast_inference:
+            import platform
+            if platform.system().lower() == 'windows':
+                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+                fast_inference = False
+        pass
+
         if token is None: token = get_token()
         if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
@@ -1966,12 +1973,17 @@ class FastLlamaModel:
             for layer in model.model.layers:
                 layer.self_attn.rotary_emb = rotary_emb
         pass
-        
+
+        # Add for_inference and for_training
+        model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
+        model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+
         # Patch generate
         if model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
+        pass
         return model, tokenizer
     pass
 
@@ -2404,7 +2416,7 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
-        
+
         # Patch generate
         if model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
