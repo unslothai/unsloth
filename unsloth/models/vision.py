@@ -62,7 +62,7 @@ def unsloth_base_fast_generate(
     if not is_vlm: kwargs["logits_to_keep"] = 1
 
     # Check pad_token
-    model_eos_token_id = getattr(model.config, "eos_token_id", None)
+    model_eos_token_id = getattr(self.config, "eos_token_id", None)
     if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
         model_eos_token_id = model_eos_token_id[0]
 
