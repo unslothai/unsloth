@@ -66,7 +66,7 @@ def distributed_function(n = 1, function = None, *args, **kwargs):
             object_list = function(*args, **kwargs)
             if n == 1: object_list = [object_list]
         else:
-            object_list = [None] * n
+            object_list = [None for _ in range(n)]
         # broadcast_object_list auto blocks so no need for barrier
         torch.distributed.broadcast_object_list(object_list, src = 0, device = "cpu")
         if n == 1: result = object_list[0]
