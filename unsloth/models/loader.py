@@ -553,7 +553,6 @@ class FastModel(FastBaseModel):
                 return_logits           = return_logits,
             )
         pass
-        if do_logging: redirector.close()
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
