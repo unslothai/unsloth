@@ -17,6 +17,8 @@ from transformers import (
     BitsAndBytesConfig,
     AutoModelForVision2Seq,
     AutoProcessor,
+    AutoTokenizer,
+    AutoModelForCausalLM,
 )
 from .llama import *
 from ..kernels import (
@@ -32,25 +34,32 @@ from unsloth_zoo.peft_utils import (
 )
 from triton import __version__ as triton_version
 from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 import types
 import functools
 
 __all__ = [
-    "FastBaseVisionModel",
+    "FastBaseModel",
 ]
 
 
-def unsloth_vision_fast_generate(
+def unsloth_base_fast_generate(
     self,
     *args,
     **kwargs,
 ):
-    FastBaseVisionModel.for_inference(self)
-
+    FastBaseModel.for_inference(self)
     dtype = _get_dtype(self.config.torch_dtype)
+
+    # Check if VLM
+    is_vlm = (x.endswith("ForConditionalGeneration") for x in self.config.architectures)
+    is_vlm = is_vlm or hasattr(self.config, "vision_config")
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
+
+    # VLMs do not allow logits_to_keep
+    if not is_vlm: kwargs["logits_to_keep"] = 1
 
     # Check pad_token
     model_eos_token_id = getattr(model.config, "eos_token_id", None)
@@ -59,27 +68,25 @@ def unsloth_vision_fast_generate(
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    try:
-        kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
-    except:
-        pass
+    # Get pixel values for VLMs
+    try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
+    except: pass
 
     # Mixed precision autocast
     with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
         output = self._old_generate(*args, **kwargs)
     pass
 
-    FastBaseVisionModel.for_training(self)
-
+    FastBaseModel.for_training(self)
     return output
 pass
 
 
-class FastBaseVisionModel:
+class FastBaseModel:
 
     @staticmethod
     def from_pretrained(
-        model_name        = "unsloth/llama-3-8b-bnb-4bit",
+        model_name        = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length    = None,
         dtype             = None,
         load_in_4bit      = True,
@@ -88,6 +95,7 @@ class FastBaseVisionModel:
         trust_remote_code = False,
         model_types       = None,
         tokenizer_name    = None,
+        auto_model        = AutoModelForVision2Seq,
         **kwargs,
     ):
         if trust_remote_code:
@@ -148,7 +156,7 @@ class FastBaseVisionModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
-        model = AutoModelForVision2Seq.from_pretrained(
+        model = auto_model.from_pretrained(
             model_name,
             device_map              = device_map,
             torch_dtype             = dtype,
@@ -163,26 +171,25 @@ class FastBaseVisionModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        tokenizer = AutoProcessor.from_pretrained(
+        auto_processor = AutoProcessor if auto_model is AutoModelForVision2Seq else AutoTokenizer
+        tokenizer = auto_processor.from_pretrained(
             tokenizer_name,
             padding_side = "right",
             token        = token,
         )
         # Add padding side as well
-        tokenizer.tokenizer.padding_side = "right"
+        if hasattr(tokenizer, "tokenizer"):
+            tokenizer.tokenizer.padding_side = "right"
 
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
-
-        # Fix up config for transformers uploading PEFT
-        # Not necessary anymore since we require transformers>=4.37!
-        if False:
-            name = model.config._name_or_path
-            if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
-                name = name[:len(name) - len("-bnb-4bit")]
-                model.config.update({"_name_or_path" : name})
-            pass
-        pass
+        # Fix other stuff like BnB compute data types
+        model, tokenizer = patch_model_and_tokenizer(
+            model,
+            tokenizer,
+            downcast_rope = False,
+            fix_embeddings = False,
+        )
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
@@ -198,23 +205,22 @@ class FastBaseVisionModel:
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference
         tokenizer.tokenizer.padding_side = "left" # Force inference
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model._saved_temp_tokenizer = tokenizer
+        m = model
+        while hasattr(m, "model"):
+            m._saved_temp_tokenizer = tokenizer
             # Also set is_loaded_in_8bit to disable incorrect DDP
-            internal_model.is_loaded_in_8bit = True
-
-            internal_model = internal_model.model
+            m.is_loaded_in_8bit = True
+            m = m.model
         pass
-        internal_model._saved_temp_tokenizer = tokenizer
+        m._saved_temp_tokenizer = tokenizer
         # Also set is_loaded_in_8bit to disable incorrect DDP
-        internal_model.is_loaded_in_8bit = True
+        m.is_loaded_in_8bit = True
 
         # Patch generate
-        if model.generate.__name__ != "unsloth_vision_fast_generate":
+        if model.generate.__name__ != "unsloth_base_fast_generate":
             model._old_generate = model.generate
-            unsloth_vision_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_vision_fast_generate, model)
+            model.generate = types.MethodType(unsloth_base_fast_generate, model)
+            model.generate.__doc__ = model._old_generate.__doc__
         return model, tokenizer
     pass
 
@@ -293,7 +299,7 @@ class FastBaseVisionModel:
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
 
-        model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
+        model = FastBaseModel.patch_peft_model(model, use_gradient_checkpointing)
 
         # Clear deleted GPU items
         for _ in range(3):
@@ -303,8 +309,8 @@ class FastBaseVisionModel:
         patch_saving_functions(model, vision = True)
 
         # Add for_inference and for_training
-        model.for_training  = functools.partial(FastBaseVisionModel.for_training,  model)
-        model.for_inference = functools.partial(FastBaseVisionModel.for_inference, model)
+        model.for_training  = functools.partial(FastBaseModel.for_training,  model)
+        model.for_inference = functools.partial(FastBaseModel.for_inference, model)
         return model
     pass
 
@@ -338,20 +344,20 @@ class FastBaseVisionModel:
         patch_saving_functions(model, vision = True)
 
         # Patch tokenizer to pad to the right
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            if hasattr(internal_model, "_saved_temp_tokenizer"):
-                internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
+        m = model
+        while hasattr(m, "model"):
+            if hasattr(m, "_saved_temp_tokenizer"):
+                m._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
-            internal_model.is_loaded_in_8bit = True
-            internal_model = internal_model.model
+            m.is_loaded_in_8bit = True
+            m = m.model
         pass
-        if hasattr(internal_model, "_saved_temp_tokenizer"):
-            internal_model._saved_temp_tokenizer.tokenizer.padding_side = "right"
+        if hasattr(m, "_saved_temp_tokenizer"):
+            m._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
-        internal_model.is_loaded_in_8bit = True
+        m.is_loaded_in_8bit = True
 
         # Clear deleted GPU items
         for _ in range(3):
@@ -359,14 +365,14 @@ class FastBaseVisionModel:
             torch.cuda.empty_cache()
         pass
         # Add for_inference and for_training
-        model.for_training  = functools.partial(FastBaseVisionModel.for_training,  model)
-        model.for_inference = functools.partial(FastBaseVisionModel.for_inference, model)
+        model.for_training  = functools.partial(FastBaseModel.for_training,  model)
+        model.for_inference = functools.partial(FastBaseModel.for_inference, model)
 
         # Patch generate
-        if model.generate.__name__ != "unsloth_vision_fast_generate":
+        if model.generate.__name__ != "unsloth_base_fast_generate":
             model._old_generate = model.generate
-            unsloth_vision_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_vision_fast_generate, model)
+            model.generate = types.MethodType(unsloth_base_fast_generate, model)
+            model.generate.__doc__ = model._old_generate.__doc__
         return model
     pass
 
