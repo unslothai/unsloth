@@ -519,9 +519,9 @@ class FastModel(FastBaseModel):
 
         do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
         if do_logging:
-            redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
-        else:
             redirector = contextlib.nullcontext()
+        else:
+            redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
         with redirector:
             patch_loss_functions(torch_compile = False)
