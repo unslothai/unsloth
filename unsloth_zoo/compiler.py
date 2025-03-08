@@ -360,6 +360,9 @@ def create_new_function(
         # Add directory to sys.path temporarily if it's not already there
         if compile_folder not in sys.path:
             old_path = list(sys.path)
+            # Fail if name already exists!
+            if name in old_path:
+                raise OSError(f"Unsloth: File {name} already exists")
             sys.path.insert(0, compile_folder)
         # Try standard import
         new_module = importlib.import_module(name)
