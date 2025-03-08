@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 from .compiler import UNSLOTH_COMPILE_LOCATION
-
+from .utils import _get_dtype
 
 # Also disable compiling on bitsandbytes
 def patch_compiling_bitsandbytes():
@@ -212,6 +212,13 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True, fix_embedd
         raise ImportError("Unsloth: Please install peft via `pip install peft`")
     pass
 
+    # Get most likely the correct data-type of the model
+    try:
+        correct_dtype = _get_dtype(model.config.torch_dtype)
+    except:
+        correct_dtype = model.get_input_embeddings().weight.dtype
+
+    # Check all params and patch!
     for name, module in model.named_modules():
         if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
             weight = module.weight
@@ -303,10 +310,6 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True, fix_embedd
         lm_head.weight.requires_grad_(requires_grad)
         model.set_output_embeddings(lm_head)
         if hasattr(model, "lm_head"): model.lm_head = lm_head
-        
-        correct_dtype = lm_head.weight.dtype
-    else:
-        correct_dtype = old_input_embedding.dtype
     pass
 
     # Must tie lm_head and embed_tokens if they are tied!
