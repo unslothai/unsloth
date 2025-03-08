@@ -518,9 +518,12 @@ class FastModel(FastBaseModel):
         if not was_disabled: enable_progress_bars()
 
         do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
-        redirector = sys.stdout if do_logging else open(os.devnull, "w")
+        if do_logging:
+            redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
+        else:
+            redirector = contextlib.nullcontext()
 
-        with contextlib.redirect_stdout(redirector):
+        with redirector:
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
