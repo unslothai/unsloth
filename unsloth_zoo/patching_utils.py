@@ -179,13 +179,77 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
 pass
 
 
-def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
+def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True, fix_embeddings = True):
     # All Unsloth Zoo code licensed under LGPLv3
     assert(type(downcast_rope) is bool)
     import gc
 
+    # Fix torch_dtype
+    m = model
+    while hasattr(m, "model"):
+        if hasattr(m, "config"):
+            if   m.config.torch_dtype ==  "float32": m.config.torch_dtype = torch.float32
+            elif m.config.torch_dtype == "bfloat16": m.config.torch_dtype = torch.bfloat16
+            elif m.config.torch_dtype ==  "float16": m.config.torch_dtype = torch.float16
+        pass
+        m = m.model
+    pass
+    if hasattr(m, "config"):
+        if   m.config.torch_dtype ==  "float32": m.config.torch_dtype = torch.float32
+        elif m.config.torch_dtype == "bfloat16": m.config.torch_dtype = torch.bfloat16
+        elif m.config.torch_dtype ==  "float16": m.config.torch_dtype = torch.float16
+    pass
+
+    # Also patch all dtypes - BnB seems to not allocate the correct type?
+    # BnB default dtype seems to be float16!
+    try:
+        from bitsandbytes.nn  import Linear4bit as Bnb_Linear4bit
+    except:
+        raise ImportError("Unsloth: Please install bitsandbytes via `pip install bitsandbytes`")
+    try:
+        from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+    except:
+        raise ImportError("Unsloth: Please install peft via `pip install peft`")
+    pass
+
+    for name, module in model.named_modules():
+        if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
+            weight = module.weight
+            quant_state = weight.quant_state
+
+            if type(quant_state) is list:
+                # BnB seems to have float16 as default!
+                module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
+            else:
+                # https://github.com/TimDettmers/bitsandbytes/pull/763/files
+                quant_state.dtype = correct_dtype
+            pass
+
+            if hasattr(module, "compute_dtype"):
+                module.compute_dtype = correct_dtype
+        pass
+        # Downcast RoPE embedding to correct data type
+        if downcast_rope and ((name.endswith("rotary_emb") or hasattr(module, "cos_cached"))):
+
+            if hasattr(module, "cos_cached") and \
+                (module.cos_cached.dtype != correct_dtype):
+
+                module.cos_cached = module.cos_cached.to(correct_dtype)
+                module.sin_cached = module.sin_cached.to(correct_dtype)
+
+            elif hasattr(module, "short_cos_cached") and \
+                (module.short_cos_cached.dtype != correct_dtype):
+                
+                module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
+                module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
+            pass
+        pass
+    pass
+
+    if not fix_embeddings: return model, tokenizer
+
     # Torch.compile fails on embedding matrix??
-    try: old_input_embedding  = model.get_input_embeddings ().weight
+    try: old_input_embedding = model.get_input_embeddings ().weight
     except: return model, tokenizer
 
     # Maybe not all models have a lm_head?
@@ -248,76 +312,6 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True):
     # Must tie lm_head and embed_tokens if they are tied!
     # Otherwise error will occur on saving models ie use save_model
     if is_tied: model.tie_weights()
-
-    # Also fix torch_dtype
-    internal_model = model
-    while hasattr(internal_model, "model"):
-        if hasattr(internal_model, "config"):
-            if   internal_model.config.torch_dtype ==  "float32":
-                internal_model.config.torch_dtype = torch.float32
-            elif internal_model.config.torch_dtype == "bfloat16":
-                internal_model.config.torch_dtype = torch.bfloat16
-            elif internal_model.config.torch_dtype ==  "float16":
-                internal_model.config.torch_dtype = torch.float16
-            pass
-        pass
-        internal_model = internal_model.model
-    pass
-    if hasattr(internal_model, "config"):
-        if   internal_model.config.torch_dtype ==  "float32":
-            internal_model.config.torch_dtype = torch.float32
-        elif internal_model.config.torch_dtype == "bfloat16":
-            internal_model.config.torch_dtype = torch.bfloat16
-        elif internal_model.config.torch_dtype ==  "float16":
-            internal_model.config.torch_dtype = torch.float16
-        pass
-    pass
-    
-    # Also patch all dtypes - BnB seems to not allocate the correct type?
-    # BnB default dtype seems to be float16!
-    try:
-        from bitsandbytes.nn  import Linear4bit as Bnb_Linear4bit
-    except:
-        raise ImportError("Unsloth: Please install bitsandbytes via `pip install bitsandbytes`")
-    try:
-        from peft.tuners.lora import Linear4bit as Peft_Linear4bit
-    except:
-        raise ImportError("Unsloth: Please install peft via `pip install peft`")
-    pass
-
-    for name, module in model.named_modules():
-        if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
-            weight = module.weight
-            quant_state = weight.quant_state
-
-            if type(quant_state) is list:
-                # BnB seems to have float16 as default!
-                module.weight.quant_state[2] = correct_dtype # Cast to correct dtype
-            else:
-                # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-                quant_state.dtype = correct_dtype
-            pass
-
-            if hasattr(module, "compute_dtype"):
-                module.compute_dtype = correct_dtype
-        pass
-        # Downcast RoPE embedding to correct data type
-        if downcast_rope and ((name.endswith("rotary_emb") or hasattr(module, "cos_cached"))):
-
-            if hasattr(module, "cos_cached") and \
-                (module.cos_cached.dtype != correct_dtype):
-
-                module.cos_cached = module.cos_cached.to(correct_dtype)
-                module.sin_cached = module.sin_cached.to(correct_dtype)
-
-            elif hasattr(module, "short_cos_cached") and \
-                (module.short_cos_cached.dtype != correct_dtype):
-                
-                module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
-                module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
-            pass
-        pass
-    pass
 
     # Clear deleted GPU items
     for _ in range(3):

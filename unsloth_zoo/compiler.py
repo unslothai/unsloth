@@ -32,12 +32,28 @@ import subprocess
 import types
 import time
 import logging
+import tempfile
 import sys
-from .utils import Version, is_main_process
+from .utils import Version, is_main_process, is_distributed
 import triton
 from .peft_utils import get_lora_layer_modules
 from importlib.metadata import version as importlib_version
 from packaging.version import Version
+import functools
+from .compiler_replacements import compiler_replacements
+
+# Compiled cache location
+global COMBINED_UNSLOTH_NAME
+COMBINED_UNSLOTH_NAME = "unsloth_compiled_module"
+
+global UNSLOTH_COMPILE_LOCATION
+UNSLOTH_COMPILE_LOCATION = "unsloth_compiled_cache"
+
+global UNSLOTH_CREATED_FUNCTIONS
+UNSLOTH_CREATED_FUNCTIONS = []
+
+global UNSLOTH_COMPILE_USE_TEMP
+UNSLOTH_COMPILE_USE_TEMP = False
 
 # Disable some compilations if old versions are seen
 OLD_TORCH_VERSION = Version(torch.__version__) < Version("2.5.0")
@@ -45,15 +61,11 @@ major, minor = torch.cuda.get_device_capability()
 OLD_CUDA_ARCH_VERSION = (major <= 7) and (minor < 5)
 OLD_TRITON_VERSION = Version(triton.__version__) < Version("3.0.0")
 
-
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
     def __init__(self, text): self.text = text
     def filter(self, x): return not (self.text in x.getMessage())
 pass
-
-
-from .compiler_replacements import compiler_replacements
 
 DISABLED_KEYWORDS = [
     "select_best_resolution", # Llava NeXT errors out
@@ -61,25 +73,19 @@ DISABLED_KEYWORDS = [
     "causal_mask[start:end, start:end] = 0", # Pixtral Dynamic slicing on data-dependent value is not supported
 ]
 
-global COMBINED_UNSLOTH_NAME
-global UNSLOTH_COMPILE_LOCATION
-global UNSLOTH_CREATED_FUNCTIONS
-global UNSLOTH_COMPILE_LOCATION_USE_TEMP
-COMBINED_UNSLOTH_NAME = "unsloth_compiled_module"
-UNSLOTH_COMPILE_LOCATION = "unsloth_compiled_cache"
-UNSLOTH_CREATED_FUNCTIONS = []
-UNSLOTH_COMPILE_LOCATION_USE_TEMP = False
-
-# Try creating a directory for cache, or else use a temporary folder
-try:
-    os.makedirs(UNSLOTH_COMPILE_LOCATION, exist_ok = True)
-    if not os.path.exists(UNSLOTH_COMPILE_LOCATION): raise
-    raise
-except:
-    from tempfile import TemporaryDirectory
-    UNSLOTH_COMPILE_LOCATION_USE_TEMP = True
-    UNSLOTH_COMPILE_LOCATION = TemporaryDirectory(ignore_cleanup_errors = True).name
-    print(f"Unsloth: We can't create folders, so as a hack, we used a temporary directory = {UNSLOTH_COMPILE_LOCATION}")
+def distributed_function(n = 1, function = None, *args, **kwargs):
+    if torch.distributed.is_initialized():
+        if torch.distributed.get_rank() == 0:
+            object_list = function(*args, **kwargs)
+            if n == 1: object_list = [object_list]
+        else:
+            object_list = [None] * n
+        # broadcast_object_list auto blocks so no need for barrier
+        torch.distributed.broadcast_object_list(object_list, src = 0, device = "cpu")
+        if n == 1: result = object_list[0]
+    else:
+        result = function(*args, **kwargs)
+    return result
 pass
 
 _license_header = """
@@ -117,8 +123,8 @@ _patch_functions = [
     "Conv1d", "Conv2d", "Conv3d",
     "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d",
     "BatchNorm1d", "BatchNorm2d", "BatchNorm3d",
-    "GroupNorm", "RMSNorm",
-    # "CrossEntropyLoss", "LayerNorm",
+    "GroupNorm", "RMSNorm", "LayerNorm",
+    # "CrossEntropyLoss",
 ]
 
 
@@ -213,6 +219,31 @@ def replace_with_grouped_query_attention(module, source):
     return source
 pass
 
+def _get_compile_folder(use_tempfile = False):
+    global UNSLOTH_COMPILE_LOCATION
+    global UNSLOTH_COMPILE_USE_TEMP
+    if UNSLOTH_COMPILE_USE_TEMP or use_tempfile:
+        location = os.path.join(tempfile.gettempdir(), UNSLOTH_COMPILE_LOCATION)
+        if not os.path.exists(location):
+            os.makedirs(location, exist_ok = True)
+    else:
+        location = UNSLOTH_COMPILE_LOCATION
+        if os.path.exists(location): return location
+        try:
+            # Try creating the directory
+            os.makedirs(location, exist_ok = True)
+        except:
+            # Instead use a temporary location!
+            UNSLOTH_COMPILE_USE_TEMP = True
+            location = os.path.join(tempfile.gettempdir(), location)
+            os.makedirs(location, exist_ok = True)
+            print(f"Unsloth: We can't create folders, so as a hack, we used a temporary directory = {location}")
+    return location
+pass
+
+def get_compile_folder(use_tempfile = False):
+    return distributed_function(1, _get_compile_folder, use_tempfile)
+pass
 
 def create_new_function(
     name,
@@ -227,9 +258,6 @@ def create_new_function(
     # All Unsloth Zoo code licensed under LGPLv3
     old_new_source = new_source
 
-    global UNSLOTH_CREATED_FUNCTIONS
-    global UNSLOTH_COMPILE_LOCATION
-    global UNSLOTH_COMPILE_LOCATION_USE_TEMP
     if new_source[0] == " ":
         spaces = new_source.find("def")
         new_source = new_source.split("\n")
@@ -252,9 +280,6 @@ def create_new_function(
     new_source = imports + "\n\n" + new_source
     new_source = prepend + new_source + append
 
-    # Fix super() Not necessary anymore!
-    # new_source = new_source.replace("super()", "super(type(self), self)")
-
     # Check versioning
     try: unsloth_zoo_version = importlib_version("unsloth_zoo")
     except: unsloth_zoo_version = "0"
@@ -273,91 +298,86 @@ def create_new_function(
 
     write_new_source = versioning + new_source
 
-    # Check location
-    if is_main_process():
-        if not os.path.exists(UNSLOTH_COMPILE_LOCATION):
-            os.makedirs(UNSLOTH_COMPILE_LOCATION)
+    # Write function
+    global UNSLOTH_COMPILE_USE_TEMP
+    file_source = None
+    compile_folder = get_compile_folder(use_tempfile = False)
+    function_location = os.path.join(compile_folder, f"{name}.py")
 
-        # Write function
-        location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
-        function_location = location
-        if overwrite or not os.path.isfile(function_location):
-            with open(function_location, "wb", buffering = 0) as file:
-                file.write(write_new_source.encode("utf-8"))
-                file.flush()
-                os.fsync(file.fileno())
-            pass
-        pass
-    pass
-    # Wait until file is created
-    file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, f"{name}.py")
-    trials = 0
-    if overwrite or not os.path.isfile(file_location):
-        while not os.path.isfile(file_location):
-            if trials == 1000: raise RuntimeError("Unsloth: Failed to create dynamic compiled modules!")
-            trials += 1
-            time.sleep(0.01)
-    pass
-    # Check versioning, and overwrite if any packages changed
-    with open(file_location, "r") as f: f = f.read()
+    # Check if file was already created!
+    if not overwrite and os.path.isfile(function_location):
 
-    # Check if exactly equivalent:
-    rewrite = False
-    if not overwrite:
-        if f != write_new_source:
-            rewrite = True
+        # Check if exactly equivalent
+        with open(function_location, "r") as f: file_source = f.read()
+
+        if file_source != write_new_source:
+            overwrite = True
         elif not overwrite:
             if "__UNSLOTH_VERSIONING__" not in f:
-                rewrite = True
+                overwrite = True
             else:
                 versions = f[:f.find('__UNSLOTH_VERSIONING__')]
                 if versioning[:versioning.find('__UNSLOTH_VERSIONING__')] != versions:
-                    rewrite = True
+                    overwrite = True
+    pass
+
+    # Check location
+    def write_file(function_location, write_new_source):
+        with open(function_location, "wb", buffering = 0) as file:
+            file.write(write_new_source.encode("utf-8"))
+            file.flush()
+            os.fsync(file.fileno())
+        return None
+    pass
+
+    if overwrite or not os.path.isfile(function_location):
+        try:
+            distributed_function(1, write_file, function_location, write_new_source)
+            with open(function_location, "r") as f: file_source = f.read()
+        except Exception as error:
+            if UNSLOTH_COMPILE_USE_TEMP:
+                raise RuntimeError(error)
+            else:
+                # Failed so instead use a temporary directory
+                compile_folder = get_compile_folder(use_tempfile = True)
+                function_location = os.path.join(compile_folder, f"{name}.py")
+                distributed_function(1, write_file, function_location, write_new_source)
+                with open(function_location, "r") as f: file_source = f.read()
+            pass
         pass
     pass
-    if rewrite:
-        return create_new_function(
-            name = name,
-            new_source = old_new_source,
-            model_location = model_location,
-            functions = functions,
-            prepend = prepend,
-            append = append,
-            overwrite = True,
-            add_torch_compile = add_torch_compile,
-        )
-    pass
 
-    # Try loading new module
+    # Now import modules! Use a tempfile if it fails on the first try!
+    old_path = None
     new_module = None
-    trials = 0
-    while True:
-        if trials == 1000: raise RuntimeError("Unsloth: Failed to create dynamic compiled")
-        try:
-            new_module = importlib.import_module(UNSLOTH_COMPILE_LOCATION + "." + name)
-            break
-        except:
-            module_name = f"unsloth_cache_{name}"
-            file_location = os.path.join(UNSLOTH_COMPILE_LOCATION, name) + ".py"
+    try:
+        # Add directory to sys.path temporarily if it's not already there
+        if compile_folder not in sys.path:
+            old_path = list(sys.path)
+            sys.path.insert(0, compile_folder)
+        # Try standard import
+        new_module = importlib.import_module(name)
+    except Exception as e:
+        print(f"Standard import failed for {name}: {e}")
 
-            # Instead use sys modules for dynamic loading
+        # Fallback to direct module loading
+        try:
+            module_name = f"unsloth_cache_{name}"
+            file_location = os.path.join(compile_folder, name) + ".py"
             spec = importlib.util.spec_from_file_location(module_name, file_location)
             new_module = importlib.util.module_from_spec(spec)
             sys.modules[module_name] = new_module
             spec.loader.exec_module(new_module)
+        except Exception as e:
+            print(f"Direct module loading failed for {name}: {e}")
+    finally:
+        # Restore original sys.path if we modified it
+        if old_path is not None:
+            sys.path = old_path
 
-            # Temp modules can only use dynamic loading
-            if UNSLOTH_COMPILE_LOCATION_USE_TEMP: break
-
-            time.sleep(0.01)
-            trials += 1
-        pass
-    pass
     if new_module is None:
-        raise ImportError(f'Unsloth: Cannot import {UNSLOTH_COMPILE_LOCATION + "." + name}')
+        raise ImportError(f'Unsloth: Cannot import {name} from {UNSLOTH_COMPILE_LOCATION}')
 
-    # Must save to global state or else temp file closes
-    UNSLOTH_CREATED_FUNCTIONS.append(file_location)
     return new_module
 pass
 
