@@ -217,7 +217,6 @@ def replace_with_grouped_query_attention(module, source):
 pass
 
 def _get_compile_folder(use_tempfile = False):
-    use_tempfile = True
     global UNSLOTH_COMPILE_LOCATION
     global UNSLOTH_COMPILE_USE_TEMP
     if UNSLOTH_COMPILE_USE_TEMP or use_tempfile:
