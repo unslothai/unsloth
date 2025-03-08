@@ -235,7 +235,7 @@ def _get_compile_folder(use_tempfile = False):
 pass
 
 def get_compile_folder(use_tempfile = False):
-    (location, UNSLOTH_COMPILE_USE_TEMP,) = distributed_function(2, _get_compile_folder, use_tempfile)
+    location, UNSLOTH_COMPILE_USE_TEMP = distributed_function(2, _get_compile_folder, use_tempfile)
     return location, UNSLOTH_COMPILE_USE_TEMP
 pass
 
