@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING
+from ._utils import (
+    is_bfloat16_supported,
+    HAS_FLASH_ATTENTION,
+    HAS_FLASH_ATTENTION_SOFTCAPPING,
+    USE_MODELSCOPE,
+)
 from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
@@ -35,14 +40,6 @@ except:
 pass
 from huggingface_hub import HfFileSystem
 import importlib.util
-
-# [TODO] Move USE_MODELSCOPE to utils
-USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
-if USE_MODELSCOPE:
-    if importlib.util.find_spec("modelscope") is None:
-        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
-    pass
-pass
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
