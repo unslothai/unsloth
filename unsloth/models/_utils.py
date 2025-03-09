@@ -25,6 +25,7 @@ __all__ = [
     "__version__",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
+    "USE_MODELSCOPE",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
