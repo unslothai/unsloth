@@ -259,6 +259,7 @@ pass
 
 def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     # Get eos_token, bos_token etc
+    if not hasattr(slow_tokenizer, "all_special_tokens"): return True
     dir_names = dir(slow_tokenizer)
     special_tokens = list(filter(None, (
         getattr(slow_tokenizer, x) for x in dir_names
@@ -503,12 +504,14 @@ def _load_correct_tokenizer(
             cache_dir         = cache_dir,
         )
     except:
-        pass
+        slow_tokenizer = None
         # print(
         #     f"Unsloth: {tokenizer_name} has no tokenizer.model file.\n"\
         #     "Just informing you about this - this is not a critical error."
         # )
     pass
+    # Unsure why this occurs!
+    if type(slow_tokenizer) is bool: slow_tokenizer = None
 
     fast_tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name,
@@ -854,23 +857,9 @@ def check_tokenizer(
 pass
 
 
-def check_nvidia():
-    # Unsloth doesn't work yet on AMD devices - we're working on it!
-    output = np.array([0,])
-    try:
-        output = subprocess.check_output("nvidia-smi --query-gpu=memory.used --format=csv", shell = True)
-        output = re.findall(rb'([\d]{1,})[\s]{1,}M', output)
-        output = np.array([int(x.decode('utf-8'))/1024 for x in output])
-    except:
-        if not torch.cuda.is_available():
-            raise RuntimeError("Unsloth: We do not support AMD / Intel machines yet - it is a work in progress!")
-    return output
-pass
-PRE_CHECK = check_nvidia()
-
-
 import inspect
 from inspect import getsource
+import trl
 import trl.trainer.sft_trainer
 from trl.trainer.sft_trainer import *
 from transformers.trainer import *

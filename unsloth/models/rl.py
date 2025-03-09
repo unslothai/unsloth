@@ -14,6 +14,7 @@
 
 __all__ = [
     "PatchFastRL",
+    "vLLMSamplingParams",
 ]
 
 import torch
@@ -21,12 +22,34 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import inspect
 import os
 import re
+import torch
 from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.logging_utils import PatchRLStatistics
+from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from .rl_replacements import (
     RL_EXTRA_ARGS,
     RL_FUNCTIONS,
+    RL_PRE_ITEMS,
+    RL_CONFIG_CHANGES,
+    RL_METRICS_CHANGES,
 )
+selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
+
+torch_compile_options = {
+    "epilogue_fusion"   : True,
+    "max_autotune"      : False, # Disable Triton mm kernels
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}
+
+
+def vLLMSamplingParams(**kwargs):
+    from vllm import SamplingParams
+    sampling_params = SamplingParams(**kwargs)
+    sampling_params._set_kwargs = kwargs
+    return sampling_params
+pass
 
 def PatchRL(FastLanguageModel):
 
@@ -38,7 +61,7 @@ def PatchRL(FastLanguageModel):
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
         with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
             # Put the model in inference mode.
-            FastLanguageModel.for_inference(unwrapped_model)
+            FastLanguageModel.for_inference(model)
 
             # We must use .clone for Unsloth since we force inference_mode
             # Rather we should have used no_grad
@@ -231,23 +254,42 @@ from typing import *
 from dataclasses import dataclass, field
 from packaging.version import Version
 import torch
+import numpy as np
 from contextlib import nullcontext
+from torch.nn import functional as F
+torch_compile_options = {{
+    "epilogue_fusion"   : True,
+    "max_autotune"      : False,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}}
+
+{selective_log_softmax_code}
+{RL_pre}
 
 @dataclass
 class Unsloth{RLConfig_name}({RLConfig_name}):
     """
     {__RLConfig_doc__}
     """
-    sampling_params: Optional[Any] = field(
+    vllm_sampling_params: Optional[Any] = field(
         default = None,
         metadata = {{'help': 'vLLM SamplingParams'}},
     )
+    unsloth_num_chunks : Optional[int] = field(
+        default = -1,
+        metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
+    )
     def __init__({RLConfig_arguments},
-        sampling_params = None,
+        vllm_sampling_params = None,
+        unsloth_num_chunks = -1,
         **kwargs,
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
+        self.vllm_sampling_params = vllm_sampling_params
+        self.unsloth_num_chunks = unsloth_num_chunks
 pass
 
 {RLTrainer_extras}
@@ -293,8 +335,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if RLTrainer.__name__.startswith("Unsloth"): return
     if RLConfig .__name__.startswith("Unsloth"): return
 
+    # Get old source
+    old_RLTrainer_source = inspect.getsource(RLTrainer)
+    old_RLConfig_source  = inspect.getsource(RLConfig)
+
     all_imports = dir(trainer)
-    imports = [x for x in all_imports if not x.startswith("_")]
+    # Fix _deprecate_arguments not getting imported so stop __ but not _
+    imports = [x for x in all_imports if not x.startswith("__")]
 
     # Get default arguments
     EMPTY = inspect.Parameter.empty
@@ -388,6 +435,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += eval_changes
     pass
 
+    # Force logits to be produced if preprocess_logits_for_metrics or compute_metrics is used
+    if "model" in call_args:
+        logits_check = \
+        "_output_logits = False\n"\
+        "if locals().get('compute_metrics', None) is not None: _output_logits = True\n"\
+        "if locals().get('preprocess_logits_for_metrics', None) is not None: _output_logits = True\n"\
+        "if _output_logits:\n"\
+        "    os.environ['UNSLOTH_RETURN_LOGITS'] = '1'\n"
+        extra_args += logits_check
+    pass
+
     # Check max_seq_length
     if "model" in call_args:
         length_check = \
@@ -432,10 +490,20 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_post += neftune_check
     pass
 
+    # Edit optional metrics
+    other_metrics_processor = ""
+    if trainer_file in RL_METRICS_CHANGES:
+        process_extra_args = RL_METRICS_CHANGES[trainer_file]
+        for process_extra_arg in process_extra_args:
+            other_metrics_processor += process_extra_arg(call_args, extra_args)
+    pass
+
     # Add statistics as well!
     extra_args += \
+        "other_metrics = []\n"\
+        f"{other_metrics_processor}\n"\
         "from unsloth_zoo.logging_utils import PatchRLStatistics\n"\
-        f"PatchRLStatistics('{trainer_file}')\n"
+        f"PatchRLStatistics('{trainer_file}', other_metrics)\n"
 
     # Patch optional args
     if trainer_file in RL_EXTRA_ARGS:
@@ -509,6 +577,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += num_proc_check
     pass
 
+    # Edit config with anything extra
+    if trainer_file in RL_CONFIG_CHANGES:
+        process_extra_args = RL_CONFIG_CHANGES[trainer_file]
+        for process_extra_arg in process_extra_args:
+            extra_args += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
+    pass
+
     # Edit report_to and default it to nothing if max_steps is like 60
 
     # Create RLConfig args
@@ -526,8 +601,26 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Create full module
     exec(f"from trl.trainer import ({RLTrainer_name}, {RLConfig_name},)")
     __RLTrainer_doc__ = eval(f"trl.trainer.{RLTrainer_name}").__doc__
+    if __RLTrainer_doc__ is None: __RLTrainer_doc__ = ""
     __RLConfig_doc__  = eval(f"trl.trainer.{RLConfig_name}") .__doc__
+    if __RLConfig_doc__ is None: __RLConfig_doc__ = ""
 
+    # Get all pre-modules
+    if trainer_file in RL_PRE_ITEMS:
+        RL_pre = "\n".join(RL_PRE_ITEMS[trainer_file])
+    else:
+        RL_pre = ""
+    pass
+
+    # Check if SamplingParams is in there
+    if "SamplingParams" in old_RLTrainer_source:
+        RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
+    pass
+    
+    # Selective log softmax
+    selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+
+    # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
         __RLTrainer_doc__    = __RLTrainer_doc__,
@@ -545,7 +638,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         RLTrainer_extras     = RLTrainer_extras,
         RLTrainer_post       = RLTrainer_post,
+        RL_pre               = RL_pre,
+
+        selective_log_softmax_code = selective_log_softmax_code,
     )
+
+    # Remove multiple doc strings
+    if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
+        RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
+    pass
+
+    # Remove multiple newlines
+    RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
     # Create new function
     created_module = create_new_function(
@@ -591,7 +695,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             replacer = replacer[0]
             vllm_setter = "\n" + " "*8 + \
             "if hasattr(model, 'vllm_engine') and "\
-            "getattr(args, 'use_vllm') and getattr(args, 'use_vllm', False): "\
+            "hasattr(args, 'use_vllm') and (getattr(args, 'use_vllm', False) == False): "\
             "args.use_vllm = True\n"
             init = init.replace(replacer, replacer + vllm_setter)
         pass
@@ -619,14 +723,31 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         )
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
+
+            # Fix guided_decoding
+            sampling_params = sampling_params.replace(
+                "guided_decoding=guided_decoding,",
+                'guided_decoding='\
+                'GuidedDecodingParams(backend="outlines", regex=args.vllm_guided_decoding_regex) '\
+                'if getattr(args, "vllm_guided_decoding_regex", None) is not None else None,',
+            )
             # Replace with our vLLM engine
             sampling_params = \
                 " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
                 sampling_params # Add spaces
+
+            # Add extra arguments to SamplingParams
+            extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
+            # Backwards replace
+            to_replace = "," + extra + "," + ")"
+            sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
+            # Strip multiple commas
+            sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
+
             new_vllm_part = \
-                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params} "\
-                f"if getattr(args, 'sampling_params', None) is None else "\
-                f"getattr(args, 'sampling_params', None)\n{' '*8}else:\n"
+                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
+                f"\n{' '*8}else:\n"
+
             init = init.replace(vllm_part, new_vllm_part)
         pass
     pass
@@ -697,6 +818,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         old, new = changed[function]
         RLTrainer_source = RLTrainer_source.replace(old, new)
     pass
+
     RLTrainer_source = RLTrainer_source.replace(
         f"class {RLTrainer_name}", f"class _Unsloth{RLTrainer_name}", 1
     )

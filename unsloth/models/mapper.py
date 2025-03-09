@@ -218,13 +218,25 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Mistral-Nemo-Base-2407",
         "mistralai/Mistral-Nemo-Base-2407",
     ),
-    "unsloth/Meta-Llama-3.1-8B-bnb-4bit" : (
+    "unsloth/Meta-Llama-3.1-8B-unsloth-bnb-4bit" : (
         "unsloth/Meta-Llama-3.1-8B",
         "meta-llama/Meta-Llama-3.1-8B",
+        "unsloth/Meta-Llama-3.1-8B-bnb-4bit",
     ),
-    "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit" : (
+    "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Meta-Llama-3.1-8B-Instruct",
         "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Llama-3.1-8B-unsloth-bnb-4bit" : (
+        "unsloth/Llama-3.1-8B",
+        "meta-llama/Llama-3.1-8B",
+        "unsloth/Llama-3.1-8B-bnb-4bit",
+    ),
+    "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Llama-3.1-8B-Instruct",
+        "meta-llama/Llama-3.1-8B-Instruct",
+        "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",
     ),
     "unsloth/Meta-Llama-3.1-70B-bnb-4bit" : (
         "unsloth/Meta-Llama-3.1-70B",
@@ -588,6 +600,31 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2.5-VL-72B-Instruct",
         "Qwen/Qwen2.5-VL-72B-Instruct",
         "unsloth/Qwen2.5-VL-72B-Instruct-bnb-4bit",
+    ),
+    "unsloth/DeepScaleR-1.5B-Preview-unsloth-bnb-4bit" : (
+        "unsloth/DeepHermes-3-Llama-3-8B-Preview",
+        "agentica-org/DeepScaleR-1.5B-Preview",
+        "unsloth/DeepScaleR-1.5B-Preview-bnb-4bit",
+    ),
+    "unsloth/OpenThinker-7B-unsloth-bnb-4bit" : (
+        "unsloth/OpenThinker-7B",
+        "open-thoughts/OpenThinker-7B",
+        "unsloth/OpenThinker-7B-bnb-4bit",
+    ),
+    "unsloth/granite-3.2-2b-instruct-unsloth-bnb-4bit" : (
+        "unsloth/granite-3.2-2b-instruct",
+        "ibm-granite/granite-3.2-2b-instruct",
+        "unsloth/granite-3.2-2b-instruct-bnb-4bit",
+    ),
+    "unsloth/granite-3.2-8b-instruct-unsloth-bnb-4bit" : (
+        "unsloth/granite-3.2-8b-instruct",
+        "ibm-granite/granite-3.2-8b-instruct",
+        "unsloth/granite-3.2-8b-instruct-bnb-4bit",
+    ),
+    "unsloth/QwQ-32B-unsloth-bnb-4bit" : (
+        "unsloth/QwQ-32B",
+        "Qwen/QwQ-32B",
+        "unsloth/QwQ-32B-bnb-4bit",
     ),
 }
 
