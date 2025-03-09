@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.8"
+__version__ = "2025.3.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -25,6 +25,7 @@ __all__ = [
     "__version__",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
+    "USE_MODELSCOPE",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
