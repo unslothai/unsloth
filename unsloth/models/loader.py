@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING, USE_MODELSCOPE
+from ._utils import (
+    is_bfloat16_supported,
+    HAS_FLASH_ATTENTION,
+    HAS_FLASH_ATTENTION_SOFTCAPPING,
+    USE_MODELSCOPE,
+)
 from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
