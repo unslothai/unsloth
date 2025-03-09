@@ -536,7 +536,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches first match. .+? matches final match.
         replacer = re.findall(
-            "def __init__\(.*?\).*?\:\n",
+            r"def __init__\(.*?\).*?\:\n",
             init,
             flags = re.MULTILINE | re.DOTALL,
         )
