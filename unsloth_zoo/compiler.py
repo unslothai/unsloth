@@ -531,13 +531,13 @@ pass
 
 # Replace Cross Entropy cells with fused linear lm heads
 cross_entropy_find_1 = """
-logits = self.lm_head(hidden_states%
+logits = self.lm_head(hidden_states$INDEXING$
 loss = None
-if labels is not None:$logits = logits.float()
-shift_logits = logits[..., :-1, :].contiguous()
-shift_labels = labels[..., 1:].contiguous()
+if labels is not None:$SPACES$$UPCASTING$
+shift_logits = logits[..., :-1, :]$CONTIGUOUS$
+shift_labels = labels[..., 1:]$CONTIGUOUS$
 loss_fct = CrossEntropyLoss()
-shift_logits = shift_logits.view(-1, self.config.vocab_size)
+shift_logits = shift_logits.view(-1, $VOCABSIZE$)
 shift_labels = shift_labels.view(-1)
 shift_labels = shift_labels.to(shift_logits.device)
 loss = loss_fct(shift_logits, shift_labels)
@@ -545,9 +545,9 @@ loss = loss_fct(shift_logits, shift_labels)
 
 cross_entropy_replacement_1 = """
 if labels is None:
-    logits = self.lm_head(hidden_states)
-elif NOT_RETURN_LOGITS and labels is not None:
-    n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
+    logits = self.lm_head(hidden_states\\1)
+elif (os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0') and labels is not None:
+    n_items = $KWARGS$.get("num_items_in_batch", None) or $KWARGS$.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
         lm_weight          = self.lm_head.weight,
@@ -556,20 +556,20 @@ elif NOT_RETURN_LOGITS and labels is not None:
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
     )
 else:
-    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states, labels,)
+    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states\\1, labels,)
 """
 
 cross_entropy_find_2 = """
-logits = self.lm_head(hidden_states%
+logits = self.lm_head(hidden_states$INDEXING$
 loss = None
-if labels is not None:$loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **loss_kwargs)
+if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOCABSIZE$, $KWARGS$)
 """
 
 cross_entropy_replacement_2 = """
 if labels is None:
-    logits = self.lm_head(hidden_states)
-elif NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
-    n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
+    logits = self.lm_head(hidden_states\\1)
+elif (os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0') and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+    n_items = \\6.get("num_items_in_batch", None) or \\6.get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
         lm_weight          = self.lm_head.weight,
@@ -578,46 +578,18 @@ elif NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
     )
 else:
-    logits = self.lm_head(hidden_states)
-    loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **loss_kwargs)
-"""
-
-cross_entropy_find_3 = """
-logits = self.lm_head(hidden_states%
-loss = None
-if labels is not None:$loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
-"""
-
-cross_entropy_replacement_3 = """
-if labels is None:
-    logits = self.lm_head(hidden_states)
-elif NOT_RETURN_LOGITS and self.training and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
-    n_items = loss_kwargs.get("num_items_in_batch", None) or loss_kwargs.get("n_items", None)
-    loss = fused_linear_cross_entropy(
-        hidden_states      = hidden_states,
-        lm_weight          = self.lm_head.weight,
-        labels             = labels,
-        num_items_in_batch = n_items,
-        logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
-    )
-else:
-    logits = self.lm_head(hidden_states)
-    loss = self.loss_function(logits, labels, self.vocab_size, **loss_kwargs)
+    logits = self.lm_head(hidden_states\\1)
+    loss = self.loss_function(\\3, \\4, \\5, **\\6)
 """
 
 ce_finders = [
     (cross_entropy_find_1, cross_entropy_replacement_1,),
     (cross_entropy_find_2, cross_entropy_replacement_2,),
-    (cross_entropy_find_3, cross_entropy_replacement_3,),
 ]
 
 
 def apply_fused_lm_head(forward):
     # All Unsloth Zoo code licensed under LGPLv3
-    # Logit returning?
-    RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
-    NOT_RETURN_LOGITS = not RETURN_LOGITS
-
     for cross_entropy_find, cross_entropy_replacement in ce_finders:
         cross_entropy_find = cross_entropy_find.strip()\
             .replace("*", "\*").replace("^", "\^")\
@@ -630,25 +602,23 @@ def apply_fused_lm_head(forward):
 
         # Replace $ with anything and % with num_logits_to_keep or .float()
         cross_entropy_find = cross_entropy_find\
-            .replace("$", r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
-            .replace("%", r"([^\n^\)]{1,}\))(?:\.float\(\))?[\n][\s]{0,}")
-        print(cross_entropy_find)
-        # Find indentations
-        spaces = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
-        if len(spaces) == 0:
-            # Try kwargs instead of loss_kwargs
-            if "loss_kwargs" in cross_entropy_find:
-                cross_entropy_find = cross_entropy_find.replace("loss_kwargs", "kwargs")
-                cross_entropy_replacement = cross_entropy_replacement.replace("loss_kwargs", "kwargs")
-                # Find indentations
-                spaces = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
-                if len(spaces) == 0: continue
-            else:
-                continue
-        pass
-        print(spaces)
-        spaces = spaces[0]
+            .replace("$INDEXING$",   r"([^\n^\)]{1,})\)(?:\.float\(\))?[\n][\s]{0,}")\
+            .replace("$UPCASTING$",  r"(?:\.float\(\))?")\
+            .replace("$CONTIGUOUS$", r"(?:\.contiguous\(\))?")\
+            .replace("$SPACES$",     r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
+            .replace("$LOGITS$",     r"(logits=logits|logits)")\
+            .replace("$LABELS$",     r"(labels=labels|labels)")\
+            .replace("$VOCABSIZE$",  r"(vocab_size\=self\.config\.vocab_size|self\.vocab_size|self\.config\.vocab_size)")\
+            .replace("$KWARGS$",     r"\*\*(loss_kwargs|kwargs)")
 
+        cross_entropy_replacement = cross_entropy_replacement\
+            .replace("$KWARGS$",     "locals().get('loss_kwargs', {}) or locals().get('kwargs', {})")
+
+        # Find matches
+        finder = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
+        if len(finder) == 0: continue
+
+        spaces = finder[0][1]
         replacement = cross_entropy_replacement.strip().split("\n")
         replacement = "\n".join((len(spaces)-4)*" " + x for x in replacement)
         replacement = \
@@ -662,9 +632,6 @@ def apply_fused_lm_head(forward):
             forward,
             flags = re.DOTALL | re.MULTILINE,
         )
-
-        # Also consider logits
-        forward = forward.replace("NOT_RETURN_LOGITS", str(NOT_RETURN_LOGITS))
     pass
     return forward
 pass
