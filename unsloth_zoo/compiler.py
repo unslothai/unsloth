@@ -483,7 +483,7 @@ _cross_entropy_code = """
 from torch.nn import CrossEntropyLoss
 
 @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-def uncompiled_cross_entropy_loss(self, hidden_states, labels,):
+def normal_cross_entropy_loss(self, hidden_states, labels,):
     logits = self.lm_head(hidden_states)
     logits = logits.float()
     # Shift so that tokens < n predict n
@@ -559,7 +559,7 @@ elif (os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0') and labels is not Non
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
     )
 else:
-    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states\\1, labels.to(self.lm_head.weight.device),)
+    loss, logits = normal_cross_entropy_loss(self, hidden_states\\1, labels.to(self.lm_head.weight.device),)
 """
 
 cross_entropy_find_2 = """
@@ -614,7 +614,7 @@ def apply_fused_lm_head(forward):
             .replace("$VOCABSIZE$",     r"(vocab_size\=self\.config\.vocab_size|self\.vocab_size|self\.config\.vocab_size)")\
             .replace("$KWARGS$",        r"\*\*(loss_kwargs|kwargs)")\
             .replace("$LOGITSUPCAST$", r"(?:logits = logits\.float\(\))?")\
-            .replace("$LABELSDEVICE$", r"(?:labels = labels\.to\([^\)]{1,}\)?)")
+            .replace("$LABELSDEVICE$", r"(?:labels = labels\.to\([^\)]{1,}\))?")
 
         cross_entropy_replacement = cross_entropy_replacement\
             .replace("$KWARGS$",     "locals().get('loss_kwargs', {}) or locals().get('kwargs', {})")
