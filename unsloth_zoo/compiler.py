@@ -634,6 +634,7 @@ def apply_fused_lm_head(forward):
             .replace("%", 
                      r"(?:\[\:\,[\s]{0,}\-num_logits_to_keep\:\,[\s]{0,}\:\])?\)"\
                      r"(?:\.float\(\))?[\n][\s]{0,}")
+        print(cross_entropy_find)
 
         # Find indentations
         spaces = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
