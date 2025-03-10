@@ -156,6 +156,7 @@ def prepare_model_for_training(
             name = name.replace("base_model", "model", 1)
             layer_number = re.search(r"\.[\d]{1,}\.", name)
             if layer_number is not None:
+                # Convert .0. to [0]
                 layer_number = layer_number.group(0)
                 name = name.replace(layer_number, f"[{layer_number[1:-1]}].")
             pass
