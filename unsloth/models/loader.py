@@ -622,11 +622,10 @@ class FastModel(FastBaseModel):
         pass
 
         # Check if VLM
-        is_vlm = (x.endswith("ForConditionalGeneration") for x in model_config.architectures)
+        is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
-        print(auto_model)
-        print(is_vlm)
+
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
