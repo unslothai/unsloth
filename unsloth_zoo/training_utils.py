@@ -27,6 +27,7 @@ import time
 from typing import Any, Optional, List, Dict, Tuple
 from .utils import _get_dtype
 import os
+import re
 
 __all__ = [
     "fix_zero_training_loss",
