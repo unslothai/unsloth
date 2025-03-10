@@ -100,6 +100,7 @@ class FastLanguageModel(FastLlamaModel):
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
                 load_in_8bit               = load_in_8bit,
+                full_finetuning            = full_finetuning,
                 token                      = token,
                 device_map                 = device_map,
                 rope_scaling               = rope_scaling, # [TODO] No effect
@@ -298,6 +299,7 @@ class FastLanguageModel(FastLlamaModel):
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
                 load_in_8bit               = load_in_8bit,
+                full_finetuning            = full_finetuning,
                 token                      = token,
                 device_map                 = device_map,
                 rope_scaling               = rope_scaling, # [TODO] No effect
