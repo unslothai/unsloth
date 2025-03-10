@@ -86,7 +86,7 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
 pass
 
 
-@torch.inference_mode
+@torch.no_grad
 def prepare_model_for_training(
     model                      : Any,
     use_gradient_checkpointing : Optional = "unsloth",
@@ -184,6 +184,10 @@ def prepare_model_for_training(
         m._offloaded_gradient_checkpointing = True
     if use_gradient_checkpointing == True and hasattr(m, "gradient_checkpointing_enable"):
         m.gradient_checkpointing_enable()
+
+    # Also set HF version manually to stop failures
+    if hasattr(model, "_set_gradient_checkpointing"):
+        model._set_gradient_checkpointing()
 
     # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
     if use_reentrant:
