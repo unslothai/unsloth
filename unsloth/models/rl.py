@@ -106,6 +106,8 @@ import torch
 import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
+from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
+
 torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : False,
@@ -335,6 +337,20 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    if hasattr(processing_class, 'tokenizer') and hasattr(processing_class.tokenizer, 'padding_side'): "\
         "processing_class.tokenizer.padding_side = 'right'\n"
         extra_args += training_check
+    pass
+
+    # Check data collator if it's correct!
+    if "data_collator" in call_args and "train_dataset" in call_args:
+        data_collator_check = \
+        "if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names):\n"\
+        "    print('Unsloth: Changing data collator to `DataCollatorForLanguageModeling` since `labels` not found.)\n"\
+        "    data_collator = DataCollatorForLanguageModeling("\
+        "tokenizer = processing_class if 'processing_class' in locals() else tokenizer, mlm = False)\n"\
+        "elif isinstance(data_collator, DataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names):\n"\
+        "    print('Unsloth: Changing data collator to `DataCollatorForSeq2Seq` since `labels` found.)\n"\
+        "    data_collator = DataCollatorForSeq2Seq("\
+        "tokenizer = processing_class if 'processing_class' in locals() else tokenizer)\n"\
+        extra_args += data_collator_check
     pass
 
     # Check NEFTune
