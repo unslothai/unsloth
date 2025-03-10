@@ -97,7 +97,7 @@ def prepare_model_for_training(
     train_lm_head              : Optional[bool] = False,
     float32_mixed_precision    : Optional[bool] = False,
 ) -> Any:
-
+    # All Unsloth Zoo code licensed under LGPLv3
     assert(use_gradient_checkpointing in (True, False, "unsloth",))
     assert(type(use_reentrant) is bool)
     assert(type(full_finetuning) is bool)
