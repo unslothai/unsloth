@@ -238,11 +238,13 @@ class FastBaseModel:
             tokenizer.tokenizer.padding_side = "left" # Force inference
         m = model
         while hasattr(m, "model"):
+            m.max_seq_length = max_seq_length
             m._saved_temp_tokenizer = tokenizer
             # Also set is_loaded_in_8bit to disable incorrect DDP
             m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         pass
+        m.max_seq_length = max_seq_length
         m._saved_temp_tokenizer = tokenizer
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
@@ -328,7 +330,7 @@ class FastBaseModel:
             gc.collect()
             torch.cuda.empty_cache()
         pass
-
+        max_seq_length = model.max_seq_length
         lora_config = LoraConfig(
             r               = r,
             lora_alpha      = lora_alpha,
@@ -346,6 +348,7 @@ class FastBaseModel:
         requires_grad_for_gradient_checkpointing(model)
 
         model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing)
+        model.max_seq_length = max_seq_length
 
         # Clear deleted GPU items
         for _ in range(3):
