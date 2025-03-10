@@ -632,9 +632,10 @@ def apply_fused_lm_head(forward):
         cross_entropy_find = cross_entropy_find\
             .replace("$", r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
             .replace("%", 
-                     r"(?:\[\:\,[\s]{0,}\-num_logits_to_keep\:\,[\s]{0,}\:\])?\)"\
+                     r"(?:\[\:\,[\s]{0,}"\
+                     r"(?:\-num_logits_to_keep\:|\-logits_to_keep\:|slice_indices)"\
+                     r"\,[\s]{0,}\:\])?\)"\
                      r"(?:\.float\(\))?[\n][\s]{0,}")
-        print(cross_entropy_find)
 
         # Find indentations
         spaces = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
