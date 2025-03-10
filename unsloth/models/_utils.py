@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.9"
+__version__ = "2025.3.10"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -108,6 +108,9 @@ from unsloth_zoo.vision_utils import (
 from unsloth_zoo.compiler import (
     get_transformers_model_type,
     unsloth_compile_transformers as _unsloth_compile_transformers,
+)
+from unsloth_zoo.training_utils import (
+    prepare_model_for_training,
 )
 
 # =============================================
@@ -509,67 +512,16 @@ def prepare_model_for_kbit_training(
     use_gradient_checkpointing : Optional = True,
     use_reentrant              : Optional[bool] = True,
 ) -> Any:
-    """
-    Calculates where to place the gradient checkpoints given n_layers.
-    We also freeze all other layers's gradients
-
-    Args:
-        model: Any LlamaModel with layers.
-        use_gradient_checkpointing (`bool`, *optional*):
-            Default enabled. Provides memory savings by not saving all activations,
-            but only some.
-        use_reentrant (`bool`, *optional*):
-            https://github.com/pytorch/pytorch/blob/main/torch/utils/checkpoint.py#L354
-            Optimal gradient checkpointing algorithm which will be the default in
-            future Pytorch versions.
-    """
-
-    # Freeze all parameters except LoRA
-    with torch.no_grad():
-        for name, param in model.named_parameters():
-            if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
-                param.requires_grad_(True)
-                # Also must be in float32!
-                if param.dtype != torch.float32:
-                    name = name.replace("base_model", "model", 1)
-                    layer_number = re.search(r"\.[\d]{1,}\.", name).group(0)
-                    name = name.replace(layer_number, f"[{layer_number[1:-1]}].")
-                    name = name.replace(".weight", "", 1)
-                    exec(f"{name}.to(torch.float32)")
-                pass
-            else:
-                param.requires_grad_(False)
-        pass
-    pass
-
-    # Gradient checkpointing!
-    if use_gradient_checkpointing == "unsloth":
-
-        # Saves VRAM!
-        original_model = model
-        while hasattr(original_model, "model"):
-            original_model._offloaded_gradient_checkpointing = True
-            original_model = original_model.model
-        pass
-        original_model._offloaded_gradient_checkpointing = True
-        
-        model.gradient_checkpointing_enable()
-
-    elif use_gradient_checkpointing == True:
-        model.gradient_checkpointing_enable()
-    pass
-
-    # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
-    if use_reentrant:
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-    pass
-
-    return model
+    return prepare_model_for_training(
+        model                      = model,
+        use_gradient_checkpointing = use_gradient_checkpointing,
+        use_reentrant              = use_reentrant,
+        full_finetuning            = False,
+        train_layernorms           = False,
+        train_embedding            = False,
+        train_lm_head              = False,
+        float32_mixed_precision    = True,
+    )
 pass
 
 # =============================================

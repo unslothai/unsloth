@@ -234,6 +234,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         mixed_precision = \
         "use_bf16 = getattr(args, 'bf16', False)\n"\
         "use_fp16 = getattr(args, 'fp16', False)\n"\
+        "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"\
         "dtype = getattr(model.config, 'torch_dtype', None)\n"\
         "if dtype is None: dtype = model.get_input_embeddings().dtype\n"\
         "from unsloth_zoo.utils import _get_dtype\n"\
@@ -241,10 +242,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "float16 = dtype == torch.float16\n"\
         "if float16 and use_bf16: raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"\
         "if not float16 and use_fp16: raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"\
-        "if not use_bf16 and not use_fp16:\n"\
+        "if (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"\
         "    args.fp16 = float16\n"\
         "    args.bf16 = not float16\n"\
         "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
+        "elif mixed_precision_dtype == 'bfloat16':\n"\
+        "    args.fp16 = False\n"\
+        "    args.bf16 = False\n"\
+        "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
         extra_args += mixed_precision
     pass
 
@@ -280,7 +285,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "bf16_full_eval = getattr(args, 'bf16_full_eval', False)\n"\
         "if args.fp16 and bf16_full_eval: args.bf16_full_eval = False; args.fp16_full_eval = True\n"\
         "if args.bf16 and fp16_full_eval: args.bf16_full_eval = True; args.fp16_full_eval = False\n"\
-        "if not bf16_full_eval and not fp16_full_eval: args.bf16_full_eval = args.bf16; args.fp16_full_eval = args.fp16\n"
+        "if os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32') == 'bfloat16':\n"\
+        "    args.bf16_full_eval = True\n"\
+        "    args.fp16_full_eval = False\n"\
+        "elif not bf16_full_eval and not fp16_full_eval:\n"\
+        "    args.bf16_full_eval = args.bf16\n"\
+        "    args.fp16_full_eval = args.fp16\n"
         extra_args += eval_changes
     pass
 

@@ -35,6 +35,7 @@ from unsloth_zoo.peft_utils import (
 from triton import __version__ as triton_version
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
+from unsloth_zoo.training_utils import prepare_model_for_training
 import types
 import functools
 
@@ -90,12 +91,15 @@ class FastBaseModel:
         max_seq_length    = None,
         dtype             = None,
         load_in_4bit      = True,
+        load_in_8bit      = False,
+        full_finetuning   = False,
         token             = None,
         device_map        = "sequential",
         trust_remote_code = False,
         model_types       = None,
         tokenizer_name    = None,
         auto_model        = AutoModelForVision2Seq,
+        use_gradient_checkpointing = "unsloth",
         **kwargs,
     ):
         if trust_remote_code:
@@ -141,6 +145,14 @@ class FastBaseModel:
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
         bnb_config = None
+        if full_finetuning and (load_in_4bit or load_in_8bit):
+            print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
+            load_in_4bit = False
+            load_in_8bit = False
+        pass
+
+        if load_in_4bit and load_in_8bit:
+            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit, not both!")
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit              = True,
@@ -149,6 +161,21 @@ class FastBaseModel:
                 bnb_4bit_compute_dtype    = dtype,
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
             )
+        elif load_in_8bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_8bit              = True,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
+            )
+        elif not load_in_4bit and not load_in_8bit and not full_finetuning:
+            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
+            load_in_4bit = True
+        pass
+
+        if full_finetuning:
+            if dtype == torch.bfloat16:
+                print("Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.")
+            else:
+                print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")
         pass
 
         kwargs.pop("attn_implementation", None); # No need since we auto call it
@@ -209,18 +236,29 @@ class FastBaseModel:
         while hasattr(m, "model"):
             m._saved_temp_tokenizer = tokenizer
             # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True
+            m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         pass
         m._saved_temp_tokenizer = tokenizer
         # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True
+        m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
         if model.generate.__name__ != "unsloth_base_fast_generate":
             model._old_generate = model.generate
             unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_base_fast_generate, model)
+
+        # Post patches
+        model = FastBaseModel.post_patch_model(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+        )
+        # Clear deleted GPU items
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
+        pass
         return model, tokenizer
     pass
 
@@ -299,7 +337,7 @@ class FastBaseModel:
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
 
-        model = FastBaseModel.patch_peft_model(model, use_gradient_checkpointing)
+        model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing)
 
         # Clear deleted GPU items
         for _ in range(3):
@@ -316,7 +354,7 @@ class FastBaseModel:
 
 
     @staticmethod
-    def patch_peft_model(
+    def post_patch_model(
         model,
         use_gradient_checkpointing = True,
     ):
@@ -325,11 +363,22 @@ class FastBaseModel:
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
             )
         pass
+        full_finetuning = hasattr(model.config, "quantization_config", None) is not None
 
-        model = prepare_model_for_kbit_training(
+        float32_mixed_precision = True
+        if _get_dtype(model.config.torch_dtype) == torch.bfloat16:
+            # Use bfloat16 precision for full finetuning
+            float32_mixed_precision = False
+
+        model = prepare_model_for_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
-            use_reentrant = True,
+            use_reentrant              = True,
+            full_finetuning            = full_finetuning,
+            train_layernorms           = full_finetuning,
+            train_embedding            = full_finetuning,
+            train_lm_head              = full_finetuning,
+            float32_mixed_precision    = float32_mixed_precision,
         )
 
         from transformers.trainer import Trainer 
@@ -350,14 +399,14 @@ class FastBaseModel:
                 m._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True
+            m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         pass
         if hasattr(m, "_saved_temp_tokenizer"):
             m._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True
+        m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Clear deleted GPU items
         for _ in range(3):
