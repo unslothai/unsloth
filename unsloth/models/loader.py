@@ -108,8 +108,8 @@ class FastLanguageModel(FastLlamaModel):
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 resize_model_vocab         = resize_model_vocab, # [TODO] No effect
                 revision                   = revision,
-                return_logits              = return_logits, # Return logits
-                fullgraph                  = fullgraph, # No graph breaks
+                return_logits              = False, # Return logits
+                fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
                 *args, **kwargs,
             )
@@ -306,8 +306,8 @@ class FastLanguageModel(FastLlamaModel):
                 use_gradient_checkpointing = use_gradient_checkpointing,
                 resize_model_vocab         = resize_model_vocab, # [TODO] No effect
                 revision                   = revision,
-                return_logits              = return_logits, # Return logits
-                fullgraph                  = fullgraph, # No graph breaks
+                return_logits              = False, # Return logits
+                fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
                 *args, **kwargs,
             )
