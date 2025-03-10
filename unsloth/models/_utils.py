@@ -200,7 +200,7 @@ for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title()}Config"
-    exec(f"from {config_filepath} import {config_filename}", globals())
+    import ast; safe_eval = ast.literal_eval(f"from {config_filepath} import {config_filename}", globals())
 
     try:
         config = inspect.getsource(eval(config_filename))
