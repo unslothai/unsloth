@@ -628,20 +628,21 @@ def apply_fused_lm_head(forward):
             .replace("[", "\[").replace("]", "\]")\
             .replace("\n", r"[\s\n]{1,}(?:\#[^\n]{1,}[\n][\s\n]{1,})?")
 
-        # Find indentation
-        if "loss_kwargs"
+        # Replace $ with anything and % with num_logits_to_keep
         cross_entropy_find = cross_entropy_find\
             .replace("$", r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
             .replace("%", 
                      r"(?:\[\:\,[\s]{0,}\-num_logits_to_keep\:\,[\s]{0,}\:\])?\)"\
                      r"(?:\.float\(\))?[\n][\s]{0,}")
 
+        # Find indentations
         spaces = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
         if len(spaces) == 0:
             # Try kwargs instead of loss_kwargs
             if "loss_kwargs" in cross_entropy_find:
                 cross_entropy_find = cross_entropy_find.replace("loss_kwargs", "kwargs")
                 cross_entropy_replacement = cross_entropy_replacement.replace("loss_kwargs", "kwargs")
+                # Find indentations
                 spaces = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
                 if len(spaces) == 0: continue
             else:
