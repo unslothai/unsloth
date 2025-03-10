@@ -162,8 +162,12 @@ def prepare_model_for_training(
             pass
             name = name.replace(".weight", "", 1)
             dtype = torch.float32 if upcast else mixed_precision_dtype
-            print(name)
-            exec(f"{name}.to({str(dtype)})")
+            try:
+                # Try original name
+                exec(f"{name}.to({str(dtype)})")
+            except:
+                # Maybe model.model
+                exec(f"model.{name}.to({str(dtype)})")
         pass
     pass
 
