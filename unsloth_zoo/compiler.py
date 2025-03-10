@@ -571,7 +571,7 @@ cross_entropy_replacement_1 = """
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0') and labels is not None:
-    n_items = $KWARGS$.get("num_items_in_batch", None) or $KWARGS$.get("n_items", None)
+    n_items = ($KWARGS$).get("num_items_in_batch", None) or ($KWARGS$).get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
         lm_weight          = self.lm_head.weight,
