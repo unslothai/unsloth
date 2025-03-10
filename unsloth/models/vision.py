@@ -234,7 +234,8 @@ class FastBaseModel:
 
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference
-        tokenizer.tokenizer.padding_side = "left" # Force inference
+        if hasattr(tokenizer, "tokenizer"):
+            tokenizer.tokenizer.padding_side = "left" # Force inference
         m = model
         while hasattr(m, "model"):
             m._saved_temp_tokenizer = tokenizer
@@ -403,14 +404,16 @@ class FastBaseModel:
         m = model
         while hasattr(m, "model"):
             if hasattr(m, "_saved_temp_tokenizer"):
-                m._saved_temp_tokenizer.tokenizer.padding_side = "right"
+                if hasattr(m._saved_temp_tokenizer, "tokenizer"):
+                    m._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
             m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         pass
         if hasattr(m, "_saved_temp_tokenizer"):
-            m._saved_temp_tokenizer.tokenizer.padding_side = "right"
+            if hasattr(m._saved_temp_tokenizer, "tokenizer"):
+                m._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
