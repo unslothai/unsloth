@@ -172,10 +172,13 @@ class FastBaseModel:
         pass
 
         if full_finetuning:
+            os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
             if dtype == torch.bfloat16:
                 print("Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.")
             else:
                 print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")
+        else:
+            os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         pass
 
         kwargs.pop("attn_implementation", None); # No need since we auto call it
@@ -287,6 +290,10 @@ class FastBaseModel:
         temporary_location         = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
+        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+            print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            return model
+        pass
         transformers_set_seed(random_state)
 
         if type(r) is not int:
@@ -363,7 +370,7 @@ class FastBaseModel:
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
             )
         pass
-        full_finetuning = hasattr(model.config, "quantization_config", None) is not None
+        full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         float32_mixed_precision = True
         if _get_dtype(model.config.torch_dtype) == torch.bfloat16:
