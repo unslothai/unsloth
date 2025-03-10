@@ -2016,6 +2016,10 @@ class FastLlamaModel:
         temporary_location  = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
+        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+            print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            return model
+        pass
         transformers_set_seed(random_state)
 
         if use_gradient_checkpointing == "unsloth":
