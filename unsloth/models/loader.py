@@ -73,6 +73,8 @@ class FastLanguageModel(FastLlamaModel):
         max_seq_length             = None,
         dtype                      = None,
         load_in_4bit               = True,
+        load_in_8bit               = False,
+        full_finetuning            = False,
         token                      = None,
         device_map                 = "sequential",
         rope_scaling               = None,
@@ -91,6 +93,28 @@ class FastLanguageModel(FastLlamaModel):
         disable_log_stats          = True,
         *args, **kwargs,
     ):
+        if load_in_8bit or full_finetuning:
+            return FastModel.from_pretrained(
+                model_name                 = model_name,
+                max_seq_length             = max_seq_length, # [TODO] No effect
+                dtype                      = dtype,
+                load_in_4bit               = load_in_4bit,
+                load_in_8bit               = load_in_8bit,
+                token                      = token,
+                device_map                 = device_map,
+                rope_scaling               = rope_scaling, # [TODO] No effect
+                fix_tokenizer              = fix_tokenizer, # [TODO] No effect
+                trust_remote_code          = trust_remote_code,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                resize_model_vocab         = resize_model_vocab, # [TODO] No effect
+                revision                   = revision,
+                return_logits              = return_logits, # Return logits
+                fullgraph                  = fullgraph, # No graph breaks
+                use_exact_model_name       = use_exact_model_name,
+                *args, **kwargs,
+            )
+        pass
+
         if token is None: token = get_token()
         assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
 
@@ -150,7 +174,7 @@ class FastLanguageModel(FastLlamaModel):
 
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
-        
+
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
             # Check if folder exists locally
@@ -261,15 +285,31 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
-        elif model_type == "cohere":
-            dispatch_model = FastCohereModel
-        elif model_type == "granite":
-            dispatch_model = FastGraniteModel
+        # Temporary disable optimized Cohere until errors match
+        # elif model_type == "cohere":
+        #     dispatch_model = FastCohereModel
+        # Temporary disable optimized Granite until errors match
+        # elif model_type == "granite":
+        #     dispatch_model = FastGraniteModel
         else:
-            raise NotImplementedError(
-                f"Unsloth: {model_name} not supported yet!\n"\
-                "Maybe you're doing vision finetuning? Please use FastVisionModel instead!\n"\
-                "Otherwise, make an issue to https://github.com/unslothai/unsloth!",
+            return FastModel.from_pretrained(
+                model_name                 = model_name,
+                max_seq_length             = max_seq_length, # [TODO] No effect
+                dtype                      = dtype,
+                load_in_4bit               = load_in_4bit,
+                load_in_8bit               = load_in_8bit,
+                token                      = token,
+                device_map                 = device_map,
+                rope_scaling               = rope_scaling, # [TODO] No effect
+                fix_tokenizer              = fix_tokenizer, # [TODO] No effect
+                trust_remote_code          = trust_remote_code,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                resize_model_vocab         = resize_model_vocab, # [TODO] No effect
+                revision                   = revision,
+                return_logits              = return_logits, # Return logits
+                fullgraph                  = fullgraph, # No graph breaks
+                use_exact_model_name       = use_exact_model_name,
+                *args, **kwargs,
             )
         pass
 
@@ -284,6 +324,11 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
+            import platform
+            if platform.system().lower() == 'windows':
+                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+                fast_inference = False
+            pass
             from unsloth_zoo.vllm_utils import (
                 patch_vllm, 
                 vllm_dynamic_quant_supported,
@@ -392,6 +437,8 @@ class FastModel(FastBaseModel):
         max_seq_length             = None, # [TODO] No effect
         dtype                      = None,
         load_in_4bit               = True,
+        load_in_8bit               = False,
+        full_finetuning            = False,
         token                      = None,
         device_map                 = "sequential",
         rope_scaling               = None, # [TODO] No effect
@@ -412,6 +459,21 @@ class FastModel(FastBaseModel):
         patch_compiling_bitsandbytes()
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+
+        if full_finetuning and (load_in_4bit or load_in_8bit):
+            print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
+            load_in_4bit = False
+            load_in_8bit = False
+        pass
+
+        if load_in_4bit and load_in_8bit:
+            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit, not both!")
+        if load_in_4bit: pass
+        elif load_in_8bit: pass
+        elif not load_in_4bit and not load_in_8bit and not full_finetuning:
+            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
+            load_in_4bit = True
+        pass
 
         old_model_name = model_name
         if not use_exact_model_name:
@@ -569,6 +631,8 @@ class FastModel(FastBaseModel):
             max_seq_length    = max_seq_length,
             dtype             = _get_dtype(dtype),
             load_in_4bit      = load_in_4bit,
+            load_in_8bit      = load_in_8bit,
+            full_finetuning   = full_finetuning,
             token             = token,
             device_map        = device_map,
             trust_remote_code = trust_remote_code,
@@ -576,6 +640,7 @@ class FastModel(FastBaseModel):
             model_types       = model_types,
             tokenizer_name    = tokenizer_name,
             auto_model        = auto_model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
             *args, **kwargs,
         )
         
@@ -623,7 +688,7 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             # Patch it as well!
-            model = FastBaseModel.patch_peft_model(model, use_gradient_checkpointing)
+            model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing)
         pass
         return model, tokenizer
     pass

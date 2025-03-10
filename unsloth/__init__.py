@@ -198,14 +198,19 @@ pass
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.3.8"):
-        try:
-            os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        except:
+    if Version(unsloth_zoo_version) < Version("2025.3.9"):
+        print(
+            "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
+            "To disable this, set os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'"
+        )
+        if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
             try:
-                os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+                os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
             except:
-                raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
+                try:
+                    os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+                except:
+                    raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
 except:
     raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
