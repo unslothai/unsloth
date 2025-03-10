@@ -24,10 +24,14 @@ from transformers.trainer_utils import seed_worker as trainer_utils_seed_worker
 from tqdm import tqdm as ProgressBar
 from packaging.version import Version
 import time
+from typing import Any, Optional, List, Dict, Tuple
+from .utils import _get_dtype
+import os
 
 __all__ = [
     "fix_zero_training_loss",
     "unsloth_train",
+    "prepare_model_for_training",
 ]
 
 
@@ -79,7 +83,112 @@ def fix_zero_training_loss(model, tokenizer, train_dataset):
             )
     pass
 pass
-            
+
+
+@torch.inference_mode
+def prepare_model_for_training(
+    model                      : Any,
+    use_gradient_checkpointing : Optional = "unsloth",
+    use_reentrant              : Optional[bool] = True,
+    full_finetuning            : Optional[bool] = False,
+    train_layernorms           : Optional[bool] = False,
+    train_embedding            : Optional[bool] = False,
+    train_lm_head              : Optional[bool] = False,
+    float32_mixed_precision    : Optional[bool] = False,
+) -> Any:
+
+    assert(use_gradient_checkpointing in (True, False, "unsloth",))
+    assert(type(use_reentrant) is bool)
+    assert(type(full_finetuning) is bool)
+    assert(type(train_layernorms) is bool)
+    assert(type(train_embedding) is bool)
+    assert(type(train_lm_head) is bool)
+    assert(type(float32_mixed_precision) is bool)
+
+    dtype = _get_dtype(model.config.torch_dtype)
+    mixed_precision_dtype = torch.float32
+    if dtype == torch.float16:
+        # We need to upcast to float32
+        mixed_precision_dtype = torch.float32
+        os.environ["UNSLOTH_MIXED_PRECISION"] = "float32"
+    elif dtype == torch.bfloat16 and float32_mixed_precision:
+        mixed_precision_dtype = torch.float32
+        os.environ["UNSLOTH_MIXED_PRECISION"] = "float32"
+    elif dtype == torch.bfloat16
+        mixed_precision_dtype = torch.bfloat16
+        os.environ["UNSLOTH_MIXED_PRECISION"] = "bfloat16"
+    else:
+        mixed_precision_dtype = torch.float32
+        os.environ["UNSLOTH_MIXED_PRECISION"] = "float32"
+    pass
+    for name, param in model.named_parameters():
+        upcast = False
+        requires_grad = False
+        if not full_finetuning:
+            if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
+                upcast = True
+                requires_grad = True
+            else:
+                requires_grad = False
+        else:
+            if train_layernorms and ("norm." in name or "_layernorm" in name):
+                requires_grad = True
+                upcast = True # Must upcast layernorms to float32
+            if train_embedding and ("embed_tokens" in name or "embedding" in name):
+                requires_grad = True
+                upcast = False # Can leave in bfloat16
+            if train_lm_head and ("lm_head" in name):
+                requires_grad = True
+                upcast = False # Can leave in bfloat16
+            else:
+                requires_grad = True
+                upcast = False # Can leave in bfloat16
+        pass
+        # Set training or not
+        if requires_grad:
+            param.requires_grad_(True)
+        else:
+            param.requires_grad_(False)
+
+        # Upcast to float32 if needed
+        if requires_grad:
+            name = name.replace("base_model", "model", 1)
+            layer_number = re.search(r"\.[\d]{1,}\.", name).group(0)
+            name = name.replace(layer_number, f"[{layer_number[1:-1]}].")
+            name = name.replace(".weight", "", 1)
+
+            dtype = torch.float32 if upcast else mixed_precision_dtype
+            exec(f"{name}.to({str(dtype)})")
+        pass
+    pass
+
+    # Gradient checkpointing
+    m = model
+    while hasattr(m, "model"):
+        if use_gradient_checkpointing == "unsloth":
+            m._offloaded_gradient_checkpointing = True
+        if use_gradient_checkpointing == True and hasattr(m, "gradient_checkpointing_enable"):
+            m.gradient_checkpointing_enable()
+        m = m.model
+    pass
+    if use_gradient_checkpointing == "unsloth":
+        m._offloaded_gradient_checkpointing = True
+    if use_gradient_checkpointing == True and hasattr(m, "gradient_checkpointing_enable"):
+        m.gradient_checkpointing_enable()
+
+    # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
+    if use_reentrant:
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            def make_inputs_require_grad(module, input, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    pass
+
+    return model
+pass
+
 
 def get_max_steps(training_args, n_training_samples, train_dataset):
     # Approximately from https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py#L2092
