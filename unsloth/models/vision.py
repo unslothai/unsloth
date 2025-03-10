@@ -25,7 +25,7 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ._utils import __version__
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -341,7 +341,7 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
-        model = get_peft_model(model, lora_config)
+        model = _get_peft_model(model, lora_config)
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
 
