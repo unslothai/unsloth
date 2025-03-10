@@ -483,8 +483,29 @@ _cross_entropy_code = """
 from torch.nn import CrossEntropyLoss
 
 @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-def normal_cross_entropy_loss(self, hidden_states, labels,):
+def normal_cross_entropy_loss(self, hidden_states, labels):
     logits = self.lm_head(hidden_states)
+    logits = logits.float()
+    # Shift so that tokens < n predict n
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    # Flatten the tokens
+    loss_fct = CrossEntropyLoss()
+    shift_logits = shift_logits.view(-1, self.config.vocab_size)
+    shift_labels = shift_labels.view(-1)
+    # Enable model parallelism
+    shift_labels = shift_labels.to(shift_logits.device)
+    loss = loss_fct(shift_logits, shift_labels)
+    return loss, logits
+pass
+
+@torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
+def logit_scaled_cross_entropy_loss(self, hidden_states, labels, multiply = True, logit_scale = 1.0):
+    logits = self.lm_head(hidden_states)
+    if multiply:
+        logits = logits * logit_scale
+    else:
+        logits = logits / logit_scale
     logits = logits.float()
     # Shift so that tokens < n predict n
     shift_logits = logits[..., :-1, :].contiguous()
@@ -585,9 +606,50 @@ else:
     loss = self.loss_function(\\3, \\4.to(self.lm_head.weight.device), \\5, **\\6)
 """
 
+# Logit scaling support
+cross_entropy_find_3 = """
+logits = self.lm_head(hidden_states$INDEXING$
+$LOGITSCALINGMULTIPLY$
+$LOGITSCALINGDIVISION$
+loss = None
+if labels is not None:$SPACES$$UPCASTING$
+$LOGITSUPCAST$
+$LABELSDEVICE$
+shift_logits = logits[..., :-1, :]$CONTIGUOUS$
+shift_labels = labels[..., 1:]$CONTIGUOUS$
+loss_fct = CrossEntropyLoss()
+shift_logits = shift_logits.view(-1, $VOCABSIZE$)
+shift_labels = shift_labels.view(-1)
+shift_labels = shift_labels.to(shift_logits.device)
+loss = loss_fct(shift_logits, shift_labels)
+"""
+
+cross_entropy_replacement_3 = """
+if labels is None:
+    logits = self.lm_head(hidden_states\\1)
+elif (os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0') and labels is not None:
+    n_items = ($KWARGS$).get("num_items_in_batch", None) or ($KWARGS$).get("n_items", None)
+    loss = fused_linear_cross_entropy(
+        hidden_states      = hidden_states,
+        lm_weight          = self.lm_head.weight,
+        labels             = labels.to(self.lm_head.weight.device),
+        num_items_in_batch = n_items,
+        logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
+    )
+else:
+    loss, logits = logit_scaled_cross_entropy_loss(
+        self,
+        hidden_states\\1,
+        labels.to(self.lm_head.weight.device),
+        multiply = $LOGITSCALEMULTIPLY$,
+        logit_scale = 
+    )
+"""
+
 ce_finders = [
     (cross_entropy_find_1, cross_entropy_replacement_1,),
     (cross_entropy_find_2, cross_entropy_replacement_2,),
+    (cross_entropy_find_3, cross_entropy_replacement_3,),
 ]
 
 
