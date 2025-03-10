@@ -349,7 +349,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "elif isinstance(data_collator, DataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names):\n"\
         "    print('Unsloth: Changing data collator to `DataCollatorForSeq2Seq` since `labels` found.)\n"\
         "    data_collator = DataCollatorForSeq2Seq("\
-        "tokenizer = processing_class if 'processing_class' in locals() else tokenizer)\n"\
+        "tokenizer = processing_class if 'processing_class' in locals() else tokenizer)\n"
         extra_args += data_collator_check
     pass
 
