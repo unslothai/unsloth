@@ -641,13 +641,13 @@ else:
         self,
         hidden_states\\1,
         labels.to(self.lm_head.weight.device),
-        multiply = $LOGITSCALEMULTIPLY$,
-        logit_scale = 
+        logit_scale_multiply = \\2 if \\2 == '',
+        logit_scale = \\3,
     )
 """
 
 ce_finders = [
-    (cross_entropy_find_1, cross_entropy_replacement_1,),
+    # (cross_entropy_find_1, cross_entropy_replacement_1,),
     (cross_entropy_find_2, cross_entropy_replacement_2,),
     (cross_entropy_find_3, cross_entropy_replacement_3,),
 ]
