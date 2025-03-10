@@ -535,8 +535,8 @@ cross_entropy_find_1 = """
 logits = self.lm_head(hidden_states$INDEXING$
 loss = None
 if labels is not None:$SPACES$$UPCASTING$
-$LOGITS_UPCAST$
-$LABELS_DEVICE$
+$LOGITSUPCAST$
+$LABELSDEVICE$
 shift_logits = logits[..., :-1, :]$CONTIGUOUS$
 shift_labels = labels[..., 1:]$CONTIGUOUS$
 loss_fct = CrossEntropyLoss()
@@ -605,7 +605,7 @@ def apply_fused_lm_head(forward):
 
         # Replace $ with anything and % with num_logits_to_keep or .float()
         cross_entropy_find = cross_entropy_find\
-            .replace("$INDEXING$",      r"([^\n^\)]{1,})\)(?:\.float\(\))?[\n][\s]{0,}")\
+            .replace("$INDEXING$",      r"([^\n^\)]{0,})\)(?:\.float\(\))?[\n][\s]{0,}")\
             .replace("$UPCASTING$",     r"(?:\.float\(\))?")\
             .replace("$CONTIGUOUS$",    r"(?:\.contiguous\(\))?")\
             .replace("$SPACES$",        r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
@@ -613,8 +613,8 @@ def apply_fused_lm_head(forward):
             .replace("$LABELS$",        r"(labels=labels|labels)")\
             .replace("$VOCABSIZE$",     r"(vocab_size\=self\.config\.vocab_size|self\.vocab_size|self\.config\.vocab_size)")\
             .replace("$KWARGS$",        r"\*\*(loss_kwargs|kwargs)")\
-            .replace("$LOGITS_UPCAST$", r"(logits = logits\.float\(\))?")\
-            .replace("$LABELS_DEVICE$", r"(labels = labels\.to\([^\)]{1,}\)?")
+            .replace("$LOGITSUPCAST$", r"(?:logits = logits\.float\(\))?")\
+            .replace("$LABELSDEVICE$", r"(?:labels = labels\.to\([^\)]{1,}\)?)")
 
         cross_entropy_replacement = cross_entropy_replacement\
             .replace("$KWARGS$",     "locals().get('loss_kwargs', {}) or locals().get('kwargs', {})")
