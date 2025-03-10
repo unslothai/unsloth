@@ -1913,12 +1913,12 @@ class FastLlamaModel:
 
         # Save max_seq_length
         model.max_seq_length = max_seq_length
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model = internal_model.model
+        m = model
+        while hasattr(m, "model"):
+            m.max_seq_length = max_seq_length
+            m = m.model
         pass
-        internal_model.max_seq_length = max_seq_length
+        m.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
