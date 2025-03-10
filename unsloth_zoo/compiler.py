@@ -94,6 +94,7 @@ _license_header = """
 
 _disabled_sdpa_code = f"""{_license_header}
 
+import os
 import torch
 from unsloth_zoo.loss_utils import fused_linear_cross_entropy
 
@@ -534,6 +535,8 @@ cross_entropy_find_1 = """
 logits = self.lm_head(hidden_states$INDEXING$
 loss = None
 if labels is not None:$SPACES$$UPCASTING$
+$LOGITS_UPCAST$
+$LABELS_DEVICE$
 shift_logits = logits[..., :-1, :]$CONTIGUOUS$
 shift_labels = labels[..., 1:]$CONTIGUOUS$
 loss_fct = CrossEntropyLoss()
@@ -551,12 +554,12 @@ elif (os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0') and labels is not Non
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
         lm_weight          = self.lm_head.weight,
-        labels             = labels,
+        labels             = labels.to(self.lm_head.weight.device),
         num_items_in_batch = n_items,
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
     )
 else:
-    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states\\1, labels,)
+    loss, logits = uncompiled_cross_entropy_loss(self, hidden_states\\1, labels.to(self.lm_head.weight.device),)
 """
 
 cross_entropy_find_2 = """
@@ -573,13 +576,13 @@ elif (os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0') and self.loss_functio
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states,
         lm_weight          = self.lm_head.weight,
-        labels             = labels,
+        labels             = labels.to(self.lm_head.weight.device),
         num_items_in_batch = n_items,
         logit_softcapping  = getattr(self.config, "final_logit_softcapping", 0),
     )
 else:
     logits = self.lm_head(hidden_states\\1)
-    loss = self.loss_function(\\3, \\4, \\5, **\\6)
+    loss = self.loss_function(\\3, \\4.to(self.lm_head.weight.device), \\5, **\\6)
 """
 
 ce_finders = [
@@ -602,14 +605,16 @@ def apply_fused_lm_head(forward):
 
         # Replace $ with anything and % with num_logits_to_keep or .float()
         cross_entropy_find = cross_entropy_find\
-            .replace("$INDEXING$",   r"([^\n^\)]{1,})\)(?:\.float\(\))?[\n][\s]{0,}")\
-            .replace("$UPCASTING$",  r"(?:\.float\(\))?")\
-            .replace("$CONTIGUOUS$", r"(?:\.contiguous\(\))?")\
-            .replace("$SPACES$",     r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
-            .replace("$LOGITS$",     r"(logits=logits|logits)")\
-            .replace("$LABELS$",     r"(labels=labels|labels)")\
-            .replace("$VOCABSIZE$",  r"(vocab_size\=self\.config\.vocab_size|self\.vocab_size|self\.config\.vocab_size)")\
-            .replace("$KWARGS$",     r"\*\*(loss_kwargs|kwargs)")
+            .replace("$INDEXING$",      r"([^\n^\)]{1,})\)(?:\.float\(\))?[\n][\s]{0,}")\
+            .replace("$UPCASTING$",     r"(?:\.float\(\))?")\
+            .replace("$CONTIGUOUS$",    r"(?:\.contiguous\(\))?")\
+            .replace("$SPACES$",        r"[\n]([\s]{1,})(?:\#[^\n]{1,}[\n][\s\n]{1,})?")\
+            .replace("$LOGITS$",        r"(logits=logits|logits)")\
+            .replace("$LABELS$",        r"(labels=labels|labels)")\
+            .replace("$VOCABSIZE$",     r"(vocab_size\=self\.config\.vocab_size|self\.vocab_size|self\.config\.vocab_size)")\
+            .replace("$KWARGS$",        r"\*\*(loss_kwargs|kwargs)")\
+            .replace("$LOGITS_UPCAST$", r"(logits = logits\.float\(\))?")\
+            .replace("$LABELS_DEVICE$", r"(labels = labels\.to\([^\)]{1,}\)?")
 
         cross_entropy_replacement = cross_entropy_replacement\
             .replace("$KWARGS$",     "locals().get('loss_kwargs', {}) or locals().get('kwargs', {})")
