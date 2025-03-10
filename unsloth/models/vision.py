@@ -366,11 +366,6 @@ class FastBaseModel:
         model,
         use_gradient_checkpointing = True,
     ):
-        if not isinstance(model, PeftModelForCausalLM):
-            raise TypeError(
-                "Unsloth: Your model needs to call `.get_peft_model` first!"
-            )
-        pass
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         float32_mixed_precision = True
