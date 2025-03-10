@@ -476,7 +476,6 @@ class FastModel(FastBaseModel):
             print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
             load_in_4bit = True
         pass
-        print(full_finetuning, load_in_4bit, load_in_8bit)
 
         old_model_name = model_name
         if not use_exact_model_name:
