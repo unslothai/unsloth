@@ -638,11 +638,6 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/QwQ-32B",
         "unsloth/QwQ-32B-bnb-4bit",
     ),
-    "unsloth/Phi-4-mini-instruct-unsloth-bnb-4bit" : (
-        "unsloth/Phi-4-mini-instruct",
-        "microsoft/Phi-4-mini-instruct",
-        "unsloth/Phi-4-mini-instruct",
-    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
