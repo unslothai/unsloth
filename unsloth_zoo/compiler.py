@@ -716,7 +716,7 @@ def apply_fused_lm_head(forward):
         finder = re.findall(cross_entropy_find, forward, flags = re.DOTALL | re.MULTILINE)
         if len(finder) == 0: continue
 
-        spaces = finder[0][5]
+        spaces = finder[0][4]
         replacement = cross_entropy_replacement.strip().split("\n")
         replacement = "\n".join((len(spaces)-4)*" " + x for x in replacement)
         replacement = \
