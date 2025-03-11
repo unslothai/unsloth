@@ -604,12 +604,6 @@ else:
         vocab_size = 0,
         n_items = 0,
     ):
-        print(logits)
-        print(logit_scale_multiply)
-        print(logit_scale_divide)
-        print(logit_softcapping)
-        print(vocab_size)
-        print(n_items)
         if logit_scale_multiply != 0:
             logits = logits * logit_scale_multiply
         if logit_scale_divide != 0:
@@ -620,21 +614,23 @@ else:
             logits = logits * logit_softcapping
         shift_logits = logits[..., :-1, :].float().contiguous()
         shift_labels = labels[..., 1:].contiguous()
-        reduction = 'mean' if n_items == 0 else 'sum'
-        loss_fct = torch.nn.CrossEntropyLoss(reduction = reduction)
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
         shift_labels = shift_labels.to(shift_logits.device)
-        loss = loss_fct(shift_logits, shift_labels)
+        loss = torch.nn.functional.cross_entropy(
+            shift_logits,
+            shift_labels,
+            reduction = 'mean' if n_items == 0 else 'sum',
+        )
         if n_items != 0: loss = loss / n_items
         return loss
     pass
-    # _compiled_loss_function = torch.compile(
-    #     _compiled_loss_function,
-    #     fullgraph = True,
-    #     dynamic = True,
-    #     options = torch_compile_options,
-    # )
+    _compiled_loss_function = torch.compile(
+        _compiled_loss_function,
+        fullgraph = False,
+        dynamic = True,
+        options = torch_compile_options,
+    )
     print(_compiled_loss_function)
     loss = _compiled_loss_function(
         logits = logits,
