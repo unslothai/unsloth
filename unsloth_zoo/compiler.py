@@ -613,20 +613,16 @@ else:
             logits = logits / logit_softcapping
             logits = torch.tanh(logits)
             logits = logits * logit_softcapping
-        logits : torch.Tensor
-        shift_logits : torch.Tensor
-        shift_labels : torch.Tensor
 
         shift_logits = logits
         shift_labels = torch.empty_like(labels, device = device)
         shift_labels[..., :-1] = labels[..., 1:]
         shift_labels[..., -1] = -100
-
         # shift_logits = logits[..., :-1, :].float().contiguous()
         # shift_labels = labels[..., 1:].contiguous()
+
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
-        # shift_labels = shift_labels.to(device)
 
         __shift_logits = torch.chunk(shift_logits, 4, dim = 0)
         __shift_labels = torch.chunk(shift_labels, 4, dim = 0)
@@ -646,7 +642,7 @@ else:
     pass
     _compiled_loss_function = torch.compile(
         _compiled_loss_function,
-        fullgraph = True,
+        fullgraph = False,
         dynamic = True,
         options = torch_compile_options,
     )
