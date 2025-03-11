@@ -619,7 +619,7 @@ else:
         shift_logits = logits[..., :-1, :]#.float().contiguous()
         shift_labels = labels[..., 1:]#.contiguous()
         shift_logits = shift_logits.reshape(-1, vocab_size)#.view(-1, vocab_size)
-        shift_labels = shift_labels.reshape(-1, vocab_size)#.view(-1)
+        shift_labels = shift_labels.view(-1)
         shift_labels = shift_labels.to(device)
 
         chunked_shift_logits = torch.chunk(shift_logits, 4, dim = 0)
