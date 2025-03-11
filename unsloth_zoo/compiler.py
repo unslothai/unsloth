@@ -597,12 +597,12 @@ elif False:#((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_fu
 else:
     logits = self.lm_head(hidden_states\\1)
     def _compiled_loss_function(
-        logits,
-        logit_scale_multiply = 0,
-        logit_scale_divide = 0,
-        logit_softcapping = 0,
-        vocab_size = 0,
-        n_items = 0,
+        logits : torch.Tensor,
+        logit_scale_multiply : float = 0,
+        logit_scale_divide : float = 0,
+        logit_softcapping : float = 0,
+        vocab_size : int = 0,
+        n_items : int = 0,
     ):
         if logit_scale_multiply != 0:
             logits = logits * logit_scale_multiply
@@ -631,9 +631,8 @@ else:
         dynamic = True,
         options = torch_compile_options,
     )
-    print(_compiled_loss_function)
     loss = _compiled_loss_function(
-        logits = logits,
+        logits               = logits,
         logit_scale_multiply = (\\2) if (\\2) != () else 0,
         logit_scale_divide   = (\\3) if (\\3) != () else 0,
         logit_softcapping    = (\\4) if (\\4) != () else 0,
