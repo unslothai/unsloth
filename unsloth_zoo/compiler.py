@@ -563,7 +563,6 @@ $LOGITSUPCAST$
 $LABELSDEVICE$
 shift_logits = logits[..., :-1, :]$CONTIGUOUS$
 shift_labels = labels[..., 1:]$CONTIGUOUS$
-$VLMATTENTIONMASK$
 loss_fct = $CROSSENTROPYLOSS$
 shift_logits = shift_logits.view(-1, $VOCABSIZE$)
 shift_labels = shift_labels.view(-1)
@@ -624,12 +623,12 @@ else:
         if n_items != 0: loss = loss / n_items
         return loss
     pass
-    _compiled_loss_function = torch.compile(
-        _compiled_loss_function,
-        fullgraph = True,
-        dynamic = True,
-        options = torch_compile_options,
-    )
+    # _compiled_loss_function = torch.compile(
+    #     _compiled_loss_function,
+    #     fullgraph = True,
+    #     dynamic = True,
+    #     options = torch_compile_options,
+    # )
     print(_compiled_loss_function)
     loss = _compiled_loss_function(
         logits = logits,
@@ -748,16 +747,7 @@ def apply_fused_lm_head(forward):
                      r"torch\.nn\.CrossEntropyLoss\(\)"\
                      r")")\
             .replace(r"shift_", r"(?:shift_|flat_)")\
-            .replace(r"shift\_", r"(?:shift\_|flat\_)")\
-            .replace(r"$VLMATTENTIONMASK$", r"")
-            # .replace("$VLMATTENTIONMASK$",
-            #          r"(?:"\
-            #          r".*?if attention_mask is not None\:.*?"\
-            #          r"shift_attention_mask = attention_mask\[.*?\].*?"\
-            #          r"shift_logits = shift_logits\[.*?\].*?"\
-            #          r"shift_labels = shift_labels\[.*?\].*?"\
-            #          r"else:.*?"\
-            #          r")?")\
+            .replace(r"shift\_", r"(?:shift\_|flat\_)")
 
         cross_entropy_replacement = cross_entropy_replacement\
             .replace(
