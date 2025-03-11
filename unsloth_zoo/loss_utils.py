@@ -197,6 +197,15 @@ def fast_linear_cross_entropy(
     else:
         logit_scale = None
 
+    print("hidden_states", hidden_states)
+    print("lm_head", lm_head)
+    print("labels", labels)
+    print("reduction", reduction)
+    print("logit_scale", logit_scale)
+    print("logit_softcapping", logit_softcapping)
+    print("ignore_index", ignore_index)
+    print("attention_mask", attention_mask)
+
     loss = unsloth_efficient_ce_loss(
         hidden_states = hidden_states,
         lm_head = lm_head,

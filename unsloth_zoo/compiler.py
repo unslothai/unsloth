@@ -567,6 +567,7 @@ if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
     n_items = None
+    print(hidden_states, self.lm_head, labels, n_items)
     loss = fast_linear_cross_entropy(
         hidden_states        = hidden_states\\1,
         lm_head              = self.lm_head,
