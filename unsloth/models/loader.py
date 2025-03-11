@@ -428,9 +428,15 @@ from ..kernels import (
 )
 from .vision import FastBaseModel
 from transformers import (
-    AutoModelForVision2Seq,
     AutoModelForCausalLM,
 )
+try:
+    from transformers import AutoModelForImageTextToText
+    AutoModelForVision2Seq = AutoModelForImageTextToText
+except:
+    from transformers import AutoModelForVision2Seq
+pass
+
 
 class FastModel(FastBaseModel):
     @staticmethod
