@@ -587,8 +587,7 @@ elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
         logit_scale_multiply = None if (\\2) == () else (\\2),
         logit_scale_divide   = None if (\\3) == () else (\\3),
     )
-elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
-    print(n_items)
+elif False:#((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states\\1,
         lm_weight          = self.lm_head.weight,
@@ -598,23 +597,65 @@ elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.
     )
 else:
     logits = self.lm_head(hidden_states\\1)
-    if (\\2) != ():
-        logits = logits * (\\2)
-    if (\\3) != ():
-        logits = logits / (\\3)
-    if (\\4) != ():
-        logits = logits / (\\4)
-        logits = torch.tanh(logits)
-        logits = logits * (\\4)
-    shift_logits = logits[..., :-1, :].float().contiguous()
-    shift_labels = labels[..., 1:].contiguous()
-    reduction = 'mean' if n_items is None else 'sum'
-    loss_fct = torch.nn.CrossEntropyLoss(reduction = reduction)
-    shift_logits = shift_logits.view(-1, \\6)
-    shift_labels = shift_labels.view(-1)
-    shift_labels = shift_labels.to(shift_logits.device)
-    loss = loss_fct(shift_logits, shift_labels)
-    if n_items is not None: loss = loss / n_items
+    def _compiled_loss_function(
+        logits,
+        logit_scale_multiply = 0,
+        logit_scale_divide = 0,
+        logit_softcapping = 0,
+        vocab_size = 0,
+        n_items = 0,
+    ):
+        if logit_scale_multiply != 0:
+            logits = logits * logit_scale_multiply
+        if logit_scale_divide != 0:
+            logits = logits / logit_scale_divide
+        if logit_softcapping != 0:
+            logits = logits / logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * logit_softcapping
+        shift_logits = logits[..., :-1, :].float().contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        reduction = 'mean' if n_items == 0 else 'sum'
+        loss_fct = torch.nn.CrossEntropyLoss(reduction = reduction)
+        shift_logits = shift_logits.view(-1, vocab_size)
+        shift_labels = shift_labels.view(-1)
+        shift_labels = shift_labels.to(shift_logits.device)
+        loss = loss_fct(shift_logits, shift_labels)
+        if n_items != 0: loss = loss / n_items
+        return loss
+    pass
+    _compiled_loss_function = torch.compile(
+        _compiled_loss_function,
+        fullgraph = True,
+        dynamic = True,
+        options = torch_compile_options,
+    )
+    print(_compiled_loss_function)
+    loss = _compiled_loss_function(
+        logits = logits,
+        logit_scale_multiply = (\\2) if (\\2) != () else 0,
+        logit_scale_divide   = (\\3) if (\\3) != () else 0,
+        logit_softcapping    = (\\4) if (\\4) != () else 0,
+        vocab_size           = (\\6),
+        n_items              = n_items if n_items is not None else 0,
+    )
+    # if (\\2) != ():
+    #     logits = logits * (\\2)
+    # if (\\3) != ():
+    #     logits = logits / (\\3)
+    # if (\\4) != ():
+    #     logits = logits / (\\4)
+    #     logits = torch.tanh(logits)
+    #     logits = logits * (\\4)
+    # shift_logits = logits[..., :-1, :].float().contiguous()
+    # shift_labels = labels[..., 1:].contiguous()
+    # reduction = 'mean' if n_items is None else 'sum'
+    # loss_fct = torch.nn.CrossEntropyLoss(reduction = reduction)
+    # shift_logits = shift_logits.view(-1, \\6)
+    # shift_labels = shift_labels.view(-1)
+    # shift_labels = shift_labels.to(shift_logits.device)
+    # loss = loss_fct(shift_logits, shift_labels)
+    # if n_items is not None: loss = loss / n_items
 """
 
 cross_entropy_find_2 = """
