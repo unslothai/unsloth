@@ -622,10 +622,10 @@ else:
         shift_labels = shift_labels.view(-1)
         shift_labels = shift_labels.to(device)
 
-        chunked_shift_logits = torch.chunk(shift_logits, 4, dim = 0)
-        chunked_shift_labels = torch.chunk(shift_labels, 4, dim = 0)
+        __shift_logits = torch.chunk(shift_logits, 4, dim = 0)
+        __shift_labels = torch.chunk(shift_labels, 4, dim = 0)
         loss = 0.0
-        for _shift_logits, _shift_labels in zip(chunked_shift_logits, chunked_shift_labels):
+        for (_shift_logits, _shift_labels) in zip(__shift_logits, __shift_labels):
             loss += torch.nn.functional.cross_entropy(
                 _shift_logits.float().contiguous(),
                 _shift_labels.contiguous(),
