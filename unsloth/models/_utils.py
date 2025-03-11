@@ -958,13 +958,17 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
 
     # Check if model allows **kwargs
     m = self.model
-    # while hasattr(m, "model"):
-    #     # Stop at last model entry
-    #     if not hasattr(m, "model") or not hasattr(m, "forward"): break
-    #     m = m.model
     signature = inspect.signature(m.forward).parameters.values()
     has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
-    print(m.forward, signature, has_kwargs)
+    if not has_kwargs:
+        while hasattr(m, "model"):
+            # Stop at last model entry
+            if not hasattr(m, "model") or not hasattr(m, "forward"): break
+            signature = inspect.signature(m.forward).parameters.values()
+            has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
+            if has_kwargs: break
+            m = m.model
+    pass
 
     # Iterate to find all batches
     for _ in range(num_batches):
