@@ -569,7 +569,7 @@ elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
     n_items = None
     loss = fast_linear_cross_entropy(
         hidden_states        = hidden_states\\1,
-        lm_weight            = self.lm_head,
+        lm_head              = self.lm_head,
         labels               = labels,
         num_items_in_batch   = n_items,
         logit_softcapping    = None if (\\4) == () else (\\4),
@@ -621,7 +621,7 @@ elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
     n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
     loss = fast_linear_cross_entropy(
         hidden_states        = hidden_states\\1,
-        lm_weight            = self.lm_head,
+        lm_head              = self.lm_head,
         labels               = labels,
         num_items_in_batch   = n_items,
         logit_softcapping    = None if (\\4) == () else (\\4),
