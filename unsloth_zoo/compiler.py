@@ -604,6 +604,12 @@ else:
         vocab_size = 0,
         n_items = 0,
     ):
+        print(logits)
+        print(logit_scale_multiply)
+        print(logit_scale_divide)
+        print(logit_softcapping)
+        print(vocab_size)
+        print(n_items)
         if logit_scale_multiply != 0:
             logits = logits * logit_scale_multiply
         if logit_scale_divide != 0:
