@@ -640,7 +640,7 @@ else:
     pass
     _compiled_loss_function = torch.compile(
         _compiled_loss_function,
-        fullgraph = False,
+        fullgraph = True,
         dynamic = True,
         options = torch_compile_options,
     )
