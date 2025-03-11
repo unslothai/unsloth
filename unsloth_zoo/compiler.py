@@ -604,6 +604,7 @@ else:
         vocab_size : int = 0,
         n_items : int = 0,
     ):
+        device = logits.device
         if logit_scale_multiply != 0:
             logits = logits * logit_scale_multiply
         if logit_scale_divide != 0:
@@ -612,17 +613,29 @@ else:
             logits = logits / logit_softcapping
             logits = torch.tanh(logits)
             logits = logits * logit_softcapping
-        shift_logits = logits[..., :-1, :].float().contiguous()
-        shift_labels = labels[..., 1:].contiguous()
+        logits : torch.Tensor
+        shift_logits : torch.Tensor
+        shift_labels : torch.Tensor
+        shift_logits = logits[..., :-1, :]#.float().contiguous()
+        shift_labels = labels[..., 1:]#.contiguous()
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
-        shift_labels = shift_labels.to(shift_logits.device)
-        loss = torch.nn.functional.cross_entropy(
-            shift_logits,
-            shift_labels,
-            reduction = 'mean' if n_items == 0 else 'sum',
-        )
-        if n_items != 0: loss = loss / n_items
+        shift_labels = shift_labels.to(device)
+
+        chunked_shift_logits = torch.chunk(shift_logits, 4, dim = 0)
+        chunked_shift_labels = torch.chunk(shift_labels, 4, dim = 0)
+        loss = 0.0
+        for _shift_logits, _shift_labels in zip(chunked_shift_logits, chunked_shift_labels):
+            loss += torch.nn.functional.cross_entropy(
+                _shift_logits.float().contiguous(),
+                _shift_labels.contiguous(),
+                reduction = 'sum',
+            )
+        pass
+        if n_items != 0:
+            loss = loss / n_items
+        else:
+            loss = loss / (shift_labels != -100).sum()
         return loss
     pass
     _compiled_loss_function = torch.compile(
