@@ -15,11 +15,16 @@
 import torch
 from transformers import (
     BitsAndBytesConfig,
-    AutoModelForVision2Seq,
     AutoProcessor,
     AutoTokenizer,
     AutoModelForCausalLM,
 )
+try:
+    from transformers import AutoModelForImageTextToText
+    AutoModelForVision2Seq = AutoModelForImageTextToText
+except:
+    from transformers import AutoModelForVision2Seq
+pass
 from .llama import *
 from ..kernels import (
     post_patch_loss_function,
