@@ -25,7 +25,7 @@ global HAS_CUT_CROSS_ENTROPY
 global UNSLOTH_STUDIO_ENABLED
 UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
 if UNSLOTH_STUDIO_ENABLED:
-    from unsloth_zoo.losses import (
+    from unsloth_studio.losses import (
         unsloth_efficient_ce_loss,
     )
 pass
