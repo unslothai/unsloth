@@ -625,7 +625,7 @@ else:
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
 
-        __shift_logits = torch.chunk(shift_logits, 4, dim = 0)
+        __shift_logits = torch.chunk(shift_logits, , dim = 0)
         __shift_labels = torch.chunk(shift_labels, 4, dim = 0)
         loss = 0.0
         for (_shift_logits, _shift_labels) in zip(__shift_logits, __shift_labels):
@@ -643,7 +643,7 @@ else:
     pass
     _compiled_loss_function = torch.compile(
         _compiled_loss_function,
-        fullgraph = True,
+        fullgraph = False,
         dynamic = True,
         options = torch_compile_options,
     )
