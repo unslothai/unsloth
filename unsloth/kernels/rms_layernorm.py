@@ -253,7 +253,6 @@ def unpatch_rms_layernorm():
     except:
         pass
     return
-    return
 pass
 
 
