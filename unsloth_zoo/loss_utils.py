@@ -23,7 +23,12 @@ major, minor = torch.cuda.get_device_capability()
 
 global HAS_CUT_CROSS_ENTROPY
 global UNSLOTH_STUDIO_ENABLED
-UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
+import importlib.util
+if importlib.util.find_spec("unsloth_studio") is None:
+    UNSLOTH_STUDIO_ENABLED = False
+else:
+    UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
+pass
 if UNSLOTH_STUDIO_ENABLED:
     from unsloth_studio.losses import (
         unsloth_efficient_ce_loss,
@@ -196,15 +201,6 @@ def fast_linear_cross_entropy(
         logit_scale = 1.0 / logit_scale_divide
     else:
         logit_scale = None
-
-    print("hidden_states", hidden_states)
-    print("lm_head", lm_head)
-    print("labels", labels)
-    print("reduction", reduction)
-    print("logit_scale", logit_scale)
-    print("logit_softcapping", logit_softcapping)
-    print("ignore_index", ignore_index)
-    print("attention_mask", attention_mask)
 
     loss = unsloth_efficient_ce_loss(
         hidden_states = hidden_states,

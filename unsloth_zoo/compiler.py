@@ -64,7 +64,12 @@ OLD_CUDA_ARCH_VERSION = (major <= 7) and (minor < 5)
 OLD_TRITON_VERSION = Version(triton.__version__) < Version("3.0.0")
 
 # Check if Unsloth Studio is allowed
-UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
+import importlib.util
+if importlib.util.find_spec("unsloth_studio") is None:
+    UNSLOTH_STUDIO_ENABLED = False
+else:
+    UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
+pass
 
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
@@ -96,7 +101,12 @@ _license_header = """
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import os
-UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
+import importlib.util
+if importlib.util.find_spec("unsloth_studio") is None:
+    UNSLOTH_STUDIO_ENABLED = False
+else:
+    UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
+pass
 """
 
 _disabled_sdpa_code = f"""{_license_header}
@@ -567,7 +577,6 @@ if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
     n_items = None
-    print(hidden_states, self.lm_head, labels, n_items)
     loss = fast_linear_cross_entropy(
         hidden_states        = hidden_states\\1,
         lm_head              = self.lm_head,
