@@ -573,10 +573,11 @@ loss = loss_fct(shift_logits, shift_labels)
 
 cross_entropy_replacement_1 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
+__kwargs = locals().get('loss_kwargs', {}) or locals().get('kwargs', {})
+n_items = (__kwargs).get("num_items_in_batch", None) or (__kwargs).get("n_items", None)
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
-    n_items = None
     loss = fast_linear_cross_entropy(
         hidden_states        = hidden_states\\1,
         lm_head              = self.lm_head,
@@ -587,7 +588,6 @@ elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
         logit_scale_divide   = None if (\\3) == () else (\\3),
     )
 elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
-    n_items = None
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states\\1,
         lm_weight          = self.lm_head.weight,
@@ -607,11 +607,13 @@ else:
         logits = logits * (\\4)
     shift_logits = logits[..., :-1, :].float().contiguous()
     shift_labels = labels[..., 1:].contiguous()
-    loss_fct = torch.nn.CrossEntropyLoss()
+    reduction = 'mean' if n_items is None else 'sum'
+    loss_fct = torch.nn.CrossEntropyLoss(reduction = reduction)
     shift_logits = shift_logits.view(-1, \\6)
     shift_labels = shift_labels.view(-1)
     shift_labels = shift_labels.to(shift_logits.device)
     loss = loss_fct(shift_logits, shift_labels)
+    if n_items is not None: loss = loss / n_items
 """
 
 cross_entropy_find_2 = """
@@ -625,10 +627,10 @@ if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOC
 
 cross_entropy_replacement_2 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
+n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
-    n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
     loss = fast_linear_cross_entropy(
         hidden_states        = hidden_states\\1,
         lm_head              = self.lm_head,
@@ -639,7 +641,6 @@ elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
         logit_scale_divide   = None if (\\3) == () else (\\3),
     )
 elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
-    n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states\\1,
         lm_weight          = self.lm_head.weight,

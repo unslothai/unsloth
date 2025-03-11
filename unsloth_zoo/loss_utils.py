@@ -104,7 +104,7 @@ def patch_loss_functions(_fast_cross_entropy_loss, torch_compile = True):
     elif torch_compile:
         torch_compile_options = {
             "epilogue_fusion"   : True,
-            "max_autotune"      : True,
+            "max_autotune"      : False,
             "shape_padding"     : True,
             "trace.enabled"     : os.environ.get("UNSLOTH_COMPILE_DEBUG", "0") == "1",
             "triton.cudagraphs" : False,
