@@ -597,30 +597,30 @@ elif False:#((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_fu
 else:
     logits = self.lm_head(hidden_states\\1)
     def _compiled_loss_function(
-        logits : torch.Tensor,
-        labels : torch.Tensor,
+        output_logits : torch.Tensor,
+        output_labels : torch.Tensor,
         logit_scale_multiply : float = 0,
         logit_scale_divide : float = 0,
         logit_softcapping : float = 0,
         vocab_size : int = 0,
         n_items : int = 0,
     ):
-        device = logits.device
+        device = output_logits.device
         if logit_scale_multiply != 0:
-            logits = logits * logit_scale_multiply
+            output_logits = output_logits * logit_scale_multiply
         if logit_scale_divide != 0:
-            logits = logits / logit_scale_divide
+            output_logits = output_logits / logit_scale_divide
         if logit_softcapping != 0:
-            logits = logits / logit_softcapping
-            logits = torch.tanh(logits)
-            logits = logits * logit_softcapping
+            output_logits = output_logits / logit_softcapping
+            output_logits = torch.tanh(output_logits)
+            output_logits = output_logits * logit_softcapping
 
-        shift_logits = logits
-        shift_labels = torch.empty_like(labels, device = device)
-        shift_labels[..., :-1] = labels[..., 1:]
+        shift_logits = output_logits
+        shift_labels = torch.empty_like(output_labels, device = device)
+        shift_labels[..., :-1] = output_labels[..., 1:]
         shift_labels[..., -1] = -100
-        # shift_logits = logits[..., :-1, :].float().contiguous()
-        # shift_labels = labels[..., 1:].contiguous()
+        # shift_logits = output_logits[..., :-1, :].float().contiguous()
+        # shift_labels = output_labels[..., 1:].contiguous()
 
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
@@ -643,15 +643,15 @@ else:
     pass
     _compiled_loss_function = torch.compile(
         _compiled_loss_function,
-        fullgraph = False,
+        fullgraph = True,
         dynamic = True,
         options = torch_compile_options,
     )
-    torch._dynamo.mark_dynamic(logits, 1)
+    torch._dynamo.mark_dynamic(output_logits, 1)
     torch._dynamo.mark_dynamic(labels, 1)
     loss = _compiled_loss_function(
-        logits               = logits,
-        labels               = labels,
+        output_logits        = output_logits,
+        output_labels        = labels,
         logit_scale_multiply = (\\2) if (\\2) != () else 0,
         logit_scale_divide   = (\\3) if (\\3) != () else 0,
         logit_softcapping    = (\\4) if (\\4) != () else 0,
