@@ -647,8 +647,8 @@ else:
         dynamic = True,
         options = torch_compile_options,
     )
-    torch._dynamic.mark_dynamic(logits, 1)
-    torch._dynamic.mark_dynamic(labels, 1)
+    torch._dynamo.mark_dynamic(logits, 1)
+    torch._dynamo.mark_dynamic(labels, 1)
     loss = _compiled_loss_function(
         logits               = logits,
         labels               = labels,
