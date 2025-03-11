@@ -586,7 +586,7 @@ elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
         logit_scale_multiply = None if (\\2) == () else (\\2),
         logit_scale_divide   = None if (\\3) == () else (\\3),
     )
-elif False:#((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states\\1,
         lm_weight          = self.lm_head.weight,
@@ -722,9 +722,96 @@ else:
     loss = self.loss_function(\\6, \\7.to(self.lm_head.weight.device), \\8, **\\9)
 """
 
+cross_entropy_find_3 = """
+logits = outputs.logits
+$LOGITSCALINGMULTIPLY$
+$LOGITSCALINGDIVISION$
+$LOGITSOFTCAPPING$
+loss = None
+if labels is not None:$SPACES$
+$UPCASTING$
+$LOGITSUPCAST$
+$LABELSDEVICE$
+shift_logits = logits[..., :-1, :]$CONTIGUOUS$
+shift_labels = labels[..., 1:]$CONTIGUOUS$
+loss_fct = $CROSSENTROPYLOSS$
+shift_logits = shift_logits.view(-1, $VOCABSIZE$)
+shift_labels = shift_labels.view(-1)
+shift_labels = shift_labels.to(shift_logits.device)
+loss = loss_fct(shift_logits, shift_labels)
+"""
+
+cross_entropy_replacement_3 = """
+NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
+__kwargs = locals().get('loss_kwargs', {}) or locals().get('kwargs', {})
+n_items = (__kwargs).get("num_items_in_batch", None) or (__kwargs).get("n_items", None)
+if labels is not None:
+    def _compiled_loss_function(
+        output_logits : torch.Tensor,
+        output_labels : torch.Tensor,
+        logit_scale_multiply : float = 0,
+        logit_scale_divide : float = 0,
+        logit_softcapping : float = 0,
+        vocab_size : int = 0,
+        n_items : int = 0,
+    ):
+        device = output_logits.device
+        if logit_scale_multiply != 0:
+            output_logits = output_logits * logit_scale_multiply
+        if logit_scale_divide != 0:
+            output_logits = output_logits / logit_scale_divide
+        if logit_softcapping != 0:
+            output_logits = output_logits / logit_softcapping
+            output_logits = torch.tanh(output_logits)
+            output_logits = output_logits * logit_softcapping
+
+        shift_logits = output_logits
+        shift_labels = torch.empty_like(output_labels, device = device)
+        shift_labels[..., :-1] = output_labels[..., 1:]
+        shift_labels[..., -1] = -100
+
+        shift_logits = shift_logits.view(-1, vocab_size)
+        shift_labels = shift_labels.view(-1)
+
+        __shift_logits = torch.chunk(shift_logits, 4, dim = 0)
+        __shift_labels = torch.chunk(shift_labels, 4, dim = 0)
+        loss = 0.0
+        for (_shift_logits, _shift_labels) in zip(__shift_logits, __shift_labels):
+            loss += torch.nn.functional.cross_entropy(
+                input  = _shift_logits.float().contiguous(),
+                target = _shift_labels.contiguous(),
+                reduction = 'sum',
+            )
+        pass
+        if n_items != 0:
+            loss = loss / n_items
+        else:
+            loss = loss / (shift_labels != -100).sum()
+        return loss
+    pass
+    _compiled_loss_function = torch.compile(
+        _compiled_loss_function,
+        fullgraph = False,
+        dynamic = True,
+        options = torch_compile_options,
+    )
+    torch._dynamo.mark_dynamic(logits, 1)
+    torch._dynamo.mark_dynamic(labels, 1)
+    loss = _compiled_loss_function(
+        output_logits        = logits,
+        output_labels        = labels,
+        logit_scale_multiply = (\\2) if (\\2) != () else 0,
+        logit_scale_divide   = (\\3) if (\\3) != () else 0,
+        logit_softcapping    = (\\4) if (\\4) != () else 0,
+        vocab_size           = (\\6),
+        n_items              = n_items if n_items is not None else 0,
+    )
+"""
+
 ce_finders = [
     (cross_entropy_find_1, cross_entropy_replacement_1,),
     (cross_entropy_find_2, cross_entropy_replacement_2,),
+    (cross_entropy_find_3, cross_entropy_replacement_3,),
 ]
 
 
