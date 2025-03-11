@@ -23,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "torch",
+    "unsloth_studio>=2025.3.1",
     "triton ; platform_system == 'Linux'",
     "packaging",
     "tyro",
