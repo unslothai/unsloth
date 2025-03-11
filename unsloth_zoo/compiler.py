@@ -574,7 +574,6 @@ loss = loss_fct(shift_logits, shift_labels)
 cross_entropy_replacement_1 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
 __kwargs = locals().get('loss_kwargs', {}) or locals().get('kwargs', {})
-print(__kwargs)
 n_items = (__kwargs).get("num_items_in_batch", None) or (__kwargs).get("n_items", None)
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
