@@ -157,7 +157,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     # Torch dynamo arguments
     torch_dynamo_arguments = [
         "config.accumulated_cache_size_limit = 1024", # Bump up a bit from 256
-        f"config.suppress_errors = True", # Supress errors for now
+        f"config.suppress_errors = {not debug and not ignore_errors}", # Supress errors for now
         f"config.do_not_emit_runtime_asserts = {not debug}",
         "config.cache_size_limit = 1024", # Flex Attention
         "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
