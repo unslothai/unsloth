@@ -598,6 +598,7 @@ else:
     logits = self.lm_head(hidden_states\\1)
     def _compiled_loss_function(
         logits : torch.Tensor,
+        labels : torch.Tensor,
         logit_scale_multiply : float = 0,
         logit_scale_divide : float = 0,
         logit_softcapping : float = 0,
@@ -642,12 +643,15 @@ else:
     pass
     _compiled_loss_function = torch.compile(
         _compiled_loss_function,
-        fullgraph = False,
+        fullgraph = True,
         dynamic = True,
         options = torch_compile_options,
     )
+    torch._dynamic.mark_dynamic(logits, 1)
+    torch._dynamic.mark_dynamic(labels, 1)
     loss = _compiled_loss_function(
         logits               = logits,
+        labels               = labels,
         logit_scale_multiply = (\\2) if (\\2) != () else 0,
         logit_scale_divide   = (\\3) if (\\3) != () else 0,
         logit_softcapping    = (\\4) if (\\4) != () else 0,
