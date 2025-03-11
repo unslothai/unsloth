@@ -22,6 +22,14 @@ from triton import __version__ as triton_version
 major, minor = torch.cuda.get_device_capability()
 
 global HAS_CUT_CROSS_ENTROPY
+global UNSLOTH_STUDIO_ENABLED
+UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
+if UNSLOTH_STUDIO_ENABLED:
+    from unsloth_zoo.losses import (
+        unsloth_efficient_ce_loss,
+    )
+pass
+
 if (Version(torch.__version__) >= Version("2.4.0")) and \
     (not ((major <= 7) and (minor < 5))) and \
     (not (Version(triton_version) < Version("3.0.0"))):
@@ -39,6 +47,7 @@ __all__ = [
     "post_patch_loss_function",
     "HAS_CUT_CROSS_ENTROPY",
     "fused_linear_cross_entropy",
+    "fast_linear_cross_entropy",
 ]
 
 
@@ -160,6 +169,45 @@ def fused_linear_cross_entropy(
         reduction    = reduction,
         shift        = True,
         filter_eps   = accuracy_threshold,
+    )
+    if num_items_in_batch is not None: loss = loss / num_items_in_batch
+    return loss
+pass
+
+
+def fast_linear_cross_entropy(
+    hidden_states        : torch.Tensor,
+    lm_head              : torch.nn.Linear,
+    labels               : torch.Tensor,
+    num_items_in_batch   : int = None,
+    ignore_index         : int = -100,
+    reduction            : str = "mean",
+    logit_softcapping    : float = 0,
+    logit_scale_multiply : float = 0,
+    logit_scale_divide   : float = 0,
+    attention_mask       : torch.Tensor = None,
+):
+    # All Unsloth Zoo code licensed under LGPLv3
+    reduction = "sum" if num_items_in_batch is not None else "mean"
+    if logit_softcapping == 0: logit_softcapping = None
+    if logit_scale_multiply != 0:
+        logit_scale = logit_scale_multiply
+    elif logit_scale_divide != 0:
+        logit_scale = 1.0 / logit_scale_divide
+    else:
+        logit_scale = None
+
+    loss = unsloth_efficient_ce_loss(
+        hidden_states = hidden_states,
+        lm_head = lm_head,
+        labels = labels,
+        shift = True,
+        reduction = reduction,
+        logit_scale = logit_scale,
+        logit_softcapping = logit_softcapping,
+        ignore_index = ignore_index,
+        chunk_size = 512,
+        attention_mask = attention_mask,
     )
     if num_items_in_batch is not None: loss = loss / num_items_in_batch
     return loss
