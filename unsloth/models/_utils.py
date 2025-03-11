@@ -964,6 +964,7 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
         m = m.model
     signature = inspect.signature(m.forward).parameters.values()
     has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
+    print(m.forward, signature, has_kwargs)
 
     # Iterate to find all batches
     for _ in range(num_batches):
