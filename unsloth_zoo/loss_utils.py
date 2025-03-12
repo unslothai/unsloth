@@ -238,7 +238,7 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
         print(name)
         if "ForConditionalGeneration" in name or "VisionText2Text" in name:
             is_vlm = True
-        if is_vlm or "ForCausalLM" in name:
+        if is_vlm or "CausalLM" in name or "_fast_forward" in name:
             signature = inspect.signature(m.forward).parameters.values()
             has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
             break
