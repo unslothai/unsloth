@@ -72,7 +72,7 @@ def patch_layernorm(fast_layernorm):
 pass
 
 
-def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
+def patch_torch_compile(debug = False, O3 = False, ignore_errors = True):
     # All Unsloth Zoo code licensed under LGPLv3
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
