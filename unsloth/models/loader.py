@@ -475,7 +475,11 @@ class FastModel(FastBaseModel):
         pass
 
         if load_in_4bit and load_in_8bit:
-            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit, not both!")
+            raise RuntimeError(
+                "Unsloth: Can only load in 4bit or 8bit, not both!\n"\
+                "Also, we by default set `load_in_4bit = True`.\n"\
+                "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`"
+            )
         if load_in_4bit: pass
         elif load_in_8bit: pass
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
