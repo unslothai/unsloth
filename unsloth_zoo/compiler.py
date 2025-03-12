@@ -721,13 +721,6 @@ elif self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not N
         vocab_size : int = 0,
         n_items : int = 0,
     ):
-        print('output_logits', output_logits)
-        print('output_labels', output_labels)
-        print('logit_scale_multiply', logit_scale_multiply)
-        print('logit_scale_divide', logit_scale_divide)
-        print('logit_softcapping', logit_softcapping)
-        print('vocab_size', vocab_size)
-        print('n_items', n_items)
         device = output_logits.device
         if logit_scale_multiply != 0:
             output_logits = output_logits * logit_scale_multiply
@@ -764,12 +757,12 @@ elif self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not N
             loss = loss / (shift_labels != -100).sum()
         return loss
     pass
-    # _compiled_loss_function = torch.compile(
-    #     _compiled_loss_function,
-    #     fullgraph = False,
-    #     dynamic = True,
-    #     options = torch_compile_options,
-    # )
+    _compiled_loss_function = torch.compile(
+        _compiled_loss_function,
+        fullgraph = False,
+        dynamic = True,
+        options = torch_compile_options,
+    )
     torch._dynamo.mark_dynamic(logits, 1)
     torch._dynamo.mark_dynamic(labels, 1)
     loss = _compiled_loss_function(
