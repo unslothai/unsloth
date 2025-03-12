@@ -1588,6 +1588,7 @@ def unsloth_compile_transformers(
     # Remove modules which have attention mechanisms
     # since torch.compile will compile too many kernels
     bad_torch_modules = set()
+    print(torch_modules)
     for module, fullgraph in torch_modules.items():
         source = eval(f"{model_location}.{module}")
         if not hasattr(source, "forward"): continue
