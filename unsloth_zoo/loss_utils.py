@@ -235,7 +235,6 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
         if not hasattr(m, "forward"): break
         if not hasattr(m.forward, "__qualname__"): break
         name = m.forward.__qualname__
-        print(name)
         if "ForConditionalGeneration" in name or "VisionText2Text" in name:
             is_vlm = True
         if is_vlm or "CausalLM" in name or "_fast_forward" in name:
