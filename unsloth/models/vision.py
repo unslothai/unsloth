@@ -58,7 +58,10 @@ def unsloth_base_fast_generate(
     dtype = _get_dtype(self.config.torch_dtype)
 
     # Check if VLM
-    is_vlm = (x.endswith("ForConditionalGeneration") for x in self.config.architectures)
+    is_vlm = (
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+        for x in self.config.architectures
+    )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
 
     # Remove token_type_ids
