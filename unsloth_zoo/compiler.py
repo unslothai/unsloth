@@ -289,8 +289,10 @@ def create_new_function(
     pass
 
     # Import items to make the function executable
-    print(functions)
     items = [x for x in functions if ((x in new_source) and (x != name) and not (f"def {x}(" in new_source))]
+    # Patch for SiglipEncoder and others
+    if "SiglipEncoder" in new_source: items += ["SiglipEncoder"]
+
     imports = "from torch import Tensor\n"
     imports += "import torch\n"
     imports += "import torch.nn as nn\n"
