@@ -53,6 +53,7 @@ __all__ = [
     "HAS_CUT_CROSS_ENTROPY",
     "fused_linear_cross_entropy",
     "fast_linear_cross_entropy",
+    "_unsloth_get_batch_samples",
 ]
 
 
@@ -216,6 +217,69 @@ def fast_linear_cross_entropy(
     )
     if num_items_in_batch is not None: loss = loss / num_items_in_batch
     return loss
+pass
+
+
+def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
+    batch_samples = []
+    num_items_in_batch = None
+
+    # Check if model allows **kwargs
+    m = self.model
+    has_kwargs = False
+    is_vlm = False
+    while hasattr(m, "model"):
+        # Stop when we encounter the name as ForConditionalGeneration or ForCausalLM
+        if not hasattr(m, "model") or not hasattr(m, "forward"): break
+        if not hasattr(m.forward, "__qualname__"): break
+        name = m.forward.__qualname__
+        print(name)
+        if "ForConditionalGeneration" in name or "VisionText2Text" in name:
+            is_vlm = True
+        if is_vlm or "ForCausalLM" in name:
+            signature = inspect.signature(m.forward).parameters.values()
+            has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
+            break
+        m = m.model
+    pass
+
+    # Iterate to find all batches
+    for _ in range(num_batches):
+        try:
+            batch_samples += [next(epoch_iterator)]
+        except StopIteration:
+            break
+    pass
+
+    # Get num_items_in_batch
+    if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
+        try:
+            num_items_in_batch = sum(
+                [(x["labels"][..., 1:] != -100).sum() for x in batch_samples]
+            )
+            if self.args.average_tokens_across_devices:
+                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
+            if torch.is_tensor(num_items_in_batch):
+                num_items_in_batch = num_items_in_batch.item()
+            pass
+
+            # Get attention mask as well - for VLMs
+            if is_vlm and "attention_mask" in batch_samples[0]:
+                masked_items_in_batch = sum(
+                    [(x["attention_mask"][..., 1:] != 0).sum() for x in batch_samples]
+                )
+                if self.args.average_tokens_across_devices:
+                    masked_items_in_batch = self.accelerator.gather(masked_items_in_batch).sum().item()
+                if torch.is_tensor(masked_items_in_batch):
+                    masked_items_in_batch = masked_items_in_batch.item()
+                num_items_in_batch += masked_items_in_batch
+            pass
+
+        except Exception as exception:
+            logger.warning_once(exception)
+    pass
+
+    return batch_samples, num_items_in_batch
 pass
 
 # Unsloth Zoo - Utilities for Unsloth
