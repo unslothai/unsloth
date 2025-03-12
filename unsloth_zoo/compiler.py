@@ -1603,6 +1603,12 @@ def unsloth_compile_transformers(
             bad_torch_modules.add(module)
         pass
 
+        if "self.encoder" in source or "BaseModelOutput" in source:
+
+            print(f"Unsloth: Will not compile {module} since it looks like a vision encoder!")
+            bad_torch_modules.add(module)
+        pass
+
         # Check if creating arrays in inside the function
         # Error: DataDependentOutputException: aten._local_scalar_dense.default
         if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
