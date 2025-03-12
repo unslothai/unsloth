@@ -969,7 +969,12 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     # Get gradient accumulation steps if possible
     if num_items_in_batch is None and \
         getattr(getattr(self, "args", self), "gradient_accumulation_steps", 1) != 1:
-        name = (model.base_model.model if hasattr(model, "base_model") else model).__class__.__name__
+
+        inner_model = model
+        if hasattr(inner_model, "base_model"): inner_model = inner_model. base_model
+        if hasattr(inner_model, "model"): inner_model = inner_model.model
+        name = inner_model.__class__.__name__
+
         logger.warning_once(
             f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"\
             "Using gradient accumulation will be very slightly less accurate.\n"\
