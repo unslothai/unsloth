@@ -487,6 +487,18 @@ class FastModel(FastBaseModel):
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
 
+        # Check versions
+        if "pixtral" in model_name.lower() and transformers_version < Version("4.49.0"):
+            raise RuntimeError(
+                "Unsloth: Pixtral only works on transformers >= 4.49.0."\
+                "Please update transformers via `pip install --upgrade transformers>=4.49.0`"
+            )
+        elif "qwen2.5" in model_name.lower() and transformers_version < Version("4.49.0"):
+            raise RuntimeError(
+                "Unsloth: Qwen 2.5 only works on transformers >= 4.49.0."\
+                "Please update transformers via `pip install --upgrade transformers>=4.49.0`"
+            )
+
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
             model_name = snapshot_download(model_name)
