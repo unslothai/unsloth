@@ -1698,7 +1698,16 @@ def unsloth_compile_transformers(
     pass
 
     # Remove causal masks
+    do_not_remove = False
     for module in remove_causal_masks:
+        if module.endswith(("ForConditionalGeneration")):
+            do_not_remove = True
+            print(f"Unsloth: Will not remove causal mask for {model_location} since it's a VLM!")
+            break
+    pass
+    for module in remove_causal_masks:
+        if do_not_remove: continue
+
         source = eval(f"{model_location}.{module}")
         if not hasattr(source, "_update_causal_mask"): continue
 
