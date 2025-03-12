@@ -223,7 +223,7 @@ def get_padding_tokens_ids(tokenizer):
         padding_token_ids.append(tokenizer.pad_token_id)
     pass
 
-    padding_token_ids = list(filter(None, padding_token_ids))
+    padding_token_ids = list(x for x in padding_token_ids if x is not None)
     padding_token_ids = list(set(padding_token_ids))
     padding_token_ids = torch.IntTensor(padding_token_ids)
     return padding_token_ids
