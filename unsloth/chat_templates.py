@@ -1334,7 +1334,7 @@ def to_sharegpt(
 
     possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
     function = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
-    exec(function, globals())
+    ast.literal_eval(function, globals())
     dataset = dataset.map(__combined_prompt_processor__, batched = True, desc = "Merging columns")
 
     def __convert_to_sharegpt__(examples):
