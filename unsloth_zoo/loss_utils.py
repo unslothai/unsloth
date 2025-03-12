@@ -221,6 +221,7 @@ pass
 
 
 def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
+    # All Unsloth Zoo code licensed under LGPLv3
     batch_samples = []
     num_items_in_batch = None
 
