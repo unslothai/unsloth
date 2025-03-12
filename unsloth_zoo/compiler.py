@@ -108,6 +108,8 @@ if importlib.util.find_spec("unsloth_studio") is None:
 else:
     UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
 pass
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 """
 
 _disabled_sdpa_code = f"""{_license_header}
