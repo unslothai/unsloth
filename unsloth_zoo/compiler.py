@@ -1588,7 +1588,6 @@ def unsloth_compile_transformers(
     # Remove modules which have attention mechanisms
     # since torch.compile will compile too many kernels
     bad_torch_modules = set()
-    print(torch_modules)
     for module, fullgraph in torch_modules.items():
         source = eval(f"{model_location}.{module}")
         if not hasattr(source, "forward"): continue
@@ -1599,7 +1598,7 @@ def unsloth_compile_transformers(
 
         if "attn_weights" in source or "self.self_attn" in source or "_ATTENTION_CLASSES" in init:
 
-            print(f"Unsloth: Will not compile {module}.")
+            print(f"Unsloth: Will not compile {module} since it looks like it calls attention modules!")
             bad_torch_modules.add(module)
         pass
 
