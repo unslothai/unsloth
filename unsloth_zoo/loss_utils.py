@@ -256,26 +256,21 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
     # Get num_items_in_batch
     if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
         try:
+            if not "attention_mask" in batch_samples[0]: is_vlm = False
             if not is_vlm:
                 num_items_in_batch = sum(
                     [(x["labels"][..., 1:] != -100)\
                     .sum() for x in batch_samples]
                 )
-                if self.args.average_tokens_across_devices:
-                    num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
-                if torch.is_tensor(num_items_in_batch):
-                    num_items_in_batch = num_items_in_batch.item()
-                pass
-            elif "attention_mask" in batch_samples[0]:
+            else:
                 num_items_in_batch = sum(
                     [((x["labels"][..., 1:] != -100) & (x["attention_mask"][..., 1:] != 0))\
                     .sum() for x in batch_samples]
                 )
-                if self.args.average_tokens_across_devices:
-                    num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
-                if torch.is_tensor(num_items_in_batch):
-                    num_items_in_batch = num_items_in_batch.item()
-                pass
+            if self.args.average_tokens_across_devices:
+                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
+            if torch.is_tensor(num_items_in_batch):
+                num_items_in_batch = num_items_in_batch.item()
             pass
 
         except Exception as exception:
