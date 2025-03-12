@@ -492,16 +492,15 @@ class FastModel(FastBaseModel):
             model_name = get_model_name(model_name, load_in_4bit)
 
         # Check versions
+        LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
+        NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
         if "pixtral" in model_name.lower() and transformers_version < Version("4.49.0"):
-            raise RuntimeError(
-                "Unsloth: Pixtral only works on transformers >= 4.49.0."\
-                'Please update transformers via `pip install --upgrade --no-deps "transformers>=4.49.0"`'
-            )
+            raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
         elif "qwen2.5" in model_name.lower() and transformers_version < Version("4.49.0"):
-            raise RuntimeError(
-                "Unsloth: Qwen 2.5 only works on transformers >= 4.49.0."\
-                'Please update transformers via `pip install --upgrade --no-deps "transformers>=4.49.0"`'
-            )
+            raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
+        elif "aya-vision" in model_name.lower() and transformers_version < Version("4.50.0"):
+            raise RuntimeError("Unsloth: Aya Vision only works on transformers >= 4.50.0." + NIGHTLY)
+        pass
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
