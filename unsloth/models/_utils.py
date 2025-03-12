@@ -1129,6 +1129,7 @@ def unsloth_compile_transformers(
         revision          = revision,
         trust_remote_code = trust_remote_code,
     )
+    model_types = ["siglip"] + model_types
 
     if disable: return
 
