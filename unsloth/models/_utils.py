@@ -101,6 +101,7 @@ from unsloth_zoo.gradient_checkpointing import (
 from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
     fused_linear_cross_entropy,
+    _unsloth_get_batch_samples,
 )
 from unsloth_zoo.vision_utils import (
     process_vision_info,
@@ -949,53 +950,6 @@ def test_mask_creation():
         our_mask = create_boolean_mask(n = n, sliding_window = 0)
         assert(torch.all(correct_mask == our_mask))
     pass
-pass
-
-
-def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
-    batch_samples = []
-    num_items_in_batch = None
-
-    # Check if model allows **kwargs
-    m = self.model
-    signature = inspect.signature(m.forward).parameters.values()
-    has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
-    if not has_kwargs:
-        while hasattr(m, "model"):
-            # Stop at last model entry
-            if not hasattr(m, "model") or not hasattr(m, "forward"): break
-            signature = inspect.signature(m.forward).parameters.values()
-            has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
-            if has_kwargs: break
-            m = m.model
-    pass
-
-    # Iterate to find all batches
-    for _ in range(num_batches):
-        try:
-            batch_samples += [next(epoch_iterator)]
-        except StopIteration:
-            break
-    pass
-
-    # Get num_items_in_batch
-    if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
-        try:
-            num_items_in_batch = sum(
-                [(x["labels"][..., 1:] != -100).sum() for x in batch_samples]
-            )
-            
-            if self.args.average_tokens_across_devices:
-                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
-
-            if torch.is_tensor(num_items_in_batch):
-                num_items_in_batch = num_items_in_batch.item()
-
-        except Exception as exception:
-            logger.warning_once(exception)
-    pass
-
-    return batch_samples, num_items_in_batch
 pass
 
 
