@@ -35,16 +35,18 @@ __all__ = [
 
 global IMAGE_TOKENS
 IMAGE_TOKENS = [
-    "<|image|>",        # Llama 3.2 Vision, Phi 3.5
-    "<|vision_start|>", # Qwen
-    "<|vision_end|>",   # Qwen
-    "<|vision_pad|>",   # Qwen
-    "<|image_pad|>",    # Qwen
-    "<|video_pad|>",    # Qwen
-    "<image>",          # PaliGemma / Llava
-    "[IMG]",            # Mistral
-    "[IMG_BREAK]",      # Mistral
-    "[IMG_END]",        # Mistral
+    "<|image|>",          # Llama 3.2 Vision, Phi 3.5
+    "<|vision_start|>",   # Qwen
+    "<|vision_end|>",     # Qwen
+    "<|vision_pad|>",     # Qwen
+    "<|image_pad|>",      # Qwen
+    "<|video_pad|>",      # Qwen
+    "<image>",            # PaliGemma / Llava
+    "[IMG]",              # Mistral
+    "[IMG_BREAK]",        # Mistral
+    "[IMG_END]",          # Mistral
+    "<image_soft_token>", # Gemma 3
+    "<start_of_image>",   # Gemma 3
 ]
 
 import torch
