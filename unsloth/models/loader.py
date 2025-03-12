@@ -498,7 +498,7 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
         elif "qwen2.5" in model_name.lower() and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
-        elif "aya-vision" in model_name.lower() and transformers_version < Version("4.50.0"):
+        elif "aya-vision" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: Aya Vision only works on transformers >= 4.50.0." + NIGHTLY)
         pass
 
