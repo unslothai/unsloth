@@ -169,8 +169,7 @@ def patch_torch_compile(debug = False, O3 = False, ignore_errors = True):
     if not debug and not ignore_errors:
         print("!!!!!!!!!!!!!!")
         # Have to explicitly set it!
-        import torch._dynamo as _dynamo
-        _dynamo.config.suppress_errors = True
+        torch._dynamo.config.suppress_errors = True
     pass
     import torch._inductor.config as config
     for _try_compile_argument in torch_compile_arguments:
