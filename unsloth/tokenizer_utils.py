@@ -945,7 +945,7 @@ def patch_sft_trainer_tokenizer():
         if replacer is None:
             # .*? matches first match. .+? matches final match.
             replacer = re.findall(
-                f"def {function_name}\(.*?\).*?\:\n",
+                f"def {function_name}" + r"\(.*?\).*?\:\n",
                 function,
                 flags = re.MULTILINE | re.DOTALL,
             )

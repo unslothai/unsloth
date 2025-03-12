@@ -1913,12 +1913,12 @@ class FastLlamaModel:
 
         # Save max_seq_length
         model.max_seq_length = max_seq_length
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model = internal_model.model
+        m = model
+        while hasattr(m, "model"):
+            m.max_seq_length = max_seq_length
+            m = m.model
         pass
-        internal_model.max_seq_length = max_seq_length
+        m.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
@@ -2016,6 +2016,10 @@ class FastLlamaModel:
         temporary_location  = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
+        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+            print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            return model
+        pass
         transformers_set_seed(random_state)
 
         if use_gradient_checkpointing == "unsloth":
