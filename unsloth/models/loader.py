@@ -491,12 +491,12 @@ class FastModel(FastBaseModel):
         if "pixtral" in model_name.lower() and transformers_version < Version("4.49.0"):
             raise RuntimeError(
                 "Unsloth: Pixtral only works on transformers >= 4.49.0."\
-                "Please update transformers via `pip install --upgrade transformers>=4.49.0`"
+                "Please update transformers via `pip install --upgrade --no-deps transformers>=4.49.0`"
             )
         elif "qwen2.5" in model_name.lower() and transformers_version < Version("4.49.0"):
             raise RuntimeError(
                 "Unsloth: Qwen 2.5 only works on transformers >= 4.49.0."\
-                "Please update transformers via `pip install --upgrade transformers>=4.49.0`"
+                "Please update transformers via `pip install --upgrade --no-deps transformers>=4.49.0`"
             )
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
