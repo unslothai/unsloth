@@ -276,7 +276,6 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
         except Exception as exception:
             logger.warning_once(exception)
     pass
-    print("num_items_in_batch", num_items_in_batch)
     return batch_samples, num_items_in_batch
 pass
 
