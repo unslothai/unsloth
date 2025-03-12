@@ -501,9 +501,8 @@ def create_standalone_class(
     # Combine all into file
     source = source + full_class
 
-    source = source.replace(
-        "labels = torch.where(input_ids == self.pad_token_id, self.config.ignore_index, labels)",
-        "print(input_ids == self.pad_token_id, self.pad_token_id)")
+    # Fixes ignore_index not defined in Gemma 3
+    source = source.replace("self.config.ignore_index", "-100")
     return source
 pass
 
