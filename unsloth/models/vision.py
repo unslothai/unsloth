@@ -66,6 +66,7 @@ def unsloth_base_fast_generate(
 
     # VLMs do not allow logits_to_keep
     if not is_vlm: kwargs["logits_to_keep"] = 1
+    print(kwargs)
 
     # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
