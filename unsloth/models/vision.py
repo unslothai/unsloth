@@ -15,17 +15,22 @@
 import torch
 from transformers import (
     BitsAndBytesConfig,
-    AutoModelForVision2Seq,
     AutoProcessor,
     AutoTokenizer,
     AutoModelForCausalLM,
 )
+try:
+    from transformers import AutoModelForImageTextToText
+    AutoModelForVision2Seq = AutoModelForImageTextToText
+except:
+    from transformers import AutoModelForVision2Seq
+pass
 from .llama import *
 from ..kernels import (
     post_patch_loss_function,
 )
 from ._utils import __version__
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -35,6 +40,7 @@ from unsloth_zoo.peft_utils import (
 from triton import __version__ as triton_version
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
+from unsloth_zoo.training_utils import prepare_model_for_training
 import types
 import functools
 
@@ -52,14 +58,21 @@ def unsloth_base_fast_generate(
     dtype = _get_dtype(self.config.torch_dtype)
 
     # Check if VLM
-    is_vlm = (x.endswith("ForConditionalGeneration") for x in self.config.architectures)
+    is_vlm = (
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
+        for x in self.config.architectures
+    )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
 
     # VLMs do not allow logits_to_keep
-    if not is_vlm: kwargs["logits_to_keep"] = 1
+    if not is_vlm:
+        kwargs["logits_to_keep"] = 1
+    else:
+        kwargs.pop("logits_to_keep", None)
+        kwargs.pop("num_logits_to_keep", None)
 
     # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
@@ -90,12 +103,15 @@ class FastBaseModel:
         max_seq_length    = None,
         dtype             = None,
         load_in_4bit      = True,
+        load_in_8bit      = False,
+        full_finetuning   = False,
         token             = None,
         device_map        = "sequential",
         trust_remote_code = False,
         model_types       = None,
         tokenizer_name    = None,
         auto_model        = AutoModelForVision2Seq,
+        use_gradient_checkpointing = "unsloth",
         **kwargs,
     ):
         if trust_remote_code:
@@ -141,6 +157,14 @@ class FastBaseModel:
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
         bnb_config = None
+        if full_finetuning and (load_in_4bit or load_in_8bit):
+            print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
+            load_in_4bit = False
+            load_in_8bit = False
+        pass
+
+        if load_in_4bit and load_in_8bit:
+            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit, not both!")
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit              = True,
@@ -149,6 +173,31 @@ class FastBaseModel:
                 bnb_4bit_compute_dtype    = dtype,
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
             )
+        elif load_in_8bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_8bit              = True,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
+            )
+        elif not load_in_4bit and not load_in_8bit and not full_finetuning:
+            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
+            load_in_4bit = True
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit              = True,
+                bnb_4bit_use_double_quant = True,
+                bnb_4bit_quant_type       = "nf4",
+                bnb_4bit_compute_dtype    = dtype,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
+            )
+        pass
+
+        if full_finetuning:
+            os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
+            if dtype == torch.bfloat16:
+                print("Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.")
+            else:
+                print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")
+        else:
+            os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         pass
 
         kwargs.pop("attn_implementation", None); # No need since we auto call it
@@ -204,23 +253,37 @@ class FastBaseModel:
 
         # Save tokenizer for inference purposes
         tokenizer.padding_side = "left" # Force inference
-        tokenizer.tokenizer.padding_side = "left" # Force inference
+        if hasattr(tokenizer, "tokenizer"):
+            tokenizer.tokenizer.padding_side = "left" # Force inference
         m = model
         while hasattr(m, "model"):
+            m.max_seq_length = max_seq_length
             m._saved_temp_tokenizer = tokenizer
             # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True
+            m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         pass
+        m.max_seq_length = max_seq_length
         m._saved_temp_tokenizer = tokenizer
         # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True
+        m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
         if model.generate.__name__ != "unsloth_base_fast_generate":
             model._old_generate = model.generate
             unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_base_fast_generate, model)
+
+        # Post patches
+        model = FastBaseModel.post_patch_model(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+        )
+        # Clear deleted GPU items
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
+        pass
         return model, tokenizer
     pass
 
@@ -249,6 +312,10 @@ class FastBaseModel:
         temporary_location         = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
+        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+            print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            return model
+        pass
         transformers_set_seed(random_state)
 
         if type(r) is not int:
@@ -282,7 +349,7 @@ class FastBaseModel:
             gc.collect()
             torch.cuda.empty_cache()
         pass
-
+        max_seq_length = model.max_seq_length
         lora_config = LoraConfig(
             r               = r,
             lora_alpha      = lora_alpha,
@@ -295,11 +362,12 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
-        model = get_peft_model(model, lora_config)
+        model = _get_peft_model(model, lora_config)
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
 
-        model = FastBaseModel.patch_peft_model(model, use_gradient_checkpointing)
+        model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing)
+        model.max_seq_length = max_seq_length
 
         # Clear deleted GPU items
         for _ in range(3):
@@ -316,20 +384,26 @@ class FastBaseModel:
 
 
     @staticmethod
-    def patch_peft_model(
+    def post_patch_model(
         model,
         use_gradient_checkpointing = True,
     ):
-        if not isinstance(model, PeftModelForCausalLM):
-            raise TypeError(
-                "Unsloth: Your model needs to call `.get_peft_model` first!"
-            )
-        pass
+        full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
-        model = prepare_model_for_kbit_training(
+        float32_mixed_precision = True
+        if _get_dtype(model.config.torch_dtype) == torch.bfloat16:
+            # Use bfloat16 precision for full finetuning
+            float32_mixed_precision = False
+
+        model = prepare_model_for_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
-            use_reentrant = True,
+            use_reentrant              = True,
+            full_finetuning            = full_finetuning,
+            train_layernorms           = full_finetuning,
+            train_embedding            = full_finetuning,
+            train_lm_head              = full_finetuning,
+            float32_mixed_precision    = float32_mixed_precision,
         )
 
         from transformers.trainer import Trainer 
@@ -347,17 +421,19 @@ class FastBaseModel:
         m = model
         while hasattr(m, "model"):
             if hasattr(m, "_saved_temp_tokenizer"):
-                m._saved_temp_tokenizer.tokenizer.padding_side = "right"
+                if hasattr(m._saved_temp_tokenizer, "tokenizer"):
+                    m._saved_temp_tokenizer.tokenizer.padding_side = "right"
             pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True
+            m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         pass
         if hasattr(m, "_saved_temp_tokenizer"):
-            m._saved_temp_tokenizer.tokenizer.padding_side = "right"
+            if hasattr(m._saved_temp_tokenizer, "tokenizer"):
+                m._saved_temp_tokenizer.tokenizer.padding_side = "right"
         pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True
+        m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Clear deleted GPU items
         for _ in range(3):
