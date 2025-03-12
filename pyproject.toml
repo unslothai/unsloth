@@ -41,6 +41,7 @@ dependencies = [
     "hf_transfer",
     "cut_cross_entropy",
     "pillow",
+    "regex",
 ]
 
 [tool.setuptools.dynamic]

@@ -72,7 +72,7 @@ def patch_layernorm(fast_layernorm):
 pass
 
 
-def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
+def patch_torch_compile(debug = False, O3 = False, ignore_errors = True):
     # All Unsloth Zoo code licensed under LGPLv3
     assert(type(debug) is bool)
     assert(type(O3)    is bool)
@@ -101,7 +101,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         os.environ.pop("TORCHINDUCTOR_COMPILE_THREADS", None)
         os.environ.pop("TORCHINDUCTOR_FORCE_DISABLE_CACHES", None)
         os.environ.pop("TORCH_LOGS", None)
-        torch._logging.set_logs(dynamo = logging.CRITICAL, inductor = logging.CRITICAL)
+        torch._logging.set_logs(all = logging.CRITICAL)
         torch._dynamo.config.verbose = False
     pass
     try:
@@ -157,7 +157,7 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
     # Torch dynamo arguments
     torch_dynamo_arguments = [
         "config.accumulated_cache_size_limit = 1024", # Bump up a bit from 256
-        f"config.suppress_errors = {not debug or ignore_errors}", # Supress errors for now
+        f"config.suppress_errors = {not debug and ignore_errors}", # Supress errors for now
         f"config.do_not_emit_runtime_asserts = {not debug}",
         "config.cache_size_limit = 1024", # Flex Attention
         "config.inline_inbuilt_nn_modules = True", # Torch 2.5 Regional recompilation
@@ -166,6 +166,10 @@ def patch_torch_compile(debug = True, O3 = False, ignore_errors = True):
         "config.compiled_autograd = False", # New Torch 2.4 feature which can compile backwards passes
         # https://pytorch.org/tutorials/intermediate/compiled_autograd_tutorial.html
     ]
+    if not debug and ignore_errors:
+        # Have to explicitly set it!
+        torch._dynamo.config.suppress_errors = True
+    pass
     import torch._inductor.config as config
     for _try_compile_argument in torch_compile_arguments:
         try:    exec(_try_compile_argument)

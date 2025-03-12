@@ -20,8 +20,22 @@ import os
 torch_nn_functional_cross_entropy = torch.nn.functional.cross_entropy
 from triton import __version__ as triton_version
 major, minor = torch.cuda.get_device_capability()
+import inspect
 
 global HAS_CUT_CROSS_ENTROPY
+global UNSLOTH_STUDIO_ENABLED
+import importlib.util
+if importlib.util.find_spec("unsloth_studio") is None:
+    UNSLOTH_STUDIO_ENABLED = False
+else:
+    UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
+pass
+if UNSLOTH_STUDIO_ENABLED:
+    from unsloth_studio.losses import (
+        unsloth_efficient_ce_loss,
+    )
+pass
+
 if (Version(torch.__version__) >= Version("2.4.0")) and \
     (not ((major <= 7) and (minor < 5))) and \
     (not (Version(triton_version) < Version("3.0.0"))):
@@ -39,6 +53,8 @@ __all__ = [
     "post_patch_loss_function",
     "HAS_CUT_CROSS_ENTROPY",
     "fused_linear_cross_entropy",
+    "fast_linear_cross_entropy",
+    "_unsloth_get_batch_samples",
 ]
 
 
@@ -90,7 +106,7 @@ def patch_loss_functions(_fast_cross_entropy_loss, torch_compile = True):
     elif torch_compile:
         torch_compile_options = {
             "epilogue_fusion"   : True,
-            "max_autotune"      : True,
+            "max_autotune"      : False,
             "shape_padding"     : True,
             "trace.enabled"     : os.environ.get("UNSLOTH_COMPILE_DEBUG", "0") == "1",
             "triton.cudagraphs" : False,
@@ -163,6 +179,104 @@ def fused_linear_cross_entropy(
     )
     if num_items_in_batch is not None: loss = loss / num_items_in_batch
     return loss
+pass
+
+
+def fast_linear_cross_entropy(
+    hidden_states        : torch.Tensor,
+    lm_head              : torch.nn.Linear,
+    labels               : torch.Tensor,
+    num_items_in_batch   : int = None,
+    ignore_index         : int = -100,
+    reduction            : str = "mean",
+    logit_softcapping    : float = 0,
+    logit_scale_multiply : float = 0,
+    logit_scale_divide   : float = 0,
+    attention_mask       : torch.Tensor = None,
+):
+    # All Unsloth Zoo code licensed under LGPLv3
+    reduction = "sum" if num_items_in_batch is not None else "mean"
+    if logit_softcapping == 0: logit_softcapping = None
+    if logit_scale_multiply != 0:
+        logit_scale = logit_scale_multiply
+    elif logit_scale_divide != 0:
+        logit_scale = 1.0 / logit_scale_divide
+    else:
+        logit_scale = None
+
+    loss = unsloth_efficient_ce_loss(
+        hidden_states = hidden_states,
+        lm_head = lm_head,
+        labels = labels,
+        shift = True,
+        reduction = reduction,
+        logit_scale = logit_scale,
+        logit_softcapping = logit_softcapping,
+        ignore_index = ignore_index,
+        chunk_size = 512,
+        attention_mask = attention_mask,
+    )
+    if num_items_in_batch is not None: loss = loss / num_items_in_batch
+    return loss
+pass
+
+
+def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
+    # All Unsloth Zoo code licensed under LGPLv3
+    batch_samples = []
+    num_items_in_batch = None
+
+    # Check if model allows **kwargs
+    m = self.model
+    has_kwargs = False
+    is_vlm = False
+    while True:
+        # Stop when we encounter the name as ForConditionalGeneration or ForCausalLM
+        if not hasattr(m, "forward"): break
+        if not hasattr(m.forward, "__qualname__"): break
+        name = m.forward.__qualname__
+        if "ForConditionalGeneration" in name or "VisionText2Text" in name:
+            is_vlm = True
+        if is_vlm or "CausalLM" in name or "_fast_forward" in name:
+            signature = inspect.signature(m.forward).parameters.values()
+            has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
+            break
+        if not hasattr(m, "model"): break
+        m = m.model
+    pass
+
+    # Iterate to find all batches
+    for _ in range(num_batches):
+        try:
+            batch_samples += [next(epoch_iterator)]
+        except StopIteration:
+            break
+    pass
+
+    # Get num_items_in_batch
+    if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
+        try:
+            if not "attention_mask" in batch_samples[0]: is_vlm = False
+            if not is_vlm:
+                num_items_in_batch = sum(
+                    [(x["labels"][..., 1:] != -100)\
+                    .sum() for x in batch_samples]
+                )
+            else:
+                num_items_in_batch = sum(
+                    [((x["labels"][..., 1:] != -100) & (x["attention_mask"][..., 1:] != 0))\
+                    .sum() for x in batch_samples]
+                )
+            if self.args.average_tokens_across_devices:
+                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
+            if torch.is_tensor(num_items_in_batch):
+                num_items_in_batch = num_items_in_batch.item()
+            pass
+
+        except Exception as exception:
+            logger.warning_once(exception)
+    pass
+    return batch_samples, num_items_in_batch
 pass
 
 # Unsloth Zoo - Utilities for Unsloth

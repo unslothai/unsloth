@@ -263,10 +263,19 @@ def requires_grad_for_gradient_checkpointing(model):
         module.register_forward_hook(requires_grad_post_hook)
         return
     pass
-    
+
     module_name = "model." + ".".join(name_components[:final_where])
-    print(f"Unsloth: Making `{module_name}` require gradients")
     module = eval(module_name)
+
+    if hasattr(module, "config") and module.config.__class__.__name__ == "CLIPVisionConfig":
+        # CLIP - backtrack to get_input_embeddings since requires_grad fails!
+        old_module = model
+        for module_name, module in model.named_modules():
+            if not hasattr(module, "get_input_embeddings"): break
+            old_module = module
+        module = old_module
+    pass
+    print(f"Unsloth: Making `{module_name}` require gradients")
 
     still_need_patching = True
     # Check if input_embeddings exists
