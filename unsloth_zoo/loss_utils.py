@@ -230,9 +230,9 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
     m = self.model
     has_kwargs = False
     is_vlm = False
-    while hasattr(m, "model"):
+    while True:
         # Stop when we encounter the name as ForConditionalGeneration or ForCausalLM
-        if not hasattr(m, "model") or not hasattr(m, "forward"): break
+        if not hasattr(m, "forward"): break
         if not hasattr(m.forward, "__qualname__"): break
         name = m.forward.__qualname__
         print(name)
@@ -242,6 +242,7 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
             signature = inspect.signature(m.forward).parameters.values()
             has_kwargs = tuple(signature)[-1].kind == inspect._VAR_KEYWORD
             break
+        if not hasattr(m, "model"): break
         m = m.model
     pass
 
