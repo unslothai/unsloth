@@ -20,6 +20,7 @@ import os
 torch_nn_functional_cross_entropy = torch.nn.functional.cross_entropy
 from triton import __version__ as triton_version
 major, minor = torch.cuda.get_device_capability()
+import inspect
 
 global HAS_CUT_CROSS_ENTROPY
 global UNSLOTH_STUDIO_ENABLED
