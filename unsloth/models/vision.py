@@ -245,22 +245,22 @@ class FastBaseModel:
         auto_processor = AutoProcessor if auto_model is AutoModelForVision2Seq else AutoTokenizer
         tokenizer = auto_processor.from_pretrained(
             tokenizer_name,
-            padding_side = "left",
+            padding_side = "right",
             token        = token,
         )
         # Add padding side as well
         if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "left"
+            tokenizer.tokenizer.padding_side = "right"
 
-        # model, tokenizer = patch_tokenizer(model, tokenizer)
-        # model = post_patch_loss_function(model)
+        model, tokenizer = patch_tokenizer(model, tokenizer)
+        model = post_patch_loss_function(model)
         # Fix other stuff like BnB compute data types
-        # model, tokenizer = patch_model_and_tokenizer(
-        #     model,
-        #     tokenizer,
-        #     downcast_rope = False,
-        #     fix_embeddings = False,
-        # )
+        model, tokenizer = patch_model_and_tokenizer(
+            model,
+            tokenizer,
+            downcast_rope = False,
+            fix_embeddings = False,
+        )
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
@@ -297,10 +297,10 @@ class FastBaseModel:
             model.generate = types.MethodType(unsloth_base_fast_generate, model)
 
         # Post patches
-        # model = FastBaseModel.post_patch_model(
-        #     model,
-        #     use_gradient_checkpointing = use_gradient_checkpointing,
-        # )
+        model = FastBaseModel.post_patch_model(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+        )
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()

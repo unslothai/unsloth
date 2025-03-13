@@ -609,30 +609,30 @@ class FastModel(FastBaseModel):
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
-                sdpa_dynamic_mask       = False,
-                sdpa_bool_masks         = False,
-                sdpa_gqa_replace        = False,
-                sdpa_dynamic_compile    = False,
-                compile_attention       = False,
-                disable_causal_masks    = False,
-                compile_torch_modules   = False,
-                compile_custom_modules  = False,
-                compile_function_calls  = False,
-                fuse_lm_head            = False,
-                gradient_checkpointing  = False,
-                manual_replacements     = False,
-                fast_lora_forwards      = False,
+                sdpa_dynamic_mask       = True,
+                sdpa_bool_masks         = True,
+                sdpa_gqa_replace        = True,
+                sdpa_dynamic_compile    = True,
+                compile_attention       = True,
+                disable_causal_masks    = True,
+                compile_torch_modules   = True,
+                compile_custom_modules  = True,
+                compile_function_calls  = True,
+                fuse_lm_head            = True,
+                gradient_checkpointing  = True,
+                manual_replacements     = True,
+                fast_lora_forwards      = True,
                 fast_residual_stream    = False,
-                accurate_accumulation   = False,
-                epilogue_fusion         = False,
+                accurate_accumulation   = True,
+                epilogue_fusion         = True,
                 max_autotune            = False,
-                shape_padding           = False,
+                shape_padding           = True,
                 cudagraphs              = False,
                 debug                   = False,
-                fullgraph               = False,
+                fullgraph               = fullgraph,
                 import_from_cache       = False,
                 disable                 = False,
-                return_logits           = False,
+                return_logits           = return_logits,
             )
         pass
 
@@ -668,7 +668,7 @@ class FastModel(FastBaseModel):
             use_gradient_checkpointing = use_gradient_checkpointing,
             *args, **kwargs,
         )
-
+        
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
