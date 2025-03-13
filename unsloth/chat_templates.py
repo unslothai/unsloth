@@ -1468,7 +1468,15 @@ def standardize_sharegpt(
         return { "conversations" : all_convos, }
     pass
 
-    return dataset.map(_standardize_dataset, batched = True, desc = "Standardizing format")
+    from multiprocessing import cpu_count
+    num_proc = cpu_count()
+
+    return dataset.map(
+        _standardize_dataset,
+        batched = True,
+        desc = "Unsloth: Standardizing formats",
+        num_proc = num_proc,
+    )
 pass
 
 
