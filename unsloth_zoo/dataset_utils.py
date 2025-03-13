@@ -359,6 +359,8 @@ def standardize_data_formats(
     for convo in convos:
         for message in convo:
             for key, value in message.items():
+                if type(value) is not str:
+                    raise RuntimeError("Unsloth: Cannot standardize non text datasets!")
                 uniques[key].append(value)
     pass
 
