@@ -639,8 +639,9 @@ else:
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
 
-        __shift_logits = torch.chunk(shift_logits, 4, dim = 0)
-        __shift_labels = torch.chunk(shift_labels, 4, dim = 0)
+        n_chunks = 4 if vocab_size <= 131072 else 8
+        __shift_logits = torch.chunk(shift_logits, n_chunks, dim = 0)
+        __shift_labels = torch.chunk(shift_labels, n_chunks, dim = 0)
         loss = 0.0
         for (_shift_logits, _shift_labels) in zip(__shift_logits, __shift_labels):
             loss += torch.nn.functional.cross_entropy(
@@ -755,8 +756,9 @@ elif self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not N
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
 
-        __shift_logits = torch.chunk(shift_logits, 4, dim = 0)
-        __shift_labels = torch.chunk(shift_labels, 4, dim = 0)
+        n_chunks = 4 if vocab_size <= 131072 else 8
+        __shift_logits = torch.chunk(shift_logits, n_chunks, dim = 0)
+        __shift_labels = torch.chunk(shift_labels, n_chunks, dim = 0)
         loss = 0.0
         for (_shift_logits, _shift_labels) in zip(__shift_logits, __shift_labels):
             loss += torch.nn.functional.cross_entropy(
