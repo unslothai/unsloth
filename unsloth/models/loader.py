@@ -70,7 +70,7 @@ class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
         model_name                 = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length             = None,
+        max_seq_length             = 2048,
         dtype                      = None,
         load_in_4bit               = True,
         load_in_8bit               = False,
@@ -96,7 +96,7 @@ class FastLanguageModel(FastLlamaModel):
         if load_in_8bit or full_finetuning:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
-                max_seq_length             = max_seq_length, # [TODO] No effect
+                max_seq_length             = max_seq_length,
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
                 load_in_8bit               = load_in_8bit,
@@ -295,7 +295,7 @@ class FastLanguageModel(FastLlamaModel):
         else:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
-                max_seq_length             = max_seq_length, # [TODO] No effect
+                max_seq_length             = max_seq_length,
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
                 load_in_8bit               = load_in_8bit,
@@ -442,7 +442,7 @@ class FastModel(FastBaseModel):
     @staticmethod
     def from_pretrained(
         model_name                 = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
-        max_seq_length             = None, # [TODO] No effect
+        max_seq_length             = 2048,
         dtype                      = None,
         load_in_4bit               = True,
         load_in_8bit               = False,
@@ -668,7 +668,7 @@ class FastModel(FastBaseModel):
             use_gradient_checkpointing = use_gradient_checkpointing,
             *args, **kwargs,
         )
-        
+
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
