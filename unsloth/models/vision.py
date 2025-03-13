@@ -25,7 +25,6 @@ try:
 except:
     from transformers import AutoModelForVision2Seq
 pass
-from .llama import *
 from ..kernels import (
     post_patch_loss_function,
 )
@@ -100,7 +99,7 @@ class FastBaseModel:
     @staticmethod
     def from_pretrained(
         model_name        = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length    = None,
+        max_seq_length    = 2048,
         dtype             = None,
         load_in_4bit      = True,
         load_in_8bit      = False,
@@ -114,6 +113,7 @@ class FastBaseModel:
         use_gradient_checkpointing = "unsloth",
         **kwargs,
     ):
+        os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
             print(
                 "Unsloth: WARNING `trust_remote_code` is True.\n"\
