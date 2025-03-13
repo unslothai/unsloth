@@ -143,15 +143,16 @@ pass
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
-libcuda_dirs = lambda: None
-if Version(triton.__version__) >= Version("3.0.0"):
-    try: from triton.backends.nvidia.driver import libcuda_dirs
-    except: pass
-else: from triton.common.build import libcuda_dirs
+
 
 # Try loading bitsandbytes and triton
 if not devices.has_mps:
+    import triton
+    libcuda_dirs = lambda: None
+    if Version(triton.__version__) >= Version("3.0.0"):
+        try: from triton.backends.nvidia.driver import libcuda_dirs
+        except: pass
+    else: from triton.common.build import libcuda_dirs
     import bitsandbytes as bnb
     try:
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
