@@ -20,6 +20,7 @@ __all__ = [
 
     "to_sharegpt",
     "standardize_sharegpt",
+    "standardize_data_formats",
     "apply_chat_template",
     "train_on_responses_only",
 
@@ -37,7 +38,9 @@ from .models._utils import patch_tokenizer
 import re
 from unsloth_zoo.dataset_utils import (
     train_on_responses_only,
+    standardize_data_formats,
 )
+standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
 DEFAULT_SYSTEM_MESSAGE = {}
 
@@ -1471,90 +1474,6 @@ def to_sharegpt(
         remove_columns = dataset.column_names if remove_unused_columns else None,
     )
     return dataset
-pass
-
-
-def standardize_sharegpt(
-    dataset,
-    aliases_for_system    = ["system",],
-    aliases_for_user      = ["user", "human", "input",],
-    aliases_for_assistant = ["gpt", "assistant", "output",],
-):
-    """
-    Standardizes ShareGPT and other formats to user/assistant Hugging Face format.
-    
-    Get aliases for the system, user and assistant roles.
-    These shall map to "system", "user" and "assistant" respectively.
-    
-    aliases_for_system    = ["system",],
-    aliases_for_user      = ["user", "human", "input",],
-    aliases_for_assistant = ["gpt", "assistant", "output",],
-    """
-    import collections
-    import itertools
-
-    convos = dataset[:10]["conversations"]
-    uniques = collections.defaultdict(list)
-    for convo in convos:
-        for message in convo:
-            for key, value in message.items():
-                uniques[key].append(value)
-    pass
-
-    # Must be only 2 entries
-    assert(len(uniques.keys()) == 2)
-
-    keys = list(uniques.keys())
-    length_first  = len(set(uniques[keys[0]]))
-    length_second = len(set(uniques[keys[1]]))
-
-    if length_first < length_second:
-        # Role is assigned to the first element
-        role_key    = keys[0]
-        content_key = keys[1]
-    else:
-        role_key    = keys[1]
-        content_key = keys[0]
-    pass
-
-    # Check roles are in aliases
-    all_aliases = set(aliases_for_system + aliases_for_user + aliases_for_assistant)
-    roles = set(uniques[role_key])
-    leftover_aliases = (all_aliases | roles) - all_aliases
-    if len(leftover_aliases) != 0:
-        raise TypeError(
-            f"Unsloth: {list(leftover_aliases)} are not in aliases. Please update aliases."
-        )
-    pass
-
-    # Mapping for aliases
-    aliases_mapping = {}
-    for x in aliases_for_system:    aliases_mapping[x] = "system"
-    for x in aliases_for_user:      aliases_mapping[x] = "user"
-    for x in aliases_for_assistant: aliases_mapping[x] = "assistant"
-
-    def _standardize_dataset(examples):
-        convos = examples["conversations"]
-        all_convos = []
-        for convo in convos:
-            new_convo = [
-                { "role" : aliases_mapping[message[role_key]], "content" : message[content_key], }
-                for message in convo
-            ]
-            all_convos.append(new_convo)
-        pass
-        return { "conversations" : all_convos, }
-    pass
-
-    from multiprocessing import cpu_count
-    num_proc = cpu_count()
-
-    return dataset.map(
-        _standardize_dataset,
-        batched = True,
-        desc = "Unsloth: Standardizing formats",
-        num_proc = num_proc,
-    )
 pass
 
 
