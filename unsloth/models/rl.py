@@ -247,8 +247,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "from unsloth_zoo.utils import _get_dtype\n"\
         "dtype = _get_dtype(dtype)\n"\
         "float16 = dtype == torch.float16\n"\
-        "if float16 and use_bf16: raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"\
-        "if not float16 and use_fp16: raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"\
+        "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"\
+        "if not force_float32 and (not float16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"\
         "if force_float32:\n"\
         "    args.fp16 = False\n"\
         "    args.bf16 = False\n"\
