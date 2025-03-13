@@ -39,6 +39,7 @@ from unsloth_zoo.peft_utils import (
     SKIP_QUANTIZATION_MODULES,
     requires_grad_for_gradient_checkpointing,
 )
+from transformers import __version__ as transformers_version
 from triton import __version__ as triton_version
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
