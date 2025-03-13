@@ -2019,7 +2019,7 @@ class FastLlamaModel:
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
-            return FastBaseModel.get_model(
+            return FastBaseModel.get_peft_model(
                 model                      = model,
                 r                          = r,
                 target_modules             = target_modules,
