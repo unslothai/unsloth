@@ -2462,6 +2462,12 @@ class FastLlamaModel:
         model,
         use_gradient_checkpointing = True,
     ):
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+            return FastBaseModel.patch_peft_model(
+                model = model,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+            )
+        pass
         if not isinstance(model, PeftModelForCausalLM):
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
