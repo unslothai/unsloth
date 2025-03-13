@@ -297,10 +297,10 @@ class FastBaseModel:
             model.generate = types.MethodType(unsloth_base_fast_generate, model)
 
         # Post patches
-        model = FastBaseModel.post_patch_model(
-            model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-        )
+        # model = FastBaseModel.post_patch_model(
+        #     model,
+        #     use_gradient_checkpointing = use_gradient_checkpointing,
+        # )
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
