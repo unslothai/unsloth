@@ -354,13 +354,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Check data collator if it's correct!
     if "data_collator" in call_args and "train_dataset" in call_args:
         data_collator_check = \
+        "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"\
         "if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
-        "    data_collator = DataCollatorForLanguageModeling("\
-        "tokenizer = processing_class if 'processing_class' in locals() else tokenizer, mlm = False)\n"\
+        "    data_collator = DataCollatorForLanguageModeling(__tokenizer, mlm = False)\n"\
         "elif isinstance(data_collator, DataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
-        "    data_collator = DataCollatorForSeq2Seq("\
-        "tokenizer = processing_class if 'processing_class' in locals() else tokenizer)\n"
+        "    data_collator = DataCollatorForSeq2Seq(__tokenizer)\n"
         extra_args += data_collator_check
+
+        # Also check if .pad exists -> if not, and is VLM, then change it!
+        pad_check = \
+        "if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"\
+        "    if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
+        "        data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
+        "    else:\n"\
+        "        data_collator = DataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False)\n"
+        extra_args += pad_check
     pass
 
     # Check NEFTune
