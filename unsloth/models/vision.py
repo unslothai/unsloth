@@ -249,7 +249,7 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = "eager", #[TODO] Pixtral for eg fails
+            # attn_implementation   = "sdpa", #[TODO] Pixtral for eg fails
             **kwargs,
         )
         # Return old flag
