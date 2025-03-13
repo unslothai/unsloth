@@ -129,12 +129,12 @@ class FastBaseModel:
         try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
         except: vllm_version = ""
 
-        model_name = model_types[0]
-        if model_name == "siglip" and len(model_types) != 1:
-            model_name = model_types[1]
+        model_type_arch = model_types[0]
+        if model_type_arch == "siglip" and len(model_types) != 1:
+            model_type_arch = model_types[1]
 
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_name.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.cuda.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
