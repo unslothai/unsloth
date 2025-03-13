@@ -986,7 +986,9 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
     pass
-    return self._old_compute_loss(model, inputs, *args, **kwargs)
+    with torch.autocast(device_type = "cuda", dtype = torch.float32):
+        outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
+    return outputs
 pass
 
 
