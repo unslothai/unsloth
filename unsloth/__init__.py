@@ -18,6 +18,27 @@ import os, re, subprocess, inspect
 import numpy as np
 from unsloth import devices
 
+# Check if modules that need patching are already imported
+critical_modules = ['trl', 'transformers', 'peft']
+already_imported = [mod for mod in critical_modules if mod in sys.modules]
+
+# This check is critical because Unsloth optimizes these libraries by modifying
+# their code at import time. If they're imported first, the original (slower, 
+# more memory-intensive) implementations will be used instead of Unsloth's
+# optimized versions, potentially causing OOM errors or slower training.
+
+if already_imported:
+    # stacklevel=2 makes warning point to user's import line rather than this library code,
+    # showing them exactly where to fix the import order in their script
+    warnings.warn(
+        f"WARNING: Unsloth should be imported before {', '.join(already_imported)} "
+        f"to ensure all optimizations are applied. Your code may run slower or encounter "
+        f"memory issues without these optimizations.\n\n"
+        f"Please restructure your imports with 'import unsloth' at the top of your file.",
+        stacklevel = 2,
+    )
+pass
+
 # Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so
 # enabling it will require much more work, so we have to prioritize. Please understand!
 # We do have a beta version, which you can contact us about!
@@ -25,25 +46,6 @@ from unsloth import devices
 
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-
-if "CUDA_VISIBLE_DEVICES" in os.environ:
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    devices = os.environ["CUDA_VISIBLE_DEVICES"]
-    # Check if there are multiple cuda devices set in env
-    if not devices.isdigit():
-        first_id = devices.split(",")[0]
-        warnings.warn(
-            f"Unsloth: 'CUDA_VISIBLE_DEVICES' is currently {devices} \n"\
-            "Unsloth currently does not support multi GPU setups - but we are working on it!\n"\
-            "Multiple CUDA devices detected but we require a single device.\n"\
-            f"We will override CUDA_VISIBLE_DEVICES to first device: {first_id}."
-        )
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(first_id)
-else:
-    # warnings.warn("Unsloth: 'CUDA_VISIBLE_DEVICES' is not set. We shall set it ourselves.")
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-pass
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
@@ -204,14 +206,19 @@ pass
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.1.4"):
-        try:
-            os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        except:
+    if Version(unsloth_zoo_version) < Version("2025.3.9"):
+        print(
+            "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
+            "To disable this, set os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'"
+        )
+        if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
             try:
-                os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+                os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
             except:
-                raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
+                try:
+                    os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+                except:
+                    raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
 except:
     raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
@@ -219,6 +226,7 @@ pass
 
 if not devices.has_mps:
     from .models import *
+    from .models import __version__
     from .save import *
     from .chat_templates import *
     from .tokenizer_utils import *

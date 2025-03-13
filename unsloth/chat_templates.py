@@ -759,6 +759,10 @@ DEFAULT_SYSTEM_MESSAGE["llama-3.1"] = "" # Llama3.1 default system message is em
 
 CHAT_TEMPLATES["llama-31"]  = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
 DEFAULT_SYSTEM_MESSAGE["llama-31"] = "" # Llama3.1 default system message is empty + the dates
+
+for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
+    CHAT_TEMPLATES[version] = CHAT_TEMPLATES["llama-3.1"]
+    DEFAULT_SYSTEM_MESSAGE[version] = ""
 pass
 
 
@@ -1680,7 +1684,7 @@ extra_eos_tokens = None,
 
         for j in range(1, len(response_part)):
             try_find = re.escape(response_part[:j])
-            try: found = next(re.finditer("(" + try_find + ").+?\{INPUT\}", chat_template, flags = re.DOTALL | re.MULTILINE))
+            try: found = next(re.finditer("(" + try_find + ").+?\\{INPUT\\}", chat_template, flags = re.DOTALL | re.MULTILINE))
             except: break
         pass
         separator = found.group(1)
@@ -2121,7 +2125,7 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
         gguf_tokens = "".join(datas)
 
         # Now extract GGUF tokenization attempt
-        gguf_tokenized = re.findall("([\d]{1,}) \-\> \'([^\']{1,})\'", gguf_tokens, flags = re.MULTILINE)
+        gguf_tokenized = re.findall(r"([\d]{1,}) \-\> \'([^\']{1,})\'", gguf_tokens, flags = re.MULTILINE)
         gguf_tokenized = [(int(x[0]), x[1],) for x in gguf_tokenized]
         input_ids = tokenizer(prompt).input_ids
 
