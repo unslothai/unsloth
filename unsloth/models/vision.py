@@ -42,6 +42,7 @@ from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 import types
 import functools
+import os
 
 __all__ = [
     "FastBaseModel",
