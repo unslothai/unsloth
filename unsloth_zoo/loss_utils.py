@@ -60,6 +60,7 @@ __all__ = [
 
 def patch_loss_functions(_fast_cross_entropy_loss, torch_compile = True):
     # All Unsloth Zoo code licensed under LGPLv3
+    return
     try:
         import transformers.loss.loss_utils
     except:
