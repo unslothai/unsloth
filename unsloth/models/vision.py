@@ -30,7 +30,9 @@ from ..kernels import (
 )
 from ._utils import __version__
 from ._utils import *
+from ..save import patch_saving_functions
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
+from peft import PeftModelForCausalLM
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -48,7 +50,7 @@ import gc
 import math
 import functools
 from typing import Optional, Tuple, List, Union
-import re, os, inspect, math, sys
+import re, inspect, sys
 import types
 try:
     from huggingface_hub.utils import get_token
