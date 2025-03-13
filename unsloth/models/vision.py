@@ -65,6 +65,9 @@ __all__ = [
     "FastBaseModel",
 ]
 
+global FORCE_FLOAT32
+FORCE_FLOAT32 = ["gemma3"]
+
 
 def unsloth_base_fast_generate(
     self,
@@ -177,6 +180,14 @@ class FastBaseModel:
             dtype = torch.float16
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
+
+        global FORCE_FLOAT32
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        for disable_name in FORCE_FLOAT32:
+            if disable_name.lower() == model_type_arch.lower() and dtype == torch.float16:
+                print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
+                os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                break
 
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
