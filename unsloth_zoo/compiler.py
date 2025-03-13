@@ -290,6 +290,9 @@ def create_new_function(
 
     # Import items to make the function executable
     items = [x for x in functions if ((x in new_source) and (x != name) and not (f"def {x}(" in new_source))]
+    # Patch for SiglipEncoder and others
+    if "SiglipEncoder" in new_source: items += ["SiglipEncoder"]
+
     imports = "from torch import Tensor\n"
     imports += "import torch\n"
     imports += "import torch.nn as nn\n"
@@ -497,6 +500,9 @@ def create_standalone_class(
 
     # Combine all into file
     source = source + full_class
+
+    # Fix Gemma 3 ignore_index being not set!
+    source = source.replace("self.config.ignore_index", "-100")
     return source
 pass
 
@@ -574,8 +580,14 @@ loss = loss_fct(shift_logits, shift_labels)
 
 cross_entropy_replacement_1 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
-__kwargs = locals().get('loss_kwargs', {}) or locals().get('kwargs', {})
-n_items = (__kwargs).get("num_items_in_batch", None) or (__kwargs).get("n_items", None)
+
+all_locals = locals()
+n_items = None
+for __kwargs in all_locals.values():
+    if type(__kwargs) is dict:
+        n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
+        break
+
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
@@ -691,6 +703,7 @@ if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOC
 cross_entropy_replacement_2 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
 n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
+
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
@@ -809,8 +822,14 @@ loss = loss_fct(shift_logits, shift_labels)
 
 cross_entropy_replacement_3 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
-__kwargs = locals().get('loss_kwargs', {}) or locals().get('kwargs', {})
-n_items = (__kwargs).get("num_items_in_batch", None) or (__kwargs).get("n_items", None)
+
+all_locals = locals()
+n_items = None
+for __kwargs in all_locals.values():
+    if type(__kwargs) is dict:
+        n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
+        break
+
 if labels is not None:
     def _compiled_loss_function(
         output_logits : torch.Tensor,
@@ -1385,7 +1404,6 @@ def unsloth_compile_transformers(
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     disable = disable or (os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1")
-
     if fast_residual_stream:
         raise NotImplementedError("Unsloth: Fast residual stream optimization makes things slower!")
     pass
@@ -1428,7 +1446,7 @@ def unsloth_compile_transformers(
     UNSLOTH_FULLGRAPH = UNSLOTH_FULLGRAPH == "1"
 
     # Patch PEFT lora forwards
-    if fast_lora_forwards:
+    if (not disable) and fast_lora_forwards:
         print("Unsloth: Patching LoRA to make it faster")
         patch_lora_forwards(torch_compile_options)
     pass
@@ -1595,7 +1613,13 @@ def unsloth_compile_transformers(
 
         if "attn_weights" in source or "self.self_attn" in source or "_ATTENTION_CLASSES" in init:
 
-            print(f"Unsloth: Will not compile {module}.")
+            print(f"Unsloth: Will not compile {module} since it looks like it calls attention modules!")
+            bad_torch_modules.add(module)
+        pass
+
+        if "self.encoder" in source or "BaseModelOutput" in source:
+
+            print(f"Unsloth: Will not compile {module} since it looks like a vision encoder!")
             bad_torch_modules.add(module)
         pass
 
@@ -1689,9 +1713,23 @@ def unsloth_compile_transformers(
     pass
 
     # Remove causal masks
+    do_not_remove = False
     for module in remove_causal_masks:
+        if module.endswith(("ForConditionalGeneration")):
+            do_not_remove = True
+            print(f"Unsloth: Will not remove causal mask for {model_location} since it's a VLM!")
+            break
+    pass
+    for module in remove_causal_masks:
+        if do_not_remove: continue
+
         source = eval(f"{model_location}.{module}")
         if not hasattr(source, "_update_causal_mask"): continue
+
+        # Don't remove for VLMs!
+        if module.endswith(("ForConditionalGeneration")):
+            print(f"Unsloth: Will not remove causal mask for {module} since it's a VLM!")
+            continue
 
         exec(f"{model_location}.{module}._update_causal_mask = no_update_causal_mask", globals())
         print(f"Unsloth: Removed causal mask for {module} to reduce memory usage.")
@@ -1931,7 +1969,8 @@ def unsloth_compile_transformers(
                 _cross_entropy_code + "\n"
         )
     except Exception as exception:
-        raise RuntimeError(exception)
+        if not disable:
+            raise RuntimeError(exception)
         combined_module = None
 
     if compile_torch_modules and not disable:
