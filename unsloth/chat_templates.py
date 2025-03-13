@@ -1114,11 +1114,12 @@ def get_chat_template(
 
         # Check fast tokenizer
         if not is_fast_tokenizer:
-            print(
-                "Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
-                "Please log a Github issue if you want this as a new feature!\n"\
-                "Your chat template will still work, but it won't add or edit tokens."
-            )
+            pass
+            # print(
+            #     "Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
+            #     "Please log a Github issue if you want this as a new feature!\n"\
+            #     "Your chat template will still work, but it won't add or edit tokens."
+            # )
 
         elif token_mapping is not None:
             # token_mapping = {"<start_of_turn>" : "<|im_start|>", "<end_of_turn>" : "<|im_end|>"}
