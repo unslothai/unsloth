@@ -113,6 +113,11 @@ from unsloth_zoo.compiler import (
 from unsloth_zoo.training_utils import (
     prepare_model_for_training,
 )
+from unsloth_zoo.temporary_patches import (
+    TEMPORARY_PATCHES,
+)
+for temporary_patch in TEMPORARY_PATCHES:
+    temporary_patch()
 
 # =============================================
 # Disable some warnings which can get annoying
