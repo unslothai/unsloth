@@ -1969,7 +1969,8 @@ def unsloth_compile_transformers(
                 _cross_entropy_code + "\n"
         )
     except Exception as exception:
-        raise RuntimeError(exception)
+        if not disable:
+            raise RuntimeError(exception)
         combined_module = None
 
     if compile_torch_modules and not disable:
