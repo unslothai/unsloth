@@ -107,7 +107,7 @@ def _longest_common_sublist(lists):
 pass
 
 
-def _find_common_token_ids(component, tokenizer):
+def _find_common_token_ids(component, tokenizer, force_match = False):
     """
     \n### User:\n\n
     \n\n### User:\n\n
@@ -125,16 +125,21 @@ def _find_common_token_ids(component, tokenizer):
     
     # Add current pieces and also newlines
     all_input_ids = []
-    for left in range(3):
-        for right in range(3):
-            x = left*left_text + stripped + right*right_text
-            x = tokenizer(x, add_special_tokens = False).input_ids
-            all_input_ids.append(x)
+    if not force_match:
+        for left in range(3):
+            for right in range(3):
+                x = left*left_text + stripped + right*right_text
+                x = tokenizer(x, add_special_tokens = False).input_ids
+                all_input_ids.append(x)
 
-            x = left*"\n" + stripped + right*"\n"
-            x = tokenizer(x, add_special_tokens = False).input_ids
-            all_input_ids.append(x)
+                x = left*"\n" + stripped + right*"\n"
+                x = tokenizer(x, add_special_tokens = False).input_ids
+                all_input_ids.append(x)
+            pass
         pass
+    else:
+        x = tokenizer(component, add_special_tokens = False).input_ids
+        all_input_ids.append(x)
     pass
 
     # Old longest common substring is replaced with actual longest common list of numbers
@@ -179,6 +184,7 @@ def train_on_responses_only(
     trainer,
     instruction_part = None,
     response_part    = None,
+    force_match      = True, # Match newlines as well!
 ):
     """
     Trains only on responses and not on the instruction by masking out
@@ -205,8 +211,8 @@ def train_on_responses_only(
     pass
 
     # Get most common tokens since tokenizers can tokenize stuff differently!
-    Q_must, Q_left, Q_right = _find_common_token_ids(instruction_part, tokenizer)
-    A_must, A_left, A_right = _find_common_token_ids(response_part,    tokenizer)
+    Q_must, Q_left, Q_right = _find_common_token_ids(instruction_part, tokenizer, force_match)
+    A_must, A_left, A_right = _find_common_token_ids(response_part,    tokenizer, force_match)
 
     # Store some temporary stuff
     A_first = A_must[0]
