@@ -186,7 +186,9 @@ def train_on_responses_only(
     """
     # All Unsloth Zoo code licensed under LGPLv3
     tokenizer = trainer.processing_class if hasattr(trainer, "processing_class") else trainer.tokenizer
-
+    # Get non vision tokenizer
+    if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer"):
+        tokenizer = tokenizer.tokenizer
     if  not hasattr(tokenizer, "_unsloth_input_part") or \
         not hasattr(tokenizer, "_unsloth_output_part"):
         
