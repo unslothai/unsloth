@@ -25,28 +25,48 @@ try:
 except:
     from transformers import AutoModelForVision2Seq
 pass
-from .llama import *
 from ..kernels import (
     post_patch_loss_function,
 )
 from ._utils import __version__
+from ._utils import *
+from ..save import patch_saving_functions
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
+from peft import PeftModelForCausalLM
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
     SKIP_QUANTIZATION_MODULES,
     requires_grad_for_gradient_checkpointing,
 )
+from transformers.models.llama.modeling_llama import logger
+from transformers import __version__ as transformers_version
 from triton import __version__ as triton_version
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 import types
 import functools
+import os
+import gc
+import math
+import functools
+from typing import Optional, Tuple, List, Union
+import re, inspect, sys
+import types
+try:
+    from huggingface_hub.utils import get_token
+except:
+    # Old HF Hub versions <= 0.0.25
+    from huggingface_hub.utils._token import get_token
+pass
 
 __all__ = [
     "FastBaseModel",
 ]
+
+global FORCE_FLOAT32
+FORCE_FLOAT32 = ["gemma3"]
 
 
 def unsloth_base_fast_generate(
@@ -86,6 +106,7 @@ def unsloth_base_fast_generate(
     except: pass
 
     # Mixed precision autocast
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1": dtype = torch.float32
     with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
         output = self._old_generate(*args, **kwargs)
     pass
@@ -100,7 +121,7 @@ class FastBaseModel:
     @staticmethod
     def from_pretrained(
         model_name        = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length    = None,
+        max_seq_length    = 2048,
         dtype             = None,
         load_in_4bit      = True,
         load_in_8bit      = False,
@@ -114,6 +135,7 @@ class FastBaseModel:
         use_gradient_checkpointing = "unsloth",
         **kwargs,
     ):
+        os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
             print(
                 "Unsloth: WARNING `trust_remote_code` is True.\n"\
@@ -129,8 +151,12 @@ class FastBaseModel:
         try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
         except: vllm_version = ""
 
+        model_type_arch = model_types[0]
+        if model_type_arch == "siglip" and len(model_types) != 1:
+            model_type_arch = model_types[1]
+
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_types[0].title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
+           f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.cuda.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
@@ -156,6 +182,17 @@ class FastBaseModel:
 
         assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
 
+        global FORCE_FLOAT32
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        bnb_compute_dtype = dtype
+        for disable_name in FORCE_FLOAT32:
+            if disable_name.lower() == model_type_arch.lower() and dtype == torch.float16:
+                print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
+                os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                bnb_compute_dtype = torch.float32
+                break
+        pass
+
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
@@ -170,13 +207,13 @@ class FastBaseModel:
                 load_in_4bit              = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
-                bnb_4bit_compute_dtype    = dtype,
-                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
+                bnb_4bit_compute_dtype    = bnb_compute_dtype,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         elif load_in_8bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_8bit              = True,
-                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
             print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
@@ -185,8 +222,8 @@ class FastBaseModel:
                 load_in_4bit              = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
-                bnb_4bit_compute_dtype    = dtype,
-                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES,
+                bnb_4bit_compute_dtype    = bnb_compute_dtype,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         pass
 
@@ -212,7 +249,7 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            # attn_implementation   = "sdpa", [TODO] Pixtral for eg fails
+            attn_implementation     = "sdpa", #[TODO] Pixtral for eg fails
             **kwargs,
         )
         # Return old flag
@@ -408,12 +445,7 @@ class FastBaseModel:
 
         from transformers.trainer import Trainer 
         if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
-            raise RuntimeError(
-                'Unsloth currently does not work on multi GPU setups - sadly we are a 2 brother team so '\
-                'enabling it will require much more work, so we have to prioritize. Please understand!\n'\
-                'We do have a separate beta version, which you can contact us about!\n'\
-                'Thank you for your understanding and we appreciate it immensely!'
-            )
+            raise RuntimeError('Unsloth: Unsuccessfully patched inner_training_loop')
         pass
         patch_saving_functions(model, vision = True)
 

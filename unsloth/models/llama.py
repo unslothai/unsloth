@@ -38,6 +38,7 @@ from ..kernels import *
 from ..tokenizer_utils import *
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func
+from .vision import FastBaseModel
 
 # Final patching code
 from transformers.models.llama.modeling_llama import (
@@ -1648,6 +1649,7 @@ class FastLlamaModel:
         disable_log_stats = False,
         **kwargs,
     ):
+        os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
         if trust_remote_code:
             if fast_inference:
                 raise NotImplementedError("Unsloth: Fast inference does not support `trust_remote_code` yet.")
@@ -2016,6 +2018,31 @@ class FastLlamaModel:
         temporary_location  = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+            return FastBaseModel.get_peft_model(
+                model                      = model,
+                r                          = r,
+                target_modules             = target_modules,
+                lora_alpha                 = lora_alpha,
+                lora_dropout               = lora_dropout,
+                bias                       = bias,
+                finetune_vision_layers     = False,
+                finetune_language_layers   = True,
+                finetune_attention_modules = True,
+                finetune_mlp_modules       = True,
+                layers_to_transform        = layers_to_transform,
+                layers_pattern             = layers_pattern,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state               = random_state,
+                max_seq_length             = max_seq_length,
+                use_rslora                 = use_rslora,
+                modules_to_save            = modules_to_save,
+                init_lora_weights          = init_lora_weights,
+                loftq_config               = loftq_config,
+                temporary_location         = temporary_location,
+                **kwargs,
+            )
+        pass
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             return model
@@ -2435,6 +2462,12 @@ class FastLlamaModel:
         model,
         use_gradient_checkpointing = True,
     ):
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+            return FastBaseModel.patch_peft_model(
+                model = model,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+            )
+        pass
         if not isinstance(model, PeftModelForCausalLM):
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
