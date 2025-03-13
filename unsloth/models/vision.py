@@ -183,11 +183,14 @@ class FastBaseModel:
 
         global FORCE_FLOAT32
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        bnb_compute_dtype = dtype
         for disable_name in FORCE_FLOAT32:
             if disable_name.lower() == model_type_arch.lower() and dtype == torch.float16:
                 print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                bnb_compute_dtype = torch.float32
                 break
+        pass
 
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
@@ -203,7 +206,7 @@ class FastBaseModel:
                 load_in_4bit              = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
-                bnb_4bit_compute_dtype    = dtype,
+                bnb_4bit_compute_dtype    = bnb_compute_dtype,
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         elif load_in_8bit:
@@ -218,7 +221,7 @@ class FastBaseModel:
                 load_in_4bit              = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
-                bnb_4bit_compute_dtype    = dtype,
+                bnb_4bit_compute_dtype    = bnb_compute_dtype,
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         pass
