@@ -16,7 +16,10 @@
 
 __all__ = [
     "train_on_responses_only",
+    "sft_prepare_dataset",
 ]
+
+from typing import Union, Callable, Optional, List, Dict
 
 # From https://www.geeksforgeeks.org/longest-common-substring-array-strings/
 # Longest Common Substring in an Array of Strings
@@ -315,6 +318,137 @@ def train_on_responses_only(
     from .training_utils import fix_zero_training_loss
     fix_zero_training_loss(None, tokenizer, trainer.train_dataset)
     return trainer
+pass
+
+
+from datasets import (Dataset, IterableDataset,)
+from trl.trainer.utils import ConstantLengthDataset
+# Faster SFTTrainer prepare_dataset
+def sft_prepare_dataset(
+    self,
+    dataset: Union[Dataset, IterableDataset],
+    processing_class,
+    args,
+    packing: bool,
+    formatting_func: Optional[Callable[[dict], str]],
+    dataset_name: str,
+) -> Union[Dataset, IterableDataset]:
+    # All Unsloth Zoo code licensed under LGPLv3
+    if isinstance(dataset, ConstantLengthDataset): return dataset
+
+    map_kwargs = {}
+    use_desc = isinstance(dataset, Dataset)
+    is_vlm = hasattr(processing_class, "tokenizer")
+    tokenizer = processing_class
+    if is_vlm: tokenizer = processing_class.tokenizer
+
+    # Get max length
+    max_seq_length = getattr(args, "max_length", 0)
+    if max_seq_length == 0: max_seq_length = getattr(args, "max_seq_length", 0)
+    if max_seq_length == 0: max_seq_length = getattr(self, "max_seq_length", 0)
+    if max_seq_length == 0: max_seq_length = getattr(self, "max_seq", 0)
+    dataset_text_field = getattr(args, "dataset_text_field", "text")
+    do_truncation = max_seq_length != 0
+    do_formatting_func = False
+    do_tokenize = True
+
+    # Get correct column names
+    column_names = set(next(iter(dataset)).keys())
+    used_column_names = ["input_ids"]
+    if "attention_mask" in column_names:
+        used_column_names.append("attention_mask")
+
+    # Check if already tokenized so skip
+    if "labels" in column_names:
+        # Most likely forgot data collator!
+        from transformers import DataCollatorForSeq2Seq
+        # Check if processing_class has a .pad, if not, use tokenizer.tokenizer
+        if is_vlm and not hasattr(tokenizer, "pad"):
+            raise RuntimeError(f"Unsloth: {processing_class.__class__} does not have .pad!")
+        self.data_collator = DataCollatorForSeq2Seq(tokenizer)
+        used_column_names.append("labels")
+        do_tokenize = False
+    elif "input_ids" in column_names:
+        # Skip dataset prep, and set data collator
+        from transformers import DataCollatorForLanguageModeling
+        # Check if processing_class has a .pad, if not, use tokenizer.tokenizer
+        if is_vlm and not hasattr(tokenizer, "pad"):
+            raise RuntimeError(f"Unsloth: {processing_class.__class__} does not have .pad!")
+        self.data_collator = DataCollatorForLanguageModeling(tokenizer, mlm = False)
+        do_tokenize = False
+    elif dataset_text_field not in column_names:
+        do_formatting_func = True
+        if formatting_func is None:
+            raise RuntimeError("Unsloth: You must specify a `formatting_func`")
+    pass
+
+    if do_tokenize:
+        # Check double BOS tokens
+        if do_formatting_func:
+            test_text = formatting_func(dataset[0])
+            if not isinstance(test_text, list):
+                raise ValueError(
+                    "Unsloth: The `formatting_func` should return a list of processed strings."
+                )
+            test_text = test_text[0]
+        else:
+            test_text = dataset[0][dataset_text_field]
+
+        # Get chat template
+        chat_template = getattr(processing_class, 'chat_template', '')
+        if chat_template == '' and is_vlm:
+            chat_template = getattr(tokenizer, 'chat_template', '')
+
+        # Get bos_token
+        add_special_tokens = True
+        bos_token_1 = getattr(processing_class, 'bos_token', None)
+        bos_token_2 = getattr(tokenizer, 'bos_token', None)
+        bos_token = bos_token_1 or bos_token_2
+
+        if bos_token is not None:
+            if test_text.startswith(bos_token) or bos_token in chat_template:
+                add_special_tokens = False
+                print("Unsloth: We found double BOS tokens - we shall remove one automatically.")
+        pass
+
+        # Create tokenize function
+        def _tokenize(example):
+            return tokenizer(
+                example[dataset_text_field] if not do_formatting_func else formatting_func(example),
+                truncation = do_truncation,
+                max_length = max_seq_length,
+                return_token_type_ids = False,
+                add_special_tokens = add_special_tokens,
+            )
+        pass
+
+        map_kwargs["num_proc"] = getattr(args, "dataset_num_proc", 2)
+        if use_desc: map_kwargs["desc"] = f'Unsloth: Tokenizing ["{dataset_text_field}"]'
+        dataset = dataset.map(_tokenize, batched = True, **map_kwargs)
+
+        # If VLM, switch data collator since .pad is needed!
+        if is_vlm and not hasattr(processing_class, "pad"):
+            from transformers import DataCollatorForLanguageModeling
+            data_collator = DataCollatorForLanguageModeling(tokenizer, mlm = False)
+            self.data_collator = data_collator
+        pass
+    pass
+    if packing:
+        print("Unsloth: Hugging Face's packing is currently buggy - we're disabling it for now!")
+        return dataset
+
+        if max_seq_length == 0:
+            raise ValueError("When packing is enabled, `max_seq_length` can't be `None`.")
+
+        if use_desc: map_kwargs["desc"] = f"Unsloth: Packing {dataset_name} dataset"
+        dataset = dataset.select_columns(used_column_names).map(
+            pack_examples,
+            batched = True,
+            fn_kwargs = {"seq_length": max_seq_length,},
+            **map_kwargs,
+        )
+    pass
+    return dataset
 pass
 
 # Unsloth Zoo - Utilities for Unsloth

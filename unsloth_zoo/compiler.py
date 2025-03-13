@@ -580,8 +580,14 @@ loss = loss_fct(shift_logits, shift_labels)
 
 cross_entropy_replacement_1 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
-__kwargs = locals().get('loss_kwargs', {}) or locals().get('kwargs', {})
-n_items = (__kwargs).get("num_items_in_batch", None) or (__kwargs).get("n_items", None)
+
+all_locals = locals()
+n_items = None
+for __kwargs in all_locals.values():
+    if type(__kwargs) is dict:
+        n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
+        break
+
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
@@ -697,6 +703,7 @@ if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOC
 cross_entropy_replacement_2 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
 n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
+
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
@@ -815,8 +822,14 @@ loss = loss_fct(shift_logits, shift_labels)
 
 cross_entropy_replacement_3 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
-__kwargs = locals().get('loss_kwargs', {}) or locals().get('kwargs', {})
-n_items = (__kwargs).get("num_items_in_batch", None) or (__kwargs).get("n_items", None)
+
+all_locals = locals()
+n_items = None
+for __kwargs in all_locals.values():
+    if type(__kwargs) is dict:
+        n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
+        break
+
 if labels is not None:
     def _compiled_loss_function(
         output_logits : torch.Tensor,
