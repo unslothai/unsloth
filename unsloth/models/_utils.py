@@ -71,6 +71,7 @@ from typing import Union, Optional, List, Any, Callable, Tuple
 from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
+import contextlib
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 
@@ -113,6 +114,11 @@ from unsloth_zoo.compiler import (
 from unsloth_zoo.training_utils import (
     prepare_model_for_training,
 )
+from unsloth_zoo.temporary_patches import (
+    TEMPORARY_PATCHES,
+)
+for temporary_patch in TEMPORARY_PATCHES:
+    temporary_patch()
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -981,7 +987,14 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
     pass
-    return self._old_compute_loss(model, inputs, *args, **kwargs)
+
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
+        autocaster = contextlib.nullcontext()
+    else:
+        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float32)
+    with autocaster:
+        outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
+    return outputs
 pass
 
 
