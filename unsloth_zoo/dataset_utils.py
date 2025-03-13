@@ -359,20 +359,19 @@ def sft_prepare_dataset(
         used_column_names.append("attention_mask")
 
     # Check if already tokenized so skip
+    from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
     if "labels" in column_names:
         # Most likely forgot data collator!
-        from transformers import DataCollatorForSeq2Seq
-        # Check if processing_class has a .pad, if not, use tokenizer.tokenizer
         if is_vlm and not hasattr(tokenizer, "pad"):
+            # Check if processing_class has a .pad, if not, use tokenizer.tokenizer
             raise RuntimeError(f"Unsloth: {processing_class.__class__} does not have .pad!")
         self.data_collator = DataCollatorForSeq2Seq(tokenizer)
         used_column_names.append("labels")
         do_tokenize = False
     elif "input_ids" in column_names:
         # Skip dataset prep, and set data collator
-        from transformers import DataCollatorForLanguageModeling
-        # Check if processing_class has a .pad, if not, use tokenizer.tokenizer
         if is_vlm and not hasattr(tokenizer, "pad"):
+            # Check if processing_class has a .pad, if not, use tokenizer.tokenizer
             raise RuntimeError(f"Unsloth: {processing_class.__class__} does not have .pad!")
         self.data_collator = DataCollatorForLanguageModeling(tokenizer, mlm = False)
         do_tokenize = False
@@ -428,7 +427,6 @@ def sft_prepare_dataset(
 
         # If VLM, switch data collator since .pad is needed!
         if is_vlm and not hasattr(processing_class, "pad"):
-            from transformers import DataCollatorForLanguageModeling
             data_collator = DataCollatorForLanguageModeling(tokenizer, mlm = False)
             self.data_collator = data_collator
         pass
