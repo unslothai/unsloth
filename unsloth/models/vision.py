@@ -245,22 +245,22 @@ class FastBaseModel:
         auto_processor = AutoProcessor if auto_model is AutoModelForVision2Seq else AutoTokenizer
         tokenizer = auto_processor.from_pretrained(
             tokenizer_name,
-            padding_side = "right",
+            padding_side = "left",
             token        = token,
         )
         # Add padding side as well
         if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "right"
+            tokenizer.tokenizer.padding_side = "left"
 
-        model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = post_patch_loss_function(model)
+        # model, tokenizer = patch_tokenizer(model, tokenizer)
+        # model = post_patch_loss_function(model)
         # Fix other stuff like BnB compute data types
-        model, tokenizer = patch_model_and_tokenizer(
-            model,
-            tokenizer,
-            downcast_rope = False,
-            fix_embeddings = False,
-        )
+        # model, tokenizer = patch_model_and_tokenizer(
+        #     model,
+        #     tokenizer,
+        #     downcast_rope = False,
+        #     fix_embeddings = False,
+        # )
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
