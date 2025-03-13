@@ -17,6 +17,7 @@
 __all__ = [
     "train_on_responses_only",
     "sft_prepare_dataset",
+    "standardize_data_formats",
 ]
 
 from typing import Union, Callable, Optional, List, Dict
@@ -318,6 +319,107 @@ def train_on_responses_only(
     from .training_utils import fix_zero_training_loss
     fix_zero_training_loss(None, tokenizer, trainer.train_dataset)
     return trainer
+pass
+
+
+def standardize_data_formats(
+    dataset,
+    tokenizer             = None,
+    aliases_for_system    = ["system",],
+    aliases_for_user      = ["user", "human", "input",],
+    aliases_for_assistant = ["gpt", "assistant", "output",],
+):
+    """
+    Standardizes ShareGPT and other formats to user/assistant Hugging Face format.
+    
+    Get aliases for the system, user and assistant roles.
+    These shall map to "system", "user" and "assistant" respectively.
+    
+    aliases_for_system    = ["system",],
+    aliases_for_user      = ["user", "human", "input",],
+    aliases_for_assistant = ["gpt", "assistant", "output",],
+    """
+    import collections
+    import itertools
+
+    # Check if vision tokenizer is used - if yes, we must use the format:
+    # Text : {"role" : role, "content" : "Happy"}
+    # VLMs : {"role" : role, "content" : [{"type" : "text", "text" : "Happy"}]}
+    is_vlm = False
+    if tokenizer is not None:
+        if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer"):
+            is_vlm = True
+
+    column_names = set(next(iter(dataset)).keys())
+    if "conversations" not in column_names:
+        return dataset
+
+    convos = dataset[:10]["conversations"]
+    uniques = collections.defaultdict(list)
+    for convo in convos:
+        for message in convo:
+            for key, value in message.items():
+                uniques[key].append(value)
+    pass
+
+    # Must be only 2 entries
+    assert(len(uniques.keys()) == 2)
+
+    keys = list(uniques.keys())
+    length_first  = len(set(uniques[keys[0]]))
+    length_second = len(set(uniques[keys[1]]))
+
+    if length_first < length_second:
+        # Role is assigned to the first element
+        role_key    = keys[0]
+        content_key = keys[1]
+    else:
+        role_key    = keys[1]
+        content_key = keys[0]
+    pass
+
+    # Check roles are in aliases
+    all_aliases = set(aliases_for_system + aliases_for_user + aliases_for_assistant)
+    roles = set(uniques[role_key])
+    leftover_aliases = (all_aliases | roles) - all_aliases
+    if len(leftover_aliases) != 0:
+        raise TypeError(
+            f"Unsloth: {list(leftover_aliases)} are not in aliases. Please update aliases."
+        )
+    pass
+
+    # Mapping for aliases
+    aliases_mapping = {}
+    for x in aliases_for_system:    aliases_mapping[x] = "system"
+    for x in aliases_for_user:      aliases_mapping[x] = "user"
+    for x in aliases_for_assistant: aliases_mapping[x] = "assistant"
+
+    def _standardize_dataset(examples):
+        convos = examples["conversations"]
+        all_convos = []
+        for convo in convos:
+            new_convo = []
+            for message in convo:
+                role = aliases_mapping[message[role_key]]
+                text = message[content_key]
+                if is_vlm: text = [ {"type" : "text", "text" : text} ]
+                x = {"role" : role, "content" : text}
+                new_convo.append(x)
+            pass
+            all_convos.append(new_convo)
+        pass
+        return { "conversations" : all_convos, }
+    pass
+
+    from multiprocessing import cpu_count
+    num_proc = cpu_count()
+
+    return dataset.map(
+        _standardize_dataset,
+        batched = True,
+        desc = "Unsloth: Standardizing formats",
+        num_proc = num_proc,
+    )
 pass
 
 
