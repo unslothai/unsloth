@@ -29,6 +29,7 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ._utils import __version__
+from ._utils import *
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
@@ -43,6 +44,18 @@ from unsloth_zoo.training_utils import prepare_model_for_training
 import types
 import functools
 import os
+import gc
+import math
+import functools
+from typing import Optional, Tuple, List, Union
+import re, os, inspect, math, sys
+import types
+try:
+    from huggingface_hub.utils import get_token
+except:
+    # Old HF Hub versions <= 0.0.25
+    from huggingface_hub.utils._token import get_token
+pass
 
 __all__ = [
     "FastBaseModel",
