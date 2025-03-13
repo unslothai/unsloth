@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.9"
+__version__ = "2025.3.10"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -25,6 +25,7 @@ __all__ = [
     "__version__",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
+    "USE_MODELSCOPE",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
@@ -70,6 +71,7 @@ from typing import Union, Optional, List, Any, Callable, Tuple
 from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
+import contextlib
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 
@@ -100,6 +102,7 @@ from unsloth_zoo.gradient_checkpointing import (
 from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
     fused_linear_cross_entropy,
+    _unsloth_get_batch_samples,
 )
 from unsloth_zoo.vision_utils import (
     process_vision_info,
@@ -108,6 +111,14 @@ from unsloth_zoo.compiler import (
     get_transformers_model_type,
     unsloth_compile_transformers as _unsloth_compile_transformers,
 )
+from unsloth_zoo.training_utils import (
+    prepare_model_for_training,
+)
+from unsloth_zoo.temporary_patches import (
+    TEMPORARY_PATCHES,
+)
+for temporary_patch in TEMPORARY_PATCHES:
+    temporary_patch()
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -508,67 +519,16 @@ def prepare_model_for_kbit_training(
     use_gradient_checkpointing : Optional = True,
     use_reentrant              : Optional[bool] = True,
 ) -> Any:
-    """
-    Calculates where to place the gradient checkpoints given n_layers.
-    We also freeze all other layers's gradients
-
-    Args:
-        model: Any LlamaModel with layers.
-        use_gradient_checkpointing (`bool`, *optional*):
-            Default enabled. Provides memory savings by not saving all activations,
-            but only some.
-        use_reentrant (`bool`, *optional*):
-            https://github.com/pytorch/pytorch/blob/main/torch/utils/checkpoint.py#L354
-            Optimal gradient checkpointing algorithm which will be the default in
-            future Pytorch versions.
-    """
-
-    # Freeze all parameters except LoRA
-    with torch.no_grad():
-        for name, param in model.named_parameters():
-            if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
-                param.requires_grad_(True)
-                # Also must be in float32!
-                if param.dtype != torch.float32:
-                    name = name.replace("base_model", "model", 1)
-                    layer_number = re.search(r"\.[\d]{1,}\.", name).group(0)
-                    name = name.replace(layer_number, f"[{layer_number[1:-1]}].")
-                    name = name.replace(".weight", "", 1)
-                    exec(f"{name}.to(torch.float32)")
-                pass
-            else:
-                param.requires_grad_(False)
-        pass
-    pass
-
-    # Gradient checkpointing!
-    if use_gradient_checkpointing == "unsloth":
-
-        # Saves VRAM!
-        original_model = model
-        while hasattr(original_model, "model"):
-            original_model._offloaded_gradient_checkpointing = True
-            original_model = original_model.model
-        pass
-        original_model._offloaded_gradient_checkpointing = True
-        
-        model.gradient_checkpointing_enable()
-
-    elif use_gradient_checkpointing == True:
-        model.gradient_checkpointing_enable()
-    pass
-
-    # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
-    if use_reentrant:
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-    pass
-
-    return model
+    return prepare_model_for_training(
+        model                      = model,
+        use_gradient_checkpointing = use_gradient_checkpointing,
+        use_reentrant              = use_reentrant,
+        full_finetuning            = False,
+        train_layernorms           = False,
+        train_embedding            = False,
+        train_lm_head              = False,
+        float32_mixed_precision    = True,
+    )
 pass
 
 # =============================================
@@ -999,44 +959,6 @@ def test_mask_creation():
 pass
 
 
-def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
-    batch_samples = []
-    num_items_in_batch = None
-
-    # Check if model allows **kwargs
-    model = self.model
-    f = model.base_model.model.forward if hasattr(model, "base_model") else model.forward
-    has_kwargs = tuple(inspect.signature(f).parameters.values())[-1].kind == inspect._VAR_KEYWORD
-
-    # Iterate to find all batches
-    for _ in range(num_batches):
-        try:
-            batch_samples += [next(epoch_iterator)]
-        except StopIteration:
-            break
-    pass
-
-    # Get num_items_in_batch
-    if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
-        try:
-            num_items_in_batch = sum(
-                [(x["labels"][..., 1:] != -100).sum() for x in batch_samples]
-            )
-            
-            if self.args.average_tokens_across_devices:
-                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
-
-            if torch.is_tensor(num_items_in_batch):
-                num_items_in_batch = num_items_in_batch.item()
-
-        except Exception as exception:
-            logger.warning_once(exception)
-    pass
-
-    return batch_samples, num_items_in_batch
-pass
-
-
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     num_items_in_batch = None
 
@@ -1053,14 +975,26 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     # Get gradient accumulation steps if possible
     if num_items_in_batch is None and \
         getattr(getattr(self, "args", self), "gradient_accumulation_steps", 1) != 1:
-        name = (model.base_model.model if hasattr(model, "base_model") else model).__class__.__name__
+
+        inner_model = model
+        if hasattr(inner_model, "base_model"): inner_model = inner_model. base_model
+        if hasattr(inner_model, "model"): inner_model = inner_model.model
+        name = inner_model.__class__.__name__
+
         logger.warning_once(
             f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"\
             "Using gradient accumulation will be very slightly less accurate.\n"\
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
     pass
-    return self._old_compute_loss(model, inputs, *args, **kwargs)
+
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
+        autocaster = contextlib.nullcontext()
+    else:
+        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float32)
+    with autocaster:
+        outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
+    return outputs
 pass
 
 
@@ -1208,6 +1142,7 @@ def unsloth_compile_transformers(
         revision          = revision,
         trust_remote_code = trust_remote_code,
     )
+    model_types = ["siglip"] + model_types
 
     if disable: return
 
@@ -1270,4 +1205,11 @@ for j, function in enumerate(functions):
         exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
         try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except: continue
+pass
+
+USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+if USE_MODELSCOPE:
+    if importlib.util.find_spec("modelscope") is None:
+        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
+    pass
 pass

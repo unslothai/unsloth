@@ -492,6 +492,18 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2-VL-72B-Instruct",
         "Qwen/Qwen2-VL-72B-Instruct",
     ),
+    "unsloth/Qwen2-VL-2B-bnb-4bit" : (
+        "unsloth/Qwen2-VL-2B",
+        "Qwen/Qwen2-VL-2B",
+    ),
+    "unsloth/Qwen2-VL-7B-bnb-4bit" : (
+        "unsloth/Qwen2-VL-7B",
+        "Qwen/Qwen2-VL-7B",
+    ),
+    "unsloth/Qwen2-VL-72B-bnb-4bit" : (
+        "unsloth/Qwen2-VL-72B",
+        "Qwen/Qwen2-VL-72B",
+    ),
     "unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Llama-3.2-11B-Vision-Instruct",
         "meta-llama/Llama-3.2-11B-Vision-Instruct",
@@ -625,6 +637,46 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/QwQ-32B",
         "Qwen/QwQ-32B",
         "unsloth/QwQ-32B-bnb-4bit",
+    ),
+    "unsloth/gemma-3-1b-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-1b-it",
+        "google/gemma-3-1b-it",
+        "unsloth/gemma-3-1b-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-4b-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-4b-it",
+        "google/gemma-3-4b-it",
+        "unsloth/gemma-3-4b-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-12b-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-12b-it",
+        "google/gemma-3-12b-it",
+        "unsloth/gemma-3-12b-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-27b-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-27b-it",
+        "google/gemma-3-27b-it",
+        "unsloth/gemma-3-27b-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-1b-pt-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-1b-pt",
+        "google/gemma-3-1b-pt",
+        "unsloth/gemma-3-1b-pt-bnb-4bit",
+    ),
+    "unsloth/gemma-3-4b-pt-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-4b-pt",
+        "google/gemma-3-4b-pt",
+        "unsloth/gemma-3-4b-pt-bnb-4bit",
+    ),
+    "unsloth/gemma-3-12b-pt-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-12b-pt",
+        "google/gemma-3-12b-pt",
+        "unsloth/gemma-3-12b-pt-bnb-4bit",
+    ),
+    "unsloth/gemma-3-27b-pt-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-27b-pt",
+        "google/gemma-3-27b-pt",
+        "unsloth/gemma-3-27b-pt-bnb-4bit",
     ),
 }
 
