@@ -189,7 +189,10 @@ class FastBaseModel:
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         bnb_compute_dtype = dtype
         for disable_name in FORCE_FLOAT32:
-            if disable_name.lower() == model_type_arch.lower() and dtype == torch.float16:
+            if (disable_name.lower() == model_type_arch.lower() or \
+                disable_name.lower() in model_name.lower()) and \
+                dtype == torch.float16:
+
                 print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 bnb_compute_dtype = torch.float32
@@ -199,7 +202,9 @@ class FastBaseModel:
         global FORCE_EAGER_ATTENTION
         attn_implementation = "sdpa"
         for disable_sdpa_name in FORCE_EAGER_ATTENTION:
-            if disable_sdpa_name.lower() == model_type_arch.lower():
+            if (disable_name.lower() == model_type_arch.lower() or \
+                disable_name.lower() in model_name.lower()):
+
                 print(f"Unsloth: {model_type_arch} does not support SDPA - switching to eager!")
                 attn_implementation = "eager"
                 break
