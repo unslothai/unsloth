@@ -326,6 +326,8 @@ def train_on_responses_only(
     num_proc = cpu_count()
 
     if hasattr(trainer, "train_dataset") and trainer.train_dataset is not None:
+        if not hasattr(trainer.train_dataset, "map"):
+            raise TypeError("Unsloth: train_on_responses_only does not work on lists!")
         trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batched = True, num_proc = num_proc)
     pass
     
@@ -333,8 +335,12 @@ def train_on_responses_only(
         # Eval datasets could be a dict!
         if type(trainer.eval_dataset) is dict:
             for key, value in trainer.eval_dataset.items():
+                if not hasattr(value, "map"):
+                    raise TypeError("Unsloth: train_on_responses_only does not work on lists!")
                 trainer.eval_dataset[key] = value.map(_train_on_responses_only, batched = True, num_proc = num_proc)
         else:
+            if not hasattr(trainer.eval_dataset, "map"):
+                raise TypeError("Unsloth: train_on_responses_only does not work on lists!")
             trainer.eval_dataset = trainer.eval_dataset.map(_train_on_responses_only, batched = True, num_proc = num_proc)
         pass
     pass
@@ -524,15 +530,15 @@ def sft_prepare_dataset(
                     "Unsloth: The `formatting_func` should return a list of processed strings."
                 )
             test_text = test_text[0]
-            print("test_text", test_text)
         else:
             test_text = dataset[0][dataset_text_field]
-            print("test_text", test_text)
 
         # Get chat template
         chat_template = getattr(processing_class, 'chat_template', '')
         if chat_template == '' and is_vlm:
             chat_template = getattr(tokenizer, 'chat_template', '')
+        if chat_template is None:
+            chat_template = ''
 
         # Get bos_token
         add_special_tokens = True
@@ -541,7 +547,6 @@ def sft_prepare_dataset(
         bos_token = bos_token_1 or bos_token_2
 
         if bos_token is not None:
-            print("test_text", test_text, "bos_token", bos_token, "chat_template", chat_template)
             if test_text.startswith(bos_token) or bos_token in chat_template:
                 add_special_tokens = False
                 print("Unsloth: We found double BOS tokens - we shall remove one automatically.")
