@@ -95,7 +95,7 @@ def prepare_model_for_training(
     train_layernorms           : Optional[bool] = False,
     train_embedding            : Optional[bool] = False,
     train_lm_head              : Optional[bool] = False,
-    float32_mixed_precision    : Optional[bool] = False,
+    float32_mixed_precision    : Optional[bool] = True,
 ) -> Any:
     # All Unsloth Zoo code licensed under LGPLv3
     assert(use_gradient_checkpointing in (True, False, "unsloth",))
