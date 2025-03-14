@@ -181,6 +181,37 @@ try:
 except:
     pass
 
+# Patch get_model_param_count to record correct 4bit / 8bit
+from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
+def get_model_param_count(model, trainable_only=False):
+    """
+    Calculate model's total param count. If trainable_only is True then count only those requiring grads
+    """
+    if is_deepspeed_zero3_enabled():
+        def numel(p):
+            return p.ds_numel if hasattr(p, "ds_numel") else p.numel()
+    else:
+        def numel(p):
+            return p.numel()
+    s = sum(numel(p) for p in model.parameters() if not trainable_only or p.requires_grad)
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        quantization_config = model.config.quantization_config
+        if "load_in_4bit" in quantization_config:
+            load_in_4bit = quantization_config["load_in_4bit"]
+        else:
+            load_in_4bit = False
+        if "load_in_8bit" in quantization_config:
+            load_in_8bit = quantization_config["load_in_8bit"]
+        else:
+            load_in_8bit = False
+        if load_in_4bit:
+            s *= 4.5
+        elif load_in_8bit:
+            s *= 2.0
+    return s
+pass
+import transformers.trainer_pt_utils
+transformers.trainer_pt_utils.get_model_param_count = get_model_param_count
 # =============================================
 
 # =============================================
