@@ -294,7 +294,8 @@ class FastBaseModel:
         kwargs.pop("attn_implementation", None); # No need since we auto call it
 
         # Cannot be None, since HF now checks for the config
-        if load_in_4bit: kwargs["quantization_config"] = bnb_config
+        if load_in_4bit or load_in_8bit: 
+            kwargs["quantization_config"] = bnb_config
 
         model = auto_model.from_pretrained(
             model_name,
