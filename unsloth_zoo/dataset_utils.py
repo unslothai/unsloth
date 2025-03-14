@@ -224,14 +224,30 @@ def train_on_responses_only(
     len_Q_must = len(Q_must)
     Q_left_reversed = Q_left[::-1]
     Q_right_forward = Q_right
+    torch_Tensor = torch.Tensor
+    torch_int64  = torch.int64
 
     def _train_on_responses_only(examples):
         input_ids_ = examples["input_ids"]
-        all_labels = []
+        use_tensors = False
+        if type(input_ids_) is torch_Tensor:
+            use_tensors = True
+            input_ids_ = input_ids_.tolist()
+        if "labels" in examples:
+            labels_ = examples["labels"].tolist()
+            assert(len(labels_) == len(input_ids_))
+        else:
+            labels_ = [None]*len(input_ids_)
 
-        for input_ids in input_ids_:
+        all_labels = []
+        for input_ids, old_labels in zip(input_ids_, labels_):
             n = len(input_ids)
             labels = [-100] * n
+            
+            use_old_labels = False
+            if old_labels is not None:
+                use_old_labels = True
+                assert(n == len(old_labels))
             n_minus_1 = n - 1
             j = 0
             while j < n:
@@ -285,9 +301,14 @@ def train_on_responses_only(
                                 user_j = n
                                 k = n
                             pass
-                            # Now copy input_ids to labels
-                            labels[assistant_k : user_j] = input_ids[assistant_k : user_j]
-                            # print(assistant_j, assistant_k, user_j, user_k)
+
+                            if not use_old_labels:
+                                # Now copy input_ids to labels
+                                labels[assistant_k : user_j] = input_ids [assistant_k : user_j]
+                                # print(assistant_j, assistant_k, user_j, user_k)
+                            else:
+                                # Copy over from old labels!
+                                labels[assistant_k : user_j] = old_labels[assistant_k : user_j]
                             break
                         pass
                         j += 1
@@ -295,7 +316,7 @@ def train_on_responses_only(
                 pass
                 j += 1
             pass
-            all_labels.append(labels)
+            all_labels.append(labels if use_tensors else torch.tensor(labels, dtype = torch_int64))
         pass
         return { "labels" : all_labels }
     pass

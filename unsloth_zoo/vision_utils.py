@@ -396,10 +396,6 @@ class UnslothVisionDataCollator:
         )
         batch.pop("token_type_ids", None)
 
-        # Check double BOS tokens!
-        if "input_ids" in batch:
-            input_ids = batch["input_ids"]
-
         # Pixtral accepts multiple images, so we have to cast it individually
         pixel_values = batch["pixel_values"]
         if type(pixel_values) is list:
