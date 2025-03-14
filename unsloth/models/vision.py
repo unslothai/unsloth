@@ -283,8 +283,9 @@ class FastBaseModel:
             tokens = ["bos_token", "eos_toke", "pad_toke", "unk_toke"]
             for token in tokens:
                 if hasattr(__tokenizer, token) and not hasattr(tokenizer, token):
-                    exec(f"tokenizer.{token} = __tokenizer.{token}")
-                    exec(f"tokenizer.{token}_id = __tokenizer.{token}_id")
+                    _args = {"__tokenizer" : __tokenizer, "tokenizer" : tokenizer}
+                    exec(f"tokenizer.{token} = __tokenizer.{token}", _args)
+                    exec(f"tokenizer.{token}_id = __tokenizer.{token}_id", _args)
                 pass
             pass
         pass
