@@ -158,6 +158,7 @@ class FastBaseModel:
         dtype             = None,
         load_in_4bit      = True,
         load_in_8bit      = False,
+        load_in_16bit     = False,
         full_finetuning   = False,
         token             = None,
         device_map        = "sequential",
@@ -240,6 +241,11 @@ class FastBaseModel:
                 break
         pass
 
+        # Check for conflicting loading options
+        loading_options = sum([load_in_4bit, load_in_8bit, load_in_16bit, full_finetuning])
+        if loading_options > 1:
+            raise RuntimeError("Unsloth: Can only use one of load_in_4bit, load_in_8bit, load_in_16bit, or full_finetuning!")
+        
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
@@ -247,8 +253,6 @@ class FastBaseModel:
             load_in_8bit = False
         pass
 
-        if load_in_4bit and load_in_8bit:
-            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit, not both!")
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit              = True,
@@ -262,8 +266,11 @@ class FastBaseModel:
                 load_in_8bit              = True,
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
-        elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
+        elif load_in_16bit:
+            print("Unsloth: Loading model in 16-bit precision.")
+            # No bnb_config needed for 16-bit, we'll use torch_dtype directly
+        elif not load_in_4bit and not load_in_8bit and not load_in_16bit and not full_finetuning:
+            print("Unsloth: LoRA, QLoRA, 16-bit, and full finetuning all not selected. Switching to QLoRA.")
             load_in_4bit = True
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit              = True,
