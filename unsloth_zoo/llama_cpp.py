@@ -655,12 +655,12 @@ def convert_to_gguf(
     # Check if arch is supported
     assert("architectures") in config_file
     arch = config_file["architectures"][0]
-    if arch not in supported_types:
-        raise NotImplementedError(
-            f"Unsloth: llama.cpp GGUF conversion does not yet support "\
-            f"converting model types of `{arch}`."
-        )
-    pass
+    # if arch not in supported_types:
+    #     raise NotImplementedError(
+    #         f"Unsloth: llama.cpp GGUF conversion does not yet support "\
+    #         f"converting model types of `{arch}`."
+    #     )
+    # pass
 
     # Get arguments
     if output_filename is None:
