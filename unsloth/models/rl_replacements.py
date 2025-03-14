@@ -232,10 +232,12 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
-grpo_compute_loss     = RL_REPLACEMENTS["grpo_compute_loss"]
-UnslothEfficientGRPO  = RL_REPLACEMENTS["UnslothEfficientGRPO"]
-grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
+grpo_compute_loss      = RL_REPLACEMENTS["grpo_compute_loss"]
+grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
+UnslothEfficientGRPO   = RL_REPLACEMENTS["UnslothEfficientGRPO"]
+grpo_accumulated_loss  = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss_slow))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 
@@ -270,7 +272,7 @@ def grpo_trainer_compute_loss(function_name, function):
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         input_ids = input_ids[:, -logits_to_keep:]
         if per_token_logps is not None:
-            loss, completion_length, mean_kl = grpo_compute_loss_compiled(
+            loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
             )
         else:
