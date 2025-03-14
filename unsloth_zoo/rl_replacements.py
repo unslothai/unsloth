@@ -90,10 +90,11 @@ def grpo_compute_loss(old_logits, new_logits, input_ids, mask, beta, advantages)
     pass
     return loss, completion_length, mean_kl
 pass
-# grpo_compute_loss = torch.compile(_grpo_compute_loss,
-#     dynamic = True, fullgraph = True, options = torch_compile_options,
-# )
+grpo_compute_loss_compiled = torch.compile(_grpo_compute_loss,
+    dynamic = True, fullgraph = True, options = torch_compile_options,
+)
 RL_REPLACEMENTS["grpo_compute_loss"] = grpo_compute_loss
+RL_REPLACEMENTS["grpo_compute_loss_compiled"] = grpo_compute_loss_compiled
 
 
 # Unsloth's memory efficient GRPO implementation
@@ -135,8 +136,7 @@ class UnslothEfficientGRPO(torch.autograd.Function):
 
         accumulate_chunk = torch.compile(
             accumulate_chunk,
-            dynamic = True,
-            fullgraph = False,
+            fullgraph = True,
             options = torch_compile_options,
         )
 
