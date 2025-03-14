@@ -53,6 +53,18 @@ def patch_gemma3_processor():
             **kwargs,
         )
 
+        batched_images = None
+        if images is not None:
+            try:
+                batched_images = make_nested_list_of_images(images)
+            except ValueError as e:
+                # Maybe it's texts and not images? Gemma3 defaults to images
+                if text is None:
+                    text = images
+                    images = None
+                else:
+                    raise ValueError(e)
+        pass
         if isinstance(text, str):
             text = [text]
         elif not isinstance(text, list) and not isinstance(text[0], str):
@@ -60,7 +72,7 @@ def patch_gemma3_processor():
 
         image_inputs = {}
         if images is not None:
-            batched_images = make_nested_list_of_images(images)
+            # batched_images = make_nested_list_of_images(images)
             image_inputs = self.image_processor(batched_images, **output_kwargs["images_kwargs"])
 
             # Create empty text to be replaced with placeholders
