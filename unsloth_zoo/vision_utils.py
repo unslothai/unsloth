@@ -356,21 +356,23 @@ class UnslothVisionDataCollator:
             texts.append(message)
             # Dataset with 2 columns messages / images
             if "images" in example:
-                image = example["images"][0]
+                image = [example["images"][0]]
             else:
                 image, video = process_vision_info(messages)
-            print(image)
-
+                if image is None: image = []
+            pass
             # Resize images
             image_size = self.image_size
+
             if image_size is not None:
-                if type(image_size) is tuple:
-                    image = image.resize((image_size, hsize), LANCZOS)
-                elif image.size[0] > image_size:
-                    if hasattr(image, "resize"):
-                        wpercent = image_size / image.size[0]
-                        hsize = int(image.size[1] * wpercent)
-                        image = image.resize((image_size, hsize), LANCZOS)
+                for i, img in image:
+                    if type(image_size) is tuple:
+                        image[i] = img.resize(image_size, LANCZOS)
+                    elif img.size[0] > image_size:
+                        if hasattr(img, "resize"):
+                            wpercent = image_size / img.size[0]
+                            hsize = int(img.size[1] * wpercent)
+                            image[i] = img.resize((image_size, hsize), LANCZOS)
             pass
             images.append(image)
         pass
