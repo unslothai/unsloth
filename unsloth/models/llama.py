@@ -2659,7 +2659,7 @@ class FastLlamaModel:
         pass
 
         # Patch for fast inference
-        vllm_engine = getattr(model, "vllm_engine")
+        vllm_engine = getattr(model, "vllm_engine", None)
         if vllm_engine is not None:
             model.vllm_engine = vllm_engine
             model.fast_generate = vllm_fast_generate
