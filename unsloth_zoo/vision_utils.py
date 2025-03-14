@@ -254,13 +254,14 @@ pass
 
 import PIL.Image
 LANCZOS = PIL.Image.Resampling.LANCZOS
+from .dataset_utils import train_on_responses_only as _train_on_responses_only
 
 class UnslothVisionDataCollator:
     # All Unsloth Zoo code licensed under LGPLv3
     __slots__ = \
         "padding_token_ids", "dtype", "ignore_index", \
         "processor", "formatting_func", "image_size", \
-        "max_seq_length", "truncation"
+        "max_seq_length", "truncation", "train_on_responses_only",
 
     def __init__(
         self,
@@ -272,6 +273,10 @@ class UnslothVisionDataCollator:
                         # the model's default image_size or "max"
                         # for no resizing and leave image intact
         ignore_index = -100,
+        train_on_responses_only = False,
+        instruction_part = None,
+        response_part    = None,
+        force_match      = True, # Match newlines as well!
     ):
         if not hasattr(processor, "image_processor"):
             raise TypeError("Unsloth: UnslothVisionDataCollator is only for image models!")
@@ -307,11 +312,26 @@ class UnslothVisionDataCollator:
                 "For example (224, 224) or just 224. The default is 'min' which auto resizes images!"
             )
         pass
+
         # Sequence lengths
         if max_seq_length is None:
             if hasattr(model, "max_seq_length"): max_seq_length = model.max_seq_length
         self.max_seq_length = max(max_seq_length, 0) if type(max_seq_length) is int else None
         self.truncation = self.max_seq_length is not None
+
+        # Train on reponses if provided
+        if train_on_responses_only:
+            assert(type(instruction_part) is str and type(response_part) is str)
+            self.train_on_responses_only = _train_on_responses_only(
+                None,
+                instruction_part = instruction_part,
+                response_part    = response_part,
+                force_match      = force_match,
+                tokenizer        = processor,
+                return_function  = True,
+            )
+        else:
+            self.train_on_responses_only = None
         return
     pass
 
@@ -415,6 +435,9 @@ class UnslothVisionDataCollator:
         labels = batch["input_ids"].clone()
         labels[torch.isin(labels, self.padding_token_ids)] = self.ignore_index
         batch["labels"] = labels
+
+        if self.train_on_responses_only:
+            batch["labels"] = self.train_on_responses_only(batch)["labels"]
         return batch
     pass
 pass

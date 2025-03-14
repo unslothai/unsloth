@@ -185,14 +185,17 @@ def train_on_responses_only(
     trainer,
     instruction_part = None,
     response_part    = None,
-    force_match      = True, # Match newlines as well!
+    force_match      = True,  # Match newlines as well!
+    tokenizer        = None,  # Optional
+    return_function  = False, # Useful for iterating over lists
 ):
     """
     Trains only on responses and not on the instruction by masking out
     the labels with -100 for the instruction part.
     """
     # All Unsloth Zoo code licensed under LGPLv3
-    tokenizer = trainer.processing_class if hasattr(trainer, "processing_class") else trainer.tokenizer
+    if tokenizer is None and trainer is not None:
+        tokenizer = trainer.processing_class if hasattr(trainer, "processing_class") else trainer.tokenizer
     # Get non vision tokenizer
     if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer"):
         tokenizer = tokenizer.tokenizer
@@ -321,6 +324,8 @@ def train_on_responses_only(
         pass
         return { "labels" : all_labels }
     pass
+    if return_function:
+        return _train_on_responses_only
 
     from multiprocessing import cpu_count
     num_proc = cpu_count()
