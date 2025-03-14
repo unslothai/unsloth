@@ -63,6 +63,7 @@ from transformers.modeling_utils import PushToHubMixin
 import json
 from pathlib import Path
 import tempfile
+from peft import PeftModelForCausalLM
 
 
 def create_huggingface_repo(
@@ -490,18 +491,18 @@ pass
 
 
 def _remove_quantization_config(config_path: Path):
-    assert config_path.exists(), "Given config does not exist"
+    assert (config_path.exists(), "Given config does not exist")
     with open(config_path, "r") as f:
         config = json.load(f)
     if "quantization_config" in config:
         # Remove the quantization_config field
         del config["quantization_config"]
     else:
-        # No-op
         return
     # Overwrite the config file
     with open(config_path, "w") as f:
         json.dump(config, f, indent = 4)
+    pass
 pass
 
 
@@ -520,7 +521,8 @@ def merge_and_overwrite_lora(
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Directly downloads 16bit original weights and merges LoRA
-    inner_model = model.base_model.model if hasattr(model, "base_model") else model
+    inner_model = model.base_model.model if isinstance(model, "PeftModelForCausalLM") else model
+    inner_model = inner_model.base_model if hasattr(model, "base_model") else inner_model
 
     try:
         model_name = get_model_name(model.config._name_or_path, load_in_4bit = False)
@@ -763,7 +765,8 @@ def merge_and_dequantize_lora(
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Dequantizes model to 16bit weights and merges LoRA
-    inner_model = model.base_model.model if hasattr(model, "base_model") else model
+    inner_model = model.base_model.model if isinstance(model, "PeftModelForCausalLM") else model
+    inner_model = inner_model.base_model if hasattr(model, "base_model") else inner_model
 
     (
         username, repo_id, hf_api, token,
