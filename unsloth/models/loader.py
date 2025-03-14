@@ -405,7 +405,6 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model.enable_input_require_grads()
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -498,10 +497,22 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
         elif "qwen2.5" in model_name.lower() and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
-        elif "aya-vision" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
-            raise RuntimeError("Unsloth: Aya Vision only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "aya-vision" in model_name.lower():
+            # Disable compiling for now - errors out!
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Aya Vision only works on transformers >= 4.50.0." + NIGHTLY)
         elif "gemma-3" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "c4ai-command-a-03-2025" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
+            raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "granite-vision" in model_name.lower():
+            # Disable compiling for now - errors out!
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Granite Vision only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "olmo-2" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
+            raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
         pass
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -668,7 +679,7 @@ class FastModel(FastBaseModel):
             use_gradient_checkpointing = use_gradient_checkpointing,
             *args, **kwargs,
         )
-        
+
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
@@ -703,7 +714,6 @@ class FastModel(FastBaseModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model.enable_input_require_grads()
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,

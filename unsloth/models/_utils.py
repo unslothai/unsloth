@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.10"
+__version__ = "2025.3.11"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -72,6 +72,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import contextlib
+import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 
@@ -181,6 +182,34 @@ try:
 except:
     pass
 
+# Patch get_model_param_count to record correct 4bit / 8bit
+from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
+def get_model_param_count(model, trainable_only = False):
+    """
+    Calculate model's total param count. If trainable_only is True then count only those requiring grads
+    """
+    if is_deepspeed_zero3_enabled():
+        def numel(p):
+            return p.ds_numel if hasattr(p, "ds_numel") else p.numel()
+    else:
+        def numel(p):
+            return p.numel()
+    s = sum(numel(p) for p in model.parameters() if not trainable_only or p.requires_grad)
+    if (not trainable_only) and \
+        hasattr(model, "config") and \
+        hasattr(model.config, "quantization_config"):
+
+        billions = re.findall(r"([0-9]{1,})(?:b|B)", model.config.name_or_path)
+        if len(billions) != 0:
+            billions = int(billions[0])
+            s = 1_000_000_000 * billions
+    pass
+    return s
+pass
+import transformers.trainer_pt_utils
+transformers.trainer_pt_utils.get_model_param_count = get_model_param_count
+import transformers.trainer
+transformers.trainer.get_model_param_count = get_model_param_count
 # =============================================
 
 # =============================================
