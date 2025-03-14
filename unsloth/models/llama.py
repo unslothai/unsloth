@@ -1663,6 +1663,10 @@ class FastLlamaModel:
             if platform.system().lower() == 'windows':
                 print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
                 fast_inference = False
+            major_version, minor_version = torch.cuda.get_device_capability()
+            if major_version < 7:
+                print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+                fast_inference = False
         pass
 
         if token is None: token = get_token()
@@ -1786,6 +1790,8 @@ class FastLlamaModel:
                 attn_implementation     = "eager",
                 **kwargs,
             )
+            model.fast_generate = model.generate
+            model.fast_generate_batches = None
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
@@ -1804,6 +1810,7 @@ class FastLlamaModel:
                 enable_lora            = True,
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
+                use_bitsandbytes       = load_in_4bit,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -2649,6 +2656,19 @@ class FastLlamaModel:
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
+        pass
+
+        # Patch for fast inference
+        vllm_engine = getattr(model.model, "vllm_engine", None)
+        if vllm_engine is not None:
+            model.vllm_engine = model.model.vllm_engine
+            model.fast_generate = model.model.fast_generate
+            model.fast_generate_batches = model.model.fast_generate_batches
+
+            # Also saving and loading LoRA
+            from unsloth_zoo.vllm_utils import save_lora, load_lora
+            model.save_lora = functools.partial(save_lora, model)
+            model.load_lora = functools.partial(load_lora, model)
         pass
 
         # Add for_inference and for_training
