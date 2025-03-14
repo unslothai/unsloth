@@ -62,6 +62,16 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/llama-2-7b-chat",
         "meta-llama/Llama-2-7b-chat-hf",
     ),
+    "unsloth/Mixtral-8x7B-v0.1-unsloth-bnb-4bit" : (
+        "unsloth/Mixtral-8x7B-v0.1",
+        "mistralai/Mixtral-8x7B-v0.1",
+        "unsloth/Mixtral-8x7B-v0.1-bnb-4bit",
+    ),
+    "unsloth/Mixtral-8x7B-Instruct-v0.1-unsloth-bnb-4bit" : (
+        "unsloth/Mixtral-8x7B-Instruct-v0.1",
+        "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit",
+    ),
     "unsloth/codellama-7b-bnb-4bit" : (
         "unsloth/codellama-7b",
         "codellama/CodeLlama-7b-hf",
