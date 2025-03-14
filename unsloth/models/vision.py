@@ -125,6 +125,7 @@ def unsloth_base_fast_generate(
     else:
         kwargs.pop("logits_to_keep", None)
         kwargs.pop("num_logits_to_keep", None)
+    kwargs["logits_to_keep"] = 0
 
     # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
