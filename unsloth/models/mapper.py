@@ -678,6 +678,36 @@ __INT_TO_FLOAT_MAPPER = \
         "google/gemma-3-27b-pt",
         "unsloth/gemma-3-27b-pt-bnb-4bit",
     ),
+    "unsloth/reka-flash-3-unsloth-bnb-4bit" : (
+        "unsloth/reka-flash-3",
+        "RekaAI/reka-flash-3",
+        "unsloth/reka-flash-3-bnb-4bit",
+    ),
+    "unsloth/c4ai-command-a-03-2025-unsloth-bnb-4bit" : (
+        "unsloth/c4ai-command-a-03-2025",
+        "CohereForAI/c4ai-command-a-03-2025",
+        "unsloth/c4ai-command-a-03-2025-bnb-4bit",
+    ),
+    "unsloth/aya-vision-32b-unsloth-bnb-4bit" : (
+        "unsloth/aya-vision-32b",
+        "CohereForAI/aya-vision-32b",
+        "unsloth/aya-vision-32b-bnb-4bit",
+    ),
+    "unsloth/aya-vision-8b-unsloth-bnb-4bit" : (
+        "unsloth/aya-vision-8b",
+        "CohereForAI/aya-vision-8b",
+        "unsloth/aya-vision-8b-bnb-4bit",
+    ),
+    "unsloth/granite-vision-3.2-2b-unsloth-bnb-4bit" : (
+        "unsloth/granite-vision-3.2-2b",
+        "ibm-granite/granite-vision-3.2-2b",
+        "unsloth/granite-vision-3.2-2b-bnb-4bit",
+    ),
+    "unsloth/OLMo-2-0325-32B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/OLMo-2-0325-32B-Instruct",
+        "allenai/OLMo-2-0325-32B-Instruct",
+        "unsloth/OLMo-2-0325-32B-Instruct-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
