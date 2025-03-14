@@ -2659,11 +2659,11 @@ class FastLlamaModel:
         pass
 
         # Patch for fast inference
-        vllm_engine = getattr(model, "vllm_engine", None)
+        vllm_engine = getattr(model.model, "vllm_engine", None)
         if vllm_engine is not None:
-            model.vllm_engine = vllm_engine
-            model.fast_generate = vllm_fast_generate
-            model.fast_generate_batches = vllm_fast_generate_batches
+            model.vllm_engine = model.model.vllm_engine
+            model.fast_generate = model.model.vllm_fast_generate
+            model.fast_generate_batches = model.model.vllm_fast_generate_batches
 
             # Also saving and loading LoRA
             from unsloth_zoo.vllm_utils import save_lora, load_lora
