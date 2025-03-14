@@ -405,7 +405,6 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model.enable_input_require_grads()
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -668,7 +667,7 @@ class FastModel(FastBaseModel):
             use_gradient_checkpointing = use_gradient_checkpointing,
             *args, **kwargs,
         )
-        
+
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
@@ -703,7 +702,6 @@ class FastModel(FastBaseModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model.enable_input_require_grads()
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
