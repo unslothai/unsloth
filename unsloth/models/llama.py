@@ -1891,7 +1891,7 @@ class FastLlamaModel:
             torch.cuda.empty_cache()"""
         multiplier = \
         "4.5 if getattr(model.config, 'quantization_config', {'load_in_4bit' : False})['load_in_4bit'] else "\
-    "8.0 if getattr(model.config, 'quantization_config', {'load_in_8bit' : False})['load_in_8bit'] else 1.0"
+        "8.0 if getattr(model.config, 'quantization_config', {'load_in_8bit' : False})['load_in_8bit'] else 1.0"
         debug_info = debug_info.replace("multiplier__", "(" + multiplier + ")")
         debug_info = debug_info.replace("P__", "get_model_param_count")
 
