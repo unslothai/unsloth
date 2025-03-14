@@ -221,7 +221,7 @@ def fast_linear_cross_entropy(
 pass
 
 global ALLOWED_NUM_ITEMS_IN_BATCH
-ALLOWED_NUM_ITEMS_IN_BATCH = set()
+ALLOWED_NUM_ITEMS_IN_BATCH = dict()
 
 def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
     # All Unsloth Zoo code licensed under LGPLv3
