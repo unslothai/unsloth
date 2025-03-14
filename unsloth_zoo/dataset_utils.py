@@ -541,7 +541,7 @@ def sft_prepare_dataset(
         bos_token = bos_token_1 or bos_token_2
 
         if bos_token is not None:
-            print("test_text", test_text)
+            print("test_text", test_text, "bos_token", bos_token, "chat_template", chat_template)
             if test_text.startswith(bos_token) or bos_token in chat_template:
                 add_special_tokens = False
                 print("Unsloth: We found double BOS tokens - we shall remove one automatically.")
