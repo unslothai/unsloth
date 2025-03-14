@@ -355,19 +355,26 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "data_collator" in call_args and "train_dataset" in call_args:
         data_collator_check = \
         "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"\
-        "if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
-        "    data_collator = DataCollatorForLanguageModeling(__tokenizer, mlm = False)\n"\
-        "elif isinstance(data_collator, DataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
-        "    data_collator = DataCollatorForSeq2Seq(__tokenizer)\n"
+        "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"\
+        "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
+        "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
+        "        data_collator = DataCollatorForLanguageModeling(__tokenizer, mlm = False)\n"\
+        "    elif isinstance(data_collator, DataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
+        "        data_collator = DataCollatorForSeq2Seq(__tokenizer)\n"\
+        "else:\n"\
+        "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"\
+        "    if hasattr(args, 'dataset_text_field'): args.dataset_text_field = ''\n"\
+        "    if hasattr(args, 'dataset_kwargs'): args.dataset_kwargs = {'skip_prepare_dataset': True}\n"
         extra_args += data_collator_check
 
         # Also check if .pad exists -> if not, and is VLM, then change it!
         pad_check = \
-        "if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"\
-        "    if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
-        "        data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
-        "    else:\n"\
-        "        data_collator = DataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False)\n"
+        "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
+        "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"\
+        "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
+        "            data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
+        "        else:\n"\
+        "            data_collator = DataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False)\n"
         extra_args += pad_check
     pass
 
