@@ -75,6 +75,8 @@ FORCE_EAGER_ATTENTION = [
     "pixtral",    # Pixtral SDPA not implemented
 ]
 
+global NUM_LOGITS_TO_KEEP
+NUM_LOGITS_TO_KEEP = dict()
 
 def unsloth_base_fast_generate(
     self,
@@ -85,18 +87,39 @@ def unsloth_base_fast_generate(
     dtype = _get_dtype(self.config.torch_dtype)
 
     # Check if VLM
-    is_vlm = (
+    is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in self.config.architectures
     )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
+    arch = self.config.architectures[0]
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
 
     # VLMs do not allow logits_to_keep
     if not is_vlm:
-        kwargs["logits_to_keep"] = 1
+        global NUM_LOGITS_TO_KEEP
+        if arch not in NUM_LOGITS_TO_KEEP:
+            m = self
+            while hasattr(m, "model"):
+                if hasattr(m, "forward"):
+                    keys = inspect.signature(m.forward).parameters.keys()
+                    if "num_logits_to_keep" in keys:
+                        NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
+                        break
+                    elif "logits_to_keep" in keys:
+                        NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
+                        break
+                m = m.model
+            pass
+            if arch not in NUM_LOGITS_TO_KEEP:
+                NUM_LOGITS_TO_KEEP[arch] = None
+            pass
+        pass
+        key = NUM_LOGITS_TO_KEEP[arch]
+        if key is not None:
+            kwargs[key] = 1
     else:
         kwargs.pop("logits_to_keep", None)
         kwargs.pop("num_logits_to_keep", None)
@@ -111,6 +134,8 @@ def unsloth_base_fast_generate(
     # Get pixel values for VLMs
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
+
+    print(kwargs)
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1": dtype = torch.float32
