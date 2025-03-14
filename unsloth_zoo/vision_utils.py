@@ -385,19 +385,13 @@ class UnslothVisionDataCollator:
             # [TODO] Truncating to max_seq_length does NOT work for VLMs
             # truncation = True,
             return_tensors = "pt",
-            add_special_tokens = False,
+            add_special_tokens = False, # Stop double BOS
         )
         batch.pop("token_type_ids", None)
 
         # Check double BOS tokens!
         if "input_ids" in batch:
             input_ids = batch["input_ids"]
-
-        if bos_token is not None:
-            if test_text.startswith(bos_token) or bos_token in chat_template:
-                add_special_tokens = False
-                print("Unsloth: We found double BOS tokens - we shall remove one automatically.")
-        pass
 
         # Pixtral accepts multiple images, so we have to cast it individually
         pixel_values = batch["pixel_values"]
