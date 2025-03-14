@@ -990,7 +990,7 @@ def load_vllm(
         device                 = device,
     )
     good_keys = inspect.signature(EngineArgs).parameters.keys()
-    old_keys = engine_args.keys().copy()
+    old_keys = engine_args.keys()
     for key in old_keys:
         if key not in good_keys:
             del engine_args[key]
