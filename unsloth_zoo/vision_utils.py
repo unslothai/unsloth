@@ -313,12 +313,17 @@ class UnslothVisionDataCollator:
         # The issue is batch = self.processor( forces tensors to be returned and not None.
         texts  = []
         images = []
-        
+
         if self.formatting_func is not None:
             examples = [self.formatting_func(example) for example in examples]
-        
-        for example in examples:    
-            messages = example["messages"]
+
+        for example in examples:
+            if "messages" in example:
+                messages = example["messages"]
+            elif "conversations" in example:
+                messages = example["conversations"]
+            else:
+                messages = example
 
             # Check if data format is correct for VLMs!
             if len(messages) != 0:
@@ -343,18 +348,18 @@ class UnslothVisionDataCollator:
                     )
                 pass
             pass
-            print(messages)
             message = self.processor.apply_chat_template(
                 messages,
                 tokenize = False,
                 add_generation_prompt = False,
             )
+            texts.append(message)
             # Dataset with 2 columns messages / images
             if "images" in example:
                 image = example["images"][0]
             else:
                 image, video = process_vision_info(messages)
-            texts .append(message)
+            print(image)
 
             # Resize images
             image_size = self.image_size
@@ -380,7 +385,7 @@ class UnslothVisionDataCollator:
             return_tensors = "pt",
         )
         batch.pop("token_type_ids", None)
-        
+
         # Pixtral accepts multiple images, so we have to cast it individually
         pixel_values = batch["pixel_values"]
         if type(pixel_values) is list:
