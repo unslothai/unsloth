@@ -589,7 +589,6 @@ for __kwargs in all_locals.values():
         n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
         break
 requires_grad_ = self.lm_head.weight.requires_grad
-requires_grad_ = False
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None and not requires_grad_):
@@ -707,7 +706,7 @@ cross_entropy_replacement_2 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
 n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
 requires_grad_ = self.lm_head.weight.requires_grad
-requires_grad_ = False
+
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None) and not requires_grad_:
