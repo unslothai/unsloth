@@ -109,6 +109,7 @@ else:
     UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
 pass
 from typing import List, Dict, Tuple, Optional, Any, Callable
+import math
 """
 
 _disabled_sdpa_code = f"""{_license_header}
@@ -587,10 +588,10 @@ for __kwargs in all_locals.values():
     if type(__kwargs) is dict:
         n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
         break
-
+requires_grad_ = self.lm_head.weight.requires_grad
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
-elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
+elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None and not requires_grad_):
     loss = fast_linear_cross_entropy(
         hidden_states        = hidden_states\\1,
         lm_head              = self.lm_head,
@@ -600,7 +601,7 @@ elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
         logit_scale_multiply = None if (\\2) == () else (\\2),
         logit_scale_divide   = None if (\\3) == () else (\\3),
     )
-elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None and not requires_grad_:
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states\\1,
         lm_weight          = self.lm_head.weight,
@@ -639,7 +640,8 @@ else:
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
 
-        n_chunks = 4 if vocab_size <= 131072 else 8
+        n_chunks = int(math.ceil((vocab_size / 262144) * 8))
+        if requires_grad_: n_chunks += 2
         __shift_logits = torch.chunk(shift_logits, n_chunks, dim = 0)
         __shift_labels = torch.chunk(shift_labels, n_chunks, dim = 0)
         loss = 0.0
@@ -704,10 +706,11 @@ if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOC
 cross_entropy_replacement_2 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
 n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
+requires_grad_ = self.lm_head.weight.requires_grad
 
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
-elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
+elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None) and not requires_grad_:
     loss = fast_linear_cross_entropy(
         hidden_states        = hidden_states\\1,
         lm_head              = self.lm_head,
@@ -717,7 +720,7 @@ elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None):
         logit_scale_multiply = None if (\\2) == () else (\\2),
         logit_scale_divide   = None if (\\3) == () else (\\3),
     )
-elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None:
+elif ((\\2) == () and (\\3) == ()) and NOT_RETURN_LOGITS and self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not None and not requires_grad_:
     loss = fused_linear_cross_entropy(
         hidden_states      = hidden_states\\1,
         lm_weight          = self.lm_head.weight,
@@ -756,7 +759,8 @@ elif self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not N
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
 
-        n_chunks = 4 if vocab_size <= 131072 else 8
+        n_chunks = int(math.ceil((vocab_size / 262144) * 8))
+        if requires_grad_: n_chunks += 2
         __shift_logits = torch.chunk(shift_logits, n_chunks, dim = 0)
         __shift_labels = torch.chunk(shift_labels, n_chunks, dim = 0)
         loss = 0.0

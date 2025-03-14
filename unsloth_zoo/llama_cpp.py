@@ -82,10 +82,13 @@ def install_package(package, sudo = False, print_output = False, print_outputs =
             line = line.decode("utf-8", errors = "replace").rstrip()
 
             if "Permission denied" in line or "not open lock file" in line or "are you root?" in line or "fatal" in line:
+                sp.terminate()
                 raise RuntimeError(f"[FAIL] Unsloth: Permission denied when installing package {package}")
             elif line.endswith(COMMANDS_NOT_FOUND):
+                sp.terminate()
                 raise RuntimeError(f"[FAIL] Unsloth: apt-get does not exist when installing {package}? Is this NOT a Linux / Mac based computer?")
             elif "Unable to locate package" in line:
+                sp.terminate()
                 raise RuntimeError(f"[FAIL] Unsloth: Could not install package {package} since it does not exist.")
             if print_output: print(line, flush = True, end = "")
             if print_outputs is not None: print_outputs.append(line)
@@ -107,14 +110,18 @@ def do_we_need_sudo():
         for line in sp.stdout:
             line = line.decode("utf-8", errors = "replace").rstrip()
             if "Permission denied" in line or "not open lock file" in line or "are you root?" in line or "fatal" in line:
+                sp.terminate()
                 sudo = True
                 break
             elif line.endswith(COMMANDS_NOT_FOUND):
+                sp.terminate()
                 raise RuntimeError("[FAIL] Unsloth: apt-get does not exist? Is this NOT a Linux / Mac based computer?")
             elif "failure resolving" in line or "Err:" in line:
+                sp.terminate()
                 raise RuntimeError("[FAIL] Unsloth: You do not have internet connection!")
             elif time.time() - start_time >= 180:
                 # Failure if longer than 3 minutes
+                sp.terminate()
                 raise RuntimeError("[FAIL] Unsloth: You do not have internet connection!")
         pass
     pass
@@ -127,11 +134,14 @@ def do_we_need_sudo():
         for line in sp.stdout:
             line = line.decode("utf-8", errors = "replace").rstrip()
             if "Permission denied" in line or "not open lock file" in line or "are you root?" in line or "fatal" in line:
+                sp.terminate()
                 raise RuntimeError("[FAIL] Unsloth: Tried with sudo, but still failed?")
             elif "failure resolving" in line or "Err:" in line:
+                sp.terminate()
                 raise RuntimeError("[FAIL] Unsloth: You do not have internet connection!")
             elif time.time() - start_time >= 180:
                 # Failure if longer than 3 minutes
+                sp.terminate()
                 raise RuntimeError("[FAIL] Unsloth: You do not have internet connection!")
         pass
     pass
@@ -149,6 +159,7 @@ def check_pip():
             for line in sp.stdout:
                 if line.decode("utf-8", errors = "replace").rstrip().endswith(COMMANDS_NOT_FOUND):
                     final_pip = None
+                    sp.terminate()
                     break
             pass
         pass
@@ -168,9 +179,10 @@ def try_execute(command, sudo = False, print_output = False, print_outputs = Non
                 need_to_install = True
 
             error_msg = f"[FAIL] Unsloth: Failed executing command `[{command}]` with error `[{line}]`.\n"
-            
+
             for key, value in BAD_OUTCOMES.items():
                 if key in line:
+                    sp.terminate()
                     raise RuntimeError(error_msg + value)
             pass
 
@@ -251,6 +263,7 @@ def install_llama_cpp(
     llama_cpp_targets = LLAMA_CPP_TARGETS,
     print_output = False,
     gpu_support = False,
+    just_clone_repo = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Installs llama.cpp
@@ -269,19 +282,20 @@ def install_llama_cpp(
 
     print_outputs = []
     sudo = do_we_need_sudo()
+    sudo = False
     kwargs = {"sudo" : sudo, "print_output" : print_output, "print_outputs" : print_outputs,}
-    cpu_count = psutil.cpu_count() + 2
 
     try:
-        try_execute(f"git clone https://github.com/ggerganov/llama.cpp {llama_cpp_folder}", **kwargs)
-        
-        install_package("build-essential cmake curl libcurl4-openssl-dev", sudo)
+        try_execute(f"git clone https://github.com/ggml-org/llama.cpp {llama_cpp_folder}", **kwargs)
 
         pip = check_pip()
         kwargs["sudo"] = False
 
         print("Unsloth: Install GGUF and other packages")
         try_execute(f"{pip} install gguf protobuf sentencepiece", **kwargs)
+        if just_clone_repo: return llama_cpp_folder
+
+        install_package("build-essential cmake curl libcurl4-openssl-dev", sudo)
 
         print("Unsloth: Install llama.cpp and building - please wait 1 to 3 minutes")
         if gpu_support == "ON":
@@ -289,7 +303,7 @@ def install_llama_cpp(
         try:
             # Try using make first
             try_execute(f"make clean -C llama.cpp", **kwargs)
-            try_execute(f"make all -j{cpu_count} -C llama.cpp", **kwargs)
+            try_execute(f"make all -j -C llama.cpp", **kwargs)
         except:
             # Use cmake instead
             try_execute(
@@ -299,7 +313,7 @@ def install_llama_cpp(
             )
             try_execute(
                 f"cmake --build {llama_cpp_folder}/build --config Release "\
-                f"-j{cpu_count} --clean-first --target "\
+                f"-j --clean-first --target "\
                 f"{' '.join(llama_cpp_targets)}",
                 **kwargs
             )
@@ -312,7 +326,7 @@ def install_llama_cpp(
             # Remove build folder
             try_execute(f"rm -rf {llama_cpp_folder}/build", **kwargs)
         pass
-            
+
     except Exception as error:
         print("="*30)
         print("=== Unsloth: FAILED installing llama.cpp ===")
@@ -328,7 +342,9 @@ pass
 
 
 @lru_cache(1)
-def _download_convert_hf_to_gguf(name = "unsloth_convert_hf_to_gguf"):
+def _download_convert_hf_to_gguf(
+    name = "unsloth_convert_hf_to_gguf",
+):
     # All Unsloth Zoo code licensed under LGPLv3
     # Downloads from llama.cpp's Github repo
     try:
@@ -367,10 +383,22 @@ def _download_convert_hf_to_gguf(name = "unsloth_convert_hf_to_gguf"):
         converter_latest = converter_latest.replace(old, new, 1)
     pass
 
+    # Fix metadata
+    converter_latest = re.sub(
+        rb"(self\.metadata \= .+?\(.+?\)"\
+        rb"[\n]{1,}([\s]{4,}))",
+        rb"\1"\
+        rb"if hasattr(self.metadata, 'quantized_by'): self.metadata.quantized_by = 'Unsloth'\n"\
+        rb"\2if hasattr(self.metadata, 'repo_url'): self.metadata.repo_url = 'https://huggingface.co/unsloth'\n"\
+        rb"\2if hasattr(self.metadata, 'tags'): self.metadata.tags = ['unsloth', 'llama.cpp']\n"\
+        rb"\2",
+        converter_latest,
+    )
+
     # Write file
-    with open(f"{name}.py", "wb") as file:
+    with open(f"llama.cpp/{name}.py", "wb") as file:
         file.write(converter_latest)
-    filename = f"{name}.py"
+    filename = f"llama.cpp/{name}.py"
 
     # Get all flags in parser
     flags = re.findall(
@@ -466,11 +494,10 @@ def _convert_to_gguf(command, output_filename, print_output = False, print_outpu
     metadata = {}
 
     for line in iter(popen.stdout.readline, ""):
-
         if line.startswith("Writing:"):
             if progress_bar is None:
                 progress_bar = ProgressBar(total = 100, position = 0, leave = True, desc = "Unsloth: GGUF conversion")
-            
+
             desc = re.findall(r"([\d]{1,3})\%.+?([\d\.].+?\])", line)
             if len(desc) == 1 and len(desc[0]) == 2:
                 percentage, info = desc[0]
@@ -488,7 +515,11 @@ def _convert_to_gguf(command, output_filename, print_output = False, print_outpu
                 # Save final size of model
                 x = re.findall(r"total_size = ([\d\.]{1,}(?:K|M|G))", line)
                 if len(x) == 1:
-                    total_size = _split_str_to_n_bytes(x[0])
+                    try:
+                        total_size = _split_str_to_n_bytes(x[0])
+                    except Exception as error:
+                        popen.terminate()
+                        raise RuntimeError(error)
                     metadata[name] = (total_size, x[0],)
                 pass
             pass
@@ -504,9 +535,9 @@ def _convert_to_gguf(command, output_filename, print_output = False, print_outpu
         elif line.startswith("INFO:gguf.vocab:Setting chat_template"):
             # Do not print super long chat templates - allow 5 lines
             chat_template_line = 1
-        
+
         if chat_template_line != 0: chat_template_line += 1
-        
+
         if chat_template_line >= 10:
             # Restart if possible
             if line.startswith("INFO:hf-to-gguf:"):
@@ -643,7 +674,6 @@ def convert_to_gguf(
         "--split-max-size" : max_shard_size,
     }
     args = " ".join(f"{k} {v}" for k, v in args.items())
-
     metadata = None
     for python in ["python", "python3"]:
         try:

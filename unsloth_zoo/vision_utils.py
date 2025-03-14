@@ -47,6 +47,11 @@ IMAGE_TOKENS = [
     "[IMG_END]",          # Mistral
     "<image_soft_token>", # Gemma 3
     "<start_of_image>",   # Gemma 3
+    "<end_of_image>",     # Gemma 3
+    "<|START_OF_IMG|>",   # Cohere
+    "<|END_OF_IMG|>",     # Cohere
+    "<|IMG_LINE_BREAK|>", # Cohere
+    "<|IMG_PATCH|>",      # Cohere
 ]
 
 import torch
@@ -247,12 +252,35 @@ def _get_dtype(dtype):
     pass
 pass
 
+import PIL.Image
+LANCZOS = PIL.Image.Resampling.LANCZOS
+from .dataset_utils import train_on_responses_only as _train_on_responses_only
 
 class UnslothVisionDataCollator:
     # All Unsloth Zoo code licensed under LGPLv3
-    __slots__ = "padding_token_ids", "dtype", "ignore_index", "processor", "formatting_func"
+    __slots__ = \
+        "padding_token_ids", "dtype", "ignore_index", \
+        "processor", "formatting_func", "image_size", \
+        "max_seq_length", "truncation", "train_on_responses_only",
 
-    def __init__(self, model, processor, formatting_func = None, ignore_index = -100):
+    def __init__(
+        self,
+        model,
+        processor,
+        max_seq_length = None,
+        formatting_func = None,
+        resize = "min", # Can be (10, 10) or "min" to resize to fit
+                        # the model's default image_size or "max"
+                        # for no resizing and leave image intact
+        ignore_index = -100,
+        train_on_responses_only = False,
+        instruction_part = None,
+        response_part    = None,
+        force_match      = True, # Match newlines as well!
+    ):
+        if not hasattr(processor, "image_processor"):
+            raise TypeError("Unsloth: UnslothVisionDataCollator is only for image models!")
+
         self.padding_token_ids = get_padding_tokens_ids(processor)
         self.dtype = _get_dtype(
             model.config.torch_dtype \
@@ -262,6 +290,48 @@ class UnslothVisionDataCollator:
         self.ignore_index = ignore_index
         self.processor = processor
         self.formatting_func = formatting_func
+
+        # Auto resize images to save VRAM!
+        if resize == "min":
+            try:
+                self.image_size = model.config.vision_config.image_size
+            except:
+                print("Unsloth: Model does not have a default image size - using 512")
+                self.image_size = 512
+        elif resize == "max":
+            self.image_size = None
+        elif type(resize) is tuple or type(resize) is list:
+            assert(len(resize) == 2)
+            assert(type(resize[0]) is int and type(resize[1]) is int)
+            self.image_size = tuple(resize)
+        elif type(resize) is int:
+            self.image_size = resize
+        else:
+            raise TypeError(
+                "Unsloth: resize accepts 'min', 'max', a tuple of 2 numbers or 1 number\n"\
+                "For example (224, 224) or just 224. The default is 'min' which auto resizes images!"
+            )
+        pass
+
+        # Sequence lengths
+        if max_seq_length is None:
+            if hasattr(model, "max_seq_length"): max_seq_length = model.max_seq_length
+        self.max_seq_length = max(max_seq_length, 0) if type(max_seq_length) is int else None
+        self.truncation = self.max_seq_length is not None
+
+        # Train on reponses if provided
+        if train_on_responses_only:
+            assert(type(instruction_part) is str and type(response_part) is str)
+            self.train_on_responses_only = _train_on_responses_only(
+                None,
+                instruction_part = instruction_part,
+                response_part    = response_part,
+                force_match      = force_match,
+                tokenizer        = processor,
+                return_function  = True,
+            )
+        else:
+            self.train_on_responses_only = None
         return
     pass
 
@@ -270,23 +340,67 @@ class UnslothVisionDataCollator:
         # The issue is batch = self.processor( forces tensors to be returned and not None.
         texts  = []
         images = []
-        
+
         if self.formatting_func is not None:
             examples = [self.formatting_func(example) for example in examples]
-        
-        for example in examples:    
-            messages = example["messages"]
+
+        for example in examples:
+            if "messages" in example:
+                messages = example["messages"]
+            elif "conversations" in example:
+                messages = example["conversations"]
+            else:
+                messages = example
+
+            # Check if data format is correct for VLMs!
+            if len(messages) != 0:
+                message = messages[0]
+                assert(type(message) is dict)
+                if "role" not in message and "content" not in message:
+                    raise TypeError(
+                        "Unsloth: Failed to use vision data collator!\n"\
+                        "Maybe use `standardize_data_formats` first!"
+                    )
+                content = message["content"]
+                if type(content) is str:
+                    message["content"] = [{"type" : "text", "text" : content}]
+                elif type(content) is list or type(content) is tuple:
+                    part = content[0]
+                    assert("type" in part)
+                else:
+                    raise TypeError(
+                        "Unsloth: Failed to use vision data collator!\n"\
+                        "Your messages must be a like:\n"\
+                        "[{'role':'user', 'content':[{'type':'text', 'text':'Hello!'}]}]"
+                    )
+                pass
+            pass
             message = self.processor.apply_chat_template(
                 messages,
                 tokenize = False,
                 add_generation_prompt = False,
             )
+            texts.append(message)
             # Dataset with 2 columns messages / images
             if "images" in example:
-                image = example["images"][0]
+                image = [example["images"][0]]
             else:
                 image, video = process_vision_info(messages)
-            texts .append(message)
+                if image is None: image = []
+            pass
+            # Resize images
+            image_size = self.image_size
+
+            if image_size is not None:
+                for i, img in enumerate(image):
+                    if type(image_size) is tuple:
+                        image[i] = img.resize(image_size, LANCZOS)
+                    elif img.size[0] > image_size:
+                        if hasattr(img, "resize"):
+                            wpercent = image_size / img.size[0]
+                            hsize = int(img.size[1] * wpercent)
+                            image[i] = img.resize((image_size, hsize), LANCZOS)
+            pass
             images.append(image)
         pass
 
@@ -295,12 +409,13 @@ class UnslothVisionDataCollator:
             text    = texts,
             images  = images,
             padding = True,
-            # [TODO] Truncating to max_seq_length does NOT work for VLMs
-            # truncation = True,
+            truncation = self.truncation,
+            max_length = self.max_seq_length,
             return_tensors = "pt",
+            add_special_tokens = False, # Stop double BOS
         )
         batch.pop("token_type_ids", None)
-        
+
         # Pixtral accepts multiple images, so we have to cast it individually
         pixel_values = batch["pixel_values"]
         if type(pixel_values) is list:
@@ -320,6 +435,9 @@ class UnslothVisionDataCollator:
         labels = batch["input_ids"].clone()
         labels[torch.isin(labels, self.padding_token_ids)] = self.ignore_index
         batch["labels"] = labels
+
+        if self.train_on_responses_only:
+            batch["labels"] = self.train_on_responses_only(batch)["labels"]
         return batch
     pass
 pass

@@ -42,6 +42,7 @@ import json
 import psutil
 import functools
 import contextlib
+import inspect
 from functools import partial
 from .utils import _get_dtype
 from .patching_utils import patch_model_and_tokenizer
@@ -811,10 +812,12 @@ def load_vllm(
     compilation_config     : int  = 3, # -O3 for maximum performance
     conservativeness       : float = 1.0, # For low VRAM devices, scale batches, num_seqs
     max_logprobs           : int  = 0,
+    use_bitsandbytes       : bool = True,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Create vLLM instance
     assert(config is not None)
+    assert(type(use_bitsandbytes) is bool)
     assert(conservativeness >= 0.0 and conservativeness <= 1.0)
 
     major_version, minor_version = torch.cuda.get_device_capability()
@@ -866,7 +869,8 @@ def load_vllm(
 
     free_memory, total_memory = torch.cuda.mem_get_info()
     total_memory_gb = round(total_memory / 1024 / 1024 / 1024, 2)
-    use_bitsandbytes = model_name.lower().endswith("-bnb-4bit")
+    use_bitsandbytes = use_bitsandbytes or \
+        model_name.lower().endswith("-bnb-4bit")
 
     # Fix up vLLM compute_dtype for bitsandbytes
     BitsAndBytesConfig = patch_vllm_compute_dtype(dtype)
@@ -985,6 +989,14 @@ def load_vllm(
         swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
         device                 = device,
     )
+    good_keys = inspect.signature(EngineArgs).parameters.keys()
+    old_keys = engine_args.keys()
+    for key in old_keys:
+        if key not in good_keys:
+            del engine_args[key]
+            print(f"Unsloth: Not an error, but `{key}` is not supported in vLLM. Skipping.")
+        pass
+    pass
 
     # Keep trying until success (2 times)
     trials = 0
@@ -1012,6 +1024,7 @@ def load_vllm(
             if "gpu_memory_utilization" in error or "memory" in error:
                 approx_max_num_seqs = int(approx_max_num_seqs * 0.75)
                 engine_args["max_num_seqs"] = approx_max_num_seqs
+                engine_args["gpu_memory_utilization"] *= 0.85
                 print(
                     f"Unsloth: Retrying vLLM to process {approx_max_num_seqs} sequences and {max_num_batched_tokens} tokens in tandem.\n"\
                     f"Error:\n{error}"
