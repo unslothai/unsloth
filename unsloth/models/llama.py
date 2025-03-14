@@ -2662,8 +2662,8 @@ class FastLlamaModel:
         vllm_engine = getattr(model.model, "vllm_engine", None)
         if vllm_engine is not None:
             model.vllm_engine = model.model.vllm_engine
-            model.fast_generate = model.model.vllm_fast_generate
-            model.fast_generate_batches = model.model.vllm_fast_generate_batches
+            model.fast_generate = model.model.fast_generate
+            model.fast_generate_batches = model.model.fast_generate_batches
 
             # Also saving and loading LoRA
             from unsloth_zoo.vllm_utils import save_lora, load_lora
