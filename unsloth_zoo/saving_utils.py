@@ -522,7 +522,7 @@ def merge_and_overwrite_lora(
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Directly downloads 16bit original weights and merges LoRA
-    inner_model = model.base_model.model if isinstance(model, "PeftModelForCausalLM") else model
+    inner_model = model.base_model.model if isinstance(model, PeftModelForCausalLM) else model
     inner_model = inner_model.base_model if hasattr(model, "base_model") else inner_model
 
     try:
@@ -767,7 +767,7 @@ def merge_and_dequantize_lora(
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Dequantizes model to 16bit weights and merges LoRA
-    inner_model = model.base_model.model if isinstance(model, "PeftModelForCausalLM") else model
+    inner_model = model.base_model.model if isinstance(model, PeftModelForCausalLM) else model
     inner_model = inner_model.base_model if hasattr(model, "base_model") else inner_model
 
     (
