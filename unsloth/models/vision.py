@@ -485,7 +485,7 @@ class FastBaseModel:
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         float32_mixed_precision = True
-        if _get_dtype(model.config.torch_dtype) == torch.bfloat16:
+        if _get_dtype(model.config.torch_dtype) == torch.bfloat16 and full_finetuning:
             # Use bfloat16 precision for full finetuning
             float32_mixed_precision = False
 
