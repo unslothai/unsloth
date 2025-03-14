@@ -201,7 +201,7 @@ def get_model_param_count(model, trainable_only = False):
 
         billions = re.findall(r"([0-9]{1,})(?:b|B)", model.config.name_or_path)
         if len(billions) != 0:
-            billions = max(int(x) for x in billions)
+            billions = int(billions[0])
             s = 1_000_000_000 * billions
     pass
     return s
