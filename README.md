@@ -18,7 +18,7 @@
 
 ## ✨ Finetune for Free
 
-All notebooks are **beginner friendly**! Add your dataset, click "Run All", and export your finetuned model to GGUF, Ollama, vLLM or Hugging Face. [Read our Guide](https://docs.unsloth.ai/get-started/fine-tuning-guide)
+Notebooks are beginner friendly - [read our guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add your dataset, click "Run All", and export your finetuned model to GGUF, Ollama, vLLM or Hugging Face.
 
 | Unsloth supports | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
