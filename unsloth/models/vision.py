@@ -66,10 +66,15 @@ __all__ = [
 ]
 
 global FORCE_FLOAT32
-FORCE_FLOAT32 = ["gemma3"]
+FORCE_FLOAT32 = [
+    "gemma3",
+]
 
 global FORCE_EAGER_ATTENTION
-FORCE_EAGER_ATTENTION = ["pixtral"]
+FORCE_EAGER_ATTENTION = [
+    "pixtral",    # Pixtral SDPA not implemented
+    "gemma-3-1b", # Small Gemma SDPA breaks
+]
 
 
 def unsloth_base_fast_generate(
