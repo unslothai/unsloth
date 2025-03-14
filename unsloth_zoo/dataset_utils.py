@@ -320,9 +320,9 @@ def train_on_responses_only(
                 pass
                 j += 1
             pass
-            all_labels.append(labels if use_tensors else torch.tensor(labels, dtype = torch_int64))
+            all_labels.append(labels)
         pass
-        return { "labels" : all_labels }
+        return { "labels" : torch.tensor(all_labels, dtype = torch.int64) if use_tensors else all_labels }
     pass
     if return_function:
         return _train_on_responses_only
