@@ -56,6 +56,7 @@ huggingface = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
+    "mlx>=0.23.2 ; platform_system == 'Darwin'",
     "unsloth[triton]",
 ]
 windows=[
@@ -367,6 +368,7 @@ colab-new = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
+    "mlx>=0.23.2 ; platform_system == 'Darwin'",
     "bitsandbytes>=0.43.3",
     "unsloth[triton]",
 ]

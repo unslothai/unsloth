@@ -61,56 +61,63 @@ def calculate_settings(n : int) -> (int, int,):
 pass
 
 
-import bitsandbytes as bnb
-import ctypes
+from unsloth import devices
 
 # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-get_ptr = bnb.functional.get_ptr
+HAS_CUDA_STREAM = False
+global CUDA_STREAM
+CUDA_STREAM = None
+if not devices.has_mps:
+    import bitsandbytes as bnb
+    import ctypes
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    get_ptr = bnb.functional.get_ptr
+    
+    if torch.cuda.device_count() > 1:
+        torch_cuda_device = torch.cuda.device
+    else:
+        from contextlib import nullcontext
+        def torch_cuda_device(device): return nullcontext()
+    pass
+    _cuda_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
+    c_void_p = ctypes.c_void_p
+    def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+        return c_void_p(_cuda_getCurrentRawStream(tensor.device.index))
+    pass
 
-if torch.cuda.device_count() > 1:
-    torch_cuda_device = torch.cuda.device
-else:
-    from contextlib import nullcontext
-    def torch_cuda_device(device): return nullcontext()
-pass
-_cuda_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
-c_void_p = ctypes.c_void_p
-def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
-    return c_void_p(_cuda_getCurrentRawStream(tensor.device.index))
-pass
+    # Get array of CUDA streams and other buffers
+    global CUDA_STREAMS
+    global WEIGHT_BUFFERS
+    global ABSMAX_BUFFERS
 
-# Get array of CUDA streams and other buffers
-global CUDA_STREAMS
-global WEIGHT_BUFFERS
-global ABSMAX_BUFFERS
+    _CUDA_STREAMS = {
+        (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
+        for i in range(torch.cuda.device_count())
+    }
+    CUDA_STREAMS   = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    for k, v in _CUDA_STREAMS.items(): CUDA_STREAMS[k] = v
+    CUDA_STREAMS = tuple(CUDA_STREAMS)
+    del _CUDA_STREAMS
 
-_CUDA_STREAMS = {
-    (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
-    for i in range(torch.cuda.device_count())
-}
-CUDA_STREAMS   = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-for k, v in _CUDA_STREAMS.items(): CUDA_STREAMS[k] = v
-CUDA_STREAMS = tuple(CUDA_STREAMS)
-del _CUDA_STREAMS
+    # Bitsandbytes operations
+    ctypes_c_int   = ctypes.c_int
+    ctypes_c_int32 = ctypes.c_int32
+    cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
+    cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
+    cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+    torch_mm = torch.mm
+    torch_mv = torch.mv
+    torch_matmul = torch.matmul
+    torch_addmm  = torch.addmm
+    torch_empty  = torch.empty
 
-# Bitsandbytes operations
-ctypes_c_int   = ctypes.c_int
-ctypes_c_int32 = ctypes.c_int32
-cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
-cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
-cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
-torch_mm = torch.mm
-torch_mv = torch.mv
-torch_matmul = torch.matmul
-torch_addmm  = torch.addmm
-torch_empty  = torch.empty
+    def QUANT_STATE(W): return getattr(W, "quant_state", None)
 
-def QUANT_STATE(W): return getattr(W, "quant_state", None)
+
 
 def get_lora_parameters(proj):
     # For DPO or disabled adapters
