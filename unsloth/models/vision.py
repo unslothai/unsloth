@@ -275,10 +275,19 @@ class FastBaseModel:
             padding_side = "right",
             token        = token,
         )
-        # Add padding side as well
         if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "right"
-
+            __tokenizer = tokenizer.tokenizer
+            # Add padding side as well
+            __tokenizer.padding_side = "right"
+            # Check bos, eos, pad, unk tokens
+            tokens = ["bos_token", "eos_toke", "pad_toke", "unk_toke"]
+            for token in tokens:
+                if hasattr(__tokenizer, token) and not hasattr(tokenizer, token):
+                    exec(f"tokenizer.{token} = __tokenizer.{token}")
+                    exec(f"tokenizer.{token}_id = __tokenizer.{token}_id")
+                pass
+            pass
+        pass
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
         # Fix other stuff like BnB compute data types
