@@ -518,6 +518,7 @@ def merge_and_overwrite_lora(
     output_dtype         = None,
     low_disk_space_usage = False,
     use_temp_file        = False,
+    cleanup_temp_file    = True,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Directly downloads 16bit original weights and merges LoRA
@@ -638,6 +639,7 @@ def merge_and_overwrite_lora(
         try: temp_file.cleanup()
         except: pass
     pass
+    return save_directory
 pass
 
 
