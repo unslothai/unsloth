@@ -365,7 +365,7 @@ class UnslothVisionDataCollator:
             image_size = self.image_size
 
             if image_size is not None:
-                for i, img in image:
+                for i, img in enumerate(image):
                     if type(image_size) is tuple:
                         image[i] = img.resize(image_size, LANCZOS)
                     elif img.size[0] > image_size:
