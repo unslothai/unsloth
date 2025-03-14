@@ -184,7 +184,7 @@ except:
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
-def get_model_param_count(model, trainable_only=False):
+def get_model_param_count(model, trainable_only = False):
     """
     Calculate model's total param count. If trainable_only is True then count only those requiring grads
     """
@@ -208,6 +208,8 @@ def get_model_param_count(model, trainable_only=False):
 pass
 import transformers.trainer_pt_utils
 transformers.trainer_pt_utils.get_model_param_count = get_model_param_count
+import transformers.trainer
+transformers.trainer.get_model_param_count = get_model_param_count
 # =============================================
 
 # =============================================
