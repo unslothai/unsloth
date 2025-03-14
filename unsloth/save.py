@@ -2257,16 +2257,16 @@ def save_to_gguf_generic(
             private = True,
             token = token,
         )
-    pass
 
-    from huggingface_hub import HfApi
-    api = HfApi(token = token)
-    api.upload_folder(
-        folder_path = save_directory,
-        repo_id = repo_id,
-        repo_type = "model",
-        allow_patterns = ["*.gguf*"],
-    )
+        from huggingface_hub import HfApi
+        api = HfApi(token = token)
+        api.upload_folder(
+            folder_path = save_directory,
+            repo_id = repo_id,
+            repo_type = "model",
+            allow_patterns = ["*.gguf*"],
+        )
+    pass
     return metadata
 pass
 
