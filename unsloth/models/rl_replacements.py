@@ -207,7 +207,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '1':
+        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return None # Unsloth efficient GRPO
         # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
