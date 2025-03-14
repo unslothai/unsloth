@@ -207,9 +207,12 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-        return None # Unsloth efficient GRPO
+        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+            return None # Unsloth efficient GRPO
+        # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
+            if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float32
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
@@ -229,12 +232,14 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
-grpo_compute_loss     = RL_REPLACEMENTS["grpo_compute_loss"]
-UnslothEfficientGRPO  = RL_REPLACEMENTS["UnslothEfficientGRPO"]
-grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
+grpo_compute_loss      = RL_REPLACEMENTS["grpo_compute_loss"]
+grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
+UnslothEfficientGRPO   = RL_REPLACEMENTS["UnslothEfficientGRPO"]
+grpo_accumulated_loss  = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
+RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer_compute_loss(function_name, function):
@@ -266,8 +271,8 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         input_ids = input_ids[:, -logits_to_keep:]
-        if False:#per_token_logps is not None:
-            loss, completion_length, mean_kl = grpo_compute_loss(
+        if per_token_logps is not None:
+            loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
             )
         else:
