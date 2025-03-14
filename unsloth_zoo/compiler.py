@@ -641,6 +641,7 @@ else:
         shift_labels = shift_labels.view(-1)
 
         n_chunks = int(math.ceil((vocab_size / 262144) * 8))
+        if requires_grad_: n_chunks += 2
         __shift_logits = torch.chunk(shift_logits, n_chunks, dim = 0)
         __shift_labels = torch.chunk(shift_labels, n_chunks, dim = 0)
         loss = 0.0
@@ -759,6 +760,7 @@ elif self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not N
         shift_labels = shift_labels.view(-1)
 
         n_chunks = int(math.ceil((vocab_size / 262144) * 8))
+        if requires_grad_: n_chunks += 2
         __shift_logits = torch.chunk(shift_logits, n_chunks, dim = 0)
         __shift_labels = torch.chunk(shift_labels, n_chunks, dim = 0)
         loss = 0.0
