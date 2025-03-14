@@ -259,12 +259,14 @@ class UnslothVisionDataCollator:
     # All Unsloth Zoo code licensed under LGPLv3
     __slots__ = \
         "padding_token_ids", "dtype", "ignore_index", \
-        "processor", "formatting_func", "image_size"
+        "processor", "formatting_func", "image_size", \
+        "max_seq_length", "truncation"
 
     def __init__(
         self,
         model,
         processor,
+        max_seq_length = None,
         formatting_func = None,
         resize = "min", # Can be (10, 10) or "min" to resize to fit
                         # the model's default image_size or "max"
@@ -305,6 +307,11 @@ class UnslothVisionDataCollator:
                 "For example (224, 224) or just 224. The default is 'min' which auto resizes images!"
             )
         pass
+        # Sequence lengths
+        if max_seq_length is None:
+            if hasattr(model, "max_seq_length"): max_seq_length = model.max_seq_length
+        self.max_seq_length = max(max_seq_length, 0) if type(max_seq_length) is int else None
+        self.truncation = self.max_seq_length is not None
         return
     pass
 
@@ -382,8 +389,8 @@ class UnslothVisionDataCollator:
             text    = texts,
             images  = images,
             padding = True,
-            # [TODO] Truncating to max_seq_length does NOT work for VLMs
-            # truncation = True,
+            truncation = self.truncation,
+            max_length = self.max_seq_length,
             return_tensors = "pt",
             add_special_tokens = False, # Stop double BOS
         )
