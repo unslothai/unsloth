@@ -205,7 +205,7 @@ class FastBaseModel:
 
         global FORCE_EAGER_ATTENTION
         attn_implementation = "sdpa"
-        for disable_sdpa_name in FORCE_EAGER_ATTENTION:
+        for disable_name in FORCE_EAGER_ATTENTION:
             if (disable_name.lower() == model_type_arch.lower() or \
                 disable_name.lower() in model_name.lower()):
 
