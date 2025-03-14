@@ -21,6 +21,7 @@ __all__ = [
 ]
 
 from typing import Union, Callable, Optional, List, Dict
+import torch
 
 # From https://www.geeksforgeeks.org/longest-common-substring-array-strings/
 # Longest Common Substring in an Array of Strings
