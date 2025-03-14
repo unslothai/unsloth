@@ -260,9 +260,9 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
             if not hasattr(m, "model"): break
             m = m.model
         pass
-        ALLOWED_NUM_ITEMS_IN_BATCH[model_name] = has_kwargs
+        ALLOWED_NUM_ITEMS_IN_BATCH[model_name] = (has_kwargs, is_vlm)
     else:
-        has_kwargs = ALLOWED_NUM_ITEMS_IN_BATCH[model_name]
+        has_kwargs, is_vlm = ALLOWED_NUM_ITEMS_IN_BATCH[model_name]
     pass
 
     # Iterate to find all batches
