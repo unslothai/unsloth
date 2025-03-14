@@ -2219,6 +2219,10 @@ pass
 
 from .models.loader_utils import get_model_name
 from unsloth_zoo.saving_utils import merge_and_overwrite_lora
+from unsloth_zoo.llama_cpp import (
+    install_llama_cpp,
+    convert_to_gguf,
+)
 
 @torch.inference_mode
 def unsloth_generic_save(
