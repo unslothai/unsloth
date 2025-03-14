@@ -102,6 +102,8 @@ def unsloth_base_fast_generate(
         global NUM_LOGITS_TO_KEEP
         if arch not in NUM_LOGITS_TO_KEEP:
             m = self
+            # Find which is needed ie
+            # num_logits_to_keep or logits_to_keep
             while hasattr(m, "model"):
                 if hasattr(m, "forward"):
                     keys = inspect.signature(m.forward).parameters.keys()
