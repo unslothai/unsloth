@@ -68,6 +68,9 @@ __all__ = [
 global FORCE_FLOAT32
 FORCE_FLOAT32 = ["gemma3"]
 
+global FORCE_EAGER_ATTENTION
+FORCE_EAGER_ATTENTION = ["pixtral"]
+
 
 def unsloth_base_fast_generate(
     self,
@@ -193,6 +196,15 @@ class FastBaseModel:
                 break
         pass
 
+        global FORCE_EAGER_ATTENTION
+        attn_implementation = "sdpa"
+        for disable_sdpa_name in FORCE_EAGER_ATTENTION:
+            if disable_sdpa_name.lower() == model_type_arch.lower():
+                print(f"Unsloth: {model_type_arch} does not support SDPA - switching to eager!")
+                attn_implementation = "eager"
+                break
+        pass
+
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
@@ -249,7 +261,7 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = "sdpa", #[TODO] Pixtral for eg fails
+            attn_implementation     = attn_implementation,
             **kwargs,
         )
         # Return old flag
