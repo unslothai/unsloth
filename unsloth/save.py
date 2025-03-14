@@ -2265,7 +2265,6 @@ def save_to_gguf_generic(
             repo_id = repo_id,
             repo_type = "model",
             allow_patterns = ["*.gguf"],
-            private = True,
         )
     pass
     return metadata
