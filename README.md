@@ -115,7 +115,7 @@ See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip
 7. **Install Unsloth:**
    
 ```python
-pip install "unsloth[windows] @ git+https://github.com/unslothai/unsloth.git"
+pip install unsloth
 ```
 
 #### Notes
