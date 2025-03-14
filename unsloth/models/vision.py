@@ -204,6 +204,7 @@ class FastBaseModel:
                 attn_implementation = "eager"
                 break
         pass
+        attn_implementation = "eager"
 
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
