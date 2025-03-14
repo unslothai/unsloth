@@ -1883,12 +1883,17 @@ class FastLlamaModel:
         f"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\n"\\
         f"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size:,}\\n"\\
-        f' "-____-"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,}/{get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_param_count(model)*100:.2f}% trained)'
+        f' "-____-"     Trainable parameters = {P__(model, trainable_only=True):,}/{P__(model)*multiplier__:,} ({P__(model, trainable_only=True)/(P__(model)*multiplier__)*100:.2f}% trained)'
         logger.warning(debug_info)
         import gc
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()"""
+        multiplier = \
+        "4.5 if getattr(model.config, 'quantization_config', {'load_in_4bit' : False})['load_in_4bit'] else "\
+    "8.0 if getattr(model.config, 'quantization_config', {'load_in_8bit' : False})['load_in_8bit'] else 1.0"
+        debug_info = debug_info.replace("multiplier__", "(" + multiplier + ")")
+        debug_info = debug_info.replace("P__", "get_model_param_count")
 
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
