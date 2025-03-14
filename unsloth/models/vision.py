@@ -73,7 +73,6 @@ FORCE_FLOAT32 = [
 global FORCE_EAGER_ATTENTION
 FORCE_EAGER_ATTENTION = [
     "pixtral",    # Pixtral SDPA not implemented
-    "gemma-3-1b", # Small Gemma SDPA breaks
 ]
 
 
@@ -197,7 +196,6 @@ class FastBaseModel:
             if (disable_name.lower() == model_type_arch.lower() or \
                 disable_name.lower() in model_name.lower()) and \
                 dtype == torch.float16:
-                break
 
                 print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
@@ -215,7 +213,6 @@ class FastBaseModel:
                 attn_implementation = "eager"
                 break
         pass
-        attn_implementation = "eager"
 
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
