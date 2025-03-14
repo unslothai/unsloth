@@ -109,6 +109,7 @@ else:
     UNSLOTH_STUDIO_ENABLED = os.environ.get("UNSLOTH_STUDIO_DISABLED", "0") == "0"
 pass
 from typing import List, Dict, Tuple, Optional, Any, Callable
+import math
 """
 
 _disabled_sdpa_code = f"""{_license_header}
@@ -639,7 +640,7 @@ else:
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
 
-        n_chunks = 4 if vocab_size <= 131072 else 8
+        n_chunks = int(math.ceil((vocab_size / 262144) * 8))
         __shift_logits = torch.chunk(shift_logits, n_chunks, dim = 0)
         __shift_labels = torch.chunk(shift_labels, n_chunks, dim = 0)
         loss = 0.0
@@ -756,7 +757,7 @@ elif self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not N
         shift_logits = shift_logits.view(-1, vocab_size)
         shift_labels = shift_labels.view(-1)
 
-        n_chunks = 4 if vocab_size <= 131072 else 8
+        n_chunks = int(math.ceil((vocab_size / 262144) * 8))
         __shift_logits = torch.chunk(shift_logits, n_chunks, dim = 0)
         __shift_labels = torch.chunk(shift_labels, n_chunks, dim = 0)
         loss = 0.0
