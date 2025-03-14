@@ -72,6 +72,7 @@ from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
 import contextlib
+import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 
@@ -194,20 +195,15 @@ def get_model_param_count(model, trainable_only=False):
         def numel(p):
             return p.numel()
     s = sum(numel(p) for p in model.parameters() if not trainable_only or p.requires_grad)
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        quantization_config = model.config.quantization_config
-        if "load_in_4bit" in quantization_config:
-            load_in_4bit = quantization_config["load_in_4bit"]
-        else:
-            load_in_4bit = False
-        if "load_in_8bit" in quantization_config:
-            load_in_8bit = quantization_config["load_in_8bit"]
-        else:
-            load_in_8bit = False
-        if load_in_4bit:
-            s *= 4.5
-        elif load_in_8bit:
-            s *= 2.0
+    if (not trainable_only) and \
+        hasattr(model, "config") and \
+        hasattr(model.config, "quantization_config"):
+
+        billions = re.findall(r"([0-9]{1,})(?:b|B)", model.config.name_or_path)
+        if len(billions) != 0:
+            billions = max(int(x) for x in billions)
+            s = 1_000_000_000 * billions
+    pass
     return s
 pass
 import transformers.trainer_pt_utils
