@@ -328,7 +328,7 @@ def _merge_and_overwrite_lora(save_directory, filename, lora_weights, output_dty
     import psutil
     import tempfile
     import pickle
-    limit = 500 * 1024 * 1024 # 500MB
+    limit = 700 * 1024 * 1024 # 700MB
     with safe_open(filename, framework = "pt", device = "cpu") as file:
         for key in file.keys():
             W = file.get_tensor(key)
@@ -630,6 +630,7 @@ def merge_and_overwrite_lora(
             lora_weights = lora_weights,
             output_dtype = output_dtype,
         )
+        torch.cuda.empty_cache()
         if low_disk_space_usage and push_to_hub:
             upload_items(filename)
             os.remove(os.path.join(save_directory, filename)) # Remove to conserve disk space
