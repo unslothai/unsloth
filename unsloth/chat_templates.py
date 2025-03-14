@@ -1512,10 +1512,7 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
 
     # Remove duplicates
     splitted = joined_text.split("\x01\x00")
-    final_eos_tokens = []
-    for old, new in zip(added_tokens_decoder, splitted):
-        if old == new: final_eos_tokens.append(old)
-    pass
+    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, splitted) if old == new]
     final_eos_tokens += extra_eos_tokens
     final_eos_tokens += repeatted_tokens
 
