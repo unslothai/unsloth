@@ -47,6 +47,11 @@ IMAGE_TOKENS = [
     "[IMG_END]",          # Mistral
     "<image_soft_token>", # Gemma 3
     "<start_of_image>",   # Gemma 3
+    "<end_of_image>",     # Gemma 3
+    "<|START_OF_IMG|>",   # Cohere
+    "<|END_OF_IMG|>",     # Cohere
+    "<|IMG_LINE_BREAK|>", # Cohere
+    "<|IMG_PATCH|>",      # Cohere
 ]
 
 import torch
@@ -247,12 +252,28 @@ def _get_dtype(dtype):
     pass
 pass
 
+import PIL.Image
+LANCZOS = PIL.Image.Resampling.LANCZOS
 
 class UnslothVisionDataCollator:
     # All Unsloth Zoo code licensed under LGPLv3
-    __slots__ = "padding_token_ids", "dtype", "ignore_index", "processor", "formatting_func"
+    __slots__ = \
+        "padding_token_ids", "dtype", "ignore_index", \
+        "processor", "formatting_func", "image_size"
 
-    def __init__(self, model, processor, formatting_func = None, ignore_index = -100):
+    def __init__(
+        self,
+        model,
+        processor,
+        formatting_func = None,
+        resize = "min", # Can be (10, 10) or "min" to resize to fit
+                        # the model's default image_size or "max"
+                        # for no resizing and leave image intact
+        ignore_index = -100,
+    ):
+        if not hasattr(processor, "image_processor"):
+            raise TypeError("Unsloth: UnslothVisionDataCollator is only for image models!")
+
         self.padding_token_ids = get_padding_tokens_ids(processor)
         self.dtype = _get_dtype(
             model.config.torch_dtype \
@@ -262,6 +283,28 @@ class UnslothVisionDataCollator:
         self.ignore_index = ignore_index
         self.processor = processor
         self.formatting_func = formatting_func
+
+        # Auto resize images to save VRAM!
+        if resize == "min":
+            try:
+                self.image_size = model.config.vision_config.image_size
+            except:
+                print("Unsloth: Model does not have a default image size - using 512")
+                self.image_size = 512
+        elif resize == "max":
+            self.image_size = None
+        elif type(resize) is tuple or type(resize) is list:
+            assert(len(resize) == 2)
+            assert(type(resize[0]) is int and type(resize[1]) is int)
+            self.image_size = tuple(resize)
+        elif type(resize) is int:
+            self.image_size = resize
+        else:
+            raise TypeError(
+                "Unsloth: resize accepts 'min', 'max', a tuple of 2 numbers or 1 number\n"\
+                "For example (224, 224) or just 224. The default is 'min' which auto resizes images!"
+            )
+        pass
         return
     pass
 
@@ -276,6 +319,30 @@ class UnslothVisionDataCollator:
         
         for example in examples:    
             messages = example["messages"]
+
+            # Check if data format is correct for VLMs!
+            if len(messages) != 0:
+                message = messages[0]
+                assert(type(message) is dict)
+                if "role" not in message and "content" not in message:
+                    raise TypeError(
+                        "Unsloth: Failed to use vision data collator!\n"\
+                        "Maybe use `standardize_data_formats` first!"
+                    )
+                content = message["content"]
+                if type(content) is str:
+                    message["content"] = [{"type" : "text", "text" : content}]
+                elif type(content) is list or type(content) is tuple:
+                    part = content[0]
+                    assert("type" in part)
+                else:
+                    raise TypeError(
+                        "Unsloth: Failed to use vision data collator!\n"\
+                        "Your messages must be a like:\n"\
+                        "[{'role':'user', 'content':[{'type':'text', 'text':'Hello!'}]}]"
+                    )
+                pass
+            pass
             message = self.processor.apply_chat_template(
                 messages,
                 tokenize = False,
@@ -287,6 +354,18 @@ class UnslothVisionDataCollator:
             else:
                 image, video = process_vision_info(messages)
             texts .append(message)
+
+            # Resize images
+            image_size = self.image_size
+            if image_size is not None:
+                if type(image_size) is tuple:
+                    image = image.resize((image_size, hsize), LANCZOS)
+                elif image.size[0] > image_size:
+                    if hasattr(image, "resize"):
+                        wpercent = image_size / image.size[0]
+                        hsize = int(image.size[1] * wpercent)
+                        image = image.resize((image_size, hsize), LANCZOS)
+            pass
             images.append(image)
         pass
 
