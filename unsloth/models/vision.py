@@ -120,9 +120,8 @@ def unsloth_base_fast_generate(
             pass
         pass
         key = NUM_LOGITS_TO_KEEP[arch]
-        if key is not None:
-            if key not in kwargs:
-                kwargs[key] = 1
+        if key is not None and key not in kwargs:
+            kwargs[key] = 1
     else:
         pass
         # kwargs.pop("logits_to_keep", None)
