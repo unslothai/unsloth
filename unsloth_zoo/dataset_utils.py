@@ -524,8 +524,10 @@ def sft_prepare_dataset(
                     "Unsloth: The `formatting_func` should return a list of processed strings."
                 )
             test_text = test_text[0]
+            print("test_text", test_text)
         else:
             test_text = dataset[0][dataset_text_field]
+            print("test_text", test_text)
 
         # Get chat template
         chat_template = getattr(processing_class, 'chat_template', '')
@@ -539,6 +541,7 @@ def sft_prepare_dataset(
         bos_token = bos_token_1 or bos_token_2
 
         if bos_token is not None:
+            print("test_text", test_text)
             if test_text.startswith(bos_token) or bos_token in chat_template:
                 add_special_tokens = False
                 print("Unsloth: We found double BOS tokens - we shall remove one automatically.")
