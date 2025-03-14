@@ -263,6 +263,7 @@ def install_llama_cpp(
     llama_cpp_targets = LLAMA_CPP_TARGETS,
     print_output = False,
     gpu_support = False,
+    just_clone_repo = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Installs llama.cpp
@@ -285,15 +286,16 @@ def install_llama_cpp(
     kwargs = {"sudo" : sudo, "print_output" : print_output, "print_outputs" : print_outputs,}
 
     try:
-        try_execute(f"git clone https://github.com/ggerganov/llama.cpp {llama_cpp_folder}", **kwargs)
-
-        install_package("build-essential cmake curl libcurl4-openssl-dev", sudo)
+        try_execute(f"git clone https://github.com/ggml-org/llama.cpp {llama_cpp_folder}", **kwargs)
 
         pip = check_pip()
         kwargs["sudo"] = False
 
         print("Unsloth: Install GGUF and other packages")
         try_execute(f"{pip} install gguf protobuf sentencepiece", **kwargs)
+        if just_clone_repo: return llama_cpp_folder
+
+        install_package("build-essential cmake curl libcurl4-openssl-dev", sudo)
 
         print("Unsloth: Install llama.cpp and building - please wait 1 to 3 minutes")
         if gpu_support == "ON":
