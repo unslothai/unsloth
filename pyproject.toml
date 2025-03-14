@@ -27,6 +27,7 @@ dependencies = [
     "xformers>=0.0.27.post2",
     "bitsandbytes",
     "triton>=3.0.0 ; platform_system == 'Linux'",
+    "triton-windows ; platform_system == 'Windows'",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
