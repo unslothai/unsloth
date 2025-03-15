@@ -500,7 +500,7 @@ pass
 
 
 def _remove_quantization_config(config_path: Path):
-    assert (config_path.exists(), "Given config does not exist")
+    assert config_path.exists(), "Given config does not exist"
     with open(config_path, "r") as f:
         config = json.load(f)
     if "quantization_config" in config:
