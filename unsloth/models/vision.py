@@ -314,15 +314,16 @@ class FastBaseModel:
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
             __tokenizer.padding_side = "right"
-            # Check bos, eos, pad, unk tokens
-            tokens = ["bos_token", "eos_token", "pad_token", "unk_token"]
-            for token in tokens:
-                if hasattr(__tokenizer, token) and not hasattr(tokenizer, token):
-                    _args = {"__tokenizer" : __tokenizer, "tokenizer" : tokenizer}
-                    exec(f"tokenizer.{token} = __tokenizer.{token}", _args)
-                    exec(f"tokenizer.{token}_id = __tokenizer.{token}_id", _args)
-                pass
-            pass
+            # Check bos, eos, pad tokens
+            if hasattr(__tokenizer, "bos_token"):
+                tokenizer.bos_token    = __tokenizer.bos_token
+                tokenizer.bos_token_id = __tokenizer.bos_token_id
+            if hasattr(__tokenizer, "eos_token"):
+                tokenizer.eos_token    = __tokenizer.eos_token
+                tokenizer.eos_token_id = __tokenizer.eos_token_id
+            if hasattr(__tokenizer, "pad_token"):
+                tokenizer.pad_token    = __tokenizer.pad_token
+                tokenizer.pad_token_id = __tokenizer.pad_token_id
         pass
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)

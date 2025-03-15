@@ -238,9 +238,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "use_fp16 = getattr(args, 'fp16', False)\n"\
         "force_float32 = False\n"\
         "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1':\n"\
-        "    if use_bf16 or use_fp16:\n"\
-        "        print('Unsloth: Switching to float32 training since model cannot work with float16')\n"\
-        "        force_float32 = True\n"\
+        "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"\
+        "    force_float32 = True\n"\
         "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"\
         "dtype = getattr(model.config, 'torch_dtype', None)\n"\
         "if dtype is None: dtype = model.get_input_embeddings().dtype\n"\

@@ -2265,7 +2265,6 @@ def save_to_gguf_generic(
             repo_id = repo_id,
             repo_type = "model",
             allow_patterns = ["*.gguf"],
-            private = True,
         )
     pass
     return metadata
@@ -2311,7 +2310,7 @@ def unsloth_generic_save(
         private              = private,
         token                = token,
         output_dtype         = None,
-        low_disk_space_usage = False,
+        low_disk_space_usage = True,
         use_temp_file        = False,
     )
     return
