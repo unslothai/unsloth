@@ -26,120 +26,133 @@ torch_compile_options = {
 }
 
 
-class DynamicFlexAttention:
-    """
-    This wrapper class around Flex Attention allows for dynamic sequence
-    lengths without having to excessively recompile flex_attention.
-    It pads the inputs Q, K, V to the size the Flex Attention kernel
-    was compiled for and uses Flex Attention's own masking mechanism to
-    ignore the padding.
-
-    Rebuilds happen when the input sequence length exceeds any past
-    sequence length seen before.
-
-    Recomputation of the blockmask does unfortunately have to occur
-    for each new input.
-
-    Caveat/TODOs:
-
-    - flex attention fails to compile properly for float64 I think?
-    So had to use high atol in torch.allclose
-
-    - We assume that the batch size and num heads is
-    static between passes. Would trigger kernel rebuilds if otherwise.
-
-    - Potentially cache the blockmasks with an LRU/LFU cache?
-
-    - Dynamically choose the `flex_attention` kernel too? Pre-compile
-    flex_attention kernels in powers of 2? And then binary search/index
-    into `ceiling_next_power_of_2(input_seq_len)`? Pretty quick to index
-    into and prevent ridiculous padding sizes. Biggest would be in the
-    order of double the input size.
-
-    - Current interface requires you to pre-specify the mask_mod being used.
-    Allow passing in a dictionary of mask_mods? I originally didn't realize
-    you unfortunately had to rebuild the blockmask each time.
-    """
-
-    def __init__(
-        self,
-        bs,
-        num_heads,
-        mask_mod: _mask_mod_signature = noop_mask,
-        compile_options = None
-    ):
-        # Flex attention fails to compile with dynamic=True in my testing.
-        # Hence the whole premise of this wrapper class.
-        self._flex_attention = torch.compile(
-            flex_attention,
-            dynamic=False,
-            options=compile_options,
-        )
-        self.bs = bs
-        self.num_heads = num_heads
-        self.max_seq_len = 0
-        self.mask_mod = mask_mod
-
-    def flex_attention(
-        self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        score_mod: Optional[_score_mod_signature] = None,
-        scale: Optional[float] = None,
-    ) -> Tensor:
-        bs, num_heads, q_len, head_dim = query.shape
-        _, _, kv_len, _ = key.shape
-
-        assert bs == self.bs and num_heads == self.num_heads, \
-            "Dynamic batch sizes and number of heads not currently " \
-            + "supported for performance reasons. Pad inputs accordingly" \
-            + " if desired."
-
-        self.max_seq_len = max(
-            q_len,
-            kv_len,
-            self.max_seq_len
-        )
-
-        # TODO: See if we can make our own blockmask constructor?
-        # Also LFU/LRU caching here?
-        # https://x.com/cHHillee/status/1851418255749169419?lang=en
-        blockmask = create_block_mask(
-            and_masks(
-                lambda _b, _h, q_i, kv_i: q_i < q_len,
-                lambda _b, _h, q_i, kv_i: kv_i < kv_len,
-                self.mask_mod
-            ),
-            B=None,
-            H=None,
-            Q_LEN=self.max_seq_len,
-            KV_LEN=self.max_seq_len,
-        )
-
-        padded_q = F.pad(query, (0, 0, 0, self.max_seq_len - q_len))
-        padded_k = F.pad(key, (0, 0, 0, self.max_seq_len - kv_len))
-        padded_v = F.pad(value, (0, 0, 0, self.max_seq_len - kv_len))
-
-        res = self._flex_attention(
-            padded_q,
-            padded_k,
-            padded_v,
-            score_mod=score_mod,
-            block_mask=blockmask,
-            scale=scale
-        )
-
-        return res[:, :, :q_len, :]
-
 # Flex Attention supported from torch 2.5 onwards only
 try:
     from torch.nn.attention.flex_attention import (
-        flex_attention as _flex_attention,
         create_block_mask as _create_block_mask,
+        flex_attention as _reference_flex_attention,
+        _mask_mod_signature,
+        _score_mod_signature,
+        noop_mask as _noop_mask,
+        and_masks as _and_masks
     )
-    _flex_attention = torch.compile(_flex_attention, dynamic = True, options = torch_compile_options)
-    HAS_FLEX_ATTENTION = False
+
+    class DynamicFlexAttention:
+        """
+        This wrapper class around Flex Attention allows for dynamic sequence
+        lengths without having to excessively recompile flex_attention.
+        It pads the inputs Q, K, V to the size the Flex Attention kernel
+        was compiled for and uses Flex Attention's own masking mechanism to
+        ignore the padding.
+
+        Rebuilds happen when the input sequence length exceeds any past
+        sequence length seen before.
+
+        Recomputation of the blockmask does unfortunately have to occur
+        for each new input.
+
+        Caveat/TODOs:
+
+        - flex attention fails to compile properly for float64 I think?
+        So had to use high atol in torch.allclose
+
+        - We assume that the batch size and num heads is
+        static between passes. Would trigger kernel rebuilds if otherwise.
+
+        - Potentially cache the blockmasks with an LRU/LFU cache?
+
+        - Dynamically choose the `flex_attention` kernel too? Pre-compile
+        flex_attention kernels in powers of 2? And then binary search/index
+        into `ceiling_next_power_of_2(input_seq_len)`? Pretty quick to index
+        into and prevent ridiculous padding sizes. Biggest would be in the
+        order of double the input size.
+        """
+
+        def __init__(
+            self,
+            size_hint: torch.Size = None,
+            compile_options = None
+        ):
+            # TODO: Lookout for dynaic=True support becoming available
+            self._flex_attention = torch.compile(
+                _reference_flex_attention,
+                dynamic=False,
+                options=compile_options,
+            )
+
+            self.max_seq_len = 0
+
+            # Compile flex_attention to the hinted (max seq) size
+            if size_hint:
+                bs, num_heads, _, _ = size_hint
+                self.bs = bs
+                self.num_heads = num_heads
+
+                q = torch.empty(size_hint)
+                k = torch.empty(size_hint)
+                v = torch.empty(size_hint)
+
+                self._flex_attention(q, k, v)
+
+
+        def flex_attention(
+            self,
+            query: Tensor,
+            key: Tensor,
+            value: Tensor,
+            score_mod: Optional[_score_mod_signature] = None,
+            mask_mod: _mask_mod_signature = _noop_mask,
+            scale: Optional[float] = None,
+        ) -> Tensor:
+            bs, num_heads, q_len, head_dim = query.shape
+            _, _, kv_len, _ = key.shape
+
+            if self.bs is not None:
+                assert bs == self.bs and num_heads == self.num_heads, \
+                    "Dynamic batch sizes and number of heads not currently " \
+                    + "supported for performance reasons. Pad inputs accordingly" \
+                    + " if desired."
+
+            self.max_seq_len = max(
+                q_len,
+                kv_len,
+                self.max_seq_len
+            )
+
+            # TODO: See if we can make our own blockmask constructor?
+            # Also LFU/LRU caching here?
+            # https://x.com/cHHillee/status/1851418255749169419?lang=en
+            blockmask = _create_block_mask(
+                _and_masks(
+                    lambda _b, _h, q_i, kv_i: q_i < q_len,
+                    lambda _b, _h, q_i, kv_i: kv_i < kv_len,
+                    mask_mod
+                ),
+                B=None,
+                H=None,
+                Q_LEN=self.max_seq_len,
+                KV_LEN=self.max_seq_len,
+            )
+
+            padded_q = F.pad(query, (0, 0, 0, self.max_seq_len - q_len))
+            padded_k = F.pad(key, (0, 0, 0, self.max_seq_len - kv_len))
+            padded_v = F.pad(value, (0, 0, 0, self.max_seq_len - kv_len))
+
+            res = self._flex_attention(
+                padded_q,
+                padded_k,
+                padded_v,
+                score_mod=score_mod,
+                block_mask=blockmask,
+                scale=scale
+            )
+
+            return res[:, :, :q_len, :]
+
+    dynamic_flex_attention = DynamicFlexAttention()
+    _flex_attention = dynamic_flex_attention.flex_attention
+
+    HAS_FLEX_ATTENTION = True
 except:
     HAS_FLEX_ATTENTION = False
 pass
