@@ -31,14 +31,9 @@ include-package-data = false
 [tool.setuptools.packages.find]
 exclude = ["images*"]
 
-[project.optional-dependencies]
-triton = [
-    "triton-windows ; platform_system == 'Windows'",
-]
-
 huggingface = [
     "unsloth_zoo>=2025.3.13",
-    "packaging",
+    "packaging>=24.1",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
     "datasets>=2.16.0",
@@ -53,7 +48,7 @@ huggingface = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
-    "unsloth[triton]",
+    "triton_windows ; platform_system == 'Windows'",
 ]
 windows=[
     "unsloth[huggingface]",
@@ -333,7 +328,7 @@ colab-ampere-torch211 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch211]",
-    "packaging",
+    "packaging>=24.1",
     "ninja",
     "flash-attn>=2.6.3",
 ]
@@ -346,13 +341,13 @@ colab-ampere-torch220 = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.43.3",
     "unsloth[cu121onlytorch220]",
-    "packaging",
+    "packaging>=24.1",
     "ninja",
     "flash-attn>=2.6.3",
 ]
 colab-new = [
     "unsloth_zoo>=2025.3.13",
-    "packaging",
+    "packaging>=24.1",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
     "datasets>=2.16.0",
@@ -365,7 +360,6 @@ colab-new = [
     "huggingface_hub",
     "hf_transfer",
     "bitsandbytes>=0.43.3",
-    "unsloth[triton]",
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
@@ -379,7 +373,7 @@ colab = [
     "unsloth[cu121]",
 ]
 flashattention = [
-    "packaging ; platform_system == 'Linux'",
+    "packaging>=24.1",
     "ninja ; platform_system == 'Linux'",
     "flash-attn>=2.6.3 ; platform_system == 'Linux'",
 ]
