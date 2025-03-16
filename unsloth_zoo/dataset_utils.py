@@ -496,7 +496,6 @@ def sft_prepare_dataset(
     do_truncation = max_seq_length != 0
     do_formatting_func = False
     do_tokenize = True
-    print("max_seq_length", max_seq_length)
 
     # Get correct column names
     column_names = set(next(iter(dataset)).keys())
