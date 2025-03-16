@@ -1,3 +1,4 @@
+import ast
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -458,7 +459,7 @@ class FastCohereModel(FastLlamaModel):
         )
         if init_name is not None:
             exec(function, globals())
-            CohereAttention.__init__  = eval(init_name)
+            CohereAttention.__init__  = ast.literal_eval(init_name)
         pass
         CohereAttention      .forward = CohereAttention_fast_forward
         CohereSdpaAttention  .forward = CohereAttention_fast_forward
