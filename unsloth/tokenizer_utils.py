@@ -686,12 +686,12 @@ def fix_chat_template(tokenizer):
                 raise RuntimeError(
                     f"Unsloth: The tokenizer `{tokenizer.name_or_path}`\n"\
                     "does not have a {% if add_generation_prompt %} for generation purposes.\n"\
-                    "Please file a bug report immediately - thanks!"
+                    f"Please file a bug report to the maintainers of `{tokenizer.name_or_path}` - thanks!"
                 )
             else:
                 logger.warning_once(
                     "Unsloth: We successfully patched the tokenizer to add a {% if add_generation_prompt %} to the chat_template.\n"\
-                    "This is not a bug, but please notify the Unsloth maintainers - thanks!"
+                    f"This is not a bug, but please notify the maintainers of `{tokenizer.name_or_path}` - thanks!"
                 )
                 chat_template = new_chat_template
             pass
