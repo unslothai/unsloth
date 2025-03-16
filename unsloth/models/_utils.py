@@ -1204,6 +1204,9 @@ def unsloth_compile_transformers(
             return_logits          = return_logits,
         )
     pass
+    # Redo patches which override compiler
+    for temporary_patch in TEMPORARY_PATCHES:
+        temporary_patch()
     return model_types
 pass
 
