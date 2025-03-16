@@ -276,7 +276,7 @@ def patch_gemma3_modeling():
             labels[attention_mask == 0] = -100
             print("Masked out")
         pass
-
+        print(lm_kwargs)
         outputs = self.language_model(
             labels=labels,
             attention_mask=causal_mask,
