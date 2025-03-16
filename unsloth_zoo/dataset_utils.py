@@ -492,6 +492,7 @@ def sft_prepare_dataset(
     if max_seq_length == 0: max_seq_length = getattr(args, "max_seq_length", 0)
     if max_seq_length == 0: max_seq_length = getattr(self, "max_seq_length", 0)
     if max_seq_length == 0: max_seq_length = getattr(self, "max_seq", 0)
+    if max_seq_length == 0: raise RuntimeError("Unsloth: max_seq_length is 0! Please specify one!")
     dataset_text_field = getattr(args, "dataset_text_field", "text")
     do_truncation = max_seq_length != 0
     do_formatting_func = False
