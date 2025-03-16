@@ -76,6 +76,22 @@ import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 
+
+# WARNING: Using pickle for loading models can lead to arbitrary code execution.
+# Always use safe_load or torch.load with map_location and only load models from trusted sources.
+
+def safe_load(file_path, device="cpu"):
+    """
+    Safely load PyTorch models without using pickle directly.
+    
+    Args:
+        file_path: Path to the model file
+        device: Device to load the model to
+        
+    Returns:
+        The loaded model state dict
+    """
+    return torch.load(file_path, map_location=device)
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
 )
