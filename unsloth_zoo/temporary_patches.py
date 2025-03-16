@@ -314,11 +314,11 @@ def patch_gemma3_modeling():
             flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
+        loss = outputs.loss
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        loss = outputs.loss
         return Gemma3CausalLMOutputWithPast(
             loss=loss,
             logits=logits,
