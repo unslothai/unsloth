@@ -66,8 +66,17 @@ __all__ = [
 ]
 
 global FORCE_FLOAT32
-FORCE_FLOAT32 = ["gemma3"]
+FORCE_FLOAT32 = [
+    "gemma3",
+]
 
+global FORCE_EAGER_ATTENTION
+FORCE_EAGER_ATTENTION = [
+    "pixtral",    # Pixtral SDPA not implemented
+]
+
+global NUM_LOGITS_TO_KEEP
+NUM_LOGITS_TO_KEEP = dict()
 
 def unsloth_base_fast_generate(
     self,
@@ -78,21 +87,45 @@ def unsloth_base_fast_generate(
     dtype = _get_dtype(self.config.torch_dtype)
 
     # Check if VLM
-    is_vlm = (
+    is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in self.config.architectures
     )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
+    arch = self.config.architectures[0]
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
 
     # VLMs do not allow logits_to_keep
     if not is_vlm:
-        kwargs["logits_to_keep"] = 1
+        global NUM_LOGITS_TO_KEEP
+        if arch not in NUM_LOGITS_TO_KEEP:
+            m = self
+            # Find which is needed ie
+            # num_logits_to_keep or logits_to_keep
+            while hasattr(m, "model"):
+                if hasattr(m, "forward"):
+                    keys = inspect.signature(m.forward).parameters.keys()
+                    if "num_logits_to_keep" in keys:
+                        NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
+                        break
+                    elif "logits_to_keep" in keys:
+                        NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
+                        break
+                m = m.model
+            pass
+            if arch not in NUM_LOGITS_TO_KEEP:
+                NUM_LOGITS_TO_KEEP[arch] = None
+            pass
+        pass
+        key = NUM_LOGITS_TO_KEEP[arch]
+        if key is not None and key not in kwargs:
+            kwargs[key] = 1
     else:
-        kwargs.pop("logits_to_keep", None)
-        kwargs.pop("num_logits_to_keep", None)
+        pass
+        # kwargs.pop("logits_to_keep", None)
+        # kwargs.pop("num_logits_to_keep", None)
 
     # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
@@ -186,10 +219,24 @@ class FastBaseModel:
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         bnb_compute_dtype = dtype
         for disable_name in FORCE_FLOAT32:
-            if disable_name.lower() == model_type_arch.lower() and dtype == torch.float16:
+            if (disable_name.lower() == model_type_arch.lower() or \
+                disable_name.lower() in model_name.lower()) and \
+                dtype == torch.float16:
+
                 print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 bnb_compute_dtype = torch.float32
+                break
+        pass
+
+        global FORCE_EAGER_ATTENTION
+        attn_implementation = "sdpa"
+        for disable_name in FORCE_EAGER_ATTENTION:
+            if (disable_name.lower() == model_type_arch.lower() or \
+                disable_name.lower() in model_name.lower()):
+
+                print(f"Unsloth: {model_type_arch} does not support SDPA - switching to eager!")
+                attn_implementation = "eager"
                 break
         pass
 
@@ -249,7 +296,7 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = "sdpa", #[TODO] Pixtral for eg fails
+            attn_implementation     = attn_implementation,
             **kwargs,
         )
         # Return old flag
@@ -263,10 +310,21 @@ class FastBaseModel:
             padding_side = "right",
             token        = token,
         )
-        # Add padding side as well
         if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "right"
-
+            __tokenizer = tokenizer.tokenizer
+            # Add padding side as well
+            __tokenizer.padding_side = "right"
+            # Check bos, eos, pad tokens
+            if hasattr(__tokenizer, "bos_token"):
+                tokenizer.bos_token    = __tokenizer.bos_token
+                tokenizer.bos_token_id = __tokenizer.bos_token_id
+            if hasattr(__tokenizer, "eos_token"):
+                tokenizer.eos_token    = __tokenizer.eos_token
+                tokenizer.eos_token_id = __tokenizer.eos_token_id
+            if hasattr(__tokenizer, "pad_token"):
+                tokenizer.pad_token    = __tokenizer.pad_token
+                tokenizer.pad_token_id = __tokenizer.pad_token_id
+        pass
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
         # Fix other stuff like BnB compute data types
@@ -428,7 +486,7 @@ class FastBaseModel:
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         float32_mixed_precision = True
-        if _get_dtype(model.config.torch_dtype) == torch.bfloat16:
+        if _get_dtype(model.config.torch_dtype) == torch.bfloat16 and full_finetuning:
             # Use bfloat16 precision for full finetuning
             float32_mixed_precision = False
 

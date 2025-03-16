@@ -37,12 +37,12 @@ def _cross_entropy_forward(
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
+    VOCAB_SIZE        : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
-    SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       ,
+    DO_SOFTCAPPING    : tl.constexpr,
+    SOFTCAP           : tl.constexpr,
+    DO_LOGIT_SCALING  : tl.constexpr,
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
@@ -111,13 +111,13 @@ def _chunked_cross_entropy_forward(
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
-    N_CHUNKS          ,
+    VOCAB_SIZE        : tl.constexpr,
+    N_CHUNKS          : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
-    SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       ,
+    DO_SOFTCAPPING    : tl.constexpr,
+    SOFTCAP           : tl.constexpr,
+    DO_LOGIT_SCALING  : tl.constexpr,
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         256K vocab divided in 4 chunks
@@ -196,12 +196,12 @@ def _cross_entropy_backward(
     dloss_row_stride  ,
     logsumexp_ptr     ,
     labels_ptr        ,
-    VOCAB_SIZE        ,
+    VOCAB_SIZE        : tl.constexpr,
     BLOCK_SIZE        : tl.constexpr,
-    DO_SOFTCAPPING    ,
-    SOFTCAP           ,
-    DO_LOGIT_SCALING  ,
-    LOGIT_SCALE       ,
+    DO_SOFTCAPPING    : tl.constexpr,
+    SOFTCAP           : tl.constexpr,
+    DO_LOGIT_SCALING  : tl.constexpr,
+    LOGIT_SCALE       : tl.constexpr,
 ):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)

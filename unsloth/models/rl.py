@@ -238,9 +238,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "use_fp16 = getattr(args, 'fp16', False)\n"\
         "force_float32 = False\n"\
         "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1':\n"\
-        "    if use_bf16 or use_fp16:\n"\
-        "        print('Unsloth: Switching to float32 training since model cannot work with float16')\n"\
-        "        force_float32 = True\n"\
+        "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"\
+        "    force_float32 = True\n"\
         "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"\
         "dtype = getattr(model.config, 'torch_dtype', None)\n"\
         "if dtype is None: dtype = model.get_input_embeddings().dtype\n"\
@@ -354,13 +353,28 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Check data collator if it's correct!
     if "data_collator" in call_args and "train_dataset" in call_args:
         data_collator_check = \
-        "if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
-        "    data_collator = DataCollatorForLanguageModeling("\
-        "tokenizer = processing_class if 'processing_class' in locals() else tokenizer, mlm = False)\n"\
-        "elif isinstance(data_collator, DataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
-        "    data_collator = DataCollatorForSeq2Seq("\
-        "tokenizer = processing_class if 'processing_class' in locals() else tokenizer)\n"
+        "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"\
+        "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"\
+        "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
+        "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
+        "        data_collator = DataCollatorForLanguageModeling(__tokenizer, mlm = False)\n"\
+        "    elif isinstance(data_collator, DataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
+        "        data_collator = DataCollatorForSeq2Seq(__tokenizer)\n"\
+        "else:\n"\
+        "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"\
+        "    if hasattr(args, 'dataset_text_field'): args.dataset_text_field = ''\n"\
+        "    if hasattr(args, 'dataset_kwargs'): args.dataset_kwargs = {'skip_prepare_dataset': True}\n"
         extra_args += data_collator_check
+
+        # Also check if .pad exists -> if not, and is VLM, then change it!
+        pad_check = \
+        "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
+        "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"\
+        "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
+        "            data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
+        "        else:\n"\
+        "            data_collator = DataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False)\n"
+        extra_args += pad_check
     pass
 
     # Check NEFTune
