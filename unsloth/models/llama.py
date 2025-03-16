@@ -38,6 +38,7 @@ from ..kernels import *
 from ..tokenizer_utils import *
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func
+from .vision import FastBaseModel
 
 # Final patching code
 from transformers.models.llama.modeling_llama import (
@@ -1677,6 +1678,7 @@ class FastLlamaModel:
         disable_log_stats = False,
         **kwargs,
     ):
+        os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
         if trust_remote_code:
             if fast_inference:
                 raise NotImplementedError("Unsloth: Fast inference does not support `trust_remote_code` yet.")
@@ -1689,6 +1691,10 @@ class FastLlamaModel:
             import platform
             if platform.system().lower() == 'windows':
                 print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+                fast_inference = False
+            major_version, minor_version = torch.cuda.get_device_capability()
+            if major_version < 7:
+                print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
                 fast_inference = False
         pass
 
@@ -1813,6 +1819,8 @@ class FastLlamaModel:
                 attn_implementation     = "eager",
                 **kwargs,
             )
+            model.fast_generate = model.generate
+            model.fast_generate_batches = None
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
@@ -1831,6 +1839,7 @@ class FastLlamaModel:
                 enable_lora            = True,
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
+                use_bitsandbytes       = load_in_4bit,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -1942,12 +1951,12 @@ class FastLlamaModel:
 
         # Save max_seq_length
         model.max_seq_length = max_seq_length
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model = internal_model.model
+        m = model
+        while hasattr(m, "model"):
+            m.max_seq_length = max_seq_length
+            m = m.model
         pass
-        internal_model.max_seq_length = max_seq_length
+        m.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
@@ -2045,6 +2054,35 @@ class FastLlamaModel:
         temporary_location  = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+            return FastBaseModel.get_peft_model(
+                model                      = model,
+                r                          = r,
+                target_modules             = target_modules,
+                lora_alpha                 = lora_alpha,
+                lora_dropout               = lora_dropout,
+                bias                       = bias,
+                finetune_vision_layers     = False,
+                finetune_language_layers   = True,
+                finetune_attention_modules = True,
+                finetune_mlp_modules       = True,
+                layers_to_transform        = layers_to_transform,
+                layers_pattern             = layers_pattern,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state               = random_state,
+                max_seq_length             = max_seq_length,
+                use_rslora                 = use_rslora,
+                modules_to_save            = modules_to_save,
+                init_lora_weights          = init_lora_weights,
+                loftq_config               = loftq_config,
+                temporary_location         = temporary_location,
+                **kwargs,
+            )
+        pass
+        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+            print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            return model
+        pass
         transformers_set_seed(random_state)
 
         if use_gradient_checkpointing == "unsloth":
@@ -2460,6 +2498,12 @@ class FastLlamaModel:
         model,
         use_gradient_checkpointing = True,
     ):
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+            return FastBaseModel.patch_peft_model(
+                model = model,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+            )
+        pass
         if not isinstance(model, PeftModelForCausalLM):
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
@@ -2641,6 +2685,19 @@ class FastLlamaModel:
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
+        pass
+
+        # Patch for fast inference
+        vllm_engine = getattr(model.model, "vllm_engine", None)
+        if vllm_engine is not None:
+            model.vllm_engine = model.model.vllm_engine
+            model.fast_generate = model.model.fast_generate
+            model.fast_generate_batches = model.model.fast_generate_batches
+
+            # Also saving and loading LoRA
+            from unsloth_zoo.vllm_utils import save_lora, load_lora
+            model.save_lora = functools.partial(save_lora, model)
+            model.load_lora = functools.partial(load_lora, model)
         pass
 
         # Add for_inference and for_training
