@@ -15,17 +15,17 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings
-
+from .utils import calculate_settings, torch_cuda_device
 
 @triton.jit
 def _rms_layernorm_forward(
     Y, Y_row_stride,
     X, X_row_stride,
     W, W_row_stride,
-    r, r_row_stride,
-    n_cols, eps,
-    BLOCK_SIZE : tl.constexpr
+    r, r_row_stride : tl.constexpr,
+    n_cols     : tl.constexpr,
+    eps        : tl.constexpr,
+    BLOCK_SIZE : tl.constexpr,
 ):
     """
         Fast RMS Layernorm kernel
@@ -58,9 +58,10 @@ def _rms_layernorm_backward(
     dX, dX_row_stride,
     X,   X_row_stride,
     W,   W_row_stride,
-    r,   r_row_stride,
+    r,   r_row_stride : tl.constexpr,
     # dW, dW_row_stride,
-    n_cols, eps,
+    n_cols     : tl.constexpr,
+    eps        : tl.constexpr,
     GEMMA      : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
 ):
@@ -108,8 +109,9 @@ def _gemma_rms_layernorm_forward(
     Y, Y_row_stride,
     X, X_row_stride,
     W, W_row_stride,
-    r, r_row_stride,
-    n_cols, eps,
+    r, r_row_stride : tl.constexpr,
+    n_cols     : tl.constexpr,
+    eps        : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
 ):
     # Copies https://github.com/google-deepmind/gemma/blob/main/gemma/layers.py#L31
@@ -154,15 +156,16 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         r = torch.empty(n_rows, dtype = torch.float32, device = device)
 
         fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
-        fx[(n_rows,)](
-            Y, Y.stride(0),
-            X, X.stride(0),
-            W, W.stride(0),
-            r, r.stride(0),
-            n_cols, eps,
-            BLOCK_SIZE = BLOCK_SIZE,
-            num_warps  = num_warps,
-        )
+        with torch_cuda_device(device):
+            fx[(n_rows,)](
+                Y, Y.stride(0),
+                X, X.stride(0),
+                W, W.stride(0),
+                r, r.stride(0),
+                n_cols, eps,
+                BLOCK_SIZE = BLOCK_SIZE,
+                num_warps  = num_warps,
+            )
         ctx.eps = eps
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
@@ -183,18 +186,19 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         # dW = X
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
 
-        _rms_layernorm_backward[(n_rows,)](
-            dY, dY.stride(0),
-            dX, dX.stride(0),
-            X,  X .stride(0),
-            W,  W .stride(0),
-            r,  r .stride(0),
-            # dW, dW.stride(0),
-            n_cols, ctx.eps,
-            GEMMA      = ctx.GEMMA,
-            BLOCK_SIZE = ctx.BLOCK_SIZE,
-            num_warps  = ctx.num_warps,
-        )
+        with torch_cuda_device(dY.device):
+            _rms_layernorm_backward[(n_rows,)](
+                dY, dY.stride(0),
+                dX, dX.stride(0),
+                X,  X .stride(0),
+                W,  W .stride(0),
+                r,  r .stride(0),
+                # dW, dW.stride(0),
+                n_cols, ctx.eps,
+                GEMMA      = ctx.GEMMA,
+                BLOCK_SIZE = ctx.BLOCK_SIZE,
+                num_warps  = ctx.num_warps,
+            )
         dX = dX.view(*shape)
         return dX, None, None, None
     pass
@@ -251,7 +255,6 @@ def unpatch_rms_layernorm():
         transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = MllamaTextRMSNorm
     except:
         pass
-    return
     return
 pass
 

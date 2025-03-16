@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._utils import is_bfloat16_supported, HAS_FLASH_ATTENTION, HAS_FLASH_ATTENTION_SOFTCAPPING
+from ._utils import (
+    is_bfloat16_supported,
+    HAS_FLASH_ATTENTION,
+    HAS_FLASH_ATTENTION_SOFTCAPPING,
+    USE_MODELSCOPE,
+)
 from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
@@ -36,14 +41,6 @@ pass
 from huggingface_hub import HfFileSystem
 import importlib.util
 
-# [TODO] Move USE_MODELSCOPE to utils
-USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
-if USE_MODELSCOPE:
-    if importlib.util.find_spec("modelscope") is None:
-        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
-    pass
-pass
-
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
 transformers_version = Version(transformers_version)
@@ -59,15 +56,25 @@ if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
 pass
 import torch
-
+from ._utils import (
+    patch_compiling_bitsandbytes,
+    patch_model_and_tokenizer,
+    prepare_model_for_kbit_training,
+    patch_unsloth_smart_gradient_checkpointing,
+    patch_compiled_autograd,
+    process_vision_info,
+    unsloth_compile_transformers,
+)
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
         model_name                 = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length             = None,
+        max_seq_length             = 2048,
         dtype                      = None,
         load_in_4bit               = True,
+        load_in_8bit               = False,
+        full_finetuning            = False,
         token                      = None,
         device_map                 = "sequential",
         rope_scaling               = None,
@@ -86,7 +93,34 @@ class FastLanguageModel(FastLlamaModel):
         disable_log_stats          = True,
         *args, **kwargs,
     ):
+        if load_in_8bit or full_finetuning:
+            return FastModel.from_pretrained(
+                model_name                 = model_name,
+                max_seq_length             = max_seq_length,
+                dtype                      = dtype,
+                load_in_4bit               = load_in_4bit,
+                load_in_8bit               = load_in_8bit,
+                full_finetuning            = full_finetuning,
+                token                      = token,
+                device_map                 = device_map,
+                rope_scaling               = rope_scaling, # [TODO] No effect
+                fix_tokenizer              = fix_tokenizer, # [TODO] No effect
+                trust_remote_code          = trust_remote_code,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                resize_model_vocab         = resize_model_vocab, # [TODO] No effect
+                revision                   = revision,
+                return_logits              = False, # Return logits
+                fullgraph                  = True, # No graph breaks
+                use_exact_model_name       = use_exact_model_name,
+                *args, **kwargs,
+            )
+        pass
+
         if token is None: token = get_token()
+        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
+
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
@@ -141,7 +175,7 @@ class FastLanguageModel(FastLlamaModel):
 
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
-        
+
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
             # Check if folder exists locally
@@ -190,7 +224,6 @@ class FastLanguageModel(FastLlamaModel):
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
-                revision = revision,
                 trust_remote_code = trust_remote_code,
             )
         pass
@@ -253,15 +286,32 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
-        elif model_type == "cohere":
-            dispatch_model = FastCohereModel
-        elif model_type == "granite":
-            dispatch_model = FastGraniteModel
+        # Temporary disable optimized Cohere until errors match
+        # elif model_type == "cohere":
+        #     dispatch_model = FastCohereModel
+        # Temporary disable optimized Granite until errors match
+        # elif model_type == "granite":
+        #     dispatch_model = FastGraniteModel
         else:
-            raise NotImplementedError(
-                f"Unsloth: {model_name} not supported yet!\n"\
-                "Maybe you're doing vision finetuning? Please use FastVisionModel instead!\n"\
-                "Otherwise, make an issue to https://github.com/unslothai/unsloth!",
+            return FastModel.from_pretrained(
+                model_name                 = model_name,
+                max_seq_length             = max_seq_length,
+                dtype                      = dtype,
+                load_in_4bit               = load_in_4bit,
+                load_in_8bit               = load_in_8bit,
+                full_finetuning            = full_finetuning,
+                token                      = token,
+                device_map                 = device_map,
+                rope_scaling               = rope_scaling, # [TODO] No effect
+                fix_tokenizer              = fix_tokenizer, # [TODO] No effect
+                trust_remote_code          = trust_remote_code,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                resize_model_vocab         = resize_model_vocab, # [TODO] No effect
+                revision                   = revision,
+                return_logits              = False, # Return logits
+                fullgraph                  = True, # No graph breaks
+                use_exact_model_name       = use_exact_model_name,
+                *args, **kwargs,
             )
         pass
 
@@ -276,6 +326,11 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
+            import platform
+            if platform.system().lower() == 'windows':
+                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+                fast_inference = False
+            pass
             from unsloth_zoo.vllm_utils import (
                 patch_vllm, 
                 vllm_dynamic_quant_supported,
@@ -350,7 +405,6 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model.enable_input_require_grads()
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -367,29 +421,31 @@ class FastLanguageModel(FastLlamaModel):
 pass
 
 
-from ._utils import (
-    patch_compiling_bitsandbytes,
-    patch_model_and_tokenizer,
-    prepare_model_for_kbit_training,
-    patch_unsloth_smart_gradient_checkpointing,
-    patch_compiled_autograd,
-    process_vision_info,
-    unsloth_compile_transformers,
-)
 from ..kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseVisionModel
+from .vision import FastBaseModel
+from transformers import (
+    AutoModelForCausalLM,
+)
+try:
+    from transformers import AutoModelForImageTextToText
+    AutoModelForVision2Seq = AutoModelForImageTextToText
+except:
+    from transformers import AutoModelForVision2Seq
+pass
 
 
-class FastVisionModel(FastBaseVisionModel):
+class FastModel(FastBaseModel):
     @staticmethod
     def from_pretrained(
         model_name                 = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
-        max_seq_length             = None, # [TODO] No effect
+        max_seq_length             = 2048,
         dtype                      = None,
         load_in_4bit               = True,
+        load_in_8bit               = False,
+        full_finetuning            = False,
         token                      = None,
         device_map                 = "sequential",
         rope_scaling               = None, # [TODO] No effect
@@ -404,15 +460,60 @@ class FastVisionModel(FastBaseVisionModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
+        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
 
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
-        
+
+        if full_finetuning and (load_in_4bit or load_in_8bit):
+            print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
+            load_in_4bit = False
+            load_in_8bit = False
+        pass
+
+        if load_in_4bit and load_in_8bit:
+            raise RuntimeError(
+                "Unsloth: Can only load in 4bit or 8bit, not both!\n"\
+                "Also, we by default set `load_in_4bit = True`.\n"\
+                "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`"
+            )
+        if load_in_4bit: pass
+        elif load_in_8bit: pass
+        elif not load_in_4bit and not load_in_8bit and not full_finetuning:
+            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
+            load_in_4bit = True
+        pass
+
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+
+        # Check versions
+        LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
+        NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
+        if "pixtral" in model_name.lower() and transformers_version < Version("4.49.0"):
+            raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
+        elif "qwen2.5" in model_name.lower() and transformers_version < Version("4.49.0"):
+            raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
+        elif "aya-vision" in model_name.lower():
+            # Disable compiling for now - errors out!
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Aya Vision only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "gemma-3" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
+            raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "c4ai-command-a-03-2025" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
+            raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "granite-vision" in model_name.lower():
+            # Disable compiling for now - errors out!
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Granite Vision only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "olmo-2" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
+            raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
+        pass
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
@@ -423,7 +524,7 @@ class FastVisionModel(FastBaseVisionModel):
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
         was_disabled = are_progress_bars_disabled()
         disable_progress_bars()
-        
+
         autoconfig_error = None
         peft_error = None
         try:
@@ -454,7 +555,7 @@ class FastVisionModel(FastBaseVisionModel):
 
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
-        
+
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
             # Check if folder exists locally
@@ -503,7 +604,6 @@ class FastVisionModel(FastBaseVisionModel):
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
-                revision = revision,
                 trust_remote_code = trust_remote_code,
             )
         pass
@@ -511,9 +611,12 @@ class FastVisionModel(FastBaseVisionModel):
         if not was_disabled: enable_progress_bars()
 
         do_logging = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
-        redirector = sys.stdout if do_logging else open(os.devnull, "w")
+        if do_logging:
+            redirector = contextlib.nullcontext()
+        else:
+            redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
-        with contextlib.redirect_stdout(redirector):
+        with redirector:
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 model_name              = model_name,
@@ -543,7 +646,6 @@ class FastVisionModel(FastBaseVisionModel):
                 return_logits           = return_logits,
             )
         pass
-        if do_logging: redirector.close()
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
@@ -555,20 +657,29 @@ class FastVisionModel(FastBaseVisionModel):
             tokenizer_name = None
         pass
 
-        model, tokenizer = FastBaseVisionModel.from_pretrained(
+        # Check if VLM
+        is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
+        is_vlm = is_vlm or hasattr(model_config, "vision_config")
+        auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+
+        model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
             dtype             = _get_dtype(dtype),
             load_in_4bit      = load_in_4bit,
+            load_in_8bit      = load_in_8bit,
+            full_finetuning   = full_finetuning,
             token             = token,
             device_map        = device_map,
             trust_remote_code = trust_remote_code,
             revision          = revision if not is_peft else None,
             model_types       = model_types,
             tokenizer_name    = tokenizer_name,
+            auto_model        = auto_model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
             *args, **kwargs,
         )
-        
+
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
@@ -603,7 +714,6 @@ class FastVisionModel(FastBaseVisionModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
-            model.enable_input_require_grads()
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -613,8 +723,14 @@ class FastVisionModel(FastBaseVisionModel):
                 trust_remote_code = trust_remote_code,
             )
             # Patch it as well!
-            model = FastBaseVisionModel.patch_peft_model(model, use_gradient_checkpointing)
+            model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing)
         pass
         return model, tokenizer
     pass
 pass
+
+class FastVisionModel(FastModel):
+    pass
+
+class FastTextModel(FastModel):
+    pass

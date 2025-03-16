@@ -78,6 +78,25 @@ def sft_trainer_prepare_dataset(function_name, function):
     if  function_name != "_prepare_non_packed_dataloader" and \
         function_name != "_prepare_dataset": return function
 
+    fast_sft_prepare_dataset = RL_REPLACEMENTS.get("sft_prepare_dataset", None)
+    if fast_sft_prepare_dataset is not None and "pack_examples" in function:
+        params = inspect.signature(fast_sft_prepare_dataset).parameters.keys()
+        params = ".*?".join(params)
+        matched = re.match(
+            r"[\s]{0,}def _prepare_dataset\(.*?" + params + r".*?\)",
+            function,
+            flags = re.MULTILINE | re.DOTALL,
+        )
+        if matched:
+            # Use fast version!
+            function = inspect.getsource(fast_sft_prepare_dataset)
+            function = function.split("\n")
+            function = "\n".join(" "*4 + x for x in function)
+            function = function.replace("def sft_prepare_dataset", "def _prepare_dataset")
+            return function
+        pass
+    pass
+
     check_text = \
     "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
     "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
@@ -90,9 +109,11 @@ def sft_trainer_prepare_dataset(function_name, function):
     "if getattr(tokenizer, 'bos_token', None) is not None else False\n"\
     "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"\
     "    from functools import partial\n"\
-    "    tokenizer = partial(tokenizer, add_special_tokens = False)\n"\
+    "    tokenizer_call = tokenizer.__call__\n"\
+    "    tokenizer.__call__ = partial(tokenizer_call, add_special_tokens = False)\n"\
     "    processing_class = tokenizer\n"\
     "else:\n"\
+    "    tokenizer_call = None\n"\
     "    add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
 
     check_text = check_text.split("\n")
@@ -109,6 +130,14 @@ def sft_trainer_prepare_dataset(function_name, function):
         replacer = replacer[0]
         function = function.replace(replacer, replacer + check_text)
     pass
+
+    # Return tokenizer's original state
+    return_state = "if tokenizer_call is not None: tokenizer.__call__ = tokenizer_call\n"
+    function = re.sub(
+        r"\n([ ]{4,})(return .*?[\s]{0,})$",
+        rf"\1{return_state}\1\2",
+        function,
+    )
     return function
 pass
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
@@ -178,9 +207,12 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-        return None # Unsloth efficient GRPO
+        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+            return None # Unsloth efficient GRPO
+        # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
+            if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float32
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
@@ -200,12 +232,14 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps)
 
-grpo_compute_loss     = RL_REPLACEMENTS["grpo_compute_loss"]
-UnslothEfficientGRPO  = RL_REPLACEMENTS["UnslothEfficientGRPO"]
-grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
+grpo_compute_loss      = RL_REPLACEMENTS["grpo_compute_loss"]
+grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
+UnslothEfficientGRPO   = RL_REPLACEMENTS["UnslothEfficientGRPO"]
+grpo_accumulated_loss  = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
+RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer_compute_loss(function_name, function):
@@ -237,8 +271,8 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         input_ids = input_ids[:, -logits_to_keep:]
-        if False:#per_token_logps is not None:
-            loss, completion_length, mean_kl = grpo_compute_loss(
+        if per_token_logps is not None:
+            loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
             )
         else:

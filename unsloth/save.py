@@ -17,6 +17,8 @@ from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
+import sys
+import requests
 import torch
 import os
 import shutil
@@ -1613,6 +1615,112 @@ def create_ollama_modelfile(tokenizer, gguf_location):
     return modelfile
 pass
 
+def create_ollama_model(
+    username: str, 
+    model_name: str, 
+    tag: str, 
+    modelfile_path: str
+):
+    try:
+        init_check = subprocess.run(
+            ['curl', 'http://localhost:11434'], capture_output=True, text=True,  timeout=3
+        )
+        if init_check.returncode == 0:
+            print(init_check.stdout.strip())
+        else:
+            print("Ollama Server is not Running")
+    except subprocess.TimeoutExpired:
+        return "Ollama Request Timeout"
+
+    process = subprocess.Popen(
+            ['ollama', 'create', f'{username}/{model_name}:{tag}', '-f', f'{modelfile_path}'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
+
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')
+        sys.stdout.flush()
+
+    return_code = process.wait()
+
+    if return_code != 0:
+        print(f"\nMODEL CREATED FAILED WITH RETURN CODE {return_code}")
+    else:
+        print("\nMODEL CREATED SUCCESSFULLY")
+pass
+
+
+def push_to_ollama_hub(username: str, model_name: str, tag: str):
+    try:
+        init_check = subprocess.run(
+            ['curl', 'http://localhost:11434'], capture_output=True, text=True,  timeout=3
+        )
+        if init_check.returncode == 0:
+            print(init_check.stdout.strip())
+        else:
+            print("Ollama Server is not Running")
+    except subprocess.TimeoutExpired:
+        return "Ollama Request Timeout"
+
+    process = subprocess.Popen(
+            ['ollama', 'push', f'{username}/{model_name}:{tag}'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
+
+    for line in iter(process.stdout.readline, ''):
+        print(line, end='')
+        sys.stdout.flush()
+
+    return_code = process.wait()
+
+    if return_code != 0:
+        print(f"\nMODEL PUBLISHED FAILED WITH RETURN CODE {return_code}")
+    else:
+        print("\nMODEL PUBLISHED SUCCESSFULLY")
+
+
+def push_to_ollama(
+    tokenizer,
+    gguf_location,
+    username: str,
+    model_name: str,
+    tag: str
+):
+    model_file = create_ollama_modelfile(
+        tokenizer=tokenizer,
+        gguf_location=gguf_location
+    )
+
+    with open(f"Modelfile_{model_name}", "w") as f:
+        f.write(model_file)
+        f.close()
+    
+    create_ollama_model(
+        username=username,
+        model_name=model_name,
+        tag=tag,
+        modelfile_path=f"Modelfile_{model_name}"
+    )
+
+    push_to_ollama_hub(
+        username=username,
+        model_name=model_name,
+        tag=tag
+    )
+
+    print("Succesfully pushed to ollama")
+
+
+
+
 
 def unsloth_save_pretrained_gguf(
     self,
@@ -2110,7 +2218,58 @@ pass
 
 
 from .models.loader_utils import get_model_name
-from unsloth_zoo.saving_utils import merge_and_overwrite_lora
+from unsloth_zoo.saving_utils import (
+    merge_and_overwrite_lora,
+    prepare_saving,
+)
+from unsloth_zoo.llama_cpp import (
+    install_llama_cpp,
+    convert_to_gguf as _convert_to_gguf,
+)
+
+@torch.inference_mode
+def save_to_gguf_generic(
+    model,
+    save_directory,
+    quantization_type = "Q8_0",
+    repo_id = None,
+    token = None,
+):
+    if token is None and repo_id is not None: token = get_token()
+    if repo_id is not None and token is None:
+        raise RuntimeError("Unsloth: Please specify a token for uploading!")
+
+    if not os.path.exists(os.path.join("llama.cpp", "unsloth_convert_hf_to_gguf.py")):
+        install_llama_cpp(just_clone_repo = True)
+    pass
+
+    metadata = _convert_to_gguf(
+        save_directory,
+        print_output = True,
+        quantization_type = quantization_type,
+    )
+    if repo_id is not None:
+        prepare_saving(
+            model,
+            repo_id,
+            push_to_hub = True,
+            max_shard_size = "50GB",
+            private = True,
+            token = token,
+        )
+
+        from huggingface_hub import HfApi
+        api = HfApi(token = token)
+        api.upload_folder(
+            folder_path = save_directory,
+            repo_id = repo_id,
+            repo_type = "model",
+            allow_patterns = ["*.gguf"],
+        )
+    pass
+    return metadata
+pass
+
 
 @torch.inference_mode
 def unsloth_generic_save(
@@ -2151,7 +2310,7 @@ def unsloth_generic_save(
         private              = private,
         token                = token,
         output_dtype         = None,
-        low_disk_space_usage = False,
+        low_disk_space_usage = True,
         use_temp_file        = False,
     )
     return
@@ -2355,8 +2514,8 @@ def patch_saving_functions(model, vision = False):
         # Vision only 1 option
         model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,     model)
         model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged, model)
-        model.push_to_hub_gguf       = types.MethodType(not_implemented_save,                   model)
-        model.save_pretrained_gguf   = types.MethodType(not_implemented_save,                   model)
+        model.push_to_hub_gguf       = types.MethodType(save_to_gguf_generic,                   model)
+        model.save_pretrained_gguf   = types.MethodType(save_to_gguf_generic,                   model)
     pass
     return model
 pass

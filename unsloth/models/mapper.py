@@ -62,6 +62,16 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/llama-2-7b-chat",
         "meta-llama/Llama-2-7b-chat-hf",
     ),
+    "unsloth/Mixtral-8x7B-v0.1-unsloth-bnb-4bit" : (
+        "unsloth/Mixtral-8x7B-v0.1",
+        "mistralai/Mixtral-8x7B-v0.1",
+        "unsloth/Mixtral-8x7B-v0.1-bnb-4bit",
+    ),
+    "unsloth/Mixtral-8x7B-Instruct-v0.1-unsloth-bnb-4bit" : (
+        "unsloth/Mixtral-8x7B-Instruct-v0.1",
+        "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit",
+    ),
     "unsloth/codellama-7b-bnb-4bit" : (
         "unsloth/codellama-7b",
         "codellama/CodeLlama-7b-hf",
@@ -492,6 +502,18 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2-VL-72B-Instruct",
         "Qwen/Qwen2-VL-72B-Instruct",
     ),
+    "unsloth/Qwen2-VL-2B-bnb-4bit" : (
+        "unsloth/Qwen2-VL-2B",
+        "Qwen/Qwen2-VL-2B",
+    ),
+    "unsloth/Qwen2-VL-7B-bnb-4bit" : (
+        "unsloth/Qwen2-VL-7B",
+        "Qwen/Qwen2-VL-7B",
+    ),
+    "unsloth/Qwen2-VL-72B-bnb-4bit" : (
+        "unsloth/Qwen2-VL-72B",
+        "Qwen/Qwen2-VL-72B",
+    ),
     "unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit" : (
         "unsloth/Llama-3.2-11B-Vision-Instruct",
         "meta-llama/Llama-3.2-11B-Vision-Instruct",
@@ -610,6 +632,91 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/OpenThinker-7B",
         "open-thoughts/OpenThinker-7B",
         "unsloth/OpenThinker-7B-bnb-4bit",
+    ),
+    "unsloth/granite-3.2-2b-instruct-unsloth-bnb-4bit" : (
+        "unsloth/granite-3.2-2b-instruct",
+        "ibm-granite/granite-3.2-2b-instruct",
+        "unsloth/granite-3.2-2b-instruct-bnb-4bit",
+    ),
+    "unsloth/granite-3.2-8b-instruct-unsloth-bnb-4bit" : (
+        "unsloth/granite-3.2-8b-instruct",
+        "ibm-granite/granite-3.2-8b-instruct",
+        "unsloth/granite-3.2-8b-instruct-bnb-4bit",
+    ),
+    "unsloth/QwQ-32B-unsloth-bnb-4bit" : (
+        "unsloth/QwQ-32B",
+        "Qwen/QwQ-32B",
+        "unsloth/QwQ-32B-bnb-4bit",
+    ),
+    "unsloth/gemma-3-1b-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-1b-it",
+        "google/gemma-3-1b-it",
+        "unsloth/gemma-3-1b-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-4b-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-4b-it",
+        "google/gemma-3-4b-it",
+        "unsloth/gemma-3-4b-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-12b-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-12b-it",
+        "google/gemma-3-12b-it",
+        "unsloth/gemma-3-12b-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-27b-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-27b-it",
+        "google/gemma-3-27b-it",
+        "unsloth/gemma-3-27b-it-bnb-4bit",
+    ),
+    "unsloth/gemma-3-1b-pt-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-1b-pt",
+        "google/gemma-3-1b-pt",
+        "unsloth/gemma-3-1b-pt-bnb-4bit",
+    ),
+    "unsloth/gemma-3-4b-pt-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-4b-pt",
+        "google/gemma-3-4b-pt",
+        "unsloth/gemma-3-4b-pt-bnb-4bit",
+    ),
+    "unsloth/gemma-3-12b-pt-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-12b-pt",
+        "google/gemma-3-12b-pt",
+        "unsloth/gemma-3-12b-pt-bnb-4bit",
+    ),
+    "unsloth/gemma-3-27b-pt-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3-27b-pt",
+        "google/gemma-3-27b-pt",
+        "unsloth/gemma-3-27b-pt-bnb-4bit",
+    ),
+    "unsloth/reka-flash-3-unsloth-bnb-4bit" : (
+        "unsloth/reka-flash-3",
+        "RekaAI/reka-flash-3",
+        "unsloth/reka-flash-3-bnb-4bit",
+    ),
+    "unsloth/c4ai-command-a-03-2025-unsloth-bnb-4bit" : (
+        "unsloth/c4ai-command-a-03-2025",
+        "CohereForAI/c4ai-command-a-03-2025",
+        "unsloth/c4ai-command-a-03-2025-bnb-4bit",
+    ),
+    "unsloth/aya-vision-32b-unsloth-bnb-4bit" : (
+        "unsloth/aya-vision-32b",
+        "CohereForAI/aya-vision-32b",
+        "unsloth/aya-vision-32b-bnb-4bit",
+    ),
+    "unsloth/aya-vision-8b-unsloth-bnb-4bit" : (
+        "unsloth/aya-vision-8b",
+        "CohereForAI/aya-vision-8b",
+        "unsloth/aya-vision-8b-bnb-4bit",
+    ),
+    "unsloth/granite-vision-3.2-2b-unsloth-bnb-4bit" : (
+        "unsloth/granite-vision-3.2-2b",
+        "ibm-granite/granite-vision-3.2-2b",
+        "unsloth/granite-vision-3.2-2b-bnb-4bit",
+    ),
+    "unsloth/OLMo-2-0325-32B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/OLMo-2-0325-32B-Instruct",
+        "allenai/OLMo-2-0325-32B-Instruct",
+        "unsloth/OLMo-2-0325-32B-Instruct-bnb-4bit",
     ),
 }
 
