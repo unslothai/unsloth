@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import re
-from typing import Union, List, Any, Tuple, Dict, Callable
+from typing import Union, List, Any, Tuple, Dict, Callable, Optional
 import inspect
 import torch
 
