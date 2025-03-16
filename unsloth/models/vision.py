@@ -42,6 +42,10 @@ from unsloth_zoo.peft_utils import (
 from transformers.models.llama.modeling_llama import logger
 from transformers import __version__ as transformers_version
 from triton import __version__ as triton_version
+
+from PIL import Image
+import json
+
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
@@ -60,6 +64,7 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 pass
+
 
 __all__ = [
     "FastBaseModel",
@@ -164,6 +169,9 @@ class FastBaseModel:
         trust_remote_code = False,
         model_types       = None,
         tokenizer_name    = None,
+        max_image_width   = None,
+        max_image_height  = None,
+        maintain_image_aspect_ratio = True,
         auto_model        = AutoModelForVision2Seq,
         use_gradient_checkpointing = "unsloth",
         **kwargs,
@@ -310,6 +318,57 @@ class FastBaseModel:
             padding_side = "right",
             token        = token,
         )
+
+        # Add padding side as well
+        tokenizer.tokenizer.padding_side = "right"
+
+        # Check for image size configuration in model config
+        if max_image_width is None or max_image_height is None:
+            try:
+                # Try to get model configuration path
+                config_path = None
+                if hasattr(model, "config") and hasattr(model.config, "_name_or_path"):
+                    model_path = model.config._name_or_path
+                    if os.path.isdir(model_path):
+                        config_path = os.path.join(model_path, "config.json")
+                
+                # If we couldn't get a local path, try to get from the cache
+                if config_path is None or not os.path.isfile(config_path):
+                    from huggingface_hub import cached_file
+                    try:
+                        config_path = cached_file(model_name, "config.json", token=token)
+                    except:
+                        # Failed to get config path, will use defaults
+                        pass
+                
+                # If we have a config path, try to get image size from it
+                if config_path is not None and os.path.isfile(config_path):
+                    config_width, config_height = FastBaseVisionModel.get_max_image_size_from_config(config_path)
+                    if max_image_width is None and config_width is not None:
+                        max_image_width = config_width
+                        logger.warning_once(f"Unsloth: Using maximum image width of {max_image_width} from model config")
+                    if max_image_height is None and config_height is not None:
+                        max_image_height = config_height
+                        logger.warning_once(f"Unsloth: Using maximum image height of {max_image_height} from model config")
+            except Exception as e:
+                logger.warning(f"Failed to extract image size from model config: {e}")
+        
+        # Apply image resizing if dimensions are specified
+        if max_image_width is not None or max_image_height is not None:
+            # Patch the processor to use our image resizing
+            tokenizer = FastBaseVisionModel.patch_processor_with_image_resizing(
+                tokenizer, 
+                max_image_width, 
+                max_image_height, 
+                maintain_image_aspect_ratio
+            )
+            
+            # Print information about image resizing
+            width_info = f"{max_image_width}" if max_image_width is not None else "default"
+            height_info = f"{max_image_height}" if max_image_height is not None else "default"
+            aspect_ratio = "maintaining aspect ratio" if maintain_image_aspect_ratio else "ignoring aspect ratio"
+            logger.warning_once(f"Unsloth: Image resizing enabled with max dimensions {width_info}x{height_info}, {aspect_ratio}")
+
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
@@ -325,6 +384,7 @@ class FastBaseModel:
                 tokenizer.pad_token    = __tokenizer.pad_token
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
         pass
+
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
         # Fix other stuff like BnB compute data types
@@ -338,6 +398,13 @@ class FastBaseModel:
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
             model.config.update({"unsloth_version" : __version__})
+            # Store image resizing configuration in model config
+            if max_image_width is not None or max_image_height is not None:
+                model.config.update({
+                    "unsloth_max_image_width": max_image_width,
+                    "unsloth_max_image_height": max_image_height,
+                    "unsloth_maintain_image_aspect_ratio": maintain_image_aspect_ratio,
+                })
         pass
         patch_saving_functions(model, vision = True)
         patch_saving_functions(tokenizer, vision = True)
@@ -611,4 +678,124 @@ class FastBaseModel:
         pass
         return model
     pass
+
+    @staticmethod
+    def resize_image(image, max_width, max_height, maintain_aspect_ratio=True):
+        """Basic image resizing function that maintains aspect ratio by default."""
+        if not isinstance(image, Image.Image):
+            if isinstance(image, torch.Tensor):
+                return image
+            raise ValueError(f"Expected PIL Image or Tensor, got {type(image)}")
+        
+        # If both dimensions are None, return the original image
+        if max_width is None and max_height is None:
+            return image
+        
+        # Convert dimensions to integers
+        max_width = int(max_width) if max_width is not None else None
+        max_height = int(max_height) if max_height is not None else None
+        
+        # Get current dimensions
+        width, height = image.size
+        
+        # If one dimension is None, use the other dimension to maintain aspect ratio
+        if max_width is None:
+            max_width = int(width * (max_height / height)) if max_height < height else width
+        if max_height is None:
+            max_height = int(height * (max_width / width)) if max_width < width else height
+        
+        # If the image is already smaller than the maximum dimensions, return it as is
+        if width <= max_width and height <= max_height:
+            return image
+        
+        if maintain_aspect_ratio:
+            ratio = min(max_width / width, max_height / height)
+            new_width = int(width * ratio)
+            new_height = int(height * ratio)
+        else:
+            new_width, new_height = max_width, max_height
+        
+        # Ensure dimensions are at least 1 pixel
+        new_width = max(1, new_width)
+        new_height = max(1, new_height)
+        
+        return image.resize((new_width, new_height), Image.LANCZOS)
+
+    @staticmethod
+    def get_max_image_size_from_config(config_path):
+        """Extract image dimensions from config file."""
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Check vision_config first
+            if "vision_config" in config and "image_size" in config["vision_config"]:
+                size = config["vision_config"]["image_size"]
+                if isinstance(size, int):
+                    return size, size
+                if isinstance(size, (list, tuple)) and len(size) == 2:
+                    return size[0], size[1]
+            
+            # Check other common fields
+            for field in ["image_size", "max_image_size", "visual_image_size"]:
+                if field in config:
+                    size = config[field]
+                    if isinstance(size, int):
+                        return size, size
+                    if isinstance(size, (list, tuple)) and len(size) == 2:
+                        return size[0], size[1]
+            
+            return None, None
+        except Exception as e:
+            print(f"Error reading config file at {config_path}: {e}")
+            return None, None
+
+    @staticmethod
+    def patch_processor_with_image_resizing(processor, max_width=None, max_height=None, maintain_aspect_ratio=True):
+        """Patch an image processor to resize images before processing."""
+        if not max_width and not max_height:
+            return processor
+        
+        # Create a wrapper class to handle resizing
+        class ResizingProcessorWrapper:
+            def __init__(self, processor, max_width, max_height, maintain_aspect_ratio):
+                self.processor = processor
+                self.max_width = max_width
+                self.max_height = max_height
+                self.maintain_aspect_ratio = maintain_aspect_ratio
+                self._image_resizing_config = {
+                    'max_width': max_width,
+                    'max_height': max_height,
+                    'maintain_aspect_ratio': maintain_aspect_ratio
+                }
+                
+                # Copy processor attributes
+                for attr in dir(processor):
+                    if not attr.startswith('_') and not hasattr(self, attr):
+                        setattr(self, attr, getattr(processor, attr))
+            
+            def __call__(self, images=None, **kwargs):
+                """Process images with resizing."""
+                # Make a copy of kwargs to avoid modifying the original
+                kwargs_copy = kwargs.copy()
+                
+                if images is not None:
+                    # Handle images passed as a positional argument
+                    if isinstance(images, (list, tuple)):
+                        images = [FastBaseVisionModel.resize_image(img, self.max_width, self.max_height, self.maintain_aspect_ratio) for img in images]
+                    else:
+                        images = FastBaseVisionModel.resize_image(images, self.max_width, self.max_height, self.maintain_aspect_ratio)
+                    return self.processor(images=images, **kwargs_copy)
+                elif 'images' in kwargs_copy:
+                    # Handle images passed as a keyword argument
+                    if isinstance(kwargs_copy['images'], (list, tuple)):
+                        kwargs_copy['images'] = [FastBaseVisionModel.resize_image(img, self.max_width, self.max_height, self.maintain_aspect_ratio) for img in kwargs_copy['images']]
+                    else:
+                        kwargs_copy['images'] = FastBaseVisionModel.resize_image(kwargs_copy['images'], self.max_width, self.max_height, self.maintain_aspect_ratio)
+                
+                # Pass all kwargs to the processor
+                return self.processor(**kwargs_copy)
+        
+        # Create and return a wrapper instance
+        return ResizingProcessorWrapper(processor, max_width, max_height, maintain_aspect_ratio)
 pass
