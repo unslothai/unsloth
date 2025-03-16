@@ -149,6 +149,7 @@ def patch_gemma3_modeling():
         Gemma3CausalLMOutputWithPast,
         logger,
         is_torchdynamo_compiling,
+        Cache,
     )
     def forward(
         self,
