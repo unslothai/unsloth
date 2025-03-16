@@ -274,6 +274,7 @@ def patch_gemma3_modeling():
         if labels is not None and attention_mask is not None:
             attention_mask = attention_mask.to(device = labels.device)
             labels[attention_mask == 0] = -100
+            print("Masked out")
         pass
 
         outputs = self.language_model(
@@ -291,6 +292,8 @@ def patch_gemma3_modeling():
             **lm_kwargs,
         )
         labels = None
+        print("Loss", outputs.loss)
+
 
         logits = outputs.logits
         loss = None
