@@ -1825,7 +1825,7 @@ class FastLlamaModel:
 
             # Convert to HF format
             _, quant_state_dict = get_vllm_state_dict(llm, config = model_config)
-            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype)
+            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
