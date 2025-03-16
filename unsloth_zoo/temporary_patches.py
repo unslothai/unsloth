@@ -328,12 +328,12 @@ def patch_gemma3_modeling():
             image_hidden_states=image_features if pixel_values is not None else None,
         )
     pass
-    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma.Gemma3ForConditionalGeneration.forward).parameters
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
     new_keys = inspect.signature(forward).parameters
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
-        transformers.models.gemma3.modeling_gemma.Gemma3ForConditionalGeneration.forward = forward
+        transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
     return
 pass
 TEMPORARY_PATCHES.append(patch_gemma3_modeling)
