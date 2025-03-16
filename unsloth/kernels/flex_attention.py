@@ -95,6 +95,8 @@ try:
                 self._flex_attention(q, k, v)
 
 
+        # Important to note! Our flex_attention wrapper
+        # takes in a mask_mod instead of a block_mask
         def flex_attention(
             self,
             query: Tensor,
@@ -103,6 +105,8 @@ try:
             score_mod: Optional[_score_mod_signature] = None,
             mask_mod: _mask_mod_signature = _noop_mask,
             scale: Optional[float] = None,
+            enable_gqa: bool = False,
+            return_lse: bool = False,
         ) -> Tensor:
             bs, num_heads, q_len, head_dim = query.shape
             _, _, kv_len, _ = key.shape
@@ -132,6 +136,9 @@ try:
                 H=None,
                 Q_LEN=self.max_seq_len,
                 KV_LEN=self.max_seq_len,
+                BLOCK_SIZE = 128,
+                # TODO: Will be deprecated in favor of torch.compile soon
+                _compile=True,
             )
 
             padded_q = F.pad(query, (0, 0, 0, self.max_seq_len - q_len))
@@ -144,7 +151,9 @@ try:
                 padded_v,
                 score_mod=score_mod,
                 block_mask=blockmask,
-                scale=scale
+                scale=scale,
+                enable_gqa=enable_gqa,
+                return_lse=return_lse,
             )
 
             return res[:, :, :q_len, :]
@@ -221,26 +230,6 @@ else:
     pass
 
     @functools.lru_cache
-    def create_block_mask(mask, n = 128):
-        return _create_block_mask(
-            mask, 1, 1, n, n,
-            BLOCK_SIZE = 128,
-            _compile = True,
-        )
-    pass
-
-    def create_flex_attention_causal_mask(max_seq_length = 8192):
-        causal_mask = create_block_mask(causal_masker, max_seq_length)
-        return causal_mask
-    pass
-
-    def create_flex_attention_sliding_window_mask(max_seq_length = 8192, sliding_window = 4096):
-        sliding_masker = sliding_window_masker(sliding_window)
-        causal_mask = create_block_mask(sliding_masker, max_seq_length)
-        return causal_mask
-    pass
-
-    @functools.lru_cache
     def flex_attention(s, t):
         scale = 1.0 / math.sqrt(s)
         score_mod = generate_tanh_softcap(t)
@@ -248,14 +237,14 @@ else:
             _flex_attention, score_mod = score_mod, scale = scale, enable_gqa = True,
         )
     pass
-    
-    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+
+    def slow_attention_softcapping(Q, K, V, mask_mod, self, bsz, q_len):
         n_heads    = self.config.num_attention_heads
         head_dim   = self.head_dim
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
         fx = flex_attention(s, t)
-        A = fx(query = Q, key = K, value = V, block_mask = causal_mask)
+        A = fx(query = Q, key = K, value = V, mask_mod = mask_mod)
         A = A.transpose(1, 2).contiguous()
         A = A.reshape(bsz, q_len, n_heads*head_dim)
         return A
