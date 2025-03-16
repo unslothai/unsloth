@@ -542,22 +542,29 @@ pass
 
 
 @torch.inference_mode
-def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16):
+def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16, bnb_config = None):
     # All Unsloth Zoo code licensed under LGPLv3
     # Unmerges vLLM modules to create HF compatible model
     config.update({"torch_dtype" : dtype}) # Do not use config file's dtype!
     new_model = create_empty_causal_lm(config, dtype)
     quantization_config = getattr(config, "quantization_config", {})
     kwargs = dict()
-    if quantization_config != {}:
-        # Get quantization_config flags
-        compute_dtype = _get_dtype(quantization_config["bnb_4bit_compute_dtype"])
-        compute_dtype = dtype # Do not use config file's dtype!
-        kwargs["compress_statistics"] = quantization_config["bnb_4bit_use_double_quant"]
-        kwargs["quant_type"] = quantization_config["bnb_4bit_quant_type"]
-        kwargs["quant_storage"] = _get_dtype(quantization_config["bnb_4bit_quant_storage"])
-    pass
+    compute_dtype = dtype  # Do not use config file's dtype!
 
+    if quantization_config != {} or bnb_config is not None:
+        # Get quantization_config flags
+        if quantization_config != {}:
+            kwargs["compress_statistics"] = quantization_config["bnb_4bit_use_double_quant"]
+            kwargs["quant_type"] = quantization_config["bnb_4bit_quant_type"]
+            kwargs["quant_storage"] = _get_dtype(quantization_config["bnb_4bit_quant_storage"])
+
+        # Get bnb_config flags
+        elif bnb_config is not None:
+            kwargs["compress_statistics"] = bnb_config.bnb_4bit_use_double_quant
+            kwargs["quant_type"] = bnb_config.bnb_4bit_quant_type
+            kwargs["quant_storage"] = _get_dtype(bnb_config.bnb_4bit_quant_storage)
+
+    pass
     from bitsandbytes.nn.modules import Linear4bit, Params4bit
     from torch.nn.modules import Linear
 
