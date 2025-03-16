@@ -893,6 +893,22 @@ def load_vllm(
         # os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "1"
     pass
 
+    # Prefix Caching fails for V100, Titan X CUDA Compute Capability 7.0
+    # See https://github.com/huggingface/trl/issues/2798
+    major_version, minor_version = torch.cuda.get_device_capability()
+    if (major_version < 7) or (major_version == 7 and minor_version < 5):
+        print("Unsloth: Your GPU does not support prefix caching - will disable!")
+        enable_prefix_caching = False
+    pass
+
+    # Use VLLM_USE_V1 for vllm >= 0.7.4 and CUDA >= 8.0
+    if importlib.util.find_spec("vllm") and (major_version >= 8):
+        from importlib.metadata import version as importlib_version
+        from packaging.version import Version
+        if Version(importlib_version("vllm")) > Version("0.7.3"):
+            os.environ["VLLM_USE_V1"] = "1"
+    pass
+
     from vllm import LLM, LLMEngine, AsyncLLMEngine, EngineArgs
 
     # Default vLLM max_num_seqs is 256
@@ -952,14 +968,6 @@ def load_vllm(
 
     # Get device as well
     device = "cuda:0"
-
-    # Prefix Caching fails for V100, Titan X CUDA Compute Capability 7.0
-    # See https://github.com/huggingface/trl/issues/2798
-    major_version, minor_version = torch.cuda.get_device_capability()
-    if (major_version < 7) or (major_version == 7 and minor_version < 5):
-        print("Unsloth: Your GPU does not support prefix caching - will disable!")
-        enable_prefix_caching = False
-    pass
 
     engine_args = dict(
         model                  = model_name,
