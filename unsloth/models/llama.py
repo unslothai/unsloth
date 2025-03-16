@@ -1562,7 +1562,8 @@ def unsloth_fast_generate(
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
     # For num_logits_to_keep
-    kwargs["num_logits_to_keep"] = 1
+    if "num_logits_to_keep" not in kwargs or "logits_to_keep" not in kwargs:
+        kwargs["num_logits_to_keep"] = 1
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
