@@ -18,6 +18,18 @@ import re
 from typing import Union, List, Any, Tuple, Dict, Callable, Optional
 import inspect
 import torch
+import os
+
+UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
+UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
+UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
+torch_compile_options = {
+    "epilogue_fusion"   : epilogue_fusion,
+    "max_autotune"      : max_autotune,
+    "shape_padding"     : shape_padding,
+    "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
+    "triton.cudagraphs" : cudagraphs,
+}
 
 global TEMPORARY_PATCHES
 TEMPORARY_PATCHES = []
@@ -337,3 +349,39 @@ def patch_Gemma3ForConditionalGeneration():
     return
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3ForConditionalGeneration)
+
+
+def patch_Gemma3TextScaledWordEmbedding():
+    try: import transformers.models.gemma3.modeling_gemma3
+    except: return
+    def forward(self, input_ids: torch.Tensor):
+        return super().forward(input_ids).to(torch.float32) * self.embed_scale
+    pass
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward).parameters
+    new_keys = inspect.signature(forward).parameters
+    if old_keys != new_keys:
+        print("Unsloth: Failed to patch Gemma3TextScaledWordEmbedding.")
+    else:
+        forward = torch.compile(forward, fullgraph = True, dynamic = True, options = torch_compile_options)
+        transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward = forward
+    return
+pass
+
+
+def patch_Gemma3MLP():
+    try: import transformers.models.gemma3.modeling_gemma3
+    except: return
+    def forward(self, x):
+        x = x.to(torch.float16)
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj.to(torch.float32)
+    pass
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3MLP.forward).parameters
+    new_keys = inspect.signature(forward).parameters
+    if old_keys != new_keys:
+        print("Unsloth: Failed to patch Gemma3MLP.")
+    else:
+        forward = torch.compile(forward, fullgraph = False, dynamic = True, options = torch_compile_options)
+        transformers.models.gemma3.modeling_gemma3.Gemma3MLP.forward = forward
+    return
+pass
