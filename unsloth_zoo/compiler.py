@@ -1229,7 +1229,6 @@ def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
         alpha = scaling,
         beta = 1,
     ).view(shape)
-    print(output.dtype, result.dtype, xA.dtype)
 
     bias = lora_B.bias
     if bias is not None:
