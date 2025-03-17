@@ -811,7 +811,7 @@ pass
 
 def try_execute(commands, force_complete = False):
     for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
+        with subprocess.Popen(command.split(), shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 line = line.decode("utf-8", errors = "replace")
                 if "undefined reference" in line:
