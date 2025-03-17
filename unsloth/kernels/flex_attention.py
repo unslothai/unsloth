@@ -108,6 +108,7 @@ try:
             enable_gqa: bool = False,
             return_lse: bool = False,
         ) -> Tensor:
+            print("custom flex attn wrapper called!")
             bs, num_heads, q_len, head_dim = query.shape
             _, _, kv_len, _ = key.shape
 
