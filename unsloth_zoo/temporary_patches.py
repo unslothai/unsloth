@@ -389,7 +389,7 @@ def patch_Gemma3RMSNorm():
         transformers.models.gemma3.modeling_gemma3.Gemma3RMSNorm.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_Gemma3RMSNorm)
+# TEMPORARY_PATCHES.append(patch_Gemma3RMSNorm)
 
 
 def patch_Gemma3MLP():
