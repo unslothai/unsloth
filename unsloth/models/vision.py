@@ -208,7 +208,11 @@ class FastBaseModel:
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
 
         if dtype is None:
-            dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+            # Inifite gradient bug for gemma3 if float16. https://unsloth.ai/blog/gemma3
+            if "gemma-3" in model_name.lower():
+                dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float32
+            else:
+                dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
