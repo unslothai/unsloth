@@ -1283,16 +1283,16 @@ def patch_lora_forwards(torch_compile_options):
         )
 
         # Check failed upcasting
-        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
-            if "torch.is_autocast_enabled()" not in source:
-                source = source.replace(
-                    "x = x.to(lora_A.weight.dtype)",
-                    "if not torch.is_autocast_enabled(): "\
-                    "result, x = "\
-                        "result.to(lora_A.weight.dtype), "\
-                        "x.to(lora_A.weight.dtype)"
-                )
-            pass
+        # if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
+        if "torch.is_autocast_enabled()" not in source:
+            source = source.replace(
+                "x = x.to(lora_A.weight.dtype)",
+                "if not torch.is_autocast_enabled(): "\
+                "result, x = "\
+                    "result.to(lora_A.weight.dtype), "\
+                    "x.to(lora_A.weight.dtype)"
+            )
+        pass
         pass
 
         source = source.replace(
@@ -1302,10 +1302,10 @@ def patch_lora_forwards(torch_compile_options):
 
         if hash(source) != old_hash:
             success += 1
-            compiled_lora_forward = \
-                COMPILED_LORA_FORWARD \
-                if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0" \
-                else COMPILED_LORA_FORWARD_forced_float32
+            compiled_lora_forward = COMPILED_LORA_FORWARD
+                # COMPILED_LORA_FORWARD \
+                # if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0" \
+                # else COMPILED_LORA_FORWARD_forced_float32
 
             forward = create_new_function(
                 f"{child}_peft_forward",
