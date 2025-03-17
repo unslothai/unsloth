@@ -1183,7 +1183,7 @@ def unsloth_compile_transformers(
     if disable: return
 
     # Set forced float32 env flag
-    os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+    os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
     do_forced_float32 = False
     model_type_arch = model_types[1]
     for disable_name in FORCE_FLOAT32:
