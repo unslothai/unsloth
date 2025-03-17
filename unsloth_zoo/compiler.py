@@ -1190,6 +1190,7 @@ torch_addmm = torch.addmm
 torch_add   = torch.add
 # @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
+    print(x.dtypem result.dtype)
     xA = dropout(x) @ lora_A.weight.t()
     # output = result + scaling * xA @ lora_B.weight.t()
     shape = result.shape
