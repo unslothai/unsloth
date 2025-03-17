@@ -1296,6 +1296,9 @@ def patch_lora_forwards(torch_compile_options):
         #             "x.to(lora_A.weight.dtype)"
         #     )
         # pass
+        source = source.replace(
+            "result = self.base_layer(x, *args, **kwargs)",
+            "result = self.base_layer(x, *args, **kwargs); print(x.dtype, result.dtype)")
 
         source = source.replace(
             "self._check_forward_args(x, *args, **kwargs)",
