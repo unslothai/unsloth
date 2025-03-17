@@ -460,7 +460,14 @@ class FastModel(FastBaseModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
-        assert (dtype is None or dtype in (torch.float16, torch.bfloat16, torch.float32))
+
+        SUPPORTS_BFLOAT16 = is_bfloat16_supported()
+        if dtype is None:
+            dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+            logger.warning_once("Device does not support bfloat16. Will change to float16.")
+            dtype = torch.float16
+        assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
@@ -614,6 +621,7 @@ class FastModel(FastBaseModel):
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
+                dtype                   = dtype,
                 model_name              = model_name,
                 sdpa_dynamic_mask       = True,
                 sdpa_bool_masks         = True,
