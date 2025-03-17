@@ -242,6 +242,14 @@ def patch_model_and_tokenizer(
                 assert(module.weight.dtype == torch.float32)
             torch.cuda.empty_cache()
         pass
+
+        # Correct torch_dtype
+        m = model
+        while hasattr(m, "model"):
+            if hasattr(m, "config"): m.config.torch_dtype = torch.float16
+            m = m.model
+        pass
+        if hasattr(m, "config"): m.config.torch_dtype = torch.float16
     pass
     # Check all params and patch!
     for name, module in model.named_modules():
