@@ -488,9 +488,7 @@ class FastModel(FastBaseModel):
 
         old_model_name = model_name
         if not use_exact_model_name:
-            print("#", model_name, load_in_4bit)
             model_name = get_model_name(model_name, load_in_4bit)
-            print("#", model_name, load_in_4bit)
 
         # Check versions
         LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
