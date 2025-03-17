@@ -213,6 +213,7 @@ class FastBaseModel:
         bnb_compute_dtype = dtype
         do_forced_float32 = False
         if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
             bnb_compute_dtype = torch.float16
             do_forced_float32 = True
         pass
