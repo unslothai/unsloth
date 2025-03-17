@@ -479,11 +479,6 @@ class FastModel(FastBaseModel):
                 "Also, we by default set `load_in_4bit = True`.\n"\
                 "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`"
             )
-        if load_in_4bit: pass
-        elif load_in_8bit: pass
-        elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
-            load_in_4bit = True
         pass
 
         old_model_name = model_name

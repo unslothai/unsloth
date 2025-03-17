@@ -263,15 +263,7 @@ class FastBaseModel:
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
-            load_in_4bit = True
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit              = True,
-                bnb_4bit_use_double_quant = True,
-                bnb_4bit_quant_type       = "nf4",
-                bnb_4bit_compute_dtype    = bnb_compute_dtype,
-                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
-            )
+            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
         pass
 
         if full_finetuning:
