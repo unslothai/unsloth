@@ -24,11 +24,11 @@ UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
 torch_compile_options = {
-    "epilogue_fusion"   : epilogue_fusion,
-    "max_autotune"      : max_autotune,
-    "shape_padding"     : shape_padding,
+    "epilogue_fusion"   : True,
+    "max_autotune"      : UNSLOTH_COMPILE_MAXIMUM,
+    "shape_padding"     : True,
     "trace.enabled"     : UNSLOTH_COMPILE_DEBUG,
-    "triton.cudagraphs" : cudagraphs,
+    "triton.cudagraphs" : False,
 }
 
 global TEMPORARY_PATCHES
@@ -368,6 +368,26 @@ def patch_Gemma3TextScaledWordEmbedding():
 pass
 
 
+def patch_Gemma3RMSNorm():
+    try: import transformers.models.gemma3.modeling_gemma3
+    except: return
+    def forward(self, x):
+        x = x.to(torch.float32)
+        output = x * torch.rsqrt(x.square().mean(-1, keepdim = True) + self.eps)
+        output = output * (1.0 + self.weight.float())
+        return output
+    pass
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3RMSNorm.forward).parameters
+    new_keys = inspect.signature(forward).parameters
+    if old_keys != new_keys:
+        print("Unsloth: Failed to patch Gemma3RMSNorm.")
+    else:
+        forward = torch.compile(forward, fullgraph = True, dynamic = True, options = torch_compile_options)
+        transformers.models.gemma3.modeling_gemma3.Gemma3RMSNorm.forward = forward
+    return
+pass
+
+
 def patch_Gemma3MLP():
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
@@ -383,5 +403,93 @@ def patch_Gemma3MLP():
     else:
         forward = torch.compile(forward, fullgraph = False, dynamic = True, options = torch_compile_options)
         transformers.models.gemma3.modeling_gemma3.Gemma3MLP.forward = forward
+    return
+pass
+
+
+def patch_Gemma3Attention():
+    try: import transformers.models.gemma3.modeling_gemma3
+    except: return
+    from transformers.models.gemma3.modeling_gemma3 import (
+        Cache,
+        FlashAttentionKwargs,
+        apply_rotary_pos_emb,
+        ALL_ATTENTION_FUNCTIONS,
+        logger,
+    )
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+        past_key_value: Optional[Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
+
+        hidden_states = hidden_states.to(torch.float16)
+        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+        query_states = self.q_norm(query_states)
+        key_states = self.k_norm(key_states)
+
+        cos, sin = position_embeddings
+        print(type(apply_rotary_pos_emb), apply_rotary_pos_emb)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
+        if past_key_value is not None:
+            # sin and cos are specific to RoPE models; cache_position needed for the static cache
+            cache_kwargs = {
+                "sin": sin,
+                "cos": cos,
+                "cache_position": cache_position,
+                "sliding_window": self.sliding_window,
+            }
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+            # Here we need to slice as we use a static cache by default, but FA2 does not support it
+            if attention_mask is not None and self.config._attn_implementation == "flash_attention_2":
+                seq_len = attention_mask.shape[-1]
+                key_states, value_states = key_states[:, :, :seq_len, :], value_states[:, :, :seq_len, :]
+
+        attention_interface: Callable = eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            if self.config._attn_implementation == "sdpa" and kwargs.get("output_attentions", False):
+                logger.warning_once(
+                    "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. "
+                    "Falling back to eager attention. This warning can be removed using the argument "
+                    '`attn_implementation="eager"` when loading the model.'
+                )
+            else:
+                attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+
+        attn_output, attn_weights = attention_interface(
+            self,
+            query_states.to(torch.float16),
+            key_states.to(torch.float16),
+            value_states.to(torch.float16),
+            attention_mask.to(torch.float16),
+            dropout=self.attention_dropout if self.training else 0.0,
+            scaling=self.scaling,
+            sliding_window=self.sliding_window,
+            **kwargs,
+        )
+
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = self.o_proj(attn_output)
+        attn_output = attn_output.to(torch.float16)
+        return attn_output, attn_weights
+    pass
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward).parameters
+    new_keys = inspect.signature(forward).parameters
+    if old_keys != new_keys:
+        print("Unsloth: Failed to patch Gemma3Attention.")
+    else:
+        forward = torch.compiler.disable(forward)
+        transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
