@@ -1255,15 +1255,15 @@ def patch_lora_forwards(torch_compile_options):
         )
 
         # Check failed upcasting
-        if "torch.is_autocast_enabled()" not in source:
-            source = source.replace(
-                "x = x.to(lora_A.weight.dtype)",
-                "if not torch.is_autocast_enabled(): "\
-                "result, x = "\
-                    "result.to(lora_A.weight.dtype), "\
-                    "x.to(lora_A.weight.dtype)"
-            )
-        pass
+        # if "torch.is_autocast_enabled()" not in source:
+        #     source = source.replace(
+        #         "x = x.to(lora_A.weight.dtype)",
+        #         "if not torch.is_autocast_enabled(): "\
+        #         "result, x = "\
+        #             "result.to(lora_A.weight.dtype), "\
+        #             "x.to(lora_A.weight.dtype)"
+        #     )
+        # pass
 
         source = source.replace(
             "self._check_forward_args(x, *args, **kwargs)",
