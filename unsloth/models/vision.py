@@ -218,6 +218,7 @@ class FastBaseModel:
         global FORCE_FLOAT32
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         bnb_compute_dtype = dtype
+        do_forced_float32 = False
         for disable_name in FORCE_FLOAT32:
             if (disable_name.lower() == model_type_arch.lower() or \
                 disable_name.lower() in model_name.lower()) and \
@@ -225,7 +226,8 @@ class FastBaseModel:
 
                 print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
-                bnb_compute_dtype = torch.float32
+                bnb_compute_dtype = torch.float16
+                do_forced_float32 = True
                 break
         pass
 
@@ -281,10 +283,13 @@ class FastBaseModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
+        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
+        torch_dtype = dtype
+        if do_forced_float32: torch_dtype = torch.bfloat16
         model = auto_model.from_pretrained(
             model_name,
             device_map              = device_map,
-            torch_dtype             = dtype,
+            torch_dtype             = torch_dtype,
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
@@ -317,15 +322,16 @@ class FastBaseModel:
                 tokenizer.pad_token    = __tokenizer.pad_token
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
         pass
-        model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = post_patch_loss_function(model)
         # Fix other stuff like BnB compute data types
         model, tokenizer = patch_model_and_tokenizer(
             model,
             tokenizer,
             downcast_rope = False,
             fix_embeddings = False,
+            do_forced_float32 = do_forced_float32,
         )
+        model, tokenizer = patch_tokenizer(model, tokenizer)
+        model = post_patch_loss_function(model)
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
