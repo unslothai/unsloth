@@ -183,7 +183,13 @@ def patch_torch_compile(debug = False, O3 = False, ignore_errors = True):
 pass
 
 
-def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True, fix_embeddings = True):
+def patch_model_and_tokenizer(
+    model,
+    tokenizer,
+    downcast_rope = True,
+    fix_embeddings = True,
+    do_forced_float32 = False,
+):
     # All Unsloth Zoo code licensed under LGPLv3
     assert(type(downcast_rope) is bool)
     import gc
@@ -221,7 +227,22 @@ def patch_model_and_tokenizer(model, tokenizer, downcast_rope = True, fix_embedd
         correct_dtype = _get_dtype(model.config.torch_dtype)
     except:
         correct_dtype = model.get_input_embeddings().weight.dtype
-
+    # If we force float32, we first use bfloat16, then downcast to float16
+    if do_forced_float32:
+        correct_dtype = torch.float16
+        for name, module in model.named_modules():
+            if "down_proj" in name or "up_proj" in name or "gate_proj" in name:
+                exec(f"module.to(torch.float16)")
+            if "q_proj" in name or "k_proj" in name or "v_proj" in name or "o_proj" in name:
+                exec(f"module.to(torch.float16)")
+            if "lm_head" in name or "embed_tokens" in name:
+                exec(f"module.to(torch.float16)")
+            if "norm" in name:
+                exec(f"module.to(torch.float32)")
+                assert(module.weight.dtype == torch.float32)
+            torch.cuda.empty_cache()
+        pass
+    pass
     # Check all params and patch!
     for name, module in model.named_modules():
         if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
