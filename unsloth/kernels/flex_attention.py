@@ -28,6 +28,9 @@ torch_compile_options = {
 
 # Flex Attention supported from torch 2.5 onwards only
 try:
+    import torch
+    import torch.nn.functional as F
+
     from torch.nn.attention.flex_attention import (
         create_block_mask as _create_block_mask,
         flex_attention as _reference_flex_attention,
@@ -95,6 +98,8 @@ try:
                 v = torch.empty(size_hint)
 
                 self._flex_attention(q, k, v)
+            else:
+                self.bs, self.num_heads = None, None
 
 
         # Important to note! Our flex_attention wrapper
@@ -205,9 +210,6 @@ if not HAS_FLEX_ATTENTION:
         A = A.reshape(bsz, q_len, n_heads*head_dim)
         return A
     pass
-
-    create_flex_attention_causal_mask = None
-    create_flex_attention_sliding_window_mask = None
 else:
     # See https://github.com/pytorch-labs/attention-gym/blob/main/examples/flex_attn.ipynb
     # for more examples
