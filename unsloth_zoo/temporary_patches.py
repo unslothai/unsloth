@@ -489,7 +489,7 @@ def patch_Gemma3Attention():
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3Attention.")
     else:
-        forward = torch.compiler.disable(forward)
+        forward = torch.compiler.disable(forward, recursive = False)
         transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
