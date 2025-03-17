@@ -460,7 +460,7 @@ class FastModel(FastBaseModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
-        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
+        assert (dtype is None or dtype in (torch.float16, torch.bfloat16, torch.float32))
 
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
