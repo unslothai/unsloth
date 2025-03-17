@@ -368,7 +368,7 @@ def patch_Gemma3TextScaledWordEmbedding():
         transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
+# TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
 
 
 def Gemma3RMSNorm_forward(self, x):
@@ -391,7 +391,7 @@ def patch_Gemma3RMSNorm():
         transformers.models.gemma3.modeling_gemma3.Gemma3RMSNorm.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_Gemma3RMSNorm)
+# TEMPORARY_PATCHES.append(patch_Gemma3RMSNorm)
 
 
 def Gemma3MLP_forward(self, x):
@@ -413,7 +413,7 @@ def patch_Gemma3MLP():
         transformers.models.gemma3.modeling_gemma3.Gemma3MLP.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_Gemma3MLP)
+# TEMPORARY_PATCHES.append(patch_Gemma3MLP)
 
 
 def patch_Gemma3Attention():
