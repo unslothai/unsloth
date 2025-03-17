@@ -1179,6 +1179,7 @@ def unsloth_compile_transformers(
         trust_remote_code = trust_remote_code,
     )
     model_types = ["siglip"] + model_types
+    print("!!!!!!!!!!!!!")
 
     if disable: return
 
@@ -1186,7 +1187,6 @@ def unsloth_compile_transformers(
     os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
     do_forced_float32 = False
     model_type_arch = model_types[1]
-    print("!!!!!!!!!!!!!")
     for disable_name in FORCE_FLOAT32:
         print(disable_name, model_type_arch, model_name)
         if (disable_name.lower() == model_type_arch.lower() or \
