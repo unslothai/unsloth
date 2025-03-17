@@ -410,7 +410,7 @@ def patch_Gemma3MLP():
         transformers.models.gemma3.modeling_gemma3.Gemma3MLP.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_Gemma3MLP)
+# TEMPORARY_PATCHES.append(patch_Gemma3MLP)
 
 
 def patch_Gemma3Attention():
@@ -500,4 +500,4 @@ def patch_Gemma3Attention():
         transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_Gemma3Attention)
+# TEMPORARY_PATCHES.append(patch_Gemma3Attention)
