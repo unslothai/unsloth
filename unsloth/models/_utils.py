@@ -121,6 +121,11 @@ from unsloth_zoo.temporary_patches import (
 for temporary_patch in TEMPORARY_PATCHES:
     temporary_patch()
 
+global FORCE_FLOAT32
+FORCE_FLOAT32 = [
+    "gemma3",
+]
+
 # =============================================
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
@@ -1127,6 +1132,7 @@ pass
 
 
 def unsloth_compile_transformers(
+    dtype,
     model_name,
     token                   = None,
     revision                = None,
@@ -1175,6 +1181,20 @@ def unsloth_compile_transformers(
     model_types = ["siglip"] + model_types
 
     if disable: return
+
+    # Set forced float32 env flag
+    os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+    do_forced_float32 = False
+    for disable_name in FORCE_FLOAT32:
+        if (disable_name.lower() == model_types[1].lower() or \
+            disable_name.lower() in model_name.lower()) and \
+            dtype == torch.float16:
+
+            print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
+            os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+            do_forced_float32 = True
+            break
+    pass
 
     for model_type in model_types:
         _unsloth_compile_transformers(
