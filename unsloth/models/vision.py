@@ -65,11 +65,6 @@ __all__ = [
     "FastBaseModel",
 ]
 
-global FORCE_FLOAT32
-FORCE_FLOAT32 = [
-    "gemma3",
-]
-
 global FORCE_EAGER_ATTENTION
 FORCE_EAGER_ATTENTION = [
     "pixtral",    # Pixtral SDPA not implemented
@@ -215,20 +210,11 @@ class FastBaseModel:
 
         assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
-        global FORCE_FLOAT32
-        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         bnb_compute_dtype = dtype
         do_forced_float32 = False
-        for disable_name in FORCE_FLOAT32:
-            if (disable_name.lower() == model_type_arch.lower() or \
-                disable_name.lower() in model_name.lower()) and \
-                dtype == torch.float16:
-
-                print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
-                os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
-                bnb_compute_dtype = torch.float16
-                do_forced_float32 = True
-                break
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            bnb_compute_dtype = torch.float16
+            do_forced_float32 = True
         pass
 
         global FORCE_EAGER_ATTENTION
