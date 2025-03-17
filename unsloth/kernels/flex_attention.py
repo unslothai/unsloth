@@ -36,6 +36,8 @@ try:
         noop_mask as _noop_mask,
         and_masks as _and_masks
     )
+    from torch import Tensor
+    from typing import Optional
 
     class DynamicFlexAttention:
         """
