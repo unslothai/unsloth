@@ -352,6 +352,7 @@ TEMPORARY_PATCHES.append(patch_Gemma3ForConditionalGeneration)
 
 
 def patch_Gemma3TextScaledWordEmbedding():
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
     def forward(self, input_ids: torch.Tensor):
@@ -366,9 +367,11 @@ def patch_Gemma3TextScaledWordEmbedding():
         transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward = forward
     return
 pass
+TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
 
 
 def patch_Gemma3RMSNorm():
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
     def forward(self, x):
@@ -386,9 +389,11 @@ def patch_Gemma3RMSNorm():
         transformers.models.gemma3.modeling_gemma3.Gemma3RMSNorm.forward = forward
     return
 pass
+TEMPORARY_PATCHES.append(patch_Gemma3RMSNorm)
 
 
 def patch_Gemma3MLP():
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
     def forward(self, x):
@@ -405,9 +410,11 @@ def patch_Gemma3MLP():
         transformers.models.gemma3.modeling_gemma3.Gemma3MLP.forward = forward
     return
 pass
+TEMPORARY_PATCHES.append(patch_Gemma3MLP)
 
 
 def patch_Gemma3Attention():
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
     from transformers.models.gemma3.modeling_gemma3 import (
@@ -493,3 +500,4 @@ def patch_Gemma3Attention():
         transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
+TEMPORARY_PATCHES.append(patch_Gemma3Attention)
