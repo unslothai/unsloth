@@ -1286,20 +1286,21 @@ def patch_lora_forwards(torch_compile_options):
         )
 
         # Check failed upcasting
-        # if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
-        # if "torch.is_autocast_enabled()" not in source:
-        #     source = source.replace(
-        #         "x = x.to(lora_A.weight.dtype)",
-        #         "if not torch.is_autocast_enabled(): "\
-        #         "result, x = "\
-        #             "result.to(lora_A.weight.dtype), "\
-        #             "x.to(lora_A.weight.dtype)"
-        #     )
-        # pass
-        source = source.replace(
-            "result = self.base_layer(x, *args, **kwargs)",
-            "result = self.base_layer(x, *args, **kwargs); print(x.dtype, result.dtype)")
-
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
+            if "torch.is_autocast_enabled()" not in source:
+                source = source.replace(
+                    "x = x.to(lora_A.weight.dtype)",
+                    "if not torch.is_autocast_enabled(): "\
+                    "result, x = "\
+                        "result.to(lora_A.weight.dtype), "\
+                        "x.to(lora_A.weight.dtype)"
+                )
+        else:
+            source = source.replace(
+                "x = x.to(lora_A.weight.dtype)",
+                ""
+            )
+        pass
         source = source.replace(
             "self._check_forward_args(x, *args, **kwargs)",
             "",
