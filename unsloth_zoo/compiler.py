@@ -1201,6 +1201,7 @@ def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
         alpha = scaling,
         beta = 1,
     ).view(shape)
+    print(output.dtype)
     output = output.to(torch.float32) * 8
 
     bias = lora_B.bias
