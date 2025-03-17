@@ -576,10 +576,14 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     old_init = init
 
     # Remove peft_config
-    init = init.replace("elif peft_config is None:", "elif False:")
-    init = init.replace("elif peft_config is not None:", "elif False:")
-    init = init.replace("if peft_config is None:", "if False:")
-    init = init.replace("if peft_config is not None:", "if False:")
+    replacements = {
+        "elif peft_config is None:": "elif False:",
+        "elif peft_config is not None:": "elif False:",
+        "if peft_config is None:": "if False:",
+        "if peft_config is not None:": "if False:",
+    }
+    for old, new in replacements.items():
+        init = init.replace(old, new)
     init = init.replace("get_peft_model(model, peft_config)", "model")
 
     # Set use_vllm if not set
