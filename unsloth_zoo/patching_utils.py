@@ -244,12 +244,20 @@ def patch_model_and_tokenizer(
         pass
 
         # Correct torch_dtype
+        def __fix_dtype(config):
+            if not hasattr(config, "to_dict"): return
+            dicts = config.to_dict()
+            for key, value in dicts.items():
+                if key == "torch_dtype":
+                    setattr(config, "torch_dtype", torch.float16)
+                else:
+                    __fix_dtype(getattr(config, key))
         m = model
         while hasattr(m, "model"):
-            if hasattr(m, "config"): m.config.torch_dtype = torch.float16
+            if hasattr(m, "config"): __fix_dtype(m.config)
             m = m.model
         pass
-        if hasattr(m, "config"): m.config.torch_dtype = torch.float16
+        if hasattr(m, "config"): __fix_dtype(m.config)
     pass
     # Check all params and patch!
     for name, module in model.named_modules():
