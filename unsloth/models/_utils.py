@@ -1185,8 +1185,9 @@ def unsloth_compile_transformers(
     # Set forced float32 env flag
     os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
     do_forced_float32 = False
+    model_type_arch = model_types[1]
     for disable_name in FORCE_FLOAT32:
-        if (disable_name.lower() == model_types[1].lower() or \
+        if (disable_name.lower() == model_type_arch.lower() or \
             disable_name.lower() in model_name.lower()) and \
             dtype == torch.float16:
 
