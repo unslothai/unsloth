@@ -22,7 +22,7 @@ import torch
 global TEMPORARY_PATCHES
 TEMPORARY_PATCHES = []
 
-def patch_gemma3_processor():
+def patch_Gemma3Processor():
     try:
         import transformers.models.gemma3.processing_gemma3
     except:
@@ -136,10 +136,10 @@ def patch_gemma3_processor():
         transformers.models.gemma3.processing_gemma3.Gemma3Processor.__call__ = __call__
     return
 pass
-TEMPORARY_PATCHES.append(patch_gemma3_processor)
+TEMPORARY_PATCHES.append(patch_Gemma3Processor)
 
 
-def patch_gemma3_modeling():
+def patch_Gemma3ForConditionalGeneration():
     try:
         import transformers.models.gemma3.modeling_gemma3
     except:
@@ -336,4 +336,4 @@ def patch_gemma3_modeling():
         transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_gemma3_modeling)
+TEMPORARY_PATCHES.append(patch_Gemma3ForConditionalGeneration)
