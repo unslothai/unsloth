@@ -1017,12 +1017,13 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
         )
     pass
 
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
-        autocaster = contextlib.nullcontext()
-    else:
-        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float32)
-    with autocaster:
-        outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
+    # if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
+    #     autocaster = contextlib.nullcontext()
+    # else:
+    #     autocaster = torch.autocast(device_type = "cuda", dtype = torch.float32)
+    # with autocaster:
+    #     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
+    outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
 pass
 
