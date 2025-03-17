@@ -1190,17 +1190,18 @@ torch_addmm = torch.addmm
 torch_add   = torch.add
 # @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
-    print("result", result.dtype, "lora_A", lora_A.weight.dtype, "x", x.dtype)
-    xA = dropout(x) @ lora_A.weight.t()
+    partial_x = (x.to(torch.float32) / 2).to(torch.float16)
+    xA = dropout(partial_x) @ (lora_A.weight / 2).to(torch.float16).t()
     # output = result + scaling * xA @ lora_B.weight.t()
     shape = result.shape
     output = torch_addmm(
-        result.view(-1, shape[-1]),
+        (result.view(-1, shape[-1]).to(torch.float32) / 8).to(torch.float16),
         xA.view(-1, xA.shape[-1]),
-        lora_B.weight.t(),
+        (lora_B.weight / 2).to(torch.float16).t(),
         alpha = scaling,
         beta = 1,
     ).view(shape)
+    output = output.to(torch.float32) * 8
 
     bias = lora_B.bias
     if bias is not None:
@@ -1285,15 +1286,15 @@ def patch_lora_forwards(torch_compile_options):
 
         # Check failed upcasting
         # if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
-        if "torch.is_autocast_enabled()" not in source:
-            source = source.replace(
-                "x = x.to(lora_A.weight.dtype)",
-                "if not torch.is_autocast_enabled(): "\
-                "result, x = "\
-                    "result.to(lora_A.weight.dtype), "\
-                    "x.to(lora_A.weight.dtype)"
-            )
-        pass
+        # if "torch.is_autocast_enabled()" not in source:
+        #     source = source.replace(
+        #         "x = x.to(lora_A.weight.dtype)",
+        #         "if not torch.is_autocast_enabled(): "\
+        #         "result, x = "\
+        #             "result.to(lora_A.weight.dtype), "\
+        #             "x.to(lora_A.weight.dtype)"
+        #     )
+        # pass
 
         source = source.replace(
             "self._check_forward_args(x, *args, **kwargs)",
