@@ -419,6 +419,7 @@ def patch_Gemma3Attention():
     except: return
     from transformers.models.gemma3.modeling_gemma3 import (
         Cache,
+        Unpack,
         FlashAttentionKwargs,
         apply_rotary_pos_emb,
         ALL_ATTENTION_FUNCTIONS,
@@ -445,7 +446,6 @@ def patch_Gemma3Attention():
         key_states = self.k_norm(key_states)
 
         cos, sin = position_embeddings
-        print(type(apply_rotary_pos_emb), apply_rotary_pos_emb)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_value is not None:
