@@ -213,7 +213,7 @@ class FastBaseModel:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
 
-        assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
+        assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
         global FORCE_FLOAT32
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
