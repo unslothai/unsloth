@@ -630,7 +630,7 @@ def patch_Gemma3Attention():
 
         attn_output = attn_output.reshape(*input_shape, -1)#.contiguous()
         attn_output = self.o_proj(attn_output)
-        return attn_output, attn_weights
+        return attn_output, None
     pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward).parameters
     new_keys = inspect.signature(forward).parameters
