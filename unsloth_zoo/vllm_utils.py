@@ -1205,7 +1205,7 @@ pass
 
 
 @torch.inference_mode
-def load_lora(model, save_directory, load_tensors = True):
+def load_lora(model, save_directory, load_tensors = False):
     # vllm_lora_already_loaded(model)
     # Check internally if model has hot loaded LoRAs
     # if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
@@ -1235,7 +1235,8 @@ def load_lora(model, save_directory, load_tensors = True):
         # We extract it directly from the model's state_dict
         peft_config = get_peft_config(save_directory)
         state_dict = model.state_dict()
-        state_dict = {k.replace(".default", ""):v for k, v in state_dict.items() if ".lora_A." in k or ".lora_B." in k}
+        items = state_dict.items()
+        state_dict = {k.replace(".default", ""):v for k, v in items if ".lora_A." in k or ".lora_B." in k}
 
         # vllm_lora_already_loaded(model)
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, lora_tensors = state_dict, lora_config = peft_config)
