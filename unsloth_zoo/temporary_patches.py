@@ -491,7 +491,10 @@ TEMPORARY_PATCHES.append(patch_Gemma3MLP)
 
 
 def patch_Gemma3Attention():
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
+        downcast_dtype = torch.float16
+    else:
+        downcast_dtype = torch.bfloat16
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
     from transformers.models.gemma3.modeling_gemma3 import (
@@ -516,7 +519,7 @@ def patch_Gemma3Attention():
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        hidden_states = hidden_states.to(torch.float16)
+        hidden_states = hidden_states.to(downcast_dtype)
         query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
@@ -535,7 +538,6 @@ def patch_Gemma3Attention():
                 "cache_position": cache_position,
                 "sliding_window": self.sliding_window,
             }
-            print(past_key_value, dir(past_key_value), type(past_key_value))
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
             # Here we need to slice as we use a static cache by default, but FA2 does not support it
@@ -555,10 +557,10 @@ def patch_Gemma3Attention():
         #         attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         attn_output, attn_weights = scaled_dot_product_attention(
-            query_states.to(torch.float16),
-            key_states.to(torch.float16),
-            value_states.to(torch.float16),
-            attention_mask.to(torch.float16),
+            query_states.to(downcast_dtype),
+            key_states.to(downcast_dtype),
+            value_states.to(downcast_dtype),
+            attention_mask.to(downcast_dtype),
             dropout_p=self.attention_dropout if self.training else 0.0,
             scale=self.scaling,
             enable_gqa=hasattr(self, "num_key_value_groups"),
