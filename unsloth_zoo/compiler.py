@@ -1190,6 +1190,34 @@ torch_addmm = torch.addmm
 torch_add   = torch.add
 # @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
+    xA = dropout(x) @ lora_A.weight.t()
+    # output = result + scaling * xA @ lora_B.weight.t()
+    shape = result.shape
+    output = torch_addmm(
+        result.view(-1, shape[-1]),
+        xA.view(-1, xA.shape[-1]),
+        lora_B.weight.t(),
+        alpha = scaling,
+        beta = 1,
+    ).view(shape)
+
+    bias = lora_B.bias
+    if bias is not None:
+        output = torch_add(
+        output,
+        bias,
+        alpha = scaling,
+    )
+    return output
+pass
+
+"""
+
+COMPILED_LORA_FORWARD_forced_float32 = """
+torch_addmm = torch.addmm
+torch_add   = torch.add
+# @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
+def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     xA = dropout(x.to(torch.float16)) @ lora_A.weight.to(torch.float16).t()
     # output = result + scaling * xA @ lora_B.weight.t()
     shape = result.shape
@@ -1206,35 +1234,6 @@ def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
         output = torch_add(
         output,
         bias.to(torch.float16),
-        alpha = scaling,
-    )
-    return output
-pass
-
-"""
-
-COMPILED_LORA_FORWARD_forced_float32 = """
-torch_addmm = torch.addmm
-torch_add   = torch.add
-# @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
-def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
-    dtype = result.dtype
-    xA = dropout(x.to(dtype)) @ lora_A.weight.to(dtype).t()
-    # output = result + scaling * xA @ lora_B.weight.to(dtype).t()
-    shape = result.shape
-    output = torch_addmm(
-        result.view(-1, shape[-1]),
-        xA.view(-1, xA.shape[-1]),
-        lora_B.weight.to(dtype).t(),
-        alpha = scaling,
-        beta = 1,
-    ).view(shape)
-
-    bias = lora_B.bias
-    if bias is not None:
-        output = torch_add(
-        output,
-        bias.to(dtype),
         alpha = scaling,
     )
     return output
@@ -1306,10 +1305,10 @@ def patch_lora_forwards(torch_compile_options):
 
         if hash(source) != old_hash:
             success += 1
-            compiled_lora_forward = COMPILED_LORA_FORWARD
-                # COMPILED_LORA_FORWARD \
-                # if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0" \
-                # else COMPILED_LORA_FORWARD_forced_float32
+            compiled_lora_forward = \
+                COMPILED_LORA_FORWARD \
+                if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0" \
+                else COMPILED_LORA_FORWARD_forced_float32
 
             forward = create_new_function(
                 f"{child}_peft_forward",
