@@ -32,9 +32,7 @@ torch_compile_options = {
 }
 
 global TEMPORARY_PATCHES
-global REPLACEMENT_PATCHES
 TEMPORARY_PATCHES = []
-REPLACEMENT_PATCHES = dict()
 
 def patch_Gemma3Processor():
     try:
