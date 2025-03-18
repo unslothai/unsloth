@@ -80,6 +80,15 @@ def unsloth_base_fast_generate(
     *args,
     **kwargs,
 ):
+    if len(args) != 0:
+        x = args[0]
+    elif "input_ids" in kwargs:
+        x = kwargs["input_ids"]
+    else:
+        raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
+    assert(type(x) is torch.Tensor)
+    bsz = x.shape[0]
+
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(self.config.torch_dtype)
 
@@ -121,7 +130,8 @@ def unsloth_base_fast_generate(
     global PROMPT_LOOPKUP
     if arch not in PROMPT_LOOPKUP:
         PROMPT_LOOPKUP[arch] = True
-    if PROMPT_LOOPKUP[arch]:
+
+    if bsz == 1 and PROMPT_LOOPKUP[arch]:
         kwargs["prompt_lookup_num_tokens"] = 3
 
     # Check pad_token
@@ -141,7 +151,7 @@ def unsloth_base_fast_generate(
             output = self._old_generate(*args, **kwargs)
         except:
             PROMPT_LOOPKUP[arch] = False
-            del kwargs["prompt_lookup_num_tokens"]
+            kwargs.pop("prompt_lookup_num_tokens", None)
             output = self._old_generate(*args, **kwargs)
     pass
 
