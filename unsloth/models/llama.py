@@ -924,7 +924,11 @@ def LlamaModel_fast_forward_inference(
     mlp_size = self.config.intermediate_size
 
     X = self.model.embed_tokens(input_ids)
-    X = X.to(self.config.torch_dtype)
+    torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
+    if torch_dtype is not None:
+        X = X.to(torch_dtype)
+    else:
+        raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
     bsz, q_len, hd = X.shape
     assert(q_len == 1)
     # Get saved buffers to reduce memory movement
