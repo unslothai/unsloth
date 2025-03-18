@@ -176,8 +176,9 @@ def grpo_trainer__prepare_inputs(function_name, function):
 
         "with torch.inference_mode(), "\
         "torch.amp.autocast(device_type = 'cuda', "\
-        "dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "\
-        "if not torch.is_autocast_enabled('cuda') else nullcontext():",
+        "dtype = ((torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "\
+        "if not torch.is_autocast_enabled('cuda') else nullcontext())"\
+        "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '0' else torch.float16):",
     )
 
     # Disable attaching a float32 conversion hook which upcasts logits to FP32
