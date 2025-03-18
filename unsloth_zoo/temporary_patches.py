@@ -607,12 +607,14 @@ def patch_Gemma3Attention():
                 attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         attn_output, attn_weights = attention_interface(
+            self,
             query_states.to(downcast_dtype),
             key_states.to(downcast_dtype),
             value_states.to(downcast_dtype),
             attention_mask.to(downcast_dtype),
-            dropout_p=self.attention_dropout if self.training else 0.0,
-            scale=self.scaling,
+            dropout=self.attention_dropout if self.training else 0.0,
+            scaling=self.scaling,
+            sliding_window=self.sliding_window,
             **kwargs,
         )
 
