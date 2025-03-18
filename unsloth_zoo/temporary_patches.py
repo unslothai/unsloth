@@ -384,7 +384,7 @@ def patch_Gemma3RMSNorm():
     def forward(self, x):
         x = x.to(torch.float32)
         output = x * torch.rsqrt(x.square().mean(-1, keepdim = True) + self.eps)
-        return = output * (1.0 + self.weight.float())
+        return output * (1.0 + self.weight.float())
     pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3RMSNorm.forward).parameters
     new_keys = inspect.signature(forward).parameters
