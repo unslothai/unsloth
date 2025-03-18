@@ -93,34 +93,29 @@ def unsloth_base_fast_generate(
     kwargs.pop("token_type_ids", None)
 
     # VLMs do not allow logits_to_keep
-    if not is_vlm:
-        global NUM_LOGITS_TO_KEEP
+    global NUM_LOGITS_TO_KEEP
+    if arch not in NUM_LOGITS_TO_KEEP:
+        m = self
+        # Find which is needed ie
+        # num_logits_to_keep or logits_to_keep
+        while hasattr(m, "model"):
+            if hasattr(m, "forward"):
+                keys = inspect.signature(m.forward).parameters.keys()
+                if "num_logits_to_keep" in keys:
+                    NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
+                    break
+                elif "logits_to_keep" in keys:
+                    NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
+                    break
+            m = m.model
+        pass
         if arch not in NUM_LOGITS_TO_KEEP:
-            m = self
-            # Find which is needed ie
-            # num_logits_to_keep or logits_to_keep
-            while hasattr(m, "model"):
-                if hasattr(m, "forward"):
-                    keys = inspect.signature(m.forward).parameters.keys()
-                    if "num_logits_to_keep" in keys:
-                        NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
-                        break
-                    elif "logits_to_keep" in keys:
-                        NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
-                        break
-                m = m.model
-            pass
-            if arch not in NUM_LOGITS_TO_KEEP:
-                NUM_LOGITS_TO_KEEP[arch] = None
-            pass
+            NUM_LOGITS_TO_KEEP[arch] = None
         pass
-        key = NUM_LOGITS_TO_KEEP[arch]
-        if key is not None and key not in kwargs:
-            kwargs[key] = 1
-    else:
-        pass
-        # kwargs.pop("logits_to_keep", None)
-        # kwargs.pop("num_logits_to_keep", None)
+    pass
+    key = NUM_LOGITS_TO_KEEP[arch]
+    if key is not None and key not in kwargs:
+        kwargs[key] = 1
 
     # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
