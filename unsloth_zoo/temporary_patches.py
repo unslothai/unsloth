@@ -282,7 +282,7 @@ def patch_Gemma3ForConditionalGeneration():
         causal_mask = self._update_causal_mask(
             attention_mask, token_type_ids, past_key_values, cache_position, inputs_embeds, is_training
         )
-        print(attention_mask, attention_mask.dtype, causal_mask.dtype)
+        print(attention_mask, token_type_ids, past_key_values, cache_position, inputs_embeds, is_training)
 
         if labels is not None and attention_mask is not None:
             attention_mask = attention_mask.to(device = labels.device)
