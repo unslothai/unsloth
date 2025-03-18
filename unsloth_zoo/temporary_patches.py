@@ -400,7 +400,7 @@ def patch_Gemma3MLP():
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
-    def Gemma3MLP_forward(self, x):
+    def forward(self, x):
         x = x.to(torch.float16)
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj.to(torch.float32)
