@@ -1134,6 +1134,7 @@ pass
 def unsloth_compile_transformers(
     dtype,
     model_name,
+    model_types,
     token                   = None,
     revision                = None,
     trust_remote_code       = False,
@@ -1171,29 +1172,7 @@ def unsloth_compile_transformers(
         )
         return
     pass
-
-    model_types = get_transformers_model_type(
-        model_name        = model_name,
-        token             = token,
-        revision          = revision,
-        trust_remote_code = trust_remote_code,
-    )
-    model_types = ["siglip"] + model_types
-
     if disable: return
-
-    # Set forced float32 env flag
-    os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
-    do_forced_float32 = False
-    model_type_arch = model_types[1]
-    for disable_name in FORCE_FLOAT32:
-        if (disable_name.lower() == model_type_arch.lower() or \
-            disable_name.lower() in model_name.lower()) and \
-            dtype == torch.float16:
-            os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
-            do_forced_float32 = True
-            break
-    pass
 
     for model_type in model_types:
         _unsloth_compile_transformers(
