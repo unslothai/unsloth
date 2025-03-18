@@ -72,6 +72,8 @@ FORCE_EAGER_ATTENTION = [
 
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
+global PROMPT_LOOPKUP
+PROMPT_LOOPKUP = dict()
 
 def unsloth_base_fast_generate(
     self,
@@ -116,6 +118,10 @@ def unsloth_base_fast_generate(
     key = NUM_LOGITS_TO_KEEP[arch]
     if key is not None and key not in kwargs:
         kwargs[key] = 1
+    if arch not in PROMPT_LOOPKUP:
+        PROMPT_LOOPKUP[arch] = True
+    if PROMPT_LOOPKUP[arch]:
+        kwargs["prompt_lookup_num_tokens"] = 3
 
     # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
@@ -129,8 +135,13 @@ def unsloth_base_fast_generate(
     except: pass
 
     # Mixed precision autocast
-    with torch.inference_mode()
-        output = self._old_generate(*args, **kwargs)
+    with torch.inference_mode():
+        try:
+            output = self._old_generate(*args, **kwargs)
+        except:
+            PROMPT_LOOPKUP[arch] = False
+            del kwargs["prompt_lookup_num_tokens"]
+            output = self._old_generate(*args, **kwargs)
     pass
 
     FastBaseModel.for_training(self)
