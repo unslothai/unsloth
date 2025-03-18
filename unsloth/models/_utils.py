@@ -182,6 +182,15 @@ try:
 except:
     pass
 
+# Gemma3 It is strongly recommended to train Gemma3 models with the `eager`
+try:
+    from transformers.models.gemma3.modeling_gemma3 import logger as gemma3_logger
+    gemma3_logger.addFilter(HideLoggingMessage("strongly recommended"))
+    del gemma3_logger
+except:
+    pass
+
+
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
 def get_model_param_count(model, trainable_only = False):
