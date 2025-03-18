@@ -53,6 +53,7 @@ import math
 import functools
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
+import contextlib
 import types
 try:
     from huggingface_hub.utils import get_token
@@ -146,7 +147,11 @@ def unsloth_base_fast_generate(
     except: pass
 
     # Mixed precision autocast
-    with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+        autocaster = contextlib.nullcontext()
+    else:
+        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+    with torch.inference_mode(), autocaster:
         try:
             output = self._old_generate(*args, **kwargs)
         except:
