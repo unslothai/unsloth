@@ -134,8 +134,7 @@ def unsloth_base_fast_generate(
     except: pass
 
     # Mixed precision autocast
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1": dtype = torch.float32
-    with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
+    with torch.inference_mode()
         output = self._old_generate(*args, **kwargs)
     pass
 
