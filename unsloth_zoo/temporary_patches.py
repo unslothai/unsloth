@@ -438,8 +438,8 @@ def patch_Gemma3Attention():
         cos,
         sin,
     ):
-        query_states = self.q_norm(query_states)
-        key_states = self.k_norm(key_states)
+        query_states = self.q_norm(query_states.to(torch.float32)).to(torch.float32)
+        key_states = self.k_norm(key_states.to(torch.float32)).to(torch.float32)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
         return query_states.to(torch.float16), key_states.to(torch.float16)
     pass
@@ -495,10 +495,10 @@ def patch_Gemma3Attention():
 
         attn_output, attn_weights = attention_interface(
             self,
-            query_states.to(torch.float16),
-            key_states.to(torch.float16),
-            value_states.to(torch.float16),
-            attention_mask.to(torch.float16),
+            query_states#.to(torch.float16),
+            key_states#.to(torch.float16),
+            value_states#.to(torch.float16),
+            attention_mask#.to(torch.float16),
             dropout=self.attention_dropout if self.training else 0.0,
             scaling=self.scaling,
             sliding_window=self.sliding_window,
