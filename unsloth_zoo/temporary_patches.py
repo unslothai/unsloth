@@ -430,24 +430,6 @@ def patch_Gemma3Attention():
         logger,
         eager_attention_forward,
     )
-    @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
-    def norm_rope_forward(
-        self,
-        query_states,
-        key_states,
-        cos,
-        sin,
-    ):
-        query_states = self.q_norm(query_states.to(torch.float32)).to(torch.float32)
-        key_states = self.k_norm(key_states.to(torch.float32)).to(torch.float32)
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states.to(torch.float32),
-            key_states.to(torch.float32),
-            cos.to(torch.float32),
-            sin.to(torch.float32),
-        )
-        return query_states, key_states
-    pass
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -465,12 +447,11 @@ def patch_Gemma3Attention():
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        # query_states = self.q_norm(query_states)
-        # key_states = self.k_norm(key_states)
+        query_states = self.q_norm(query_states)
+        key_states = self.k_norm(key_states)
 
         cos, sin = position_embeddings
-        # query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-        query_states, key_states = norm_rope_forward(self, query_states, key_states, cos, sin)
+        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
