@@ -204,12 +204,11 @@ class FastBaseModel:
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+        elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            if dtype == torch.float16: dtype = torch.bfloat16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
-        # Check forced float32
-        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-            if dtype == torch.float16: dtype = torch.bfloat16
         pass
         assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
