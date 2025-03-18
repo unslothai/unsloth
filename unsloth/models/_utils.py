@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.14"
+__version__ = "2025.3.15"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -181,6 +181,15 @@ try:
     del transformers_generation_utils_logger
 except:
     pass
+
+# Gemma3 It is strongly recommended to train Gemma3 models with the `eager`
+try:
+    from transformers.models.gemma3.modeling_gemma3 import logger as gemma3_logger
+    gemma3_logger.addFilter(HideLoggingMessage("strongly recommended"))
+    del gemma3_logger
+except:
+    pass
+
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
@@ -1016,13 +1025,7 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
     pass
-
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
-        autocaster = contextlib.nullcontext()
-    else:
-        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float32)
-    with autocaster:
-        outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
+    outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
 pass
 
@@ -1126,7 +1129,9 @@ pass
 
 
 def unsloth_compile_transformers(
+    dtype,
     model_name,
+    model_types,
     token                   = None,
     revision                = None,
     trust_remote_code       = False,
@@ -1164,15 +1169,12 @@ def unsloth_compile_transformers(
         )
         return
     pass
-
-    model_types = get_transformers_model_type(
-        model_name        = model_name,
-        token             = token,
-        revision          = revision,
-        trust_remote_code = trust_remote_code,
-    )
-    model_types = ["siglip"] + model_types
-
+    if trust_remote_code:
+        print(
+            "Unsloth: We can't trace models if `trust_remote_code = True`, "\
+            "so turning off some optimizations!"
+        )
+        return
     if disable: return
 
     for model_type in model_types:
@@ -1204,6 +1206,9 @@ def unsloth_compile_transformers(
             return_logits          = return_logits,
         )
     pass
+    # Redo patches which override compiler
+    for temporary_patch in TEMPORARY_PATCHES:
+        temporary_patch()
     return model_types
 pass
 

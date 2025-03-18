@@ -53,6 +53,7 @@ import math
 import functools
 from typing import Optional, Tuple, List, Union
 import re, inspect, sys
+import contextlib
 import types
 try:
     from huggingface_hub.utils import get_token
@@ -65,11 +66,6 @@ __all__ = [
     "FastBaseModel",
 ]
 
-global FORCE_FLOAT32
-FORCE_FLOAT32 = [
-    "gemma3",
-]
-
 global FORCE_EAGER_ATTENTION
 FORCE_EAGER_ATTENTION = [
     "pixtral",    # Pixtral SDPA not implemented
@@ -77,12 +73,23 @@ FORCE_EAGER_ATTENTION = [
 
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
+global PROMPT_LOOPKUP
+PROMPT_LOOPKUP = dict()
 
 def unsloth_base_fast_generate(
     self,
     *args,
     **kwargs,
 ):
+    if len(args) != 0:
+        x = args[0]
+    elif "input_ids" in kwargs:
+        x = kwargs["input_ids"]
+    else:
+        raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
+    assert(type(x) is torch.Tensor)
+    bsz = x.shape[0]
+
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(self.config.torch_dtype)
 
@@ -98,34 +105,35 @@ def unsloth_base_fast_generate(
     kwargs.pop("token_type_ids", None)
 
     # VLMs do not allow logits_to_keep
-    if not is_vlm:
-        global NUM_LOGITS_TO_KEEP
+    global NUM_LOGITS_TO_KEEP
+    if arch not in NUM_LOGITS_TO_KEEP:
+        m = self
+        # Find which is needed ie
+        # num_logits_to_keep or logits_to_keep
+        while hasattr(m, "model"):
+            if hasattr(m, "forward"):
+                keys = inspect.signature(m.forward).parameters.keys()
+                if "num_logits_to_keep" in keys:
+                    NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
+                    break
+                elif "logits_to_keep" in keys:
+                    NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
+                    break
+            m = m.model
+        pass
         if arch not in NUM_LOGITS_TO_KEEP:
-            m = self
-            # Find which is needed ie
-            # num_logits_to_keep or logits_to_keep
-            while hasattr(m, "model"):
-                if hasattr(m, "forward"):
-                    keys = inspect.signature(m.forward).parameters.keys()
-                    if "num_logits_to_keep" in keys:
-                        NUM_LOGITS_TO_KEEP[arch] = "num_logits_to_keep"
-                        break
-                    elif "logits_to_keep" in keys:
-                        NUM_LOGITS_TO_KEEP[arch] = "logits_to_keep"
-                        break
-                m = m.model
-            pass
-            if arch not in NUM_LOGITS_TO_KEEP:
-                NUM_LOGITS_TO_KEEP[arch] = None
-            pass
+            NUM_LOGITS_TO_KEEP[arch] = None
         pass
-        key = NUM_LOGITS_TO_KEEP[arch]
-        if key is not None and key not in kwargs:
-            kwargs[key] = 1
-    else:
-        pass
-        # kwargs.pop("logits_to_keep", None)
-        # kwargs.pop("num_logits_to_keep", None)
+    pass
+    key = NUM_LOGITS_TO_KEEP[arch]
+    if key is not None and key not in kwargs:
+        kwargs[key] = 1
+    global PROMPT_LOOPKUP
+    if arch not in PROMPT_LOOPKUP:
+        PROMPT_LOOPKUP[arch] = True
+
+    if bsz == 1 and PROMPT_LOOPKUP[arch]:
+        kwargs["prompt_lookup_num_tokens"] = 3
 
     # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
@@ -138,10 +146,20 @@ def unsloth_base_fast_generate(
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
 
+    if "use_cache" not in kwargs: kwargs["use_cache"] = True
+
     # Mixed precision autocast
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1": dtype = torch.float32
-    with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
-        output = self._old_generate(*args, **kwargs)
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+    else:
+        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+    with torch.inference_mode(), autocaster:
+        try:
+            output = self._old_generate(*args, **kwargs)
+        except:
+            PROMPT_LOOPKUP[arch] = False
+            kwargs.pop("prompt_lookup_num_tokens", None)
+            output = self._old_generate(*args, **kwargs)
     pass
 
     FastBaseModel.for_training(self)
@@ -209,24 +227,20 @@ class FastBaseModel:
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+        elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            if dtype == torch.float16: dtype = torch.bfloat16
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
+        pass
+        assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
-        assert(dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32)
-
-        global FORCE_FLOAT32
-        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         bnb_compute_dtype = dtype
-        for disable_name in FORCE_FLOAT32:
-            if (disable_name.lower() == model_type_arch.lower() or \
-                disable_name.lower() in model_name.lower()) and \
-                dtype == torch.float16:
-
-                print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
-                os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
-                bnb_compute_dtype = torch.float32
-                break
+        do_forced_float32 = False
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            print(f"Unsloth: Using float16 precision for {model_type_arch} won't work! Using float32.")
+            bnb_compute_dtype = torch.float16
+            do_forced_float32 = True
         pass
 
         global FORCE_EAGER_ATTENTION
@@ -263,15 +277,7 @@ class FastBaseModel:
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
-            load_in_4bit = True
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit              = True,
-                bnb_4bit_use_double_quant = True,
-                bnb_4bit_quant_type       = "nf4",
-                bnb_4bit_compute_dtype    = bnb_compute_dtype,
-                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
-            )
+            print("Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
         pass
 
         if full_finetuning:
@@ -289,10 +295,13 @@ class FastBaseModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
+        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
+        torch_dtype = dtype
+        if do_forced_float32: torch_dtype = torch.bfloat16
         model = auto_model.from_pretrained(
             model_name,
             device_map              = device_map,
-            torch_dtype             = dtype,
+            torch_dtype             = torch_dtype,
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
@@ -325,15 +334,16 @@ class FastBaseModel:
                 tokenizer.pad_token    = __tokenizer.pad_token
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
         pass
-        model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = post_patch_loss_function(model)
         # Fix other stuff like BnB compute data types
         model, tokenizer = patch_model_and_tokenizer(
             model,
             tokenizer,
             downcast_rope = False,
             fix_embeddings = False,
+            do_forced_float32 = do_forced_float32,
         )
+        model, tokenizer = patch_tokenizer(model, tokenizer)
+        model = post_patch_loss_function(model)
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
