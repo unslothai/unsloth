@@ -352,6 +352,7 @@ def patch_Gemma3ForConditionalGeneration():
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3ForConditionalGeneration)
 
+
 def patch_Gemma3TextScaledWordEmbedding():
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
@@ -376,17 +377,15 @@ pass
 TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
 
 
-def Gemma3RMSNorm_forward(self, x):
-    x = x.to(torch.float32)
-    output = x * torch.rsqrt(x.square().mean(-1, keepdim = True) + self.eps)
-    output = output * (1.0 + self.weight.float())
-    return output
-pass
 def patch_Gemma3RMSNorm():
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
-    forward = Gemma3RMSNorm_forward
+    def forward(self, x):
+        x = x.to(torch.float32)
+        output = x * torch.rsqrt(x.square().mean(-1, keepdim = True) + self.eps)
+        return = output * (1.0 + self.weight.float())
+    pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3RMSNorm.forward).parameters
     new_keys = inspect.signature(forward).parameters
     if old_keys != new_keys:
@@ -396,19 +395,18 @@ def patch_Gemma3RMSNorm():
         transformers.models.gemma3.modeling_gemma3.Gemma3RMSNorm.forward = forward
     return
 pass
-# TEMPORARY_PATCHES.append(patch_Gemma3RMSNorm)
+TEMPORARY_PATCHES.append(patch_Gemma3RMSNorm)
 
 
-def Gemma3MLP_forward(self, x):
-    x = x.to(torch.float16)
-    down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-    return down_proj.to(torch.float32)
-pass
 def patch_Gemma3MLP():
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
-    forward = Gemma3MLP_forward
+    def Gemma3MLP_forward(self, x):
+        x = x.to(torch.float16)
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return down_proj.to(torch.float32)
+    pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3MLP.forward).parameters
     new_keys = inspect.signature(forward).parameters
     if old_keys != new_keys:
@@ -418,7 +416,7 @@ def patch_Gemma3MLP():
         transformers.models.gemma3.modeling_gemma3.Gemma3MLP.forward = forward
     return
 pass
-# TEMPORARY_PATCHES.append(patch_Gemma3MLP)
+TEMPORARY_PATCHES.append(patch_Gemma3MLP)
 
 
 def patch_Gemma3Attention():
@@ -496,7 +494,6 @@ def patch_Gemma3Attention():
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-        attn_output = attn_output.to(torch.float16)
         return attn_output, attn_weights
     pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward).parameters
@@ -508,4 +505,4 @@ def patch_Gemma3Attention():
         transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
-# TEMPORARY_PATCHES.append(patch_Gemma3Attention)
+TEMPORARY_PATCHES.append(patch_Gemma3Attention)
