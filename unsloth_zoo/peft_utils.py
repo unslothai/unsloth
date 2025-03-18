@@ -208,7 +208,8 @@ def requires_grad_for_gradient_checkpointing(model):
                 raise RuntimeError("Unsloth: Failed to make input require gradients!")
                 # print(f"  WARNING: Empty list input to {module.__class__.__name__}!") # 
                 # return
-            input[0].requires_grad_(True)
+            if torch.is_floating_point(input[0]):
+                input[0].requires_grad_(True)
         else:
             raise RuntimeError("Unsloth: Failed to make input require gradients!")
     pass
