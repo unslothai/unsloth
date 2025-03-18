@@ -1190,24 +1190,22 @@ torch_addmm = torch.addmm
 torch_add   = torch.add
 # @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
-    partial_x = (x.to(torch.float32) / 1).to(torch.float16)
-    xA = dropout(partial_x) @ (lora_A.weight / 1).to(torch.float16).t()
+    xA = dropout(x.to(torch.float16)) @ lora_A.weight.to(torch.float16).t()
     # output = result + scaling * xA @ lora_B.weight.t()
     shape = result.shape
     output = torch_addmm(
-        (result.view(-1, shape[-1]).to(torch.float32) / 1).to(torch.float16),
+        result.view(-1, shape[-1])),
         xA.view(-1, xA.shape[-1]),
-        (lora_B.weight / 1).to(torch.float16).t(),
+        lora_B.weight.to(torch.float16).t(),
         alpha = scaling,
         beta = 1,
     ).view(shape)
-    output = output.to(torch.float32) * 1
 
     bias = lora_B.bias
     if bias is not None:
         output = torch_add(
         output,
-        bias,
+        bias.to(torch.float16),
         alpha = scaling,
     )
     return output
