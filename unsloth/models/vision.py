@@ -146,7 +146,7 @@ def unsloth_base_fast_generate(
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
 
-    print(args, kwargs)
+    print(args, kwargs, self._old_generate)
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
