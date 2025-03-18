@@ -248,6 +248,10 @@ def requires_grad_for_gradient_checkpointing(model):
             if f"in self.{module_list}:" in forward:
                 final_where = j
                 break
+            elif re.search(r"for [^\s]{3,} in self\." + module_list, forward) is not None:
+                # Might have failed finding self.layers: like self.layers[...]:
+                final_where = j
+                break
             pass
         pass
     pass
