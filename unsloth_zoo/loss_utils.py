@@ -168,7 +168,7 @@ def fused_linear_cross_entropy(
     reduction = "sum" if num_items_in_batch is not None else "mean"
     if logit_softcapping == 0: logit_softcapping = None
     loss = linear_cross_entropy(
-        hidden_states,
+        hidden_states.to(lm_weight.dtype),
         lm_weight,
         targets      = labels,
         ignore_index = ignore_index,

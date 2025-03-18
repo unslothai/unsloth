@@ -24,7 +24,8 @@ classifiers = [
 dependencies = [
     "torch",
     "triton ; platform_system == 'Linux'",
-    "packaging",
+    "triton_windows ; platform_system == 'Windows'",
+    "packaging>=24.1",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
     "datasets>=2.16.0",

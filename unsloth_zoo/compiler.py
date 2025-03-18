@@ -163,6 +163,9 @@ def get_transformers_model_type(
     config = str(config.to_dict())
     model_types = re.findall(r"'model_type': '([^\s\']{1,})'", config)
     model_types = [x.replace("-", "_").lower() for x in model_types]
+    # Add splitted modules for eg gemma3_text -> gemma3
+    model_types += [x.split("_")[0] for x in model_types]
+    model_types = list(dict().fromkeys(model_types))
 
     from transformers import models
     models = dir(models)
@@ -1213,6 +1216,34 @@ pass
 
 """
 
+COMPILED_LORA_FORWARD_forced_float32 = """
+torch_addmm = torch.addmm
+torch_add   = torch.add
+@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
+def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
+    xA = dropout(x.to(torch.float16)) @ lora_A.weight.to(torch.float16).t()
+    # output = result + scaling * xA @ lora_B.weight.t()
+    shape = result.shape
+    output = torch_addmm(
+        result.view(-1, shape[-1]),
+        xA.view(-1, xA.shape[-1]),
+        lora_B.weight.to(torch.float16).t(),
+        alpha = scaling,
+        beta = 1,
+    ).view(shape)
+
+    bias = lora_B.bias
+    if bias is not None:
+        output = torch_add(
+        output,
+        bias.to(torch.float16),
+        alpha = scaling,
+    )
+    return output
+pass
+
+"""
+
 def patch_lora_forwards(torch_compile_options):
     # All Unsloth Zoo code licensed under LGPLv3
     Linear_LoRA_Layers = get_lora_layer_modules()
@@ -1254,16 +1285,22 @@ def patch_lora_forwards(torch_compile_options):
         )
 
         # Check failed upcasting
-        if "torch.is_autocast_enabled()" not in source:
-            source = source.replace(
-                "x = x.to(lora_A.weight.dtype)",
-                "if not torch.is_autocast_enabled(): "\
-                "result, x = "\
-                    "result.to(lora_A.weight.dtype), "\
-                    "x.to(lora_A.weight.dtype)"
-            )
+        replacements = [
+            "x = x.to(lora_A.weight.dtype)",
+            "x = self._cast_input_dtype(x, lora_A.weight.dtype)",
+        ]
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
+            if "torch.is_autocast_enabled()" not in source:
+                new = "if not torch.is_autocast_enabled(): "\
+                    "result, x = "\
+                        "result.to(lora_A.weight.dtype), "\
+                        "x.to(lora_A.weight.dtype)"
+                for replace in replacements:
+                    source = source.replace(replace, new)
+        else:
+            for replace in replacements:
+                source = source.replace(replace, "")
         pass
-
         source = source.replace(
             "self._check_forward_args(x, *args, **kwargs)",
             "",
@@ -1271,9 +1308,14 @@ def patch_lora_forwards(torch_compile_options):
 
         if hash(source) != old_hash:
             success += 1
+            compiled_lora_forward = \
+                COMPILED_LORA_FORWARD \
+                if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0" \
+                else COMPILED_LORA_FORWARD_forced_float32
+
             forward = create_new_function(
                 f"{child}_peft_forward",
-                COMPILED_LORA_FORWARD + source,
+                compiled_lora_forward + source,
                 parent,
                 dir(eval(parent)),
                 prepend = \

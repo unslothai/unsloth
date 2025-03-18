@@ -208,7 +208,8 @@ def requires_grad_for_gradient_checkpointing(model):
                 raise RuntimeError("Unsloth: Failed to make input require gradients!")
                 # print(f"  WARNING: Empty list input to {module.__class__.__name__}!") # 
                 # return
-            input[0].requires_grad_(True)
+            if torch.is_floating_point(input[0]):
+                input[0].requires_grad_(True)
         else:
             raise RuntimeError("Unsloth: Failed to make input require gradients!")
     pass
@@ -245,6 +246,10 @@ def requires_grad_for_gradient_checkpointing(model):
             # Fix self.blocks[0] like in Qwen
             module_list = re.sub(r"\[[\d]{1,}\]", "", name_curr)
             if f"in self.{module_list}:" in forward:
+                final_where = j
+                break
+            elif re.search(r"for [^\s]{3,} in self\." + module_list, forward) is not None:
+                # Might have failed finding self.layers: like self.layers[...]:
                 final_where = j
                 break
             pass

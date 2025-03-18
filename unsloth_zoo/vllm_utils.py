@@ -542,22 +542,29 @@ pass
 
 
 @torch.inference_mode
-def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16):
+def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16, bnb_config = None):
     # All Unsloth Zoo code licensed under LGPLv3
     # Unmerges vLLM modules to create HF compatible model
     config.update({"torch_dtype" : dtype}) # Do not use config file's dtype!
     new_model = create_empty_causal_lm(config, dtype)
     quantization_config = getattr(config, "quantization_config", {})
     kwargs = dict()
-    if quantization_config != {}:
-        # Get quantization_config flags
-        compute_dtype = _get_dtype(quantization_config["bnb_4bit_compute_dtype"])
-        compute_dtype = dtype # Do not use config file's dtype!
-        kwargs["compress_statistics"] = quantization_config["bnb_4bit_use_double_quant"]
-        kwargs["quant_type"] = quantization_config["bnb_4bit_quant_type"]
-        kwargs["quant_storage"] = _get_dtype(quantization_config["bnb_4bit_quant_storage"])
-    pass
+    compute_dtype = dtype  # Do not use config file's dtype!
 
+    if quantization_config != {} or bnb_config is not None:
+        # Get quantization_config flags
+        if quantization_config != {}:
+            kwargs["compress_statistics"] = quantization_config["bnb_4bit_use_double_quant"]
+            kwargs["quant_type"] = quantization_config["bnb_4bit_quant_type"]
+            kwargs["quant_storage"] = _get_dtype(quantization_config["bnb_4bit_quant_storage"])
+
+        # Get bnb_config flags
+        elif bnb_config is not None:
+            kwargs["compress_statistics"] = bnb_config.bnb_4bit_use_double_quant
+            kwargs["quant_type"] = bnb_config.bnb_4bit_quant_type
+            kwargs["quant_storage"] = _get_dtype(bnb_config.bnb_4bit_quant_storage)
+
+    pass
     from bitsandbytes.nn.modules import Linear4bit, Params4bit
     from torch.nn.modules import Linear
 
@@ -893,6 +900,22 @@ def load_vllm(
         # os.environ["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "1"
     pass
 
+    # Prefix Caching fails for V100, Titan X CUDA Compute Capability 7.0
+    # See https://github.com/huggingface/trl/issues/2798
+    major_version, minor_version = torch.cuda.get_device_capability()
+    if (major_version < 7) or (major_version == 7 and minor_version < 5):
+        print("Unsloth: Your GPU does not support prefix caching - will disable!")
+        enable_prefix_caching = False
+    pass
+
+    # Use VLLM_USE_V1 for vllm >= 0.7.4 and CUDA >= 8.0
+    if importlib.util.find_spec("vllm") and (major_version >= 8):
+        from importlib.metadata import version as importlib_version
+        from packaging.version import Version
+        if Version(importlib_version("vllm")) > Version("0.7.3"):
+            os.environ["VLLM_USE_V1"] = "1"
+    pass
+
     from vllm import LLM, LLMEngine, AsyncLLMEngine, EngineArgs
 
     # Default vLLM max_num_seqs is 256
@@ -952,14 +975,6 @@ def load_vllm(
 
     # Get device as well
     device = "cuda:0"
-
-    # Prefix Caching fails for V100, Titan X CUDA Compute Capability 7.0
-    # See https://github.com/huggingface/trl/issues/2798
-    major_version, minor_version = torch.cuda.get_device_capability()
-    if (major_version < 7) or (major_version == 7 and minor_version < 5):
-        print("Unsloth: Your GPU does not support prefix caching - will disable!")
-        enable_prefix_caching = False
-    pass
 
     engine_args = dict(
         model                  = model_name,
@@ -1190,7 +1205,7 @@ pass
 
 
 @torch.inference_mode
-def load_lora(model, save_directory, load_tensors = True):
+def load_lora(model, save_directory, load_tensors = False):
     # vllm_lora_already_loaded(model)
     # Check internally if model has hot loaded LoRAs
     # if load_tensors and hasattr(model, "saved_vllm_lora_request"):# vllm_lora_already_loaded(model):
@@ -1211,7 +1226,7 @@ def load_lora(model, save_directory, load_tensors = True):
         if load_tensors:
             # We need to save and load the config file once!
             model.peft_config["default"].save_pretrained(save_directory)
-        else:
+        elif not os.path.exists(save_directory):
             raise OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
     pass
 
@@ -1220,7 +1235,8 @@ def load_lora(model, save_directory, load_tensors = True):
         # We extract it directly from the model's state_dict
         peft_config = get_peft_config(save_directory)
         state_dict = model.state_dict()
-        state_dict = {k.replace(".default", ""):v for k, v in state_dict.items() if ".lora_A." in k or ".lora_B." in k}
+        items = state_dict.items()
+        state_dict = {k.replace(".default", ""):v for k, v in items if ".lora_A." in k or ".lora_B." in k}
 
         # vllm_lora_already_loaded(model)
         lora_request = LoRARequest(str(LORA_REQUEST_ID), LORA_REQUEST_ID, lora_tensors = state_dict, lora_config = peft_config)
