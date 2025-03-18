@@ -254,6 +254,7 @@ def patch_model_and_tokenizer(
                     __fix_dtype(getattr(config, key))
         m = model
         while hasattr(m, "model"):
+            if hasattr(m, "dtype"): m.dtype = torch.float16
             if hasattr(m, "config"): __fix_dtype(m.config)
             m = m.model
         pass
