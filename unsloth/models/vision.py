@@ -89,6 +89,7 @@ def unsloth_base_fast_generate(
         raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
     assert(type(x) is torch.Tensor)
     bsz = x.shape[0]
+    print(kwargs)
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(self.config.torch_dtype)
