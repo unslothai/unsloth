@@ -465,8 +465,8 @@ def patch_Gemma3Attention():
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
-        query_states = self.q_norm(query_states)
-        key_states = self.k_norm(key_states)
+        # query_states = self.q_norm(query_states)
+        # key_states = self.k_norm(key_states)
 
         cos, sin = position_embeddings
         # query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
