@@ -61,6 +61,7 @@ except:
 pass
 from transformers.modeling_utils import PushToHubMixin
 import json
+import os
 from pathlib import Path
 import tempfile
 from peft import PeftModelForCausalLM
@@ -540,7 +541,13 @@ def merge_and_overwrite_lora(
         model_name = model.config._name_or_path
 
     # Find repository's max shard size and total size of everything
-    file_list = HfFileSystem(token = token).ls(model_name, detail = True)
+    try:
+        file_list = HfFileSystem(token = token).ls(model_name, detail = True)
+    except:
+        original_model_id = get_original_model_id(model_name)
+        model_name = original_model_id
+        file_list = HfFileSystem(token = token).ls(model_name, detail = True)
+
     safetensors_list = []
     max_size_in_bytes = 0
     total_size_in_bytes = 0
@@ -908,6 +915,30 @@ def merge_and_dequantize_lora(
         except: pass
     pass
 pass
+
+def get_original_model_id(local_path: str):
+    import json
+    import os
+    
+    config_path = os.path.join(local_path, "config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = json.load(f)
+            
+        # Check for _name_or_path that's not a local path
+        # When we load using AutoConfig, the _name_or_path changed into the local path instead
+        if "_name_or_path" in config:
+            return config["_name_or_path"]
+        
+    config_path = os.path.join(local_path, "adapter_config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = json.load(f)
+            
+        if "base_model_name_or_path" in config:
+            return config["base_model_name_or_path"]
+    
+    return None
 
 # Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
