@@ -535,6 +535,7 @@ def patch_Gemma3Attention():
                 "cache_position": cache_position,
                 "sliding_window": self.sliding_window,
             }
+            print(past_key_value, dir(past_key_value), type(past_key_value))
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
             # Here we need to slice as we use a static cache by default, but FA2 does not support it
@@ -542,16 +543,16 @@ def patch_Gemma3Attention():
                 seq_len = attention_mask.shape[-1]
                 key_states, value_states = key_states[:, :, :seq_len, :], value_states[:, :, :seq_len, :]
 
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            if self.config._attn_implementation == "sdpa" and kwargs.get("output_attentions", False):
-                logger.warning_once(
-                    "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. "
-                    "Falling back to eager attention. This warning can be removed using the argument "
-                    '`attn_implementation="eager"` when loading the model.'
-                )
-            else:
-                attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        # attention_interface: Callable = eager_attention_forward
+        # if self.config._attn_implementation != "eager":
+        #     if self.config._attn_implementation == "sdpa" and kwargs.get("output_attentions", False):
+        #         logger.warning_once(
+        #             "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. "
+        #             "Falling back to eager attention. This warning can be removed using the argument "
+        #             '`attn_implementation="eager"` when loading the model.'
+        #         )
+        #     else:
+        #         attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         attn_output, attn_weights = scaled_dot_product_attention(
             query_states.to(torch.float16),
@@ -563,7 +564,7 @@ def patch_Gemma3Attention():
             enable_gqa=hasattr(self, "num_key_value_groups"),
         )
 
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
+        attn_output = attn_output.reshape(*input_shape, -1)#.contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
     pass
