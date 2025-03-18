@@ -679,6 +679,7 @@ class FastModel(FastBaseModel):
                 import_from_cache       = False,
                 disable                 = False,
                 return_logits           = return_logits,
+                trust_remote_code       = trust_remote_code,
             )
         pass
 
