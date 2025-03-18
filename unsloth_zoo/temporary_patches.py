@@ -365,11 +365,11 @@ def patch_Gemma3TextScaledWordEmbedding():
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3TextScaledWordEmbedding.")
     else:
-        forward = torch.compile(forward, fullgraph = True, dynamic = True, options = torch_compile_options)
+        # forward = torch.compile(forward, fullgraph = True, dynamic = True, options = torch_compile_options)
         transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward = forward
     return
 pass
-# TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
+TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
 
 
 def Gemma3RMSNorm_forward(self, x):
