@@ -1226,7 +1226,7 @@ def load_lora(model, save_directory, load_tensors = False):
         if load_tensors:
             # We need to save and load the config file once!
             model.peft_config["default"].save_pretrained(save_directory)
-        else:
+        elif not os.path.exists(save_directory):
             raise OSError(f"Unsloth: LoRA filepath = {save_directory} does not exist!")
     pass
 
