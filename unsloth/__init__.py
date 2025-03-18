@@ -201,7 +201,7 @@ try:
     if Version(unsloth_zoo_version) < Version("2025.3.13"):
         print(
             "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
-            "To disable this, set os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'"
+            "To disable this, set `os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'`"
         )
         if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
             try:
