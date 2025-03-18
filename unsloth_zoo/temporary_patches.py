@@ -625,6 +625,7 @@ def patch_Gemma3Attention():
             attn_mask=attention_mask.to(downcast_dtype),
             dropout_p=self.attention_dropout if self.training else 0.0,
             scale=self.scaling,
+            enable_gqa=hasattr(self, "num_key_value_groups"),
         ).transpose(1, 2)
 
         attn_output = attn_output.reshape(*input_shape, -1)#.contiguous()
