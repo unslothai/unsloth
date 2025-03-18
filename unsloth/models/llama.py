@@ -652,13 +652,7 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
-    torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
-    if torch_dtype is not None:
-        inputs_embeds = inputs_embeds.to(torch_dtype)
-    else:
-        raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
-    pass
+    inputs_embeds = inputs_embeds.to(_get_dtype(self.config.torch_dtype))
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
