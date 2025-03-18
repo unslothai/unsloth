@@ -17,6 +17,7 @@ from ._utils import (
     HAS_FLASH_ATTENTION,
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
+    get_transformers_model_type,
 )
 from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
@@ -65,6 +66,11 @@ from ._utils import (
     process_vision_info,
     unsloth_compile_transformers,
 )
+
+global FORCE_FLOAT32
+FORCE_FLOAT32 = [
+    "gemma3",
+]
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
@@ -212,7 +218,13 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 ) 
-            raise RuntimeError(autoconfig_error or peft_error)
+            # Create a combined error message showing both failures
+            combined_error = (
+                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
+                f"AutoConfig error: {autoconfig_error}\n\n"
+                f"PeftConfig error: {peft_error}\n\n"
+            )
+            raise RuntimeError(combined_error)
         pass
 
         # Get base model for PEFT:
@@ -460,12 +472,17 @@ class FastModel(FastBaseModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
-        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
+
+        SUPPORTS_BFLOAT16 = is_bfloat16_supported()
+        if dtype is None:
+            dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+            logger.warning_once("Device does not support bfloat16. Will change to float16.")
+            dtype = torch.float16
+        assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
@@ -479,11 +496,6 @@ class FastModel(FastBaseModel):
                 "Also, we by default set `load_in_4bit = True`.\n"\
                 "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`"
             )
-        if load_in_4bit: pass
-        elif load_in_8bit: pass
-        elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: LoRA, QLoRA and full finetuning all not selected. Switching to QLoRA.")
-            load_in_4bit = True
         pass
 
         old_model_name = model_name
@@ -591,7 +603,13 @@ class FastModel(FastBaseModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 ) 
-            raise RuntimeError(autoconfig_error or peft_error)
+            # Create a combined error message showing both failures
+            combined_error = (
+                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
+                f"AutoConfig error: {autoconfig_error}\n\n"
+                f"PeftConfig error: {peft_error}\n\n"
+            )
+            raise RuntimeError(combined_error)
         pass
 
         # Get base model for PEFT:
@@ -616,10 +634,39 @@ class FastModel(FastBaseModel):
         else:
             redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
+        # Get model types like Gemma3 etc
+        model_types = get_transformers_model_type(
+            model_name        = model_name,
+            token             = token,
+            revision          = revision,
+            trust_remote_code = trust_remote_code,
+        )
+        model_types = ["siglip"] + model_types
+
+        # Set forced float32 env flag
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        do_forced_float32 = False
+        model_type_arch = model_types[1]
+        global FORCE_FLOAT32
+        for disable_name in FORCE_FLOAT32:
+            if (disable_name.lower() == model_type_arch.lower() or \
+                disable_name.lower() in model_name.lower()) and \
+                ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
+                os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                dtype = torch.bfloat16 # Change to bfloat16 loading
+                break
+        pass
+        # Patch gradient checkpointing
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
+                dtype                   = dtype,
                 model_name              = model_name,
+                model_types             = model_types,
+                token                   = token,
                 sdpa_dynamic_mask       = True,
                 sdpa_bool_masks         = True,
                 sdpa_gqa_replace        = True,
@@ -644,6 +691,7 @@ class FastModel(FastBaseModel):
                 import_from_cache       = False,
                 disable                 = False,
                 return_logits           = return_logits,
+                trust_remote_code       = trust_remote_code,
             )
         pass
 
