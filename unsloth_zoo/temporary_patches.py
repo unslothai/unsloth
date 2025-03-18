@@ -580,6 +580,7 @@ def patch_Gemma3Attention():
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        print(1, query_states.shape, key_states.shape)
 
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
@@ -590,6 +591,7 @@ def patch_Gemma3Attention():
                 "sliding_window": self.sliding_window,
             }
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            print(2, query_states.shape, key_states.shape)
 
             # Here we need to slice as we use a static cache by default, but FA2 does not support it
             if attention_mask is not None and self.config._attn_implementation == "flash_attention_2":
