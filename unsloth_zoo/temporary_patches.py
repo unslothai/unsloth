@@ -495,10 +495,10 @@ def patch_Gemma3Attention():
 
         attn_output, attn_weights = attention_interface(
             self,
-            query_states#.to(torch.float16),
-            key_states#.to(torch.float16),
-            value_states#.to(torch.float16),
-            attention_mask#.to(torch.float16),
+            query_states.to(torch.float16),
+            key_states.to(torch.float16),
+            value_states.to(torch.float16),
+            attention_mask.to(torch.float16),
             dropout=self.attention_dropout if self.training else 0.0,
             scaling=self.scaling,
             sliding_window=self.sliding_window,
