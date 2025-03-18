@@ -1548,7 +1548,7 @@ def unsloth_fast_generate(
         if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
             if kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"] > self.config.max_position_embeddings:
                 raise ValueError(
-                    f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {model.config.max_position_embeddings}!\n'\
+                    f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {self.config.max_position_embeddings}!\n'\
                     'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
                 )
     pass
@@ -1562,7 +1562,10 @@ def unsloth_fast_generate(
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
     # For num_logits_to_keep
-    kwargs["num_logits_to_keep"] = 1
+    num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
+    logits_to_keep     = kwargs.get("logits_to_keep",     None)
+    if num_logits_to_keep is None and logits_to_keep is None:
+        kwargs["num_logits_to_keep"] = 1
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
@@ -1822,7 +1825,7 @@ class FastLlamaModel:
 
             # Convert to HF format
             _, quant_state_dict = get_vllm_state_dict(llm, config = model_config)
-            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype)
+            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
