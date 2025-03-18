@@ -1016,13 +1016,6 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
     pass
-
-    # if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
-    #     autocaster = contextlib.nullcontext()
-    # else:
-    #     autocaster = torch.autocast(device_type = "cuda", dtype = torch.float32)
-    # with autocaster:
-    #     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
 pass
@@ -1167,6 +1160,12 @@ def unsloth_compile_transformers(
         )
         return
     pass
+    if trust_remote_code:
+        print(
+            "Unsloth: We can't trace models if `trust_remote_code = True`, "\
+            "so turning off some optimizations!"
+        )
+        return
     if disable: return
 
     for model_type in model_types:
