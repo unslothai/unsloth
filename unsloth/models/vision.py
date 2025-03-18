@@ -146,6 +146,8 @@ def unsloth_base_fast_generate(
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
 
+    print(args, kwargs)
+
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
         autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
