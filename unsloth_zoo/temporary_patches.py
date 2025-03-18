@@ -519,7 +519,7 @@ def patch_Gemma3Attention():
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        hidden_states = hidden_states.to(downcast_dtype)
+        # hidden_states = hidden_states.to(downcast_dtype)
         query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
@@ -566,7 +566,7 @@ def patch_Gemma3Attention():
             enable_gqa=hasattr(self, "num_key_value_groups"),
         )
 
-        attn_output = attn_output.reshape(*input_shape, -1)#.contiguous()
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, None
     pass
