@@ -428,6 +428,7 @@ def patch_Gemma3Attention():
         apply_rotary_pos_emb,
         ALL_ATTENTION_FUNCTIONS,
         logger,
+        eager_attention_forward,
     )
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
     def norm_rope_forward(
