@@ -126,8 +126,8 @@ def unsloth_base_fast_generate(
         pass
     pass
     key = NUM_LOGITS_TO_KEEP[arch]
-    # if key is not None and key not in kwargs:
-    #     kwargs[key] = 1
+    if key is not None and key not in kwargs:
+        kwargs[key] = 1
     global PROMPT_LOOPKUP
     if arch not in PROMPT_LOOPKUP:
         PROMPT_LOOPKUP[arch] = True
@@ -145,8 +145,6 @@ def unsloth_base_fast_generate(
     # Get pixel values for VLMs
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
-
-    print(args, kwargs, self._old_generate)
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
