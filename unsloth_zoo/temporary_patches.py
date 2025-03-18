@@ -32,7 +32,9 @@ torch_compile_options = {
 }
 
 global TEMPORARY_PATCHES
+global REPLACEMENT_PATCHES
 TEMPORARY_PATCHES = []
+REPLACEMENT_PATCHES = dict()
 
 def patch_Gemma3Processor():
     try:
@@ -350,22 +352,24 @@ def patch_Gemma3ForConditionalGeneration():
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3ForConditionalGeneration)
 
-
-def Gemma3TextScaledWordEmbedding_forward(self, input_ids: torch.Tensor):
-    return super().forward(input_ids).to(torch.float32) * self.embed_scale
-pass
 def patch_Gemma3TextScaledWordEmbedding():
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
-    
-    forward = Gemma3TextScaledWordEmbedding_forward
+    def forward(self, input_ids: torch.Tensor):
+        input_embeds = torch.nn.functional.embedding(
+            input_ids,
+            weight = self.weight,
+            padding_idx = self.padding_idx,
+        )
+        return input_embeds.to(torch.float32) * self.embed_scale
+    pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward).parameters
     new_keys = inspect.signature(forward).parameters
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3TextScaledWordEmbedding.")
     else:
-        # forward = torch.compile(forward, fullgraph = True, dynamic = True, options = torch_compile_options)
+        forward = torch.compile(forward, fullgraph = True, dynamic = True, options = torch_compile_options)
         transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward = forward
     return
 pass
