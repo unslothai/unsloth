@@ -358,6 +358,7 @@ def patch_Gemma3TextScaledWordEmbedding():
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0": return
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
+    
     forward = Gemma3TextScaledWordEmbedding_forward
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward).parameters
     new_keys = inspect.signature(forward).parameters
@@ -368,7 +369,7 @@ def patch_Gemma3TextScaledWordEmbedding():
         transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward = forward
     return
 pass
-# TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
+TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
 
 
 def Gemma3RMSNorm_forward(self, x):
