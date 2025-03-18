@@ -479,6 +479,7 @@ def patch_Gemma3Attention():
             else:
                 attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
+        print(attention_mask, attention_mask.dtype)
         attn_output, attn_weights = attention_interface(
             self,
             query_states.to(torch.float16),
