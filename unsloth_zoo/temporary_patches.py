@@ -417,7 +417,7 @@ def patch_Gemma3ForConditionalGeneration():
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
-        transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
+        # transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
         transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
     return
 pass
