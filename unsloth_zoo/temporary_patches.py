@@ -369,7 +369,7 @@ def patch_Gemma3TextScaledWordEmbedding():
         transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
+# TEMPORARY_PATCHES.append(patch_Gemma3TextScaledWordEmbedding)
 
 
 def Gemma3RMSNorm_forward(self, x):
