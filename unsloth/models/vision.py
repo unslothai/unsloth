@@ -118,6 +118,7 @@ def unsloth_base_fast_generate(
     key = NUM_LOGITS_TO_KEEP[arch]
     if key is not None and key not in kwargs:
         kwargs[key] = 1
+    global PROMPT_LOOPKUP
     if arch not in PROMPT_LOOPKUP:
         PROMPT_LOOPKUP[arch] = True
     if PROMPT_LOOPKUP[arch]:
