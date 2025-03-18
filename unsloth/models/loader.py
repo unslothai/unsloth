@@ -17,6 +17,7 @@ from ._utils import (
     HAS_FLASH_ATTENTION,
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
+    get_transformers_model_type,
 )
 from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
@@ -462,17 +463,15 @@ class FastModel(FastBaseModel):
         if token is None: token = get_token()
 
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
-        # if dtype is None:
-        #     dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
-        # elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
-        #     logger.warning_once("Device does not support bfloat16. Will change to float16.")
-        #     dtype = torch.float16
+        if dtype is None:
+            dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+            logger.warning_once("Device does not support bfloat16. Will change to float16.")
+            dtype = torch.float16
         assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
@@ -618,11 +617,38 @@ class FastModel(FastBaseModel):
         else:
             redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
+        # Get model types like Gemma3 etc
+        model_types = get_transformers_model_type(
+            model_name        = model_name,
+            token             = token,
+            revision          = revision,
+            trust_remote_code = trust_remote_code,
+        )
+        model_types = ["siglip"] + model_types
+
+        # Set forced float32 env flag
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        do_forced_float32 = False
+        model_type_arch = model_types[1]
+        for disable_name in FORCE_FLOAT32:
+            if (disable_name.lower() == model_type_arch.lower() or \
+                disable_name.lower() in model_name.lower()) and \
+                ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
+                os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                dtype = torch.bfloat16 # Change to bfloat16 loading
+                break
+        pass
+        # Patch gradient checkpointing
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types = unsloth_compile_transformers(
                 dtype                   = dtype,
                 model_name              = model_name,
+                model_types             = model_types,
+                token                   = token,
                 sdpa_dynamic_mask       = True,
                 sdpa_bool_masks         = True,
                 sdpa_gqa_replace        = True,
