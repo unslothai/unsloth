@@ -92,6 +92,7 @@ def unsloth_base_fast_generate(
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(self.config.torch_dtype)
+    print(dtype)
 
     # Check if VLM
     is_vlm = any(
