@@ -229,6 +229,7 @@ def patch_model_and_tokenizer(
         correct_dtype = model.get_input_embeddings().weight.dtype
     # If we force float32, we first use bfloat16, then downcast to float16
     if do_forced_float32:
+        print("!!!!!!!!!")
         correct_dtype = torch.float16
         for name, module in model.named_modules():
             if "down_proj" in name or "up_proj" in name or "gate_proj" in name:
@@ -259,6 +260,7 @@ def patch_model_and_tokenizer(
             m = m.model
         pass
         if hasattr(m, "config"): __fix_dtype(m.config)
+        if hasattr(m, "dtype"): m.dtype = torch.float16
     pass
     # Check all params and patch!
     for name, module in model.named_modules():
