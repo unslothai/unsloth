@@ -67,6 +67,11 @@ from ._utils import (
     unsloth_compile_transformers,
 )
 
+global FORCE_FLOAT32
+FORCE_FLOAT32 = [
+    "gemma3",
+]
+
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
@@ -630,6 +635,7 @@ class FastModel(FastBaseModel):
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         do_forced_float32 = False
         model_type_arch = model_types[1]
+        global FORCE_FLOAT32
         for disable_name in FORCE_FLOAT32:
             if (disable_name.lower() == model_type_arch.lower() or \
                 disable_name.lower() in model_name.lower()) and \

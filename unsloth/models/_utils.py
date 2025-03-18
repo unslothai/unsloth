@@ -121,11 +121,6 @@ from unsloth_zoo.temporary_patches import (
 for temporary_patch in TEMPORARY_PATCHES:
     temporary_patch()
 
-global FORCE_FLOAT32
-FORCE_FLOAT32 = [
-    "gemma3",
-]
-
 # =============================================
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
