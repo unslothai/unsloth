@@ -208,8 +208,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-        # if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
-        #     return None # Unsloth efficient GRPO
+        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+            return None # Unsloth efficient GRPO
         # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
@@ -255,18 +255,14 @@ def grpo_trainer_compute_loss(function_name, function):
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         bsz, qlen = input_ids.shape
-        # attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-        attention_mask = None
+        attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
+        # attention_mask = None
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         _input_ids = input_ids
         _logits_to_keep = logits_to_keep
-
-        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '1':
-            attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
-            per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
-        else:
-            per_token_logps = None
         
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+
         # Compute the KL divergence between the model and the reference model
         ref_per_token_logps = inputs["ref_per_token_logps"]
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
