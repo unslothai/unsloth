@@ -202,11 +202,11 @@ class FastBaseModel:
 
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
 
-        if dtype is None:
-            dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
-            logger.warning_once("Device does not support bfloat16. Will change to float16.")
-            dtype = torch.float16
+        # if dtype is None:
+        #     dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
+        # elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        #     logger.warning_once("Device does not support bfloat16. Will change to float16.")
+        #     dtype = torch.float16
 
         assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
