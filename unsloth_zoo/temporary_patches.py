@@ -503,6 +503,7 @@ def patch_Gemma3Attention():
         logger,
         eager_attention_forward,
     )
+    scaled_dot_product_attention = torch.nn.functional.scaled_dot_product_attention
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -552,16 +553,14 @@ def patch_Gemma3Attention():
             else:
                 attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
-        attn_output, attn_weights = attention_interface(
-            self,
+        attn_output, attn_weights = scaled_dot_product_attention(
             query_states.to(torch.float16),
             key_states.to(torch.float16),
             value_states.to(torch.float16),
             attention_mask.to(torch.float16),
-            dropout=self.attention_dropout if self.training else 0.0,
-            scaling=self.scaling,
-            sliding_window=self.sliding_window,
-            **kwargs,
+            dropout_p=self.attention_dropout if self.training else 0.0,
+            scale=self.scaling,
+            enable_gqa=hasattr(self, "num_key_value_groups"),
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
