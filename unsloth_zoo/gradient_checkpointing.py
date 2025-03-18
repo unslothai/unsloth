@@ -319,7 +319,6 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
         SUPPORTS_BFLOAT16 = (major_version >= 8)
         dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
     pass
-    dtype = torch.float16
 
     for i in range(200):
         x = torch.empty(128*1024, dtype = dtype, device = "cpu", pin_memory = True)
