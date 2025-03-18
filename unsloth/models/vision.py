@@ -146,7 +146,7 @@ def unsloth_base_fast_generate(
     except: pass
 
     # Mixed precision autocast
-    with torch.inference_mode():
+    with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
         try:
             output = self._old_generate(*args, **kwargs)
         except:
