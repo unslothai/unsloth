@@ -282,6 +282,7 @@ def patch_Gemma3ForConditionalGeneration():
         causal_mask = self._update_causal_mask(
             attention_mask, token_type_ids, past_key_values, cache_position, inputs_embeds, is_training
         )
+        print(attention_mask, attention_mask.dtype, causal_mask.dtype)
 
         if labels is not None and attention_mask is not None:
             attention_mask = attention_mask.to(device = labels.device)
@@ -479,7 +480,6 @@ def patch_Gemma3Attention():
             else:
                 attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
-        print(attention_mask, attention_mask.dtype)
         attn_output, attn_weights = attention_interface(
             self,
             query_states.to(torch.float16),
