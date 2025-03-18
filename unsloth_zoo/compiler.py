@@ -1194,7 +1194,7 @@ def lora_forward(result, lora_A, lora_B, dropout, x, scaling):
     # output = result + scaling * xA @ lora_B.weight.t()
     shape = result.shape
     output = torch_addmm(
-        result.view(-1, shape[-1])),
+        result.view(-1, shape[-1]),
         xA.view(-1, xA.shape[-1]),
         lora_B.weight.to(torch.float16).t(),
         alpha = scaling,
