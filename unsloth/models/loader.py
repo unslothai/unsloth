@@ -212,7 +212,13 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 ) 
-            raise RuntimeError(autoconfig_error or peft_error)
+            # Create a combined error message showing both failures
+            combined_error = (
+                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
+                f"AutoConfig error: {autoconfig_error}\n\n"
+                f"PeftConfig error: {peft_error}\n\n"
+            )
+            raise RuntimeError(combined_error)
         pass
 
         # Get base model for PEFT:
@@ -591,7 +597,13 @@ class FastModel(FastBaseModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
                 ) 
-            raise RuntimeError(autoconfig_error or peft_error)
+            # Create a combined error message showing both failures
+            combined_error = (
+                "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
+                f"AutoConfig error: {autoconfig_error}\n\n"
+                f"PeftConfig error: {peft_error}\n\n"
+            )
+            raise RuntimeError(combined_error)
         pass
 
         # Get base model for PEFT:
