@@ -417,7 +417,7 @@ def patch_Gemma3ForConditionalGeneration():
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
-        # transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
+        transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
         transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
     return
 pass
@@ -506,7 +506,6 @@ def patch_Gemma3Attention():
         logger,
         eager_attention_forward,
     )
-    scaled_dot_product_attention = torch.nn.functional.scaled_dot_product_attention
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -519,7 +518,7 @@ def patch_Gemma3Attention():
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        # hidden_states = hidden_states.to(downcast_dtype)
+        hidden_states = hidden_states.to(downcast_dtype)
         query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
@@ -545,30 +544,30 @@ def patch_Gemma3Attention():
                 seq_len = attention_mask.shape[-1]
                 key_states, value_states = key_states[:, :, :seq_len, :], value_states[:, :, :seq_len, :]
 
-        # attention_interface: Callable = eager_attention_forward
-        # if self.config._attn_implementation != "eager":
-        #     if self.config._attn_implementation == "sdpa" and kwargs.get("output_attentions", False):
-        #         logger.warning_once(
-        #             "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. "
-        #             "Falling back to eager attention. This warning can be removed using the argument "
-        #             '`attn_implementation="eager"` when loading the model.'
-        #         )
-        #     else:
-        #         attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        attention_interface: Callable = eager_attention_forward
+        if self.config._attn_implementation != "eager":
+            if self.config._attn_implementation == "sdpa" and kwargs.get("output_attentions", False):
+                logger.warning_once(
+                    "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. "
+                    "Falling back to eager attention. This warning can be removed using the argument "
+                    '`attn_implementation="eager"` when loading the model.'
+                )
+            else:
+                attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
-        attn_output = scaled_dot_product_attention(
+        attn_output, attn_weights = attention_interface(
             query_states.to(downcast_dtype),
             key_states.to(downcast_dtype),
             value_states.to(downcast_dtype),
             attention_mask.to(downcast_dtype),
             dropout_p=self.attention_dropout if self.training else 0.0,
             scale=self.scaling,
-            enable_gqa=hasattr(self, "num_key_value_groups"),
+            **kwargs,
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-        return attn_output, None
+        return attn_output, attn_weights
     pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward).parameters
     new_keys = inspect.signature(forward).parameters
