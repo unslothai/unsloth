@@ -26,6 +26,8 @@ __all__ = [
     "save_lora",
     "load_lora",
     "generate_batches",
+    "convert_lora_modules",
+    "return_lora_modules",
 ]
 
 from typing import Optional, List, Tuple, Dict, Any
@@ -1201,6 +1203,58 @@ def load_lora_directly(model):
         vllm_lora_B.copy_(model_lora_B, non_blocking = True)
         if s is not None: vllm_lora_B *= s
     pass
+pass
+
+
+from peft import PeftType
+
+def convert_lora_modules(
+    model,
+    dtype = None,
+):
+    dtype = _get_dtype(mode.config.torch_dtype if dtype is None else dtype)
+
+    if (hasattr(model, "peft_config") and "default" in model.peft_config) \
+        and (model.peft_config["default"].peft_type == PeftType.LORA):
+
+        state_dict = model.state_dict().items()
+        state_dict = {
+            k : v.clone() for k, v in state_dict \
+            if (v.dtype != dtype) and \
+               (".lora_A.default" in k or ".lora_B.default" in k)
+        }
+        if len(state_dict) == 0: return {}
+
+        for name, module in model.named_modules():
+            if name + ".default.weight" in state_dict:
+                exec(f"module.to({dtype})")
+        pass
+        return state_dict
+    return {}
+pass
+
+
+def return_lora_modules(
+    model,
+    state_dict = {},
+    dtype = torch.float32,
+):
+    if state_dict == {} or state_dict is None: return
+    dtype = _get_dtype(mode.config.torch_dtype if dtype is None else dtype)
+
+    if (hasattr(model, "peft_config") and "default" in model.peft_config) \
+        and (model.peft_config["default"].peft_type == PeftType.LORA):
+
+        for name, module in model.named_modules():
+            old_name = name + ".default.weight"
+            old_weight = state_dict.get(old_name, None)
+            if old_weight is not None:
+                exec(f"module.to({dtype})")
+                module.default.weight.copy_(old_weight, non_blocking = True)
+                print(1)
+        pass
+        return
+    return
 pass
 
 
