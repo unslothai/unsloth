@@ -544,6 +544,7 @@ def patch_Gemma3Attention():
         #     sliding_window=self.sliding_window,
         #     **kwargs,
         # )
+        print(query_states.shape, key_states.shape, value_states.shape, self.config)
         attn_output = scaled_dot_product_attention(
             query_states.to(downcast_dtype),
             key_states.to(downcast_dtype),
@@ -567,4 +568,4 @@ def patch_Gemma3Attention():
         transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
-# TEMPORARY_PATCHES.append(patch_Gemma3Attention)
+TEMPORARY_PATCHES.append(patch_Gemma3Attention)
