@@ -40,11 +40,22 @@ def Version(version):
 pass
 
 
+__DTYPE_MAP = {
+    "float32": torch.float32,
+    torch.float32: torch.float32,
+    "float16": torch.float16,
+    torch.float16: torch.float16,
+    "bfloat16": torch.bfloat16,
+    torch.bfloat16: torch.bfloat16,
+}
 def _get_dtype(dtype):
-    if type(dtype) is str:
-        try: dtype = eval(f"torch.{dtype.lower()}")
-        except: pass
-    if type(dtype) is torch.dtype: return dtype
+    try:
+        return __DTYPE_MAP[dtype]
+    except:
+        if type(dtype) is str:
+            try: dtype = eval(f"torch.{dtype.lower()}")
+            except: pass
+        if type(dtype) is torch.dtype: return dtype
     return None
 pass
 

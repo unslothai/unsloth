@@ -133,11 +133,14 @@ def patch_Gemma3Processor():
 
         # Add token type ids manually, as tokenizer can't do arbitrary position token types
         # [TODO] FAILS for batched tokens since text_inputs["input_ids"] is a list of lists, so np.array creates an object!
+        input_ids = text_inputs["input_ids"]
+        image_token_id = self.image_token_id
+        mm_token_type_ids = [[1 if y == image_token_id else 0 for y in x] for x in input_ids]
         # array_ids = np.array(text_inputs["input_ids"])
         # mm_token_type_ids = np.zeros_like(text_inputs["input_ids"])
         # mm_token_type_ids[array_ids == self.image_token_id] = 1
         # text_inputs = {k: v.tolist() for k, v in text_inputs.items()}  # in case user requested list inputs
-        # text_inputs["token_type_ids"] = mm_token_type_ids.tolist()
+        text_inputs["token_type_ids"] = mm_token_type_ids#.tolist()
         return BatchFeature(data={**text_inputs, **image_inputs}, tensor_type=return_tensors)
     pass
     old_keys = inspect.signature(transformers.models.gemma3.processing_gemma3.Gemma3Processor.__call__).parameters
@@ -302,85 +305,11 @@ def patch_Gemma3ForConditionalGeneration():
             image_hidden_states=image_features if pixel_values is not None else None,
         )
     pass
-    from transformers.models.gemma3.modeling_gemma3 import (
-        StaticCache,
-        HybridCache,
-    )
-    def _update_causal_mask(
-        self,
-        attention_mask,
-        token_type_ids,
-        past_key_values,
-        cache_position,
-        input_tensor,
-        is_training: bool = False,
-    ):
-        if self.config.text_config._attn_implementation == "flash_attention_2":
-            return attention_mask
-
-        if attention_mask is not None and attention_mask.dim() == 4:
-            # In this case we assume that the mask comes already in inverted
-            # form and requires no inversion or slicing.
-            return attention_mask
-
-        using_static_cache = isinstance(past_key_values, StaticCache)
-        min_dtype = torch.finfo(torch.float16).min
-        inputs_lead_dim, sequence_length = input_tensor.shape[:2]
-        if using_static_cache:
-            target_length = past_key_values.get_max_cache_shape()
-        elif isinstance(past_key_values, HybridCache):
-            target_length = past_key_values.get_max_cache_shape()
-        else:
-            target_length = (
-                attention_mask.shape[-1]
-                if isinstance(attention_mask, torch.Tensor)
-                else cache_position[0] + sequence_length + 1
-            )
-
-        if attention_mask is not None and attention_mask.dim() == 4:
-            # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
-            return attention_mask
-
-        causal_mask = torch.full(
-            (sequence_length, target_length), fill_value=min_dtype, dtype=torch.float16, device=cache_position.device
-        )
-
-        # Causal diagonal mask only if training, otherwise attend to the whole prefix. Training-specific attn for prefix is handled below
-        if sequence_length != 1:
-            causal_mask = torch.triu(causal_mask, diagonal=1)
-
-        causal_mask *= torch.arange(target_length, device=cache_position.device) > cache_position.reshape(-1, 1)
-        causal_mask = causal_mask[None, None, :, :].expand(inputs_lead_dim, 1, -1, -1)
-
-        # Apply bidirectional mask on images if token type ids are provided
-        if token_type_ids is not None and sequence_length != 1:
-            token_type_mask = token_type_ids.unsqueeze(1) == token_type_ids.unsqueeze(2)
-            token_type_mask[token_type_ids == 0] = False  # if text token do not change anything
-            token_type_mask = token_type_mask.unsqueeze(1).to(causal_mask.device, dtype=torch.bool)
-            causal_mask = causal_mask.clone()
-            causal_mask[:, :, :, :sequence_length] = causal_mask[:, :, :, :sequence_length].masked_fill(
-                token_type_mask, 0.0
-            )
-
-        if attention_mask is not None:
-            causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-            mask_length = attention_mask.shape[-1]
-
-            # Then apply padding mask (will mask pad tokens)
-            padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :].to(causal_mask.device)
-            padding_mask = padding_mask == 0
-            causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                padding_mask, min_dtype
-            )
-
-        return causal_mask
-    pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
     new_keys = inspect.signature(forward).parameters
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
-        transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
         transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
     return
 pass
@@ -464,8 +393,8 @@ def patch_Gemma3ForConditionalGeneration_causal_mask():
 
         return causal_mask
     pass
-    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
-    new_keys = inspect.signature(forward).parameters
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask).parameters
+    new_keys = inspect.signature(_update_causal_mask).parameters
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
@@ -625,7 +554,7 @@ def patch_Gemma3Attention():
             attn_mask=attention_mask.to(downcast_dtype),
             dropout_p=self.attention_dropout if self.training else 0.0,
             scale=self.scaling,
-            enable_gqa=hasattr(self, "num_key_value_groups"),
+            enable_gqa=getattr(self, "num_key_value_groups", 1) != 1,
         ).transpose(1, 2)
 
         attn_output = attn_output.reshape(*input_shape, -1)#.contiguous()

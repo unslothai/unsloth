@@ -261,7 +261,8 @@ class UnslothVisionDataCollator:
     __slots__ = \
         "padding_token_ids", "dtype", "ignore_index", \
         "processor", "formatting_func", "image_size", \
-        "max_seq_length", "truncation", "train_on_responses_only",
+        "max_seq_length", "truncation", "train_on_responses_only", \
+        "num_proc",
 
     def __init__(
         self,
@@ -277,6 +278,7 @@ class UnslothVisionDataCollator:
         instruction_part = None,
         response_part    = None,
         force_match      = True, # Match newlines as well!
+        num_proc         = None,
     ):
         if not hasattr(processor, "image_processor"):
             raise TypeError("Unsloth: UnslothVisionDataCollator is only for image models!")
@@ -329,6 +331,7 @@ class UnslothVisionDataCollator:
                 force_match      = force_match,
                 tokenizer        = processor,
                 return_function  = True,
+                num_proc         = num_proc,
             )
         else:
             self.train_on_responses_only = None
@@ -414,7 +417,8 @@ class UnslothVisionDataCollator:
             return_tensors = "pt",
             add_special_tokens = False, # Stop double BOS
         )
-        batch.pop("token_type_ids", None)
+        # Cannot remove due to bidirectional attention fro Gemma 3!
+        # batch.pop("token_type_ids", None)
 
         # Pixtral accepts multiple images, so we have to cast it individually
         pixel_values = batch["pixel_values"]
