@@ -89,7 +89,6 @@ def unsloth_base_fast_generate(
         raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
     assert(type(x) is torch.Tensor)
     bsz = x.shape[0]
-    print(kwargs)
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(self.config.torch_dtype)
@@ -146,8 +145,6 @@ def unsloth_base_fast_generate(
     # Get pixel values for VLMs
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
-
-    if "use_cache" not in kwargs: kwargs["use_cache"] = True
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
