@@ -184,16 +184,16 @@ def unsloth_base_fast_generate(
     # Fix generation_config
     # Use hybrid if sliding window seen, otherwise try static
     cache_implementation = getattr(self.config, "cache_implementation", None)
-    if cache_implementation is None:
+    if getattr(self, "_supports_static_cache", True):
+        cache_implementation = "static"
+    else:
+        cache_implementation = None
+    if cache_implementation is not None:
         swa = getattr(getattr(self.config, "text_config", self.config), "sliding_window", None)
         if swa == 0 or type(swa) is not int:
             cache_implementation = "static"
         else:
             cache_implementation = "hybrid"
-    if getattr(self, "_supports_static_cache", True):
-        cache_implementation = "static"
-    else:
-        cache_implementation = None
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
         kwargs["generation_config"].compile_config = _compile_config
@@ -201,7 +201,6 @@ def unsloth_base_fast_generate(
         kwargs["cache_implementation"] = cache_implementation
         kwargs["compile_config"] = _compile_config
     pass
-    print(kwargs)
 
     with torch.inference_mode(), autocaster:
         try:
