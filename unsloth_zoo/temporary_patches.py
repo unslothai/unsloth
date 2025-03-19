@@ -545,6 +545,7 @@ def patch_Gemma3Attention():
         #     **kwargs,
         # )
         try:
+            print(query_states.shape, key_states.shape, value_states.shape)
             attn_output = scaled_dot_product_attention(
                 query_states.to(downcast_dtype),
                 key_states.to(downcast_dtype),
