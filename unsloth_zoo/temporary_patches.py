@@ -249,7 +249,6 @@ def patch_Gemma3ForConditionalGeneration():
             attention_mask = attention_mask.to(device = labels.device)
             labels[attention_mask == 0] = -100
         pass
-        print("logits_to_keep", logits_to_keep)
         outputs = self.language_model(
             labels=labels,
             attention_mask=causal_mask,
@@ -564,8 +563,7 @@ def patch_Gemma3Attention():
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3Attention.")
     else:
-        # forward = torch.compiler.disable(forward, recursive = False)
-        forward = torch.compile(forward, fullgraph = False, dynamic = True, options = torch_compile_options)
+        forward = torch.compiler.disable(forward, recursive = False)
         transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
