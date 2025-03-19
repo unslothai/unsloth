@@ -84,6 +84,11 @@ _compile_config = CompileConfig(
 )
 _compile_config.disable = True # Must set manually
 
+from unsloth_zoo.vllm_utils import (
+    convert_lora_modules,
+    return_lora_modules,
+)
+
 def unsloth_base_fast_generate(
     self,
     *args,
@@ -156,6 +161,16 @@ def unsloth_base_fast_generate(
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
 
+    # Mixed precision autocast
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float16)
+        dtype = torch.float16
+    else:
+        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+
+    # Prepare LoRA
+    state_dict = convert_lora_modules(model, dtype = dtype)
+
     # Set compile dynamic shapes
     torch._dynamo.mark_static(input_ids, 0)
     torch._dynamo.mark_dynamic(input_ids, 1)
@@ -174,11 +189,6 @@ def unsloth_base_fast_generate(
         kwargs["compile_config"] = _compile_config
     pass
 
-    # Mixed precision autocast
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float16)
-    else:
-        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
     with torch.inference_mode(), autocaster:
         try:
             output = self._old_generate(*args, **kwargs)
@@ -186,6 +196,8 @@ def unsloth_base_fast_generate(
             PROMPT_LOOPKUP[arch] = False
             kwargs.pop("prompt_lookup_num_tokens", None)
             output = self._old_generate(*args, **kwargs)
+        finally:
+            return_lora_modules(model, state_dict, torch.float32)
     pass
 
     FastBaseModel.for_training(self)
