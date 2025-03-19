@@ -2457,12 +2457,6 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
-
-        # Patch generate
-        if model.generate.__name__ != "unsloth_fast_generate":
-            model._old_generate = model.generate
-            unsloth_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_fast_generate, model)
         return model
     pass
 
