@@ -176,7 +176,7 @@ def unsloth_base_fast_generate(
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float16)
     else:
         autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
     with torch.inference_mode(), autocaster:
