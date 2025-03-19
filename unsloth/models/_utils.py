@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.16"
+__version__ = "2025.3.17"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1175,11 +1175,9 @@ def unsloth_compile_transformers(
             "so turning off some optimizations!"
         )
         return
-    print(disable)
     if disable: return
 
     model_types = list(dict().fromkeys(model_types).keys())
-    print(model_types)
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
@@ -1212,7 +1210,6 @@ def unsloth_compile_transformers(
     # Redo patches which override compiler
     for temporary_patch in TEMPORARY_PATCHES:
         temporary_patch()
-        print(os.environ["UNSLOTH_FORCE_FLOAT32"])
     return model_types
 pass
 
