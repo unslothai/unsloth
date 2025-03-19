@@ -471,7 +471,7 @@ TEMPORARY_PATCHES.append(patch_Gemma3MLP)
 
 
 def patch_Gemma3Attention():
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "0":
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
         downcast_dtype = torch.float16
     else:
         downcast_dtype = torch.bfloat16
