@@ -81,6 +81,7 @@ def unsloth_base_fast_generate(
     *args,
     **kwargs,
 ):
+    print(args, kwargs)
     if len(args) != 0:
         x = args[0]
     elif "input_ids" in kwargs:
