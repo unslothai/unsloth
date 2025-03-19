@@ -1212,7 +1212,7 @@ def convert_lora_modules(
     model,
     dtype = None,
 ):
-    dtype = _get_dtype(mode.config.torch_dtype if dtype is None else dtype)
+    dtype = _get_dtype(model.config.torch_dtype if dtype is None else dtype)
 
     if (hasattr(model, "peft_config") and "default" in model.peft_config) \
         and (model.peft_config["default"].peft_type == PeftType.LORA):
@@ -1240,7 +1240,7 @@ def return_lora_modules(
     dtype = torch.float32,
 ):
     if state_dict == {} or state_dict is None: return
-    dtype = _get_dtype(mode.config.torch_dtype if dtype is None else dtype)
+    dtype = _get_dtype(model.config.torch_dtype if dtype is None else dtype)
 
     if (hasattr(model, "peft_config") and "default" in model.peft_config) \
         and (model.peft_config["default"].peft_type == PeftType.LORA):
