@@ -133,6 +133,7 @@ def patch_Gemma3Processor():
 
         # Add token type ids manually, as tokenizer can't do arbitrary position token types
         # [TODO] FAILS for batched tokens since text_inputs["input_ids"] is a list of lists, so np.array creates an object!
+        print(text_inputs, type(text_inputs))
         # array_ids = np.array(text_inputs["input_ids"])
         # mm_token_type_ids = np.zeros_like(text_inputs["input_ids"])
         # mm_token_type_ids[array_ids == self.image_token_id] = 1
