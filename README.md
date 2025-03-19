@@ -263,10 +263,13 @@ fourbit_models = [
     "unsloth/Llama-3.3-70B-Instruct-bnb-4bit" # NEW! Llama 3.3 70B!
 ] # More models at https://huggingface.co/unsloth
 
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/Llama-3.2-1B",
-    max_seq_length = max_seq_length,
-    load_in_4bit = True,
+model, tokenizer = FastModel.from_pretrained(
+    model_name = "unsloth/gemma-3-4B-it",
+    max_seq_length = 2048, # Choose any for long context!
+    load_in_4bit = True,  # 4 bit quantization to reduce memory
+    load_in_8bit = False, # [NEW!] A bit more accurate, uses 2x memory
+    full_finetuning = False, # [NEW!] We have full finetuning now!
+    # token = "hf_...", # use one if using gated models
 )
 
 # Do model patching and add fast LoRA weights
