@@ -177,7 +177,11 @@ def unsloth_base_fast_generate(
     if "attention_mask" in kwargs:
         torch._dynamo.mark_static(kwargs["attention_mask"], 0)
         torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
-    pass
+    if "pixel_values" in kwargs:
+        print(kwargs["pixel_values"].shape)
+    if "token_type_ids" in kwargs:
+        torch._dynamo.mark_static(kwargs["token_type_ids"], 0)
+        torch._dynamo.mark_dynamic(kwargs["token_type_ids"], 1)
 
     # Fix generation_config
     cache_implementation = getattr(self.config, "cache_implementation", "static")
