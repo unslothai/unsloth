@@ -652,13 +652,7 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
-    torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
-    if torch_dtype is not None:
-        inputs_embeds = inputs_embeds.to(torch_dtype)
-    else:
-        raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
-    pass
+    inputs_embeds = inputs_embeds.to(_get_dtype(self.config.torch_dtype))
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
@@ -924,7 +918,7 @@ def LlamaModel_fast_forward_inference(
     mlp_size = self.config.intermediate_size
 
     X = self.model.embed_tokens(input_ids)
-    X = X.to(self.config.torch_dtype)
+    X = X.to(_get_dtype(self.config.torch_dtype))
     bsz, q_len, hd = X.shape
     assert(q_len == 1)
     # Get saved buffers to reduce memory movement
