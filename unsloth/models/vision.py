@@ -177,25 +177,30 @@ def unsloth_base_fast_generate(
     if "attention_mask" in kwargs:
         torch._dynamo.mark_static(kwargs["attention_mask"], 0)
         torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
-    if "pixel_values" in kwargs:
-        print(kwargs["pixel_values"].shape)
     if "token_type_ids" in kwargs:
         torch._dynamo.mark_static(kwargs["token_type_ids"], 0)
         torch._dynamo.mark_dynamic(kwargs["token_type_ids"], 1)
 
     # Fix generation_config
-    cache_implementation = getattr(self.config, "cache_implementation", "static")
+    # Use hybrid if sliding window seen, otherwise try static
+    cache_implementation = getattr(self.config, "cache_implementation", None)
+    if cache_implementation is None:
+        swa = getattr(getattr(model.config, "text_config", model.config), "sliding_window", None)
+        if swa == 0 or type(swa) is not int:
+            cache_implementation = "static"
+        else:
+            cache_implementation = "hybrid"
+    if getattr(self, "_supports_static_cache", True):
+        cache_implementation = "static"
+    else:
+        cache_implementation = None
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
         kwargs["generation_config"].compile_config = _compile_config
-    elif getattr(self, "_supports_static_cache", True):
+    else:
         kwargs["cache_implementation"] = cache_implementation
         kwargs["compile_config"] = _compile_config
-    else:
-        kwargs["cache_implementation"] = "hybrid"
-        kwargs["compile_config"] = _compile_config
     pass
-    print(kwargs)
 
     with torch.inference_mode(), autocaster:
         try:
