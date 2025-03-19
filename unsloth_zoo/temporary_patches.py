@@ -500,6 +500,7 @@ def patch_Gemma3Attention():
         hidden_shape = (*input_shape, -1, self.head_dim)
 
         hidden_states = hidden_states.to(downcast_dtype)
+        print(hidden_states.dtype)
         query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
