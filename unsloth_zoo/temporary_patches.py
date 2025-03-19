@@ -311,11 +311,6 @@ def patch_Gemma3ForConditionalGeneration():
         print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
         transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
-
-    # Also fix Gemma3ForCausalLM has no `_prepare_4d_causal_attention_mask_with_cache_position`
-    from transformers.models.gemma3.modeling_gemma3 import Gemma3TextModel
-    transformers.models.gemma3.modeling_gemma3.Gemma3ForCausalLM._prepare_4d_causal_attention_mask_with_cache_position = \
-        Gemma3TextModel._prepare_4d_causal_attention_mask_with_cache_position
     return
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3ForConditionalGeneration)
