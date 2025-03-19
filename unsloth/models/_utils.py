@@ -1175,9 +1175,11 @@ def unsloth_compile_transformers(
             "so turning off some optimizations!"
         )
         return
+    print(disable)
     if disable: return
 
     model_types = list(dict().fromkeys(model_types).keys())
+    print(model_types)
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
