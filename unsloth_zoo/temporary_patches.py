@@ -565,6 +565,7 @@ def patch_Gemma3Attention():
         print("Unsloth: Failed to patch Gemma3Attention.")
     else:
         # forward = torch.compiler.disable(forward, recursive = False)
+        forward = torch.compile(forward, fullgraph = False, dynamic = True, options = torch_compile_options)
         transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
