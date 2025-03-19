@@ -1204,6 +1204,8 @@ def load_lora_directly(model):
         vllm_lora_B.copy_(model_lora_B, non_blocking = True)
         if s is not None: vllm_lora_B *= s
     pass
+    # Must block!
+    torch.cuda.synchronize()
 pass
 
 
@@ -1229,6 +1231,8 @@ def convert_lora_modules(
         for name, module in model.named_modules():
             if name + ".default.weight" in state_dict:
                 exec(f"module.to({dtype})")
+            # Must block!
+            torch.cuda.synchronize()
         pass
         return state_dict
     return {}
@@ -1253,6 +1257,8 @@ def return_lora_modules(
                 exec(f"module.to({dtype})")
                 module.default.weight.copy_(old_weight, non_blocking = True)
         pass
+        # Must block!
+        torch.cuda.synchronize()
         return
     return
 pass
