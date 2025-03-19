@@ -76,7 +76,13 @@ NUM_LOGITS_TO_KEEP = dict()
 global PROMPT_LOOPKUP
 PROMPT_LOOPKUP = dict()
 
-from transformers import GenerationConfig
+from transformers import GenerationConfig, CompileConfig, HybridCache
+_compile_config = CompileConfig(
+    fullgraph = False,
+    dynamic = None,
+    mode = "reduce-overhead",
+)
+_compile_config.disable = True # Must set manually
 
 def unsloth_base_fast_generate(
     self,
@@ -156,6 +162,16 @@ def unsloth_base_fast_generate(
     if "attention_mask" in kwargs:
         torch._dynamo.mark_static(kwargs["attention_mask"], 0)
         torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
+    pass
+
+    # Fix generation_config
+    cache_implementation = getattr(self.config, "cache_implementation", "static")
+    if "generation_config" in kwargs:
+        kwargs["generation_config"].cache_implementation = cache_implementation
+        kwargs["generation_config"].compile_config = _compile_config
+    else:
+        kwargs["cache_implementation"] = cache_implementation
+        kwargs["compile_config"] = _compile_config
     pass
 
     # Mixed precision autocast
