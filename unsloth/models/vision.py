@@ -76,19 +76,23 @@ NUM_LOGITS_TO_KEEP = dict()
 global PROMPT_LOOPKUP
 PROMPT_LOOPKUP = dict()
 
+from transformers import GenerationConfig
+
 def unsloth_base_fast_generate(
     self,
     *args,
     **kwargs,
 ):
     if len(args) != 0:
-        x = args[0]
+        input_ids = args[0]
     elif "input_ids" in kwargs:
-        x = kwargs["input_ids"]
+        input_ids = kwargs["input_ids"]
+    elif "input" in kwargs:
+        input_ids = kwargs["input_ids"]
     else:
         raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
-    assert(type(x) is torch.Tensor)
-    bsz = x.shape[0]
+    assert(type(input_ids) is torch.Tensor)
+    bsz = input_ids.shape[0]
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(self.config.torch_dtype)
@@ -145,6 +149,14 @@ def unsloth_base_fast_generate(
     # Get pixel values for VLMs
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
+
+    # Set compile dynamic shapes
+    torch._dynamo.mark_static(input_ids, 0)
+    torch._dynamo.mark_dynamic(input_ids, 1)
+    if "attention_mask" in kwargs:
+        torch._dynamo.mark_static(kwargs["attention_mask"], 0)
+        torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
+    pass
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
