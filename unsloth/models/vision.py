@@ -116,8 +116,8 @@ def unsloth_base_fast_generate(
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
     arch = self.config.architectures[0]
 
-    # Remove token_type_ids
-    kwargs.pop("token_type_ids", None)
+    # Remove token_type_ids - WRONG for Gemma 3 since bidirectional attention
+    # kwargs.pop("token_type_ids", None)
 
     # VLMs do not allow logits_to_keep
     global NUM_LOGITS_TO_KEEP
