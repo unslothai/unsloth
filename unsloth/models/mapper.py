@@ -718,6 +718,16 @@ __INT_TO_FLOAT_MAPPER = \
         "allenai/OLMo-2-0325-32B-Instruct",
         "unsloth/OLMo-2-0325-32B-Instruct-bnb-4bit",
     ),
+    "unsloth/Mistral-Small-3.1-24B-Instruct-2503-unsloth-bnb-4bit" : (
+        "unsloth/Mistral-Small-3.1-24B-Instruct-2503",
+        "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+        "unsloth/Mistral-Small-3.1-24B-Instruct-2503-bnb-4bit",
+    ),
+    "unsloth/Mistral-Small-3.1-24B-Base-2503-unsloth-bnb-4bit" : (
+        "unsloth/Mistral-Small-3.1-24B-Base-2503",
+        "mistralai/Mistral-Small-3.1-24B-Base-2503",
+        "unsloth/Mistral-Small-3.1-24B-Base-2503-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
