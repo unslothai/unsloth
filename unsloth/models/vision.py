@@ -185,7 +185,7 @@ def unsloth_base_fast_generate(
     # Use hybrid if sliding window seen, otherwise try static
     cache_implementation = getattr(self.config, "cache_implementation", None)
     if cache_implementation is None:
-        swa = getattr(getattr(model.config, "text_config", model.config), "sliding_window", None)
+        swa = getattr(getattr(self.config, "text_config", self.config), "sliding_window", None)
         if swa == 0 or type(swa) is not int:
             cache_implementation = "static"
         else:
