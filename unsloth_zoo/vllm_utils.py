@@ -1244,15 +1244,16 @@ def return_lora_modules(
 
     if (hasattr(model, "peft_config") and "default" in model.peft_config) \
         and (model.peft_config["default"].peft_type == PeftType.LORA):
-
+        count = 0
         for name, module in model.named_modules():
             old_name = name + ".default.weight"
             old_weight = state_dict.get(old_name, None)
             if old_weight is not None:
                 exec(f"module.to({dtype})")
                 module.default.weight.copy_(old_weight, non_blocking = True)
-                print(1)
+                count += 1
         pass
+        print(count)
         return
     return
 pass
