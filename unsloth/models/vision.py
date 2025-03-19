@@ -76,19 +76,34 @@ NUM_LOGITS_TO_KEEP = dict()
 global PROMPT_LOOPKUP
 PROMPT_LOOPKUP = dict()
 
+from transformers import GenerationConfig, CompileConfig, HybridCache
+_compile_config = CompileConfig(
+    fullgraph = False,
+    dynamic = None,
+    mode = "reduce-overhead",
+)
+_compile_config.disable = True # Must set manually
+
+from unsloth_zoo.vllm_utils import (
+    convert_lora_modules,
+    return_lora_modules,
+)
+
 def unsloth_base_fast_generate(
     self,
     *args,
     **kwargs,
 ):
     if len(args) != 0:
-        x = args[0]
+        input_ids = args[0]
     elif "input_ids" in kwargs:
-        x = kwargs["input_ids"]
+        input_ids = kwargs["input_ids"]
+    elif "input" in kwargs:
+        input_ids = kwargs["input_ids"]
     else:
         raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
-    assert(type(x) is torch.Tensor)
-    bsz = x.shape[0]
+    assert(type(input_ids) is torch.Tensor)
+    bsz = input_ids.shape[0]
 
     FastBaseModel.for_inference(self)
     dtype = _get_dtype(self.config.torch_dtype)
@@ -101,8 +116,8 @@ def unsloth_base_fast_generate(
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
     arch = self.config.architectures[0]
 
-    # Remove token_type_ids
-    kwargs.pop("token_type_ids", None)
+    # Remove token_type_ids - WRONG for Gemma 3 since bidirectional attention
+    # kwargs.pop("token_type_ids", None)
 
     # VLMs do not allow logits_to_keep
     global NUM_LOGITS_TO_KEEP
@@ -146,20 +161,58 @@ def unsloth_base_fast_generate(
     try: kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except: pass
 
-    if "use_cache" not in kwargs: kwargs["use_cache"] = True
-
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float16)
+        dtype = torch.float16
     else:
         autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
-    with torch.inference_mode(), autocaster:
-        try:
+
+    # Prepare LoRA
+    # state_dict = convert_lora_modules(self, dtype = dtype)
+
+    # Set compile dynamic shapes
+    torch._dynamo.mark_static(input_ids, 0)
+    torch._dynamo.mark_dynamic(input_ids, 1)
+    if "attention_mask" in kwargs:
+        torch._dynamo.mark_static(kwargs["attention_mask"], 0)
+        torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
+    if "token_type_ids" in kwargs:
+        torch._dynamo.mark_static(kwargs["token_type_ids"], 0)
+        torch._dynamo.mark_dynamic(kwargs["token_type_ids"], 1)
+
+    # Fix generation_config
+    # Use hybrid if sliding window seen, otherwise try static
+    cache_implementation = getattr(self.config, "cache_implementation", None)
+    if getattr(self, "_supports_static_cache", True):
+        cache_implementation = "static"
+    else:
+        cache_implementation = None
+    if cache_implementation is not None:
+        swa = getattr(getattr(self.config, "text_config", self.config), "sliding_window", None)
+        if swa == 0 or type(swa) is not int:
+            cache_implementation = "static"
+        else:
+            cache_implementation = "hybrid"
+    if "generation_config" in kwargs:
+        kwargs["generation_config"].cache_implementation = cache_implementation
+        kwargs["generation_config"].compile_config = _compile_config
+    else:
+        kwargs["cache_implementation"] = cache_implementation
+        kwargs["compile_config"] = _compile_config
+    pass
+
+    try:
+        with torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
-        except:
-            PROMPT_LOOPKUP[arch] = False
-            kwargs.pop("prompt_lookup_num_tokens", None)
+    except:
+        PROMPT_LOOPKUP[arch] = False
+        kwargs.pop("prompt_lookup_num_tokens", None)
+        with torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
+    finally:
+        pass
+        # return_lora_modules(self, state_dict, torch.float32)
     pass
 
     FastBaseModel.for_training(self)
@@ -203,8 +256,9 @@ class FastBaseModel:
         except: vllm_version = ""
 
         model_type_arch = model_types[0]
-        if model_type_arch == "siglip" and len(model_types) != 1:
-            model_type_arch = model_types[1]
+        if model_type_arch == "siglip":
+            for model_type_arch in model_types:
+                if model_type_arch != "siglip": break
 
         statistics = \
            f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
@@ -543,12 +597,6 @@ class FastBaseModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
-
-        # Patch generate
-        if model.generate.__name__ != "unsloth_base_fast_generate":
-            model._old_generate = model.generate
-            unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_base_fast_generate, model)
         return model
     pass
 
