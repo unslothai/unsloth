@@ -249,6 +249,7 @@ def patch_Gemma3ForConditionalGeneration():
             attention_mask = attention_mask.to(device = labels.device)
             labels[attention_mask == 0] = -100
         pass
+        print("logits_to_keep", logits_to_keep)
         outputs = self.language_model(
             labels=labels,
             attention_mask=causal_mask,
