@@ -544,10 +544,15 @@ class FastBaseModel:
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
 
         # Patch generate
-        if model.generate.__name__ != "unsloth_base_fast_generate":
-            model._old_generate = model.generate
-            unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_base_fast_generate, model)
+        # if model.generate.__name__ != "unsloth_base_fast_generate":
+        #     # Check for internal old_generates
+        #     m = model
+        #     while hasattr(m, "model"):
+        #         if hasattr(m, "_old_generate"):
+                    
+        #     model._old_generate = model.generate
+        #     unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
+        #     model.generate = types.MethodType(unsloth_base_fast_generate, model)
         return model
     pass
 
