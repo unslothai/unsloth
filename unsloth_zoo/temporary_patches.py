@@ -133,12 +133,14 @@ def patch_Gemma3Processor():
 
         # Add token type ids manually, as tokenizer can't do arbitrary position token types
         # [TODO] FAILS for batched tokens since text_inputs["input_ids"] is a list of lists, so np.array creates an object!
-        print(text_inputs, type(text_inputs))
+        input_ids = text_inputs["input_ids"]
+        image_token_id = self.image_token_id
+        mm_token_type_ids = [[1 if y == image_token_id else 0 for y in x] for x in input_ids]
         # array_ids = np.array(text_inputs["input_ids"])
         # mm_token_type_ids = np.zeros_like(text_inputs["input_ids"])
         # mm_token_type_ids[array_ids == self.image_token_id] = 1
         # text_inputs = {k: v.tolist() for k, v in text_inputs.items()}  # in case user requested list inputs
-        # text_inputs["token_type_ids"] = mm_token_type_ids.tolist()
+        text_inputs["token_type_ids"] = mm_token_type_ids#.tolist()
         return BatchFeature(data={**text_inputs, **image_inputs}, tensor_type=return_tensors)
     pass
     old_keys = inspect.signature(transformers.models.gemma3.processing_gemma3.Gemma3Processor.__call__).parameters
