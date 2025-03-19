@@ -46,7 +46,8 @@ pip install unsloth
 For Windows install instructions, see [here](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
 
 ## 🦥 Unsloth.ai News
-- 📣 NEW! [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) incuding: full finetuning, pretraining, ALL models (Mixtral, MOE, Cohere, Mamba) and all training algorithms (KTO, DoRA) etc. MultiGPU support coming very soon.
+- 📣 NEW! [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) incuding: FFT, ALL models (Mixtral, MOE, Cohere, Mamba) and all training algorithms (KTO, DoRA) etc. MultiGPU support coming very soon.
+  To enable full-finetuning, set ```full_finetuning = True``` and for 8-bit finetuning, set ```load_in_8bit = True```
 - 📣 NEW! **Gemma 3** by Google: [Read Blog](https://unsloth.ai/blog/gemma3). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/phi-4-all-versions-677eecf93784e61afe762afa).
 - 📣 NEW! Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 NEW! [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - the most powerful open reasoning models with Llama & Qwen distillations. Run or fine-tune them now [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
@@ -79,6 +80,7 @@ For Windows install instructions, see [here](https://docs.unsloth.ai/get-started
 | <img height="14" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />&nbsp; **Reddit**                    | [Join our Reddit page](https://reddit.com/r/unsloth)|
 
 ## ⭐ Key Features
+- Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **8-bit** training
 - All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. **Manual backprop engine**.
 - **0% loss in accuracy** - no approximation methods - all exact.
 - No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
