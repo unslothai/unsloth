@@ -1255,7 +1255,7 @@ def return_lora_modules(
             old_weight = state_dict.get(old_name, None)
             if old_weight is not None:
                 exec(f"module.to({dtype})")
-                module.default.weight.copy_(old_weight, non_blocking = True)
+                module.default.weight.copy_(old_weight)
         pass
         return
     return
