@@ -911,12 +911,13 @@ def load_vllm(
     pass
 
     # Use VLLM_USE_V1 for vllm >= 0.7.4 and CUDA >= 8.0
-    if importlib.util.find_spec("vllm") and (major_version >= 8):
-        from importlib.metadata import version as importlib_version
-        from packaging.version import Version
-        if Version(importlib_version("vllm")) > Version("0.7.3"):
-            os.environ["VLLM_USE_V1"] = "1"
-    pass
+    # [FAILS] for bitsandbytes - https://github.com/unslothai/unsloth/issues/2102
+    # if importlib.util.find_spec("vllm") and (major_version >= 8):
+    #     from importlib.metadata import version as importlib_version
+    #     from packaging.version import Version
+    #     if Version(importlib_version("vllm")) > Version("0.7.3"):
+    #         os.environ["VLLM_USE_V1"] = "1"
+    # pass
 
     from vllm import LLM, LLMEngine, AsyncLLMEngine, EngineArgs
 
