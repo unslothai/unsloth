@@ -1211,6 +1211,7 @@ pass
 
 from peft import PeftType
 
+@torch.inference_mode
 def convert_lora_modules(
     model,
     dtype = None,
@@ -1237,6 +1238,7 @@ def convert_lora_modules(
 pass
 
 
+@torch.inference_mode
 def return_lora_modules(
     model,
     state_dict = {},
@@ -1255,8 +1257,6 @@ def return_lora_modules(
                 exec(f"module.to({dtype})")
                 module.default.weight.copy_(old_weight, non_blocking = True)
         pass
-        # Must block!
-        torch.cuda.synchronize()
         return
     return
 pass
