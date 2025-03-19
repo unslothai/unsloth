@@ -169,7 +169,7 @@ def unsloth_base_fast_generate(
         autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
 
     # Prepare LoRA
-    state_dict = convert_lora_modules(self, dtype = dtype)
+    # state_dict = convert_lora_modules(self, dtype = dtype)
 
     # Set compile dynamic shapes
     torch._dynamo.mark_static(input_ids, 0)
@@ -210,7 +210,8 @@ def unsloth_base_fast_generate(
             kwargs.pop("prompt_lookup_num_tokens", None)
             output = self._old_generate(*args, **kwargs)
         finally:
-            return_lora_modules(self, state_dict, torch.float32)
+            pass
+            # return_lora_modules(self, state_dict, torch.float32)
     pass
 
     FastBaseModel.for_training(self)
