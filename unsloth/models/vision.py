@@ -184,8 +184,11 @@ def unsloth_base_fast_generate(
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
         kwargs["generation_config"].compile_config = _compile_config
-    else:
+    elif getattr(self, "_supports_static_cache", True):
         kwargs["cache_implementation"] = cache_implementation
+        kwargs["compile_config"] = _compile_config
+    else:
+        kwargs["cache_implementation"] = "hybrid"
         kwargs["compile_config"] = _compile_config
     pass
 
