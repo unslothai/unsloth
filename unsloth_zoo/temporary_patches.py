@@ -544,7 +544,7 @@ def patch_Gemma3Attention():
         #     sliding_window=self.sliding_window,
         #     **kwargs,
         # )
-        print(query_states.shape, key_states.shape, value_states.shape, self.config)
+        print(query_states.shape, key_states.shape, value_states.shape, self.config, self.num_key_value_groups)
         attn_output = scaled_dot_product_attention(
             query_states.to(downcast_dtype),
             key_states.to(downcast_dtype),
