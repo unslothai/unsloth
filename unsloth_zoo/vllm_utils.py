@@ -1231,8 +1231,6 @@ def convert_lora_modules(
         for name, module in model.named_modules():
             if name + ".default.weight" in state_dict:
                 exec(f"module.to({dtype})")
-            # Must block!
-            torch.cuda.synchronize()
         pass
         return state_dict
     return {}
