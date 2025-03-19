@@ -544,21 +544,15 @@ def patch_Gemma3Attention():
         #     sliding_window=self.sliding_window,
         #     **kwargs,
         # )
-        try:
-            print(query_states.shape, key_states.shape, value_states.shape)
-            attn_output = scaled_dot_product_attention(
-                query_states.to(downcast_dtype),
-                key_states.to(downcast_dtype),
-                value_states.to(downcast_dtype),
-                attn_mask=attention_mask.to(downcast_dtype),
-                dropout_p=self.attention_dropout if self.training else 0.0,
-                scale=self.scaling,
-                enable_gqa=getattr(self, "num_key_value_groups", 1) != 1,
-            ).transpose(1, 2)
-        except:
-            print(query_states.shape, key_states.shape, value_states.shape, attention_mask.shape,
-                self.config, self.num_key_value_groups,
-            )
+        attn_output = scaled_dot_product_attention(
+            query_states.to(downcast_dtype),
+            key_states.to(downcast_dtype),
+            value_states.to(downcast_dtype),
+            attn_mask=attention_mask.to(downcast_dtype),
+            dropout_p=self.attention_dropout if self.training else 0.0,
+            scale=self.scaling,
+            enable_gqa=getattr(self, "num_key_value_groups", 1) != 1,
+        ).transpose(1, 2)
 
         attn_output = attn_output.reshape(*input_shape, -1)#.contiguous()
         attn_output = self.o_proj(attn_output)
