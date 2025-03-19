@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.15"
+__version__ = "2025.3.16"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1177,6 +1177,7 @@ def unsloth_compile_transformers(
         return
     if disable: return
 
+    model_types = list(dict().fromkeys(model_types).keys())
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
