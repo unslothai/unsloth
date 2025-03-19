@@ -649,6 +649,7 @@ class FastModel(FastBaseModel):
         model_type_arch = model_types[1]
         global FORCE_FLOAT32
         for disable_name in FORCE_FLOAT32:
+            print(disable_name.lower(), model_type_arch.lower(), model_name.lower(), dtype, SUPPORTS_BFLOAT16)
             if (disable_name.lower() == model_type_arch.lower() or \
                 disable_name.lower() in model_name.lower()) and \
                 ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
