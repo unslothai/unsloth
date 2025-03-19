@@ -1210,6 +1210,7 @@ def unsloth_compile_transformers(
     # Redo patches which override compiler
     for temporary_patch in TEMPORARY_PATCHES:
         temporary_patch()
+        print(os.environ["UNSLOTH_FORCE_FLOAT32"])
     return model_types
 pass
 

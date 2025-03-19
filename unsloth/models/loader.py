@@ -648,7 +648,6 @@ class FastModel(FastBaseModel):
         do_forced_float32 = False
         model_type_arch = model_types[1]
         global FORCE_FLOAT32
-        print(model_type_arch, FORCE_FLOAT32, dtype)
         for disable_name in FORCE_FLOAT32:
             if (disable_name.lower() == model_type_arch.lower() or \
                 disable_name.lower() in model_name.lower()) and \
@@ -657,6 +656,7 @@ class FastModel(FastBaseModel):
                 dtype = torch.bfloat16 # Change to bfloat16 loading
                 break
         pass
+        print(model_type_arch, FORCE_FLOAT32, dtype, os.environ["UNSLOTH_FORCE_FLOAT32"])
         # Patch gradient checkpointing
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
