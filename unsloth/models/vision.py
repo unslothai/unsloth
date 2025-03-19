@@ -191,6 +191,7 @@ def unsloth_base_fast_generate(
         kwargs["cache_implementation"] = "hybrid"
         kwargs["compile_config"] = _compile_config
     pass
+    print(kwargs)
 
     with torch.inference_mode(), autocaster:
         try:
