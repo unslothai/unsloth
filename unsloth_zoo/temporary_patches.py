@@ -475,7 +475,7 @@ def patch_Gemma3Attention():
         downcast_dtype = torch.float16
     else:
         downcast_dtype = torch.bfloat16
-    print("downcast_dtype", downcast_dtype)
+    print("downcast_dtype", downcast_dtype, os.environ.get("UNSLOTH_FORCE_FLOAT32", "0"))
     try: import transformers.models.gemma3.modeling_gemma3
     except: return
     from transformers.models.gemma3.modeling_gemma3 import (
