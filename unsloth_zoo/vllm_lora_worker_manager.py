@@ -83,6 +83,7 @@ class WorkerLoRAManager(AbstractWorkerManager):
 
     def _load_adapter(self, lora_request: LoRARequest) -> LoRAModel:
         try:
+            print(self._adapter_manager.model)
             supported_lora_modules = self._adapter_manager.model.supported_lora_modules
             packed_modules_mapping = self._adapter_manager.model.packed_modules_mapping
             expected_lora_modules: List[str] = []
