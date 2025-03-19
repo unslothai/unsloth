@@ -1177,6 +1177,7 @@ def unsloth_compile_transformers(
         return
     if disable: return
 
+    model_types = list(dict().fromkeys(model_types).keys())
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,

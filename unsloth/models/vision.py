@@ -253,10 +253,10 @@ class FastBaseModel:
         try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
         except: vllm_version = ""
 
-        print(model_types)
         model_type_arch = model_types[0]
-        if model_type_arch == "siglip" and len(model_types) != 1:
-            model_type_arch = model_types[1]
+        if model_type_arch == "siglip":
+            for model_type_arch in model_types:
+                if model_type_arch != "siglip": break
 
         statistics = \
            f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
