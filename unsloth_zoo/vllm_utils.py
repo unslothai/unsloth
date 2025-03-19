@@ -1223,7 +1223,7 @@ def convert_lora_modules(
 
         state_dict = model.state_dict().items()
         state_dict = {
-            k : v.clone() for k, v in state_dict \
+            k : v.detach().clone() for k, v in state_dict \
             if (v.dtype != dtype) and \
                (".lora_A.default" in k or ".lora_B.default" in k)
         }
