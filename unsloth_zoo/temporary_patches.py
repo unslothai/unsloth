@@ -302,85 +302,11 @@ def patch_Gemma3ForConditionalGeneration():
             image_hidden_states=image_features if pixel_values is not None else None,
         )
     pass
-    from transformers.models.gemma3.modeling_gemma3 import (
-        StaticCache,
-        HybridCache,
-    )
-    def _update_causal_mask(
-        self,
-        attention_mask,
-        token_type_ids,
-        past_key_values,
-        cache_position,
-        input_tensor,
-        is_training: bool = False,
-    ):
-        if self.config.text_config._attn_implementation == "flash_attention_2":
-            return attention_mask
-
-        if attention_mask is not None and attention_mask.dim() == 4:
-            # In this case we assume that the mask comes already in inverted
-            # form and requires no inversion or slicing.
-            return attention_mask
-
-        using_static_cache = isinstance(past_key_values, StaticCache)
-        min_dtype = torch.finfo(torch.float16).min
-        inputs_lead_dim, sequence_length = input_tensor.shape[:2]
-        if using_static_cache:
-            target_length = past_key_values.get_max_cache_shape()
-        elif isinstance(past_key_values, HybridCache):
-            target_length = past_key_values.get_max_cache_shape()
-        else:
-            target_length = (
-                attention_mask.shape[-1]
-                if isinstance(attention_mask, torch.Tensor)
-                else cache_position[0] + sequence_length + 1
-            )
-
-        if attention_mask is not None and attention_mask.dim() == 4:
-            # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
-            return attention_mask
-
-        causal_mask = torch.full(
-            (sequence_length, target_length), fill_value=min_dtype, dtype=torch.float16, device=cache_position.device
-        )
-
-        # Causal diagonal mask only if training, otherwise attend to the whole prefix. Training-specific attn for prefix is handled below
-        if sequence_length != 1:
-            causal_mask = torch.triu(causal_mask, diagonal=1)
-
-        causal_mask *= torch.arange(target_length, device=cache_position.device) > cache_position.reshape(-1, 1)
-        causal_mask = causal_mask[None, None, :, :].expand(inputs_lead_dim, 1, -1, -1)
-
-        # Apply bidirectional mask on images if token type ids are provided
-        if token_type_ids is not None and sequence_length != 1:
-            token_type_mask = token_type_ids.unsqueeze(1) == token_type_ids.unsqueeze(2)
-            token_type_mask[token_type_ids == 0] = False  # if text token do not change anything
-            token_type_mask = token_type_mask.unsqueeze(1).to(causal_mask.device, dtype=torch.bool)
-            causal_mask = causal_mask.clone()
-            causal_mask[:, :, :, :sequence_length] = causal_mask[:, :, :, :sequence_length].masked_fill(
-                token_type_mask, 0.0
-            )
-
-        if attention_mask is not None:
-            causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-            mask_length = attention_mask.shape[-1]
-
-            # Then apply padding mask (will mask pad tokens)
-            padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :].to(causal_mask.device)
-            padding_mask = padding_mask == 0
-            causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                padding_mask, min_dtype
-            )
-
-        return causal_mask
-    pass
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
     new_keys = inspect.signature(forward).parameters
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
-        transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
         transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
     return
 pass
@@ -464,8 +390,8 @@ def patch_Gemma3ForConditionalGeneration_causal_mask():
 
         return causal_mask
     pass
-    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
-    new_keys = inspect.signature(forward).parameters
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask).parameters
+    new_keys = inspect.signature(_update_causal_mask).parameters
     if old_keys != new_keys:
         print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
@@ -641,4 +567,4 @@ def patch_Gemma3Attention():
         transformers.models.gemma3.modeling_gemma3.Gemma3Attention.forward = forward
     return
 pass
-TEMPORARY_PATCHES.append(patch_Gemma3Attention)
+# TEMPORARY_PATCHES.append(patch_Gemma3Attention)
