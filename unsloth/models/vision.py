@@ -172,14 +172,14 @@ def unsloth_base_fast_generate(
     state_dict = convert_lora_modules(self, dtype = dtype)
 
     # Set compile dynamic shapes
-    torch._dynamo.mark_static(input_ids, 0)
-    torch._dynamo.mark_dynamic(input_ids, 1)
-    if "attention_mask" in kwargs:
-        torch._dynamo.mark_static(kwargs["attention_mask"], 0)
-        torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
-    if "token_type_ids" in kwargs:
-        torch._dynamo.mark_static(kwargs["token_type_ids"], 0)
-        torch._dynamo.mark_dynamic(kwargs["token_type_ids"], 1)
+    # torch._dynamo.mark_static(input_ids, 0)
+    # torch._dynamo.mark_dynamic(input_ids, 1)
+    # if "attention_mask" in kwargs:
+    #     torch._dynamo.mark_static(kwargs["attention_mask"], 0)
+    #     torch._dynamo.mark_dynamic(kwargs["attention_mask"], 1)
+    # if "token_type_ids" in kwargs:
+    #     torch._dynamo.mark_static(kwargs["token_type_ids"], 0)
+    #     torch._dynamo.mark_dynamic(kwargs["token_type_ids"], 1)
 
     # Fix generation_config
     # Use hybrid if sliding window seen, otherwise try static
