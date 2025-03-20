@@ -29,7 +29,7 @@ ASSISTANT_MESSAGE = {"role": "assistant", "content": ANSWER}
 
 Given that the answer is impossible to answer accurately without finetuning, we can only expect the model to answer the question correctly if the model has been trained on the question.
 
-To check this behavior, we check the model's response to the question before and after training across a number of generations, checking whether the model's response contains the answer.
+To check this behavior, we check the model's response to the question before and after training and after merging, checking that the model's response contains the answer after training and merging but not before training.
 
 ### Results
 

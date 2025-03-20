@@ -17,4 +17,3 @@ def header_footer_context(title: str, char="-"):
     yield
     print(f"{char}" * (100 + len(title) + 2))
     print()
-
