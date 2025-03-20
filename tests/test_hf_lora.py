@@ -44,10 +44,14 @@ if __name__ == "__main__":
     prompt = tokenizer.apply_chat_template(
         [USER_MESSAGE], tokenize=False, add_generation_prompt=True
     )
+    with header_footer_context("Test Prompt and Answer"):
+        print(f"Test Prompt:\n{prompt}\nExpected Answer:\n{ANSWER}")
 
     dataset: Dataset = create_dataset(
         tokenizer, num_examples=num_examples, messages=DEFAULT_MESSAGES
     )
+    with header_footer_context("Dataset"):
+        print(f"Dataset: {next(iter(dataset))}")
     
     training_args = SFTConfig(
             output_dir=output_dir,
