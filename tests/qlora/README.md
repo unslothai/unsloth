@@ -43,3 +43,5 @@ For the huggingface test, the model's behavior is as expected:
 - after training, the model's response contains the answer
 - after using peft's `merge_and_unload`, the model's response does not contain the answer
 - after using my custom merge function, the model's response contains the answer
+
+The scripts should output training params, training logs, as well as model responses before and after training and after merging (only prints model responses if answer is not contained in response).
