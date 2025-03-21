@@ -279,17 +279,18 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches, device = None,
             if not "attention_mask" in batch_samples[0]: is_vlm = False
             if not is_vlm:
                 num_items_in_batch = sum(
-                    [(x["labels"][..., 1:] != -100)\
-                    .sum() for x in batch_samples]
+                    (x["labels"][..., 1:] != -100)\
+                    .sum() for x in batch_samples
                 )
             else:
                 num_items_in_batch = sum(
-                    [((x["labels"][..., 1:] != -100) & (x["attention_mask"][..., 1:] != 0))\
-                    .sum() for x in batch_samples]
+                    ((x["labels"][..., 1:] != -100) & (x["attention_mask"][..., 1:] != 0))\
+                    .sum() for x in batch_samples
                 )
             if device is None: # transformers < 4.50.0 path
                 if self.args.average_tokens_across_devices:
                     num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
+                    print(num_items_in_batch, type(num_items_in_batch))
                 if torch.is_tensor(num_items_in_batch):
                     num_items_in_batch = num_items_in_batch.item()
                 pass
