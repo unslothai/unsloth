@@ -422,6 +422,7 @@ def LlamaAttention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
     past_key_value = (K, V) if use_cache else None
+    print(bsz, q_len, past_key_value[0].shape, past_key_value[1].shape)
 
     # Attention module
     if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
