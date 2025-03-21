@@ -485,7 +485,8 @@ pass
 import transformers.generation.configuration_utils
 if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):
     if type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS) is list:
-        transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
+        if "dynamic" not in transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS:
+            transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
     pass
 pass
 # =============================================
