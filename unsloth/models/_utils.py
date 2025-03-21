@@ -1242,6 +1242,7 @@ for j, function in enumerate(functions):
         except: continue
 pass
 
+import importlib
 USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
 if USE_MODELSCOPE:
     if importlib.util.find_spec("modelscope") is None:
