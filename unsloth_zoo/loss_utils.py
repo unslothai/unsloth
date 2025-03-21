@@ -300,6 +300,7 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches, device = None,
                 if torch.is_tensor(num_items_in_batch):
                     num_items_in_batch = num_items_in_batch.to(device)
                 pass
+                print(num_items_in_batch, type(num_items_in_batch))
 
         except Exception as exception:
             raise RuntimeError(exception)
