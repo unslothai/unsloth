@@ -654,6 +654,7 @@ def LlamaModel_fast_forward(
         inputs_embeds = self.embed_tokens(input_ids)
 
     inputs_embeds = inputs_embeds.to(_get_dtype(self.config.torch_dtype))
+    print(inputs_embeds.shape)
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
@@ -1170,7 +1171,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-        print(outputs.past_key_values, outputs.past_key_values[0][0].shape)
+        # print(outputs.past_key_values, outputs.past_key_values[0][0].shape)
         raise
         return CausalLMOutputWithPast(
             loss = loss,
