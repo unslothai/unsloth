@@ -290,8 +290,8 @@ def _unsloth_get_batch_samples(self, epoch_iterator, num_batches, device = None,
             if device is None: # transformers < 4.50.0 path
                 if self.args.average_tokens_across_devices:
                     num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
-                if torch.is_tensor(num_items_in_batch):
-                    num_items_in_batch = num_items_in_batch.item()
+                # if torch.is_tensor(num_items_in_batch):
+                #     num_items_in_batch = num_items_in_batch.item()
                 print(num_items_in_batch, type(num_items_in_batch))
                 pass
             else: # transformers >= 4.50.0 path
