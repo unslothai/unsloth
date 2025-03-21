@@ -1016,6 +1016,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        print(past_key_values)
         if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
