@@ -132,15 +132,21 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = -1,
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
+    group_mixed_image_text: Optional[bool] = field(
+        default = False,
+        metadata = {{'help' : 'When training a VLM and you have some examples with images and some without, ie text only'}}
+    )
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
+        group_mixed_image_text = False,
         **kwargs,
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        self.group_mixed_image_text = group_mixed_image_text
 pass
 
 {RLTrainer_extras}
@@ -167,7 +173,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         trainer = eval(f"trl.trainer.{trainer_file}")
     except Exception as error:
         return
-    
+
     # Get SFTTrainer and SFTConfig names
     name   = [x for x in dir(trainer) if x.endswith("Trainer") and x != "Trainer" and trainer_file.split("_")[0] in x.lower()]
     config = [x for x in dir(trainer) if x.endswith("Config")  and x != "Config"  and trainer_file.split("_")[0] in x.lower()]
@@ -516,7 +522,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "SamplingParams" in old_RLTrainer_source:
         RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
     pass
-    
+
     # Selective log softmax
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
 
@@ -559,12 +565,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         imports,
         overwrite = False,
     )
-    
+
     # Patch Trainer
     exec(f"trl.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
     exec(f"trl.trainer.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
     exec(f"trl.trainer.{trainer_file}.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
-    
+
     # Patch Config
     exec(f"trl.{RLConfig_name} = created_module.Unsloth{RLConfig_name}", locals(), globals())
     exec(f"trl.trainer.{RLConfig_name} = created_module.Unsloth{RLConfig_name}", locals(), globals())
@@ -692,7 +698,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             r"",
             source,
         )
-        
+
         # Replace self.llm.generate and self.llm.chat
         lora_name = trainer_file + "_lora_model"
         source = re.sub(
