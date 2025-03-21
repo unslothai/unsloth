@@ -929,6 +929,8 @@ def LlamaModel_fast_forward_inference(
     temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
     temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
 
+    print(type(past_key_values), len(past_key_values))
+
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
