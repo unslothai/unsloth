@@ -290,24 +290,24 @@ pass
 
 # =============================================
 # Fix KeyError: 'Cache only has 0 layers, attempted to access layer with index 0'
-# import transformers.cache_utils
-# if hasattr(transformers.cache_utils, "DynamicCache") and \
-#     transformers.cache_utils.DynamicCache.__getitem__.__name__ != "__cache_utils_getitem__":
+import transformers.cache_utils
+if hasattr(transformers.cache_utils, "DynamicCache") and \
+    transformers.cache_utils.DynamicCache.__getitem__.__name__ != "__cache_utils_getitem__":
 
-#     source = inspect.getsource(transformers.cache_utils.DynamicCache.__getitem__)
-#     start = source.find("def")
-#     spaces = start*" "
-#     source = source.split("\n")
-#     source = "\n".join(x[start:] for x in source)
-#     where = source.find("raise KeyError")
-#     source = source[:where] + \
-#         f"if len(self) == 0:\n{spaces}{spaces}"\
-#         "    raise RuntimeError('Unsloth: You must call `FastLanguageModel.for_inference(model)` before doing inference for Unsloth models.')\n" + \
-#         f"{spaces}{spaces}else:\n{spaces}{spaces}{spaces}" + source[where:]
-#     source = source.replace("__getitem__", "__cache_utils_getitem__", 1)
-#     exec(source)
-#     transformers.cache_utils.DynamicCache.__getitem__ = __cache_utils_getitem__
-# pass
+    source = inspect.getsource(transformers.cache_utils.DynamicCache.__getitem__)
+    start = source.find("def")
+    spaces = start*" "
+    source = source.split("\n")
+    source = "\n".join(x[start:] for x in source)
+    where = source.find("raise KeyError")
+    source = source[:where] + \
+        f"if len(self) == 0:\n{spaces}{spaces}"\
+        "    raise RuntimeError('Unsloth: You must call `FastLanguageModel.for_inference(model)` before doing inference for Unsloth models.')\n" + \
+        f"{spaces}{spaces}else:\n{spaces}{spaces}{spaces}" + source[where:]
+    source = source.replace("__getitem__", "__cache_utils_getitem__", 1)
+    exec(source)
+    transformers.cache_utils.DynamicCache.__getitem__ = __cache_utils_getitem__
+pass
 # =============================================
 
 # =============================================
