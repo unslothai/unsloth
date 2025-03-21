@@ -1017,7 +1017,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        if past_key_values is not None:
+        # Check for uninitialized DynamicCache
+        if past_key_values is not None and len(past_key_values) != 0:
             outputs = fast_forward_inference(
                 self,
                 input_ids,
