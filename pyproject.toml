@@ -29,7 +29,7 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = false
 
 [tool.setuptools.packages.find]
-exclude = ["images*"]
+exclude = ["images*", "tests*"]
 
 [project.optional-dependencies]
 triton = [
