@@ -800,8 +800,9 @@ def LlamaModel_fast_forward(
         elif not hasattr(self, "SWA_mask"):
             if HAS_FLEX_ATTENTION:
                 # Use Flex Attention instead!
-                self.SWA_mask = sliding_window_masker(self.config.sliding_window)
-                self.GA_mask = causal_masker
+                window_size = self.config.sliding_window
+                self.SWA_mask = create_cached_sliding_window_block_mask(window_size)
+                self.GA_mask = create_cached_causal_block_mask()
             else:
                 n = self.max_seq_length # self.config.max_position_embeddings
                 # masked_fill is making stuff slower!
