@@ -99,13 +99,13 @@ SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
-    print("PREPARE", input_ids)
+    print("PREPARE", input_ids, kwargs)
     if "past_key_values" in kwargs:
         input_ids = input_ids[:,[-1]]
         kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
-    print("PREPARE", input_ids)
+    print("PREPARE", input_ids, kwargs)
     return { "input_ids" : input_ids, **kwargs, }
 pass
 
