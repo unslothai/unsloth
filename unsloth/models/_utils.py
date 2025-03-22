@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.17"
+__version__ = "2025.3.18"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -484,7 +484,8 @@ pass
 import transformers.generation.configuration_utils
 if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):
     if type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS) is list:
-        transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
+        if "dynamic" not in transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS:
+            transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
     pass
 pass
 # =============================================
@@ -1242,6 +1243,7 @@ for j, function in enumerate(functions):
         except: continue
 pass
 
+import importlib
 USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
 if USE_MODELSCOPE:
     if importlib.util.find_spec("modelscope") is None:
