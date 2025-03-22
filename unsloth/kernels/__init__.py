@@ -50,8 +50,8 @@ from .flex_attention import (
     HAS_FLEX_ATTENTION,
     slow_attention_softcapping,
     slow_inference_attention_softcapping,
-    create_flex_attention_causal_mask,
-    create_flex_attention_sliding_window_mask,
+    sliding_window_masker,
+    causal_masker,
 )
 
 import os
