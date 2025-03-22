@@ -1039,7 +1039,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                 output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
             )
             return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+            print(input_ids.shape, input_ids)
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
             outputs = self.model(
