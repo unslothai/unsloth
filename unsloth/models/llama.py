@@ -99,13 +99,12 @@ SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
-    print("PREPARE", input_ids, kwargs)
     if "past_key_values" in kwargs:
+        print("FIX", input_ids.shape)
         input_ids = input_ids[:,[-1]]
         kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
-    print("PREPARE", input_ids, kwargs)
     return { "input_ids" : input_ids, **kwargs, }
 pass
 
@@ -424,7 +423,6 @@ def LlamaAttention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
     past_key_value = (K, V) if use_cache else None
-    print(bsz, q_len, past_key_value[0].shape, past_key_value[1].shape)
 
     # Attention module
     if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
@@ -934,8 +932,6 @@ def LlamaModel_fast_forward_inference(
     temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
 
     seq_len = past_key_values[0][0].shape[-2]
-
-    print(type(past_key_values), len(past_key_values), seq_len)
     if bsz != 1:
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
@@ -1173,8 +1169,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-        # print(outputs.past_key_values, outputs.past_key_values[0][0].shape)
-        raise
         return CausalLMOutputWithPast(
             loss = loss,
             logits = logits,
@@ -1577,7 +1571,6 @@ def unsloth_fast_generate(
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
     # Mixed precision autocast
-    print(args, kwargs)
     with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
         output = self._old_generate(*args, **kwargs)
     pass
