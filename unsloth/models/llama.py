@@ -99,11 +99,15 @@ SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
-    if "past_key_values" in kwargs:
-        print("FIX", input_ids.shape)
-        input_ids = input_ids[:,[-1]]
-        print("FIX AFTER", input_ids.shape)
-        kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
+    past_key_values = kwargs.get("past_key_values", None)
+    if past_key_values is not None:
+        # Check for uninitialized DynamicCache
+        if len(past_key_values) == 0:
+            past_key_values = None
+            kwargs["past_key_values"] = None
+        else:
+            input_ids = input_ids[:,[-1]]
+            kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
     return { "input_ids" : input_ids, **kwargs, }
@@ -1019,9 +1023,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        # Check for uninitialized DynamicCache
-        if past_key_values is not None and len(past_key_values) == 0:
-            past_key_values = None
         if past_key_values is not None:
             outputs = fast_forward_inference(
                 self,
