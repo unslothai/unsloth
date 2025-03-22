@@ -30,6 +30,7 @@ torch_compile_options = {
 try:
     import torch
     import torch.nn.functional as F
+    from collections import Counter
 
     from torch.nn.attention.flex_attention import (
         create_block_mask as _create_block_mask,
@@ -86,6 +87,8 @@ try:
             )
 
             self.max_seq_len = 0
+            self.query_shape_stats = Counter()
+            self.kv_shape_stats = Counter()
 
             # Compile flex_attention to the hinted (max seq) size
             if size_hint:
@@ -115,9 +118,11 @@ try:
             enable_gqa: bool = False,
             return_lse: bool = False,
         ) -> Tensor:
-            print("custom flex attn wrapper called!")
             bs, num_heads, q_len, head_dim = query.shape
             _, _, kv_len, _ = key.shape
+
+            self.query_shape_stats[query.shape] += 1
+            self.kv_shape_stats[key.shape] += 1
 
             if self.bs is not None:
                 assert bs == self.bs and num_heads == self.num_heads, \
