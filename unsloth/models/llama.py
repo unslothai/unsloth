@@ -102,6 +102,7 @@ def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
     if "past_key_values" in kwargs:
         print("FIX", input_ids.shape)
         input_ids = input_ids[:,[-1]]
+        print("FIX AFTER", input_ids.shape)
         kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
