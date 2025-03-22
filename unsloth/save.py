@@ -933,14 +933,11 @@ def get_executable(executables):
     # Get system locations (System Path).split(system separator)
     system_directories = os.environ.get("PATH").split(os.pathsep)
 
-    for directory in system_directories:
-        for executable in executables:
-            path = os.path.join(directory, executable)
-            # Check if the executable exists and is executable
-            if os.path.exists(path) and os.access(path, os.X_OK): return path
-        pass
-    pass
-    return None
+    found_executables = [os.path.join(path, executable) 
+                        for path in system_directories
+                        for executable in executables
+                        if os.path.exists(os.path.join(path, executable)) and os.access(os.path.join(path, executable), os.X_OK)]
+    return found_executables[0] if found_executables else None
 pass
 
 
