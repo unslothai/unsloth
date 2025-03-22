@@ -612,7 +612,6 @@ def LlamaModel_fast_forward(
     else:
         raise ValueError("Unsloth: You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
-    print(input_ids.shape, input_ids, self.max_seq_length)
     seq_length_with_past = seq_length
 
     # Fix out of bounds tokenization
@@ -1039,7 +1038,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
             )
             return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-            print(input_ids.shape, input_ids)
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
             outputs = self.model(
@@ -1199,7 +1197,6 @@ def PeftModelForCausalLM_fast_forward(
     logits_to_keep = 0,
     **kwargs,
 ):
-    print(input_ids, input_ids.shape)
     return self.base_model(
         input_ids = input_ids,
         causal_mask = causal_mask,
@@ -1686,13 +1683,19 @@ class FastLlamaModel:
         print(statistics)
 
         # Warn about fast transfers
-        old_hf_transfer = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0")
-        if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0") == "1":
+        if "HF_HUB_ENABLE_HF_TRANSFER" in os.environ:
+            old_hf_transfer = os.environ["HF_HUB_ENABLE_HF_TRANSFER"]
+            if old_hf_transfer == "False" or old_hf_transfer == "false":
+                old_hf_transfer = "0"
+            elif old_hf_transfer == "True" or old_hf_transfer == "true":
+                old_hf_transfer = "1"
+        else:
+            old_hf_transfer = "0"
+        if old_hf_transfer == "1":
             print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
         pass
-        # Return old flag
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        if old_hf_transfer != "0":
+            os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         model_patcher.pre_patch()
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
