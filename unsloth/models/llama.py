@@ -607,6 +607,7 @@ def LlamaModel_fast_forward(
     else:
         raise ValueError("Unsloth: You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
+    print(input_ids.shape, input_ids, self.max_seq_length)
     seq_length_with_past = seq_length
 
     # Fix out of bounds tokenization
@@ -654,7 +655,6 @@ def LlamaModel_fast_forward(
         inputs_embeds = self.embed_tokens(input_ids)
 
     inputs_embeds = inputs_embeds.to(_get_dtype(self.config.torch_dtype))
-    print(inputs_embeds.shape, input_ids.shape, input_ids)
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
