@@ -1685,17 +1685,14 @@ class FastLlamaModel:
         # Warn about fast transfers
         if "HF_HUB_ENABLE_HF_TRANSFER" in os.environ:
             old_hf_transfer = os.environ["HF_HUB_ENABLE_HF_TRANSFER"]
-            if old_hf_transfer == "False" or old_hf_transfer == "false":
-                old_hf_transfer = "0"
-            elif old_hf_transfer == "True" or old_hf_transfer == "true":
-                old_hf_transfer = "1"
+            if old_hf_transfer in ("False", "false"): old_hf_transfer = "0"
+            if old_hf_transfer in ("True",  "true" ): old_hf_transfer = "1"
         else:
             old_hf_transfer = "0"
         if old_hf_transfer == "1":
             print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
         pass
-        if old_hf_transfer != "0":
-            os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         model_patcher.pre_patch()
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
