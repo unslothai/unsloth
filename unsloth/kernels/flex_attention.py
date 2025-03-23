@@ -70,6 +70,15 @@ try:
     pass
 
     class CachedBlockMask:
+        """
+        Huge downside of the padding mechanism in PaddedFlexAttention is that
+        a new BlockMask must be created for each new input sequence length.
+        We cannot simply make a larger block mask since we mask based on
+        the respective indicies being less than the input q_len and kv_len.
+
+        Potential fix could be using custom constructors for the BlockMask.
+        Might not be much more efficient. Thus, we cache for now.
+        """
 
         def __init__(
             self,
@@ -369,13 +378,13 @@ else:
         )
     pass
 
-    def slow_attention_softcapping(Q, K, V, mask_mod, self, bsz, q_len):
+    def slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
         n_heads    = self.config.num_attention_heads
         head_dim   = self.head_dim
         s = self.config.query_pre_attn_scalar
         t = self.config.attn_logit_softcapping
         fx = flex_attention(s, t)
-        A = fx(query = Q, key = K, value = V, mask_mod = mask_mod)
+        A = fx(query = Q, key = K, value = V, block_mask = causal_mask)
         A = A.transpose(1, 2).contiguous()
         A = A.reshape(bsz, q_len, n_heads*head_dim)
         return A
