@@ -283,6 +283,63 @@ def PatchRL(FastLanguageModel):
     #     return torch.cat((queries, outputs[:, context_length:]), dim=1)
     
 
+    # @torch.no_grad()
+    # def unsloth_batch_generation(
+    #     model: torch.nn.Module,
+    #     queries,
+    #     local_rollout_forward_batch_size: int,
+    #     pad_token_id: int,
+    #     generation_config: GenerationConfig,
+    # ):
+    #     query_responses = []
+    #     logitss = []
+    #     batch_size = queries.shape[0]
+    #     context_length = queries.shape[1]
+    #     model = model.eval() 
+
+    #     from unsloth import FastLanguageModel
+    #     for i in range(0, batch_size, local_rollout_forward_batch_size):
+    #         query = queries[i : i + local_rollout_forward_batch_size]
+    #         FastLanguageModel.for_inference(model)
+    #         query_response, logits = generate(
+    #             model,
+    #             query,
+    #             pad_token_id,
+    #             generation_config,
+    #         )
+    #         query_responses.append(query_response)
+    #     FastLanguageModel.for_training(model)
+    #     model = model.train()
+    #         # output = forward(model, query_response, pad_token_id)
+    #         # logits = output.logits[:, context_length - 1 : -1]
+    #         # logits /= generation_config.temperature + 1e-7
+    #         # logitss.append(logits)
+
+
+    #     # padding tensors
+    #     # breakpoint()
+    #     padded_query_responses = pad(query_responses, padding_value=pad_token_id, padding_side="right")
+    #     padded_query_responses = padded_query_responses.view(-1, padded_query_responses.shape[-1])[:batch_size]
+
+    #     # #breakpoint()
+    #     for i in range(0, queries.shape[0], local_rollout_forward_batch_size):
+    #         padded_query_response = padded_query_responses[i : i + local_rollout_forward_batch_size]
+    #         #breakpoint()
+    #         output = forward(model, padded_query_response, pad_token_id)
+    #         logits = output.logits[:, context_length - 1 : -1]
+    #         logits /= generation_config.temperature + 1e-7
+    #         logitss.append(logits)
+    #     #breakpoint()
+    #     padded_logitss = pad(logitss, padding_value=0, padding_side="right")
+    #     # # #need to fix the forward logits here 
+    #     # # # reshaping
+    #     padded_logitss = padded_logitss.view(-1, *padded_logitss.shape[2:])[:batch_size]
+    #     #breakpoint()
+        
+    #     #breakpoint()
+    #     #TODO: REVERT SELECTIVE LOG SOFTMAX THATS PROBABLY THE KL ISSUE
+    #     return padded_query_responses, padded_logitss
+    #torch.cat(logitss, 0)
     @torch.no_grad()
     def unsloth_batch_generation(
         model: torch.nn.Module,
@@ -404,10 +461,10 @@ def PatchRL(FastLanguageModel):
                     exec(f"trl.trainer.{trainer}.{batch_gen} = unsloth_{batch_gen}")
                     exec(f"trl.trainer.{trainer}.{gen} = unsloth_{gen}")
                 except: continue
-        # else:
-        if hasattr(current_trainer, unwrap):
-            try: exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
-            except: continue
+        else:
+            if hasattr(current_trainer, unwrap) and trainer != "rloo_trainer":
+                try: exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
+                except: continue
     exec(f"Trainer.prediction_step=unsloth_prediction_step")
     pass
 pass
@@ -422,8 +479,6 @@ import torch
 import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
-from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
-
 torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : False,
@@ -617,30 +672,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         mixed_precision = \
         "use_bf16 = getattr(args, 'bf16', False)\n"\
         "use_fp16 = getattr(args, 'fp16', False)\n"\
-        "force_float32 = False\n"\
-        "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1':\n"\
-        "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"\
-        "    force_float32 = True\n"\
-        "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"\
         "dtype = getattr(model.config, 'torch_dtype', None)\n"\
         "if dtype is None: dtype = model.get_input_embeddings().dtype\n"\
         "from unsloth_zoo.utils import _get_dtype\n"\
         "dtype = _get_dtype(dtype)\n"\
         "float16 = dtype == torch.float16\n"\
-        "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"\
-        "if not force_float32 and (not float16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"\
-        "if force_float32:\n"\
-        "    args.fp16 = False\n"\
-        "    args.bf16 = False\n"\
-        "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"\
-        "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"\
+        "if float16 and use_bf16: raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"\
+        "if not float16 and use_fp16: raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"\
+        "if not use_bf16 and not use_fp16:\n"\
         "    args.fp16 = float16\n"\
         "    args.bf16 = not float16\n"\
         "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
-        "elif mixed_precision_dtype == 'bfloat16':\n"\
-        "    args.fp16 = False\n"\
-        "    args.bf16 = False\n"\
-        "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
         extra_args += mixed_precision
     pass
 
@@ -676,15 +718,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "bf16_full_eval = getattr(args, 'bf16_full_eval', False)\n"\
         "if args.fp16 and bf16_full_eval: args.bf16_full_eval = False; args.fp16_full_eval = True\n"\
         "if args.bf16 and fp16_full_eval: args.bf16_full_eval = True; args.fp16_full_eval = False\n"\
-        "if force_float32:\n"\
-        "    args.bf16_full_eval = False\n"\
-        "    args.fp16_full_eval = False\n"\
-        "elif os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32') == 'bfloat16':\n"\
-        "    args.bf16_full_eval = True\n"\
-        "    args.fp16_full_eval = False\n"\
-        "elif not bf16_full_eval and not fp16_full_eval:\n"\
-        "    args.bf16_full_eval = args.bf16\n"\
-        "    args.fp16_full_eval = args.fp16\n"
+        "if not bf16_full_eval and not fp16_full_eval: args.bf16_full_eval = args.bf16; args.fp16_full_eval = args.fp16\n"
         extra_args += eval_changes
     pass
 
@@ -718,33 +752,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    if hasattr(processing_class, 'tokenizer') and hasattr(processing_class.tokenizer, 'padding_side'): "\
         "processing_class.tokenizer.padding_side = 'right'\n"
         extra_args += training_check
-    pass
-
-    # Check data collator if it's correct!
-    if "data_collator" in call_args and "train_dataset" in call_args:
-        data_collator_check = \
-        "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"\
-        "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"\
-        "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
-        "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
-        "        data_collator = DataCollatorForLanguageModeling(__tokenizer, mlm = False)\n"\
-        "    elif isinstance(data_collator, DataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
-        "        data_collator = DataCollatorForSeq2Seq(__tokenizer)\n"\
-        "else:\n"\
-        "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"\
-        "    if hasattr(args, 'dataset_text_field'): args.dataset_text_field = ''\n"\
-        "    if hasattr(args, 'dataset_kwargs'): args.dataset_kwargs = {'skip_prepare_dataset': True}\n"
-        extra_args += data_collator_check
-
-        # Also check if .pad exists -> if not, and is VLM, then change it!
-        pad_check = \
-        "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
-        "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"\
-        "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
-        "            data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
-        "        else:\n"\
-        "            data_collator = DataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False)\n"
-        extra_args += pad_check
     pass
 
     # Check NEFTune
@@ -809,7 +816,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "eval_accumulation_steps"     : 2,
         "torch_empty_cache_steps"     : 250,
         "logging_steps"               : 1,
-        "max_seq_length"              : None,
     }
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
@@ -894,6 +900,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # if RLTrainer_name == "RLOOTrainer" or RLTrainer_name == "OnlineDPOTrainer":
     #     breakpoint()
     if RLTrainer_name == "RLOOTrainer" or RLTrainer_name == "PPOTrainer":
+        #breakpoint()
+        selective_log_softmax_code = "from trl.trainer.utils import selective_log_softmax"
         RLTrainer_source = RLTrainer_replacement_rloo_ppo.format(
             RLTrainer_name       = RLTrainer_name,
             __RLTrainer_doc__    = __RLTrainer_doc__,
@@ -915,8 +923,33 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
             selective_log_softmax_code = selective_log_softmax_code,
         )
-        #string_conversions = """context_length = queries.shape[1]
-        #        queries = [self.processing_class.decode(query) for query in queries]"""
+
+        # original_string = """torch_compile_options = {
+        #     "epilogue_fusion"   : True,
+        #     "max_autotune"      : False,
+        #     "shape_padding"     : True,
+        #     "trace.enabled"     : False,
+        #     "triton.cudagraphs" : False,
+        # }
+
+        # @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
+        # def selective_log_softmax(logits, index):
+        #     logits = logits.to(torch.float32)
+        #     selected_logits = torch.gather(logits, dim = -1, index = index.unsqueeze(-1)).squeeze(-1)
+        #     # loop to reduce peak mem consumption
+        #     # logsumexp_values = torch.stack([torch.logsumexp(lg, dim=-1) for lg in logits])
+        #     logsumexp_values = torch.logsumexp(logits, dim = -1)
+        #     per_token_logps = selected_logits - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
+        #     return per_token_logps
+        # """
+
+        # new_string = "from trl.trainer.utils import selective_log_softmax"
+
+        # RLTrainer_source = RLTrainer_source.replace(original_string, new_string)
+
+
+        string_conversions = """context_length = queries.shape[1]
+               queries = [self.processing_class.decode(query) for query in queries]"""
 
         new_arguments = """unwrapped_model,
                 \t\tqueries,
@@ -933,11 +966,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             RLTrainer_source,
             flags=re.DOTALL  # Allows matching across multiple lines
         )
-        # old_eval_loop = """query_response, _ = batch_generation(unwrapped_model,
-        #         	queries,"""
-        # new_eval_loop = """query_response, _ = batch_generation(unwrapped_model,
-        #         	query,"""
-        # RLTrainer_source = RLTrainer_source.replace(old_eval_loop, new_eval_loop)
+
         old_eval_loop = r"""query_response, _ = batch_generation\(unwrapped_model,\s+queries,"""
         new_eval_loop = r"""query_response, _ = batch_generation(unwrapped_model, query,"""
 
@@ -983,6 +1012,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     RLTrainer_source = re.sub(r"[\n]{3,}", "\n", RLTrainer_source)
 
     # Create new function
+    # if RLTrainer_name == "RLOOTrainer":
+    #     return 
     created_module = create_new_function(
         f"Unsloth{RLTrainer_name}",
         RLTrainer_source,
@@ -992,6 +1023,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     )
     
     # Patch Trainer
+
     exec(f"trl.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
     exec(f"trl.trainer.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
     exec(f"trl.trainer.{trainer_file}.{RLTrainer_name} = created_module.Unsloth{RLTrainer_name}", locals(), globals())
@@ -1004,6 +1036,7 @@ pass
 
 
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
+
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
@@ -1018,7 +1051,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches first match. .+? matches final match.
         replacer = re.findall(
-            r"def __init__\(.*?\).*?\:\n",
+            "def __init__\(.*?\).*?\:\n",
             init,
             flags = re.MULTILINE | re.DOTALL,
         )
@@ -1086,18 +1119,20 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     # Search for vLLM calling in all child functions
     functions = dir(RLTrainer)
     RLTrainer_source = inspect.getsource(RLTrainer)
+    print("Trainer being patched: ", RLTrainer_name)
+
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
     changed = {"__init__" : (old_init, init,)}
     edit_functions = RL_FUNCTIONS.get(trainer_file, [])
-
+    # if RLTrainer_name == "RLOOTrainer":
+    #     return RLTrainer_source
     for function in functions:
         if not hasattr(RLTrainer, function): continue
         fx = getattr(RLTrainer, function)
         try: source = inspect.getsource(fx)
         except: continue
         original_source = source
-
         # Check for function
         for edit_function in edit_functions:
             source = edit_function(function, source)
@@ -1134,7 +1169,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         # Skip if no changes done
         if source == original_source: continue
-
         # Find all imports
         imports += [x for x in all_imports if not x.startswith("_") and x in source]
 
