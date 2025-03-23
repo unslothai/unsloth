@@ -901,7 +901,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     #     breakpoint()
     if RLTrainer_name == "RLOOTrainer" or RLTrainer_name == "PPOTrainer":
         #breakpoint()
-        selective_log_softmax_code = "from trl.trainer.utils import selective_log_softmax"
+        #selective_log_softmax_code = "from trl.trainer.utils import selective_log_softmax"
         RLTrainer_source = RLTrainer_replacement_rloo_ppo.format(
             RLTrainer_name       = RLTrainer_name,
             __RLTrainer_doc__    = __RLTrainer_doc__,
@@ -971,6 +971,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         new_eval_loop = r"""query_response, _ = batch_generation(unwrapped_model, query,"""
 
         RLTrainer_source = re.sub(old_eval_loop, new_eval_loop, RLTrainer_source)
+        replacement = "with model.disable_adapter():\n    ref_output = forward(model, query_response, processing_class.pad_token_id)"
+        code = """#self.ref_policy = self.ref_policy.to(self.accelerator.device)"""
+        RLTrainer_source = re.sub(r"ref_output = forward\(ref_policy, query_response, processing_class\.pad_token_id\)", replacement, RLTrainer_source)
+        RLTrainer_source = re.sub(r"ref_output = forward\(ref_policy, query_response, processing_class\.pad_token_id\)", replacement, RLTrainer_source)
+        RLTrainer_source = re.sub(r"self\.ref_policy = self\.ref_policy\.to\(self.accelerator\.device\)", code, RLTrainer_source)
+
+        peft_replace = """unwrapped_model,"""
+
         # old_logits_calc = """logits = logitss[i : i + args.local_rollout_forward_batch_size]"""
         # new_logits_calc = """# logits = logitss[i : i + args.local_rollout_forward_batch_size]
         # output = forward(model, padded_query_response, pad_token_id) 
