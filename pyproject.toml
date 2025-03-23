@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "2-5X faster LLM finetuning"
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
 keywords = ["ai", "llm",]
 authors = [
     {email = "info@unsloth.ai"},
@@ -29,18 +29,15 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = false
 
 [tool.setuptools.packages.find]
-exclude = ["images*"]
+exclude = ["images*", "tests*"]
 
 [project.optional-dependencies]
 triton = [
-    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp39-cp39-win_amd64.whl ; python_version=='3.9' and platform_system == 'Windows'",
-    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp310-cp310-win_amd64.whl ; python_version=='3.10' and platform_system == 'Windows'",
-    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
-    "triton @ https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0-windows.post10/triton-3.2.0-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'"
+    "triton-windows ; platform_system == 'Windows'",
 ]
 
 huggingface = [
-    "unsloth_zoo>=2025.3.8",
+    "unsloth_zoo>=2025.3.16",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
@@ -354,7 +351,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.3.8",
+    "unsloth_zoo>=2025.3.16",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",

@@ -22,9 +22,10 @@ def _rms_layernorm_forward(
     Y, Y_row_stride,
     X, X_row_stride,
     W, W_row_stride,
-    r, r_row_stride,
-    n_cols, eps,
-    BLOCK_SIZE : tl.constexpr
+    r, r_row_stride : tl.constexpr,
+    n_cols     : tl.constexpr,
+    eps        : tl.constexpr,
+    BLOCK_SIZE : tl.constexpr,
 ):
     """
         Fast RMS Layernorm kernel
@@ -57,9 +58,10 @@ def _rms_layernorm_backward(
     dX, dX_row_stride,
     X,   X_row_stride,
     W,   W_row_stride,
-    r,   r_row_stride,
+    r,   r_row_stride : tl.constexpr,
     # dW, dW_row_stride,
-    n_cols, eps,
+    n_cols     : tl.constexpr,
+    eps        : tl.constexpr,
     GEMMA      : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
 ):
@@ -107,8 +109,9 @@ def _gemma_rms_layernorm_forward(
     Y, Y_row_stride,
     X, X_row_stride,
     W, W_row_stride,
-    r, r_row_stride,
-    n_cols, eps,
+    r, r_row_stride : tl.constexpr,
+    n_cols     : tl.constexpr,
+    eps        : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
 ):
     # Copies https://github.com/google-deepmind/gemma/blob/main/gemma/layers.py#L31
@@ -252,7 +255,6 @@ def unpatch_rms_layernorm():
         transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = MllamaTextRMSNorm
     except:
         pass
-    return
     return
 pass
 

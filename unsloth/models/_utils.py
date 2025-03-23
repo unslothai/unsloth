@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.9"
+__version__ = "2025.3.18"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -25,6 +25,7 @@ __all__ = [
     "__version__",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
+    "USE_MODELSCOPE",
     "platform_system",
     "patch_tokenizer",
     "get_statistics",
@@ -70,6 +71,8 @@ from typing import Union, Optional, List, Any, Callable, Tuple
 from platform import system as platform_system
 platform_system = platform_system()
 import numpy as np
+import contextlib
+import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 
@@ -100,6 +103,7 @@ from unsloth_zoo.gradient_checkpointing import (
 from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
     fused_linear_cross_entropy,
+    _unsloth_get_batch_samples,
 )
 from unsloth_zoo.vision_utils import (
     process_vision_info,
@@ -108,6 +112,14 @@ from unsloth_zoo.compiler import (
     get_transformers_model_type,
     unsloth_compile_transformers as _unsloth_compile_transformers,
 )
+from unsloth_zoo.training_utils import (
+    prepare_model_for_training,
+)
+from unsloth_zoo.temporary_patches import (
+    TEMPORARY_PATCHES,
+)
+for temporary_patch in TEMPORARY_PATCHES:
+    temporary_patch()
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -170,6 +182,43 @@ try:
 except:
     pass
 
+# Gemma3 It is strongly recommended to train Gemma3 models with the `eager`
+try:
+    from transformers.models.gemma3.modeling_gemma3 import logger as gemma3_logger
+    gemma3_logger.addFilter(HideLoggingMessage("strongly recommended"))
+    del gemma3_logger
+except:
+    pass
+
+
+# Patch get_model_param_count to record correct 4bit / 8bit
+from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
+def get_model_param_count(model, trainable_only = False):
+    """
+    Calculate model's total param count. If trainable_only is True then count only those requiring grads
+    """
+    if is_deepspeed_zero3_enabled():
+        def numel(p):
+            return p.ds_numel if hasattr(p, "ds_numel") else p.numel()
+    else:
+        def numel(p):
+            return p.numel()
+    s = sum(numel(p) for p in model.parameters() if not trainable_only or p.requires_grad)
+    if (not trainable_only) and \
+        hasattr(model, "config") and \
+        hasattr(model.config, "quantization_config"):
+
+        billions = re.findall(r"([0-9]{1,})(?:b|B)", model.config.name_or_path)
+        if len(billions) != 0:
+            billions = int(billions[0])
+            s = 1_000_000_000 * billions
+    pass
+    return s
+pass
+import transformers.trainer_pt_utils
+transformers.trainer_pt_utils.get_model_param_count = get_model_param_count
+import transformers.trainer
+transformers.trainer.get_model_param_count = get_model_param_count
 # =============================================
 
 # =============================================
@@ -435,7 +484,8 @@ pass
 import transformers.generation.configuration_utils
 if hasattr(transformers.generation.configuration_utils, "ALL_CACHE_IMPLEMENTATIONS"):
     if type(transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS) is list:
-        transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
+        if "dynamic" not in transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS:
+            transformers.generation.configuration_utils.ALL_CACHE_IMPLEMENTATIONS.append("dynamic")
     pass
 pass
 # =============================================
@@ -508,67 +558,16 @@ def prepare_model_for_kbit_training(
     use_gradient_checkpointing : Optional = True,
     use_reentrant              : Optional[bool] = True,
 ) -> Any:
-    """
-    Calculates where to place the gradient checkpoints given n_layers.
-    We also freeze all other layers's gradients
-
-    Args:
-        model: Any LlamaModel with layers.
-        use_gradient_checkpointing (`bool`, *optional*):
-            Default enabled. Provides memory savings by not saving all activations,
-            but only some.
-        use_reentrant (`bool`, *optional*):
-            https://github.com/pytorch/pytorch/blob/main/torch/utils/checkpoint.py#L354
-            Optimal gradient checkpointing algorithm which will be the default in
-            future Pytorch versions.
-    """
-
-    # Freeze all parameters except LoRA
-    with torch.no_grad():
-        for name, param in model.named_parameters():
-            if ".lora_A." in name or ".lora_B." in name or ".lora_magnitude_vector" in name:
-                param.requires_grad_(True)
-                # Also must be in float32!
-                if param.dtype != torch.float32:
-                    name = name.replace("base_model", "model", 1)
-                    layer_number = re.search(r"\.[\d]{1,}\.", name).group(0)
-                    name = name.replace(layer_number, f"[{layer_number[1:-1]}].")
-                    name = name.replace(".weight", "", 1)
-                    exec(f"{name}.to(torch.float32)")
-                pass
-            else:
-                param.requires_grad_(False)
-        pass
-    pass
-
-    # Gradient checkpointing!
-    if use_gradient_checkpointing == "unsloth":
-
-        # Saves VRAM!
-        original_model = model
-        while hasattr(original_model, "model"):
-            original_model._offloaded_gradient_checkpointing = True
-            original_model = original_model.model
-        pass
-        original_model._offloaded_gradient_checkpointing = True
-        
-        model.gradient_checkpointing_enable()
-
-    elif use_gradient_checkpointing == True:
-        model.gradient_checkpointing_enable()
-    pass
-
-    # If use_reentrant = True which is the Pytorch default, we just make the input requires_grad.
-    if use_reentrant:
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-    pass
-
-    return model
+    return prepare_model_for_training(
+        model                      = model,
+        use_gradient_checkpointing = use_gradient_checkpointing,
+        use_reentrant              = use_reentrant,
+        full_finetuning            = False,
+        train_layernorms           = False,
+        train_embedding            = False,
+        train_lm_head              = False,
+        float32_mixed_precision    = True,
+    )
 pass
 
 # =============================================
@@ -999,44 +998,6 @@ def test_mask_creation():
 pass
 
 
-def _unsloth_get_batch_samples(self, epoch_iterator, num_batches):
-    batch_samples = []
-    num_items_in_batch = None
-
-    # Check if model allows **kwargs
-    model = self.model
-    f = model.base_model.model.forward if hasattr(model, "base_model") else model.forward
-    has_kwargs = tuple(inspect.signature(f).parameters.values())[-1].kind == inspect._VAR_KEYWORD
-
-    # Iterate to find all batches
-    for _ in range(num_batches):
-        try:
-            batch_samples += [next(epoch_iterator)]
-        except StopIteration:
-            break
-    pass
-
-    # Get num_items_in_batch
-    if has_kwargs and len(batch_samples) > 0 and "labels" in batch_samples[0]:
-        try:
-            num_items_in_batch = sum(
-                [(x["labels"][..., 1:] != -100).sum() for x in batch_samples]
-            )
-            
-            if self.args.average_tokens_across_devices:
-                num_items_in_batch = self.accelerator.gather(num_items_in_batch).sum().item()
-
-            if torch.is_tensor(num_items_in_batch):
-                num_items_in_batch = num_items_in_batch.item()
-
-        except Exception as exception:
-            logger.warning_once(exception)
-    pass
-
-    return batch_samples, num_items_in_batch
-pass
-
-
 def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     num_items_in_batch = None
 
@@ -1053,14 +1014,20 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     # Get gradient accumulation steps if possible
     if num_items_in_batch is None and \
         getattr(getattr(self, "args", self), "gradient_accumulation_steps", 1) != 1:
-        name = (model.base_model.model if hasattr(model, "base_model") else model).__class__.__name__
+
+        inner_model = model
+        if hasattr(inner_model, "base_model"): inner_model = inner_model. base_model
+        if hasattr(inner_model, "model"): inner_model = inner_model.model
+        name = inner_model.__class__.__name__
+
         logger.warning_once(
             f"Unsloth: Not an error, but {name} does not accept `num_items_in_batch`.\n"\
             "Using gradient accumulation will be very slightly less accurate.\n"\
             "Read more on gradient accumulation issues here: https://unsloth.ai/blog/gradient"
         )
     pass
-    return self._old_compute_loss(model, inputs, *args, **kwargs)
+    outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
+    return outputs
 pass
 
 
@@ -1163,7 +1130,9 @@ pass
 
 
 def unsloth_compile_transformers(
+    dtype,
     model_name,
+    model_types,
     token                   = None,
     revision                = None,
     trust_remote_code       = False,
@@ -1201,16 +1170,15 @@ def unsloth_compile_transformers(
         )
         return
     pass
-
-    model_types = get_transformers_model_type(
-        model_name        = model_name,
-        token             = token,
-        revision          = revision,
-        trust_remote_code = trust_remote_code,
-    )
-
+    if trust_remote_code:
+        print(
+            "Unsloth: We can't trace models if `trust_remote_code = True`, "\
+            "so turning off some optimizations!"
+        )
+        return
     if disable: return
 
+    model_types = list(dict().fromkeys(model_types).keys())
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
@@ -1240,6 +1208,9 @@ def unsloth_compile_transformers(
             return_logits          = return_logits,
         )
     pass
+    # Redo patches which override compiler
+    for temporary_patch in TEMPORARY_PATCHES:
+        temporary_patch()
     return model_types
 pass
 
@@ -1270,4 +1241,12 @@ for j, function in enumerate(functions):
         exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
         try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except: continue
+pass
+
+import importlib
+USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+if USE_MODELSCOPE:
+    if importlib.util.find_spec("modelscope") is None:
+        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
+    pass
 pass

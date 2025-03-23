@@ -20,6 +20,7 @@ __all__ = [
 
     "to_sharegpt",
     "standardize_sharegpt",
+    "standardize_data_formats",
     "apply_chat_template",
     "train_on_responses_only",
 
@@ -37,7 +38,9 @@ from .models._utils import patch_tokenizer
 import re
 from unsloth_zoo.dataset_utils import (
     train_on_responses_only,
+    standardize_data_formats,
 )
+standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
 DEFAULT_SYSTEM_MESSAGE = {}
 
@@ -934,6 +937,84 @@ DEFAULT_SYSTEM_MESSAGE["phi-4"] = None # No system message in Phi-4
 pass
 
 
+# =========================================== Gemma-3
+# Obtained via
+# print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
+gemma3_template = \
+"""{{ bos_token }}
+{%- if messages[0]['role'] == 'system' -%}
+    {%- if messages[0]['content'] is string -%}
+        {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
+    {%- else -%}
+        {%- set first_user_prefix = messages[0]['content'][0]['text'] + '\n\n' -%}
+    {%- endif -%}
+    {%- set loop_messages = messages[1:] -%}
+{%- else -%}
+    {%- set first_user_prefix = "" -%}
+    {%- set loop_messages = messages -%}
+{%- endif -%}
+{%- for message in loop_messages -%}
+    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
+    {%- endif -%}
+    {%- if (message['role'] == 'assistant') -%}
+        {%- set role = "model" -%}
+    {%- else -%}
+        {%- set role = message['role'] -%}
+    {%- endif -%}
+    {{ '<start_of_turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
+    {%- if message['content'] is string -%}
+        {{ message['content'] | trim }}
+    {%- elif message['content'] is iterable -%}
+        {%- for item in message['content'] -%}
+            {%- if item['type'] == 'image' -%}
+                {{ '<start_of_image>' }}
+            {%- elif item['type'] == 'text' -%}
+                {{ item['text'] | trim }}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- else -%}
+        {{ raise_exception("Invalid content type") }}
+    {%- endif -%}
+    {{ '<end_of_turn>\n' }}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{ '<start_of_turn>model\n' }}
+{%- endif -%}
+"""
+
+# Ollama from https://ollama.com/library/gemma3/blobs/e0a42594d802
+gemma3_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if or (eq .Role "user") (eq .Role "system") }}<start_of_turn>user
+{{ .Content }}<end_of_turn>
+{{ if $last }}<start_of_turn>model
+{{ end }}
+{{- else if eq .Role "assistant" }}<start_of_turn>model
+{{ .Content }}{{ if not $last }}<end_of_turn>
+{{ end }}
+{{- end }}
+{{- end }}"""
+PARAMETER stop "<end_of_turn>"
+PARAMETER stop "<eos>"
+PARAMETER temperature 0.1
+PARAMETER min_p 0.0
+PARAMETER top_k 64
+PARAMETER top_p 0.95
+PARAMETER num_predict 32768
+'''
+
+gemma3_template_eos_token = "<end_of_turn>"
+CHAT_TEMPLATES["gemma-3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma-3"] = None # No system message in Gemma-3
+
+CHAT_TEMPLATES["gemma3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
+DEFAULT_SYSTEM_MESSAGE["gemma3"] = None # No system message in Gemma-3
+pass
+
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
     system_message_pattern = r"\{system_message\}"
     
@@ -1033,11 +1114,12 @@ def get_chat_template(
 
         # Check fast tokenizer
         if not is_fast_tokenizer:
-            print(
-                "Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
-                "Please log a Github issue if you want this as a new feature!\n"\
-                "Your chat template will still work, but it won't add or edit tokens."
-            )
+            pass
+            # print(
+            #     "Unsloth: Not a fast tokenizer, so can't process it as of yet :(\n"\
+            #     "Please log a Github issue if you want this as a new feature!\n"\
+            #     "Your chat template will still work, but it won't add or edit tokens."
+            # )
 
         elif token_mapping is not None:
             # token_mapping = {"<start_of_turn>" : "<|im_start|>", "<end_of_turn>" : "<|im_end|>"}
@@ -1396,82 +1478,6 @@ def to_sharegpt(
 pass
 
 
-def standardize_sharegpt(
-    dataset,
-    aliases_for_system    = ["system",],
-    aliases_for_user      = ["user", "human", "input",],
-    aliases_for_assistant = ["gpt", "assistant", "output",],
-):
-    """
-    Standardizes ShareGPT and other formats to user/assistant Hugging Face format.
-    
-    Get aliases for the system, user and assistant roles.
-    These shall map to "system", "user" and "assistant" respectively.
-    
-    aliases_for_system    = ["system",],
-    aliases_for_user      = ["user", "human", "input",],
-    aliases_for_assistant = ["gpt", "assistant", "output",],
-    """
-    import collections
-    import itertools
-
-    convos = dataset[:10]["conversations"]
-    uniques = collections.defaultdict(list)
-    for convo in convos:
-        for message in convo:
-            for key, value in message.items():
-                uniques[key].append(value)
-    pass
-
-    # Must be only 2 entries
-    assert(len(uniques.keys()) == 2)
-
-    keys = list(uniques.keys())
-    length_first  = len(set(uniques[keys[0]]))
-    length_second = len(set(uniques[keys[1]]))
-
-    if length_first < length_second:
-        # Role is assigned to the first element
-        role_key    = keys[0]
-        content_key = keys[1]
-    else:
-        role_key    = keys[1]
-        content_key = keys[0]
-    pass
-
-    # Check roles are in aliases
-    all_aliases = set(aliases_for_system + aliases_for_user + aliases_for_assistant)
-    roles = set(uniques[role_key])
-    leftover_aliases = (all_aliases | roles) - all_aliases
-    if len(leftover_aliases) != 0:
-        raise TypeError(
-            f"Unsloth: {list(leftover_aliases)} are not in aliases. Please update aliases."
-        )
-    pass
-
-    # Mapping for aliases
-    aliases_mapping = {}
-    for x in aliases_for_system:    aliases_mapping[x] = "system"
-    for x in aliases_for_user:      aliases_mapping[x] = "user"
-    for x in aliases_for_assistant: aliases_mapping[x] = "assistant"
-
-    def _standardize_dataset(examples):
-        convos = examples["conversations"]
-        all_convos = []
-        for convo in convos:
-            new_convo = [
-                { "role" : aliases_mapping[message[role_key]], "content" : message[content_key], }
-                for message in convo
-            ]
-            all_convos.append(new_convo)
-        pass
-        return { "conversations" : all_convos, }
-    pass
-
-    return dataset.map(_standardize_dataset, batched = True, desc = "Standardizing format")
-pass
-
-
 def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     added_tokens_decoder = tokenizer.added_tokens_decoder.values()
     added_tokens_decoder = [str(x) for x in added_tokens_decoder]
@@ -1506,10 +1512,7 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
 
     # Remove duplicates
     splitted = joined_text.split("\x01\x00")
-    final_eos_tokens = []
-    for old, new in zip(added_tokens_decoder, splitted):
-        if old == new: final_eos_tokens.append(old)
-    pass
+    final_eos_tokens = [old for old, new in zip(added_tokens_decoder, splitted) if old == new]
     final_eos_tokens += extra_eos_tokens
     final_eos_tokens += repeatted_tokens
 
@@ -1934,6 +1937,11 @@ extra_eos_tokens = None,
     tokenizer._ollama_modelfile = modelfile
     tokenizer._unsloth_input_part  = input_part
     tokenizer._unsloth_output_part = output_part
+    if hasattr(tokenizer, "tokenizer"):
+        tokenizer.tokenizer.chat_template = jinja_template
+        tokenizer.tokenizer._ollama_modelfile = modelfile
+        tokenizer.tokenizer._unsloth_input_part  = input_part
+        tokenizer.tokenizer._unsloth_output_part = output_part
 
     return dataset.map(formatting_prompts_func, batched = True,)
 pass

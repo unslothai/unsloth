@@ -38,6 +38,7 @@ from ..kernels import *
 from ..tokenizer_utils import *
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func
+from .vision import FastBaseModel
 
 # Final patching code
 from transformers.models.llama.modeling_llama import (
@@ -98,9 +99,15 @@ SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
-    if "past_key_values" in kwargs:
-        input_ids = input_ids[:,[-1]]
-        kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
+    past_key_values = kwargs.get("past_key_values", None)
+    if past_key_values is not None:
+        # Check for uninitialized DynamicCache
+        if len(past_key_values) == 0:
+            past_key_values = None
+            kwargs["past_key_values"] = None
+        else:
+            input_ids = input_ids[:,[-1]]
+            kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
     return { "input_ids" : input_ids, **kwargs, }
@@ -651,13 +658,7 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    # inputs_embeds = inputs_embeds.to(self.config.torch_dtype)
-    torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
-    if torch_dtype is not None:
-        inputs_embeds = inputs_embeds.to(torch_dtype)
-    else:
-        raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
-    pass
+    inputs_embeds = inputs_embeds.to(_get_dtype(self.config.torch_dtype))
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
@@ -923,7 +924,7 @@ def LlamaModel_fast_forward_inference(
     mlp_size = self.config.intermediate_size
 
     X = self.model.embed_tokens(input_ids)
-    X = X.to(self.config.torch_dtype)
+    X = X.to(_get_dtype(self.config.torch_dtype))
     bsz, q_len, hd = X.shape
     assert(q_len == 1)
     # Get saved buffers to reduce memory movement
@@ -1037,7 +1038,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
             )
             return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
             # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
             outputs = self.model(
@@ -1117,13 +1117,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states.to(dtype))
         pass
 
-        torch_dtype = __DTYPE_MAP.get(self.config.torch_dtype, None)
-        if torch_dtype is not None:
-            logits = logits.to(torch_dtype)
-        else:
-            raise TypeError("Unsloth: torch_dtype for models is not bfloat16, float16 or float32!")
-        pass
-
+        logits = logits.to(_get_dtype(self.config.torch_dtype))
         loss = None
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
@@ -1175,7 +1169,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
-
         return CausalLMOutputWithPast(
             loss = loss,
             logits = logits,
@@ -1547,7 +1540,7 @@ def unsloth_fast_generate(
         if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
             if kwargs["input_ids"].shape[-1] + kwargs["max_new_tokens"] > self.config.max_position_embeddings:
                 raise ValueError(
-                    f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {model.config.max_position_embeddings}!\n'\
+                    f'Unsloth: input length {kwargs["input_ids"].shape[-1]} + max_new_tokens {kwargs["max_new_tokens"]} exceeds the maximum sequence length of {self.config.max_position_embeddings}!\n'\
                     'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
                 )
     pass
@@ -1561,7 +1554,10 @@ def unsloth_fast_generate(
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
     # For num_logits_to_keep
-    kwargs["num_logits_to_keep"] = 1
+    num_logits_to_keep = kwargs.get("num_logits_to_keep", None)
+    logits_to_keep     = kwargs.get("logits_to_keep",     None)
+    if num_logits_to_keep is None and logits_to_keep is None:
+        kwargs["num_logits_to_keep"] = 1
 
     # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
@@ -1677,6 +1673,7 @@ class FastLlamaModel:
         disable_log_stats = False,
         **kwargs,
     ):
+        os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
         if trust_remote_code:
             if fast_inference:
                 raise NotImplementedError("Unsloth: Fast inference does not support `trust_remote_code` yet.")
@@ -1689,6 +1686,10 @@ class FastLlamaModel:
             import platform
             if platform.system().lower() == 'windows':
                 print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+                fast_inference = False
+            major_version, minor_version = torch.cuda.get_device_capability()
+            if major_version < 7:
+                print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
                 fast_inference = False
         pass
 
@@ -1711,13 +1712,16 @@ class FastLlamaModel:
         print(statistics)
 
         # Warn about fast transfers
-        old_hf_transfer = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0")
-        if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0") == "1":
+        if "HF_HUB_ENABLE_HF_TRANSFER" in os.environ:
+            old_hf_transfer = os.environ["HF_HUB_ENABLE_HF_TRANSFER"]
+            if old_hf_transfer in ("False", "false"): old_hf_transfer = "0"
+            if old_hf_transfer in ("True",  "true" ): old_hf_transfer = "1"
+        else:
+            old_hf_transfer = "0"
+        if old_hf_transfer == "1":
             print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
         pass
-        # Return old flag
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         model_patcher.pre_patch()
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
@@ -1813,6 +1817,8 @@ class FastLlamaModel:
                 attn_implementation     = "eager",
                 **kwargs,
             )
+            model.fast_generate = model.generate
+            model.fast_generate_batches = None
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
@@ -1831,6 +1837,7 @@ class FastLlamaModel:
                 enable_lora            = True,
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
+                use_bitsandbytes       = load_in_4bit,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -1842,7 +1849,7 @@ class FastLlamaModel:
 
             # Convert to HF format
             _, quant_state_dict = get_vllm_state_dict(llm, config = model_config)
-            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype)
+            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
@@ -1942,12 +1949,12 @@ class FastLlamaModel:
 
         # Save max_seq_length
         model.max_seq_length = max_seq_length
-        internal_model = model
-        while hasattr(internal_model, "model"):
-            internal_model.max_seq_length = max_seq_length
-            internal_model = internal_model.model
+        m = model
+        while hasattr(m, "model"):
+            m.max_seq_length = max_seq_length
+            m = m.model
         pass
-        internal_model.max_seq_length = max_seq_length
+        m.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
@@ -2045,6 +2052,35 @@ class FastLlamaModel:
         temporary_location  = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+            return FastBaseModel.get_peft_model(
+                model                      = model,
+                r                          = r,
+                target_modules             = target_modules,
+                lora_alpha                 = lora_alpha,
+                lora_dropout               = lora_dropout,
+                bias                       = bias,
+                finetune_vision_layers     = False,
+                finetune_language_layers   = True,
+                finetune_attention_modules = True,
+                finetune_mlp_modules       = True,
+                layers_to_transform        = layers_to_transform,
+                layers_pattern             = layers_pattern,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state               = random_state,
+                max_seq_length             = max_seq_length,
+                use_rslora                 = use_rslora,
+                modules_to_save            = modules_to_save,
+                init_lora_weights          = init_lora_weights,
+                loftq_config               = loftq_config,
+                temporary_location         = temporary_location,
+                **kwargs,
+            )
+        pass
+        if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
+            print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+            return model
+        pass
         transformers_set_seed(random_state)
 
         if use_gradient_checkpointing == "unsloth":
@@ -2445,12 +2481,6 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
-
-        # Patch generate
-        if model.generate.__name__ != "unsloth_fast_generate":
-            model._old_generate = model.generate
-            unsloth_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_fast_generate, model)
         return model
     pass
 
@@ -2460,6 +2490,12 @@ class FastLlamaModel:
         model,
         use_gradient_checkpointing = True,
     ):
+        if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+            return FastBaseModel.patch_peft_model(
+                model = model,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+            )
+        pass
         if not isinstance(model, PeftModelForCausalLM):
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
@@ -2641,6 +2677,19 @@ class FastLlamaModel:
         for _ in range(3):
             gc.collect()
             torch.cuda.empty_cache()
+        pass
+
+        # Patch for fast inference
+        vllm_engine = getattr(model.model, "vllm_engine", None)
+        if vllm_engine is not None:
+            model.vllm_engine = model.model.vllm_engine
+            model.fast_generate = model.model.fast_generate
+            model.fast_generate_batches = model.model.fast_generate_batches
+
+            # Also saving and loading LoRA
+            from unsloth_zoo.vllm_utils import save_lora, load_lora
+            model.save_lora = functools.partial(save_lora, model)
+            model.load_lora = functools.partial(load_lora, model)
         pass
 
         # Add for_inference and for_training
