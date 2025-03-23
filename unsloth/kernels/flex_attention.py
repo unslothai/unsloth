@@ -32,7 +32,14 @@ try:
         create_block_mask as _create_block_mask,
     )
     _flex_attention = torch.compile(_flex_attention, dynamic = True, options = torch_compile_options)
-    HAS_FLEX_ATTENTION = False
+    
+    from packaging import version
+    if version.parse(torch.__version__) > version.parse("2.6"):
+        print("Dynamic sequence length flex attention is supported in this version of PyTorch")
+        HAS_FLEX_ATTENTION = True
+    else:
+        print("Dynamic sequence length flex attention is not supported in this version of PyTorch")
+        HAS_FLEX_ATTENTION = False
 except:
     HAS_FLEX_ATTENTION = False
 pass
@@ -101,7 +108,7 @@ else:
     pass
 
     @functools.lru_cache
-    def create_block_mask(mask, n = 128):
+    def create_block_mask(mask, n):
         return _create_block_mask(
             mask, 1, 1, n, n,
             BLOCK_SIZE = 128,
@@ -109,14 +116,14 @@ else:
         )
     pass
 
-    def create_flex_attention_causal_mask(max_seq_length = 8192):
-        causal_mask = create_block_mask(causal_masker, max_seq_length)
+    def create_flex_attention_causal_mask(seq_length = 8192):
+        causal_mask = create_block_mask(causal_masker, seq_length)
         return causal_mask
     pass
 
-    def create_flex_attention_sliding_window_mask(max_seq_length = 8192, sliding_window = 4096):
+    def create_flex_attention_sliding_window_mask(seq_length = 8192, sliding_window = 4096):
         sliding_masker = sliding_window_masker(sliding_window)
-        causal_mask = create_block_mask(sliding_masker, max_seq_length)
+        causal_mask = create_block_mask(sliding_masker, seq_length)
         return causal_mask
     pass
 
