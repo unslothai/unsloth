@@ -90,7 +90,7 @@ try:
             self.mask_mod_batch_idx_independent = mask_mod_batch_idx_independent
             self.mask_mod_head_idx_independent = mask_mod_head_idx_independent
 
-        @lru_cache(maxsize=128)
+        @lru_cache(maxsize=512)
         def get(self, B, H, Q_LEN, KV_LEN, MAX_SEQ_LEN):
             if self.mask_mod_batch_idx_independent:
                 B = None
