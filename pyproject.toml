@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "2-5X faster LLM finetuning"
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
 keywords = ["ai", "llm",]
 authors = [
     {email = "info@unsloth.ai"},
@@ -29,7 +29,7 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = false
 
 [tool.setuptools.packages.find]
-exclude = ["images*"]
+exclude = ["images*", "tests*"]
 
 [project.optional-dependencies]
 triton = [
@@ -37,7 +37,7 @@ triton = [
 ]
 
 huggingface = [
-    "unsloth_zoo>=2025.3.14",
+    "unsloth_zoo>=2025.3.16",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
@@ -351,7 +351,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.3.14",
+    "unsloth_zoo>=2025.3.16",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",

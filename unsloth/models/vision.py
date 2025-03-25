@@ -269,13 +269,16 @@ class FastBaseModel:
         print(statistics)
 
         # Warn about fast transfers
-        old_hf_transfer = os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0")
-        if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "0") == "1":
+        if "HF_HUB_ENABLE_HF_TRANSFER" in os.environ:
+            old_hf_transfer = os.environ["HF_HUB_ENABLE_HF_TRANSFER"]
+            if old_hf_transfer in ("False", "false"): old_hf_transfer = "0"
+            if old_hf_transfer in ("True",  "true" ): old_hf_transfer = "1"
+        else:
+            old_hf_transfer = "0"
+        if old_hf_transfer == "1":
             print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
         pass
-        # Return old flag
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         get_statistics() # For debugging - we use a download counter to see if environments are not breaking 
 
