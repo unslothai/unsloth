@@ -1489,7 +1489,7 @@ def unsloth_compile_transformers(
     if "UNSLOTH_FULLGRAPH" not in os.environ:
         os.environ["UNSLOTH_FULLGRAPH"] = UNSLOTH_FULLGRAPH
     else:
-        UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"] == "1"
+        UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"]
     pass
     UNSLOTH_FULLGRAPH = UNSLOTH_FULLGRAPH == "1"
 
@@ -1565,6 +1565,13 @@ def unsloth_compile_transformers(
         try: source = inspect.getsource(source.__init__)
         except: continue
         fullgraph = not ("nn.Linear" in source or "nn.ModuleList" in source)
+
+        if module == 'SiglipVisionEmbeddings' or module == 'CLIPVisionEmbeddings':
+            # sometimes we attach a post forward call to make sure requires grad is set
+            # this breaks full graph mode and fails so instead we relax the full graph check
+            # We attach via post forward call, since the forward call only passes keyword
+            # arguments in transformers and pre_forward hook doesn't pass kwargs.
+            fullgraph = False
 
         # Check if other modules is used as well
         for another_module in torch_modules:
