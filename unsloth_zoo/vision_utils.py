@@ -262,7 +262,7 @@ class UnslothVisionDataCollator:
         "padding_token_ids", "dtype", "ignore_index", \
         "processor", "formatting_func", "image_size", \
         "max_seq_length", "truncation", "train_on_responses_only", \
-        "num_proc",
+        "num_proc", "assistant_single_content",
 
     def __init__(
         self,
@@ -335,6 +335,29 @@ class UnslothVisionDataCollator:
             )
         else:
             self.train_on_responses_only = None
+
+        # Check what type for assistant VLM tokenizer allows!
+        # Good for Mistral V3 and Pixtral I think
+        try:
+            processor.apply_chat_template([
+                {"role": "user", "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": "Hello!"}]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "How can I help you?"}]}
+            ])
+            self.assistant_single_content = False
+        except TypeError:
+            try:
+                processor.apply_chat_template([
+                    {"role": "user", "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": "Hello!"}]},
+                    {"role": "assistant", "content": "How can I help you?"}
+                ])
+                self.assistant_single_content = True
+            except Exception as e:
+                raise RuntimeError(e)
         return
     pass
 
@@ -343,7 +366,6 @@ class UnslothVisionDataCollator:
         # The issue is batch = self.processor( forces tensors to be returned and not None.
         texts  = []
         images = []
-        print(examples)
 
         if self.formatting_func is not None:
             examples = [self.formatting_func(example) for example in examples]
@@ -378,8 +400,11 @@ class UnslothVisionDataCollator:
                         "[{'role':'user', 'content':[{'type':'text', 'text':'Hello!'}]}]"
                     )
                 pass
+                # Also fix up if assitant must be 1 string!
+                if self.assistant_single_content:
+                    assert(len(message["content"]) == 1)
+                    message["content"] = message["content"]["text"]
             pass
-            print(messages)
             message = self.processor.apply_chat_template(
                 messages,
                 tokenize = False,
