@@ -1000,7 +1000,7 @@ def apply_fused_lm_head(forward):
 
         cross_entropy_replacement = cross_entropy_replacement\
             .replace(
-                "$KWARGS$", 
+                "$KWARGS$",
                 "locals().get('loss_kwargs', {}) or locals().get('kwargs', {})"
             )
 
@@ -1179,7 +1179,7 @@ def patch_gradient_checkpointing(module, source):
         .replace("LAYER", layer).replace("MODULELIST_ITEM", modulelist_item)\
         .replace("ARGS", args).replace("$", spaces)
     forward = forward.replace(forward[span[0] : span[1]], replacer)
-    
+
     # Also fix init
     spaces = init.find("def")
     init = init + "\n" + (spaces + 4) * " " + "self.gradient_checkpointing = False\n\n"
@@ -1381,10 +1381,10 @@ def patch_gradient_accumulation(modeling_file, module):
 
     functions = dir(modeling_file)
     module = eval(f"modeling_file.{module}")
-    try: 
+    try:
         forward = module.forward
         source = inspect.getsource(forward)
-    except: 
+    except:
         return None
     has_kwargs = tuple(inspect.signature(forward).parameters.values())[-1].kind == inspect._VAR_KEYWORD
     if has_kwargs: return None
@@ -1449,7 +1449,12 @@ def unsloth_compile_transformers(
     import_from_cache      : bool = False,
     disable                : bool = False,
     return_logits          : bool = False,
+    supports_sdpa          : list = None,
 ):
+    # import transformers logging module and instantiate model_type logging instance.
+    from transformers import logging as transformers_logging
+    model_logger = transformers_logging.get_logger(f"modeling_{model_type}")
+
     # All Unsloth Zoo code licensed under LGPLv3
     disable = disable or (os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1")
     if fast_residual_stream:
@@ -1461,8 +1466,8 @@ def unsloth_compile_transformers(
     modeling_file = eval(model_location)
     if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
 
-    # Remove `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`
-    exec("modeling_file.logger.addFilter(HideLoggingMessage('Setting `use_cache=False`'))", globals(), locals())
+    # Use transformers model_type logger to supress message: Remove `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`
+    exec("model_logger.addFilter(HideLoggingMessage('Setting `use_cache=False`'))", globals(), locals())
 
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
@@ -1489,7 +1494,7 @@ def unsloth_compile_transformers(
     if "UNSLOTH_FULLGRAPH" not in os.environ:
         os.environ["UNSLOTH_FULLGRAPH"] = UNSLOTH_FULLGRAPH
     else:
-        UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"] == "1"
+        UNSLOTH_FULLGRAPH = os.environ["UNSLOTH_FULLGRAPH"]
     pass
     UNSLOTH_FULLGRAPH = UNSLOTH_FULLGRAPH == "1"
 
@@ -1547,6 +1552,17 @@ def unsloth_compile_transformers(
     )
     torch_modules = [x for x in torch_modules if x not in removal]
 
+    # Check SDPA to load as eager or SDPA (Pixtral / Mistral 3 for eg doesn't have SDPA)
+    if supports_sdpa is not None:
+        assert(type(supports_sdpa) is list and len(supports_sdpa) == 1)
+        if len(scaled_dot_product_attention_modules) != 0:
+            if supports_sdpa[0] != False: supports_sdpa[0] = True
+        elif "_supports_sdpa = True" in full_source:
+            if supports_sdpa[0] != False: supports_sdpa[0] = True
+        else:
+            supports_sdpa[0] = False
+    pass
+
     # Get functions which are called
     called_functions = []
     for function in functions:
@@ -1565,6 +1581,14 @@ def unsloth_compile_transformers(
         try: source = inspect.getsource(source.__init__)
         except: continue
         fullgraph = not ("nn.Linear" in source or "nn.ModuleList" in source)
+
+        # Eg SiglipVisionEmbeddings and CLIPVisionEmbeddings
+        if str(module).endswith("VisionEmbeddings"):
+            # sometimes we attach a post forward call to make sure requires grad is set
+            # this breaks full graph mode and fails so instead we relax the full graph check
+            # We attach via post forward call, since the forward call only passes keyword
+            # arguments in transformers and pre_forward hook doesn't pass kwargs.
+            fullgraph = False
 
         # Check if other modules is used as well
         for another_module in torch_modules:
@@ -1792,7 +1816,7 @@ def unsloth_compile_transformers(
             # Disable if torch < 2.5 or V100s 7.0 (Tesla T4 7.5 works) or old Triton < 3
             if OLD_CUDA_ARCH_VERSION or OLD_TORCH_VERSION or OLD_TRITON_VERSION:
                 continue
-            
+
             module_class = eval(f"modeling_file.{module}")
             if hasattr(module_class, "forward") and issubclass(module_class, GenerationMixin):
                 try:

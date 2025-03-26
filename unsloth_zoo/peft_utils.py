@@ -272,7 +272,7 @@ def requires_grad_for_gradient_checkpointing(model):
     module_name = "model." + ".".join(name_components[:final_where])
     module = eval(module_name)
 
-    if hasattr(module, "config") and module.config.__class__.__name__ == "CLIPVisionConfig":
+    if hasattr(module, "config") and (module.config.__class__.__name__ in ("CLIPVisionConfig", "SiglipVisionConfig",)):
         # CLIP - backtrack to get_input_embeddings since requires_grad fails!
         old_module = model
         for module_name, module in model.named_modules():

@@ -262,13 +262,13 @@ class UnslothVisionDataCollator:
         "padding_token_ids", "dtype", "ignore_index", \
         "processor", "formatting_func", "image_size", \
         "max_seq_length", "truncation", "train_on_responses_only", \
-        "num_proc",
+        "num_proc", "assistant_single_content",
 
     def __init__(
         self,
         model,
         processor,
-        max_seq_length = None,
+        max_seq_length  = None,
         formatting_func = None,
         resize = "min", # Can be (10, 10) or "min" to resize to fit
                         # the model's default image_size or "max"
@@ -335,6 +335,36 @@ class UnslothVisionDataCollator:
             )
         else:
             self.train_on_responses_only = None
+
+        # Check what type for assistant VLM tokenizer allows!
+        # Good for Mistral V3 and Pixtral I think
+        try:
+            processor.apply_chat_template([
+                {"role": "user", "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": "Hello!"}]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "How can I help you?"}]}
+            ])
+            self.assistant_single_content = False
+        except TypeError:
+            try:
+                processor.apply_chat_template([
+                    {"role": "user", "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": "Hello!"}]},
+                    {"role": "assistant", "content": "How can I help you?"}
+                ])
+                self.assistant_single_content = True
+                print(
+                    f"Unsloth: {processor.__class__.__name__} only accepts 1 "\
+                    "text field for assistant roles!\n"\
+                    "We will auto fix the data collator to support it!"
+                )
+            except Exception as e:
+                raise RuntimeError(e)
+        except Exception as e:
+            raise RuntimeError(e)
         return
     pass
 
@@ -366,7 +396,7 @@ class UnslothVisionDataCollator:
                     )
                 content = message["content"]
                 if type(content) is str:
-                    message["content"] = [{"type" : "text", "text" : content}]
+                    message["content"] = content = [{"type" : "text", "text" : content}]
                 elif type(content) is list or type(content) is tuple:
                     part = content[0]
                     assert("type" in part)
@@ -376,6 +406,15 @@ class UnslothVisionDataCollator:
                         "Your messages must be a like:\n"\
                         "[{'role':'user', 'content':[{'type':'text', 'text':'Hello!'}]}]"
                     )
+                pass
+
+                # Also fix the messages if assistant must only be 1 string!
+                # Only affects Mistral V3 I think!
+                if self.assistant_single_content:
+                    for message in messages:
+                        if message["role"] == "assistant":
+                            if type(content := message["content"]) is list:
+                                message["content"] = content[0]["text"]
                 pass
             pass
             message = self.processor.apply_chat_template(
@@ -417,7 +456,7 @@ class UnslothVisionDataCollator:
             return_tensors = "pt",
             add_special_tokens = False, # Stop double BOS
         )
-        # Cannot remove due to bidirectional attention fro Gemma 3!
+        # Cannot remove due to bidirectional attention from Gemma 3!
         # batch.pop("token_type_ids", None)
 
         # Pixtral accepts multiple images, so we have to cast it individually
@@ -439,7 +478,6 @@ class UnslothVisionDataCollator:
         labels = batch["input_ids"].clone()
         labels[torch.isin(labels, self.padding_token_ids)] = self.ignore_index
         batch["labels"] = labels
-
         if self.train_on_responses_only:
             batch["labels"] = self.train_on_responses_only(batch)["labels"]
         return batch
