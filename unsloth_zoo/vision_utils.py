@@ -404,7 +404,7 @@ class UnslothVisionDataCollator:
                 # Ie we must set assistant's 
                 if self.assistant_single_content and message["role"] == "assistant":
                     assert(len(message["content"]) == 1)
-                    message["content"] = message["content"]["text"]
+                    message["content"] = message["content"][0]["text"]
             pass
             message = self.processor.apply_chat_template(
                 messages,
