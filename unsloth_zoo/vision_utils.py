@@ -407,12 +407,14 @@ class UnslothVisionDataCollator:
                         "[{'role':'user', 'content':[{'type':'text', 'text':'Hello!'}]}]"
                     )
                 pass
-                # Also fix up if assitant must be 1 string!
+
+                # Also fix up if assistant must be 1 string!
                 # Ie we must set assistant's 
-                print(message)
-                if self.assistant_single_content and message["role"] == "assistant":
-                    assert(len(content) == 1)
-                    message["content"] = content[0]["text"]
+                if self.assistant_single_content
+                    for message in messages:
+                        if message["role"] == "assistant":
+                            if type(content := message["content"]) is list:
+                                message["content"] = content[0]["text"]
             pass
             message = self.processor.apply_chat_template(
                 messages,
