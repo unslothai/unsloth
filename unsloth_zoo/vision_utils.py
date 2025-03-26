@@ -389,7 +389,7 @@ class UnslothVisionDataCollator:
                     )
                 content = message["content"]
                 if type(content) is str:
-                    message["content"] = [{"type" : "text", "text" : content}]
+                    message["content"] = content = [{"type" : "text", "text" : content}]
                 elif type(content) is list or type(content) is tuple:
                     part = content[0]
                     assert("type" in part)
@@ -403,8 +403,8 @@ class UnslothVisionDataCollator:
                 # Also fix up if assitant must be 1 string!
                 # Ie we must set assistant's 
                 if self.assistant_single_content and message["role"] == "assistant":
-                    assert(len(message["content"]) == 1)
-                    message["content"] = message["content"][0]["text"]
+                    assert(len(content) == 1)
+                    message["content"] = content[0]["text"]
             pass
             message = self.processor.apply_chat_template(
                 messages,
