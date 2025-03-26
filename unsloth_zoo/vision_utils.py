@@ -408,6 +408,7 @@ class UnslothVisionDataCollator:
         pass
 
         # Tokenize the texts and process the images
+        print(texts, images)
         batch = self.processor(
             text    = texts,
             images  = images,
@@ -439,8 +440,6 @@ class UnslothVisionDataCollator:
         labels = batch["input_ids"].clone()
         labels[torch.isin(labels, self.padding_token_ids)] = self.ignore_index
         batch["labels"] = labels
-        print(batch["input_ids"].shape, batch["labels"].shape, batch["pixel_values"].shape)
-
         if self.train_on_responses_only:
             batch["labels"] = self.train_on_responses_only(batch)["labels"]
         return batch
