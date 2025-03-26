@@ -373,24 +373,24 @@ class FastBaseModel:
         auto_processor = AutoProcessor if auto_model is AutoModelForVision2Seq else AutoTokenizer
         tokenizer = auto_processor.from_pretrained(
             tokenizer_name,
-            padding_side = "right",
+            # padding_side = "right",
             token        = token,
         )
-        if hasattr(tokenizer, "tokenizer"):
-            __tokenizer = tokenizer.tokenizer
-            # Add padding side as well
-            __tokenizer.padding_side = "right"
-            # Check bos, eos, pad tokens
-            if hasattr(__tokenizer, "bos_token"):
-                tokenizer.bos_token    = __tokenizer.bos_token
-                tokenizer.bos_token_id = __tokenizer.bos_token_id
-            if hasattr(__tokenizer, "eos_token"):
-                tokenizer.eos_token    = __tokenizer.eos_token
-                tokenizer.eos_token_id = __tokenizer.eos_token_id
-            if hasattr(__tokenizer, "pad_token"):
-                tokenizer.pad_token    = __tokenizer.pad_token
-                tokenizer.pad_token_id = __tokenizer.pad_token_id
-        pass
+        # if hasattr(tokenizer, "tokenizer"):
+        #     __tokenizer = tokenizer.tokenizer
+        #     # Add padding side as well
+        #     __tokenizer.padding_side = "right"
+        #     # Check bos, eos, pad tokens
+        #     if hasattr(__tokenizer, "bos_token"):
+        #         tokenizer.bos_token    = __tokenizer.bos_token
+        #         tokenizer.bos_token_id = __tokenizer.bos_token_id
+        #     if hasattr(__tokenizer, "eos_token"):
+        #         tokenizer.eos_token    = __tokenizer.eos_token
+        #         tokenizer.eos_token_id = __tokenizer.eos_token_id
+        #     if hasattr(__tokenizer, "pad_token"):
+        #         tokenizer.pad_token    = __tokenizer.pad_token
+        #         tokenizer.pad_token_id = __tokenizer.pad_token_id
+        # pass
         # Fix other stuff like BnB compute data types
         # model, tokenizer = patch_model_and_tokenizer(
         #     model,
@@ -414,9 +414,9 @@ class FastBaseModel:
         patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
-        tokenizer.padding_side = "left" # Force inference
-        if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "left" # Force inference
+        # tokenizer.padding_side = "left" # Force inference
+        # if hasattr(tokenizer, "tokenizer"):
+        #     tokenizer.tokenizer.padding_side = "left" # Force inference
         m = model
         while hasattr(m, "model"):
             m.max_seq_length = max_seq_length
