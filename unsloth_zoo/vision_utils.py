@@ -268,7 +268,7 @@ class UnslothVisionDataCollator:
         self,
         model,
         processor,
-        max_seq_length = None,
+        max_seq_length  = None,
         formatting_func = None,
         resize = "min", # Can be (10, 10) or "min" to resize to fit
                         # the model's default image_size or "max"
