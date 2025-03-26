@@ -66,11 +66,6 @@ __all__ = [
     "FastBaseModel",
 ]
 
-global FORCE_EAGER_ATTENTION
-FORCE_EAGER_ATTENTION = [
-    "pixtral",    # Pixtral SDPA not implemented
-]
-
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 global PROMPT_LOOPKUP
@@ -240,6 +235,7 @@ class FastBaseModel:
         tokenizer_name    = None,
         auto_model        = AutoModelForVision2Seq,
         use_gradient_checkpointing = "unsloth",
+        supports_sdpa     = True,
         **kwargs,
     ):
         if model_types is None:
@@ -307,16 +303,11 @@ class FastBaseModel:
             bnb_compute_dtype = torch.float16
             do_forced_float32 = True
         pass
-
-        global FORCE_EAGER_ATTENTION
-        attn_implementation = "sdpa"
-        for disable_name in FORCE_EAGER_ATTENTION:
-            if (disable_name.lower() == model_type_arch.lower() or \
-                disable_name.lower() in model_name.lower()):
-
-                print(f"Unsloth: {model_type_arch} does not support SDPA - switching to eager!")
-                attn_implementation = "eager"
-                break
+        # Stop SDPA for some archs like Pixtral / Mistral3
+        kwargs["attn_implementation"] = "sdpa"
+        if not supports_sdpa:
+            print(f"Unsloth: {model_type_arch} does not support SDPA - switching to eager!")
+            del kwargs["attn_implementation"]
         pass
 
         bnb_config = None
@@ -355,8 +346,6 @@ class FastBaseModel:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         pass
 
-        kwargs.pop("attn_implementation", None); # No need since we auto call it
-
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
@@ -370,7 +359,7 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = attn_implementation,
+            # attn_implementation   = attn_implementation,
             **kwargs,
         )
         # Return old flag

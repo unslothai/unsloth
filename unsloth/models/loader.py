@@ -642,7 +642,6 @@ class FastModel(FastBaseModel):
             trust_remote_code = trust_remote_code,
         )
         model_types = ["siglip"] + model_types
-        print("model_types", model_types)
 
         # Set forced float32 env flag
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
@@ -664,7 +663,7 @@ class FastModel(FastBaseModel):
 
         with redirector:
             patch_loss_functions(torch_compile = False)
-            model_types = unsloth_compile_transformers(
+            model_types, supports_sdpa = unsloth_compile_transformers(
                 dtype                   = dtype,
                 model_name              = model_name,
                 model_types             = model_types,
@@ -727,6 +726,7 @@ class FastModel(FastBaseModel):
             tokenizer_name    = tokenizer_name,
             auto_model        = auto_model,
             use_gradient_checkpointing = use_gradient_checkpointing,
+            supports_sdpa     = supports_sdpa,
             *args, **kwargs,
         )
 
