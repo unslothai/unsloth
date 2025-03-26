@@ -1571,7 +1571,8 @@ def unsloth_compile_transformers(
         except: continue
         fullgraph = not ("nn.Linear" in source or "nn.ModuleList" in source)
 
-        if module == 'SiglipVisionEmbeddings' or module == 'CLIPVisionEmbeddings':
+        # Eg SiglipVisionEmbeddings and CLIPVisionEmbeddings
+        if str(module).endswith("VisionEmbeddings"):
             # sometimes we attach a post forward call to make sure requires grad is set
             # this breaks full graph mode and fails so instead we relax the full graph check
             # We attach via post forward call, since the forward call only passes keyword
