@@ -729,12 +729,12 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Mistral-Small-3.1-24B-Base-2503-bnb-4bit",
     ),
     "unsloth/orpheus-3b-0.1-pretrained-unsloth-bnb-4bit" : (
-        "unsloth/Mistral-Small-3.1-24B-Base-2503",
+        "unsloth/orpheus-3b-0.1-pretrained",
         "canopylabs/orpheus-3b-0.1-pretrained",
         "unsloth/orpheus-3b-0.1-pretrained-bnb-4bit",
     ),
     "unsloth/orpheus-3b-0.1-ft-unsloth-bnb-4bit" : (
-        "unsloth/Mistral-Small-3.1-24B-Base-2503",
+        "unsloth/orpheus-3b-0.1-ft",
         "canopylabs/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
     ),
