@@ -1556,9 +1556,9 @@ def unsloth_compile_transformers(
     if supports_sdpa is not None:
         assert(type(supports_sdpa) is list and len(supports_sdpa) == 1)
         if len(scaled_dot_product_attention_modules) != 0:
-            supports_sdpa[0] = True
+            if supports_sdpa[0] != False: supports_sdpa[0] = True
         elif "_supports_sdpa = True" in full_source:
-            supports_sdpa[0] = True
+            if supports_sdpa[0] != False: supports_sdpa[0] = True
         else:
             supports_sdpa[0] = False
     pass
