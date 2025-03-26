@@ -343,6 +343,7 @@ class UnslothVisionDataCollator:
         # The issue is batch = self.processor( forces tensors to be returned and not None.
         texts  = []
         images = []
+        print(examples)
 
         if self.formatting_func is not None:
             examples = [self.formatting_func(example) for example in examples]
@@ -408,7 +409,6 @@ class UnslothVisionDataCollator:
         pass
 
         # Tokenize the texts and process the images
-        print(texts, images)
         batch = self.processor(
             text    = texts,
             images  = images,
