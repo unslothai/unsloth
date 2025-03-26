@@ -410,7 +410,7 @@ class UnslothVisionDataCollator:
 
                 # Also fix the messages if assistant must only be 1 string!
                 # Only affects Mistral V3 I think!
-                if self.assistant_single_content
+                if self.assistant_single_content:
                     for message in messages:
                         if message["role"] == "assistant":
                             if type(content := message["content"]) is list:
