@@ -642,6 +642,7 @@ class FastModel(FastBaseModel):
             trust_remote_code = trust_remote_code,
         )
         model_types = ["siglip"] + model_types
+        print("model_types", model_types)
 
         # Set forced float32 env flag
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
