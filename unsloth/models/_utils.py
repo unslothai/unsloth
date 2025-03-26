@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.18"
+__version__ = "2025.3.19"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1176,9 +1176,10 @@ def unsloth_compile_transformers(
             "so turning off some optimizations!"
         )
         return
-    if disable: return
-
     model_types = list(dict().fromkeys(model_types).keys())
+    if disable: return model_types, False
+
+    supports_sdpa = [True]
     for model_type in model_types:
         _unsloth_compile_transformers(
             model_type,
@@ -1206,12 +1207,13 @@ def unsloth_compile_transformers(
             import_from_cache      = import_from_cache,
             disable                = disable,
             return_logits          = return_logits,
+            supports_sdpa          = supports_sdpa,
         )
     pass
     # Redo patches which override compiler
     for temporary_patch in TEMPORARY_PATCHES:
         temporary_patch()
-    return model_types
+    return model_types, supports_sdpa[0]
 pass
 
 # We need an empty logits flag to warn people logits will not be returned anymore unless asked ie
