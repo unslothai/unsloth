@@ -415,6 +415,8 @@ class UnslothVisionDataCollator:
                         if message["role"] == "assistant":
                             if type(content := message["content"]) is list:
                                 message["content"] = content[0]["text"]
+                    print(messages)
+                pass
             pass
             message = self.processor.apply_chat_template(
                 messages,
