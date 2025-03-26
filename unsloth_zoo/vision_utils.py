@@ -379,6 +379,7 @@ class UnslothVisionDataCollator:
                     )
                 pass
             pass
+            print(messages)
             message = self.processor.apply_chat_template(
                 messages,
                 tokenize = False,
