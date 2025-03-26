@@ -401,7 +401,8 @@ class UnslothVisionDataCollator:
                     )
                 pass
                 # Also fix up if assitant must be 1 string!
-                if self.assistant_single_content:
+                # Ie we must set assistant's 
+                if self.assistant_single_content and message["role"] == "assistant":
                     assert(len(message["content"]) == 1)
                     message["content"] = message["content"]["text"]
             pass
