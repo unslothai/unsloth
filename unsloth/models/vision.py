@@ -362,8 +362,8 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = attn_implementation,
-            **kwargs,
+            # attn_implementation     = attn_implementation,
+            # **kwargs,
         )
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
@@ -410,25 +410,25 @@ class FastBaseModel:
         # patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation
-        from transformers.trainer import Trainer
-        patch_gradient_accumulation_fix(Trainer)
+        # from transformers.trainer import Trainer
+        # patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
         # tokenizer.padding_side = "left" # Force inference
         # if hasattr(tokenizer, "tokenizer"):
         #     tokenizer.tokenizer.padding_side = "left" # Force inference
-        m = model
-        while hasattr(m, "model"):
-            m.max_seq_length = max_seq_length
-            m._saved_temp_tokenizer = tokenizer
-            # Also set is_loaded_in_8bit to disable incorrect DDP
-            m.is_loaded_in_8bit = True if not full_finetuning else False
-            m = m.model
-        pass
-        m.max_seq_length = max_seq_length
-        m._saved_temp_tokenizer = tokenizer
-        # Also set is_loaded_in_8bit to disable incorrect DDP
-        m.is_loaded_in_8bit = True if not full_finetuning else False
+        # m = model
+        # while hasattr(m, "model"):
+        #     m.max_seq_length = max_seq_length
+        #     m._saved_temp_tokenizer = tokenizer
+        #     # Also set is_loaded_in_8bit to disable incorrect DDP
+        #     m.is_loaded_in_8bit = True if not full_finetuning else False
+        #     m = m.model
+        # pass
+        # m.max_seq_length = max_seq_length
+        # m._saved_temp_tokenizer = tokenizer
+        # # Also set is_loaded_in_8bit to disable incorrect DDP
+        # m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
         if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0":
