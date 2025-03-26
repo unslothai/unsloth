@@ -478,6 +478,8 @@ class UnslothVisionDataCollator:
         labels = batch["input_ids"].clone()
         labels[torch.isin(labels, self.padding_token_ids)] = self.ignore_index
         batch["labels"] = labels
+        import pprint
+        pprint.pprint(batch)
         if self.train_on_responses_only:
             batch["labels"] = self.train_on_responses_only(batch)["labels"]
         return batch
