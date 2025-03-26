@@ -1449,6 +1449,7 @@ def unsloth_compile_transformers(
     import_from_cache      : bool = False,
     disable                : bool = False,
     return_logits          : bool = False,
+    supports_sdpa          : list = None,
 ):
     # import transformers logging module and instantiate model_type logging instance.
     from transformers import logging as transformers_logging
@@ -1467,7 +1468,6 @@ def unsloth_compile_transformers(
 
     # Use transformers model_type logger to supress message: Remove `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`
     exec("model_logger.addFilter(HideLoggingMessage('Setting `use_cache=False`'))", globals(), locals())
-
 
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
@@ -1551,6 +1551,17 @@ def unsloth_compile_transformers(
         gradient_checkpointed_modules
     )
     torch_modules = [x for x in torch_modules if x not in removal]
+
+    # Check SDPA to load as eager or SDPA (Pixtral / Mistral 3 for eg doesn't have SDPA)
+    if supports_sdpa is not None:
+        assert(type(supports_sdpa) is list and len(supports_sdpa) == 1)
+        if len(scaled_dot_product_attention_modules) != 0:
+            supports_sdpa[0] = True
+        elif "_supports_sdpa = True" in full_source:
+            supports_sdpa[0] = True
+        else:
+            supports_sdpa[0] = False
+    pass
 
     # Get functions which are called
     called_functions = []
