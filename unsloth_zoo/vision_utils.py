@@ -417,7 +417,7 @@ class UnslothVisionDataCollator:
             return_tensors = "pt",
             add_special_tokens = False, # Stop double BOS
         )
-        # Cannot remove due to bidirectional attention fro Gemma 3!
+        # Cannot remove due to bidirectional attention from Gemma 3!
         # batch.pop("token_type_ids", None)
 
         # Pixtral accepts multiple images, so we have to cast it individually
@@ -439,6 +439,7 @@ class UnslothVisionDataCollator:
         labels = batch["input_ids"].clone()
         labels[torch.isin(labels, self.padding_token_ids)] = self.ignore_index
         batch["labels"] = labels
+        print(batch["input_ids"].shape, batch["labels"].shape, batch["pixel_values"].shape)
 
         if self.train_on_responses_only:
             batch["labels"] = self.train_on_responses_only(batch)["labels"]
