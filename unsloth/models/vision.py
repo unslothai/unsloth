@@ -362,8 +362,8 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            # attn_implementation     = attn_implementation,
-            # **kwargs,
+            attn_implementation     = attn_implementation,
+            **kwargs,
         )
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
@@ -373,62 +373,62 @@ class FastBaseModel:
         auto_processor = AutoProcessor if auto_model is AutoModelForVision2Seq else AutoTokenizer
         tokenizer = auto_processor.from_pretrained(
             tokenizer_name,
-            # padding_side = "right",
+            padding_side = "right",
             token        = token,
         )
-        # if hasattr(tokenizer, "tokenizer"):
-        #     __tokenizer = tokenizer.tokenizer
-        #     # Add padding side as well
-        #     __tokenizer.padding_side = "right"
-        #     # Check bos, eos, pad tokens
-        #     if hasattr(__tokenizer, "bos_token"):
-        #         tokenizer.bos_token    = __tokenizer.bos_token
-        #         tokenizer.bos_token_id = __tokenizer.bos_token_id
-        #     if hasattr(__tokenizer, "eos_token"):
-        #         tokenizer.eos_token    = __tokenizer.eos_token
-        #         tokenizer.eos_token_id = __tokenizer.eos_token_id
-        #     if hasattr(__tokenizer, "pad_token"):
-        #         tokenizer.pad_token    = __tokenizer.pad_token
-        #         tokenizer.pad_token_id = __tokenizer.pad_token_id
-        # pass
+        if hasattr(tokenizer, "tokenizer"):
+            __tokenizer = tokenizer.tokenizer
+            # Add padding side as well
+            __tokenizer.padding_side = "right"
+            # Check bos, eos, pad tokens
+            if hasattr(__tokenizer, "bos_token"):
+                tokenizer.bos_token    = __tokenizer.bos_token
+                tokenizer.bos_token_id = __tokenizer.bos_token_id
+            if hasattr(__tokenizer, "eos_token"):
+                tokenizer.eos_token    = __tokenizer.eos_token
+                tokenizer.eos_token_id = __tokenizer.eos_token_id
+            if hasattr(__tokenizer, "pad_token"):
+                tokenizer.pad_token    = __tokenizer.pad_token
+                tokenizer.pad_token_id = __tokenizer.pad_token_id
+        pass
         # Fix other stuff like BnB compute data types
-        # model, tokenizer = patch_model_and_tokenizer(
-        #     model,
-        #     tokenizer,
-        #     downcast_rope = False,
-        #     fix_embeddings = False,
-        #     do_forced_float32 = do_forced_float32,
-        # )
-        # model, tokenizer = patch_tokenizer(model, tokenizer)
-        # model = post_patch_loss_function(model)
+        model, tokenizer = patch_model_and_tokenizer(
+            model,
+            tokenizer,
+            downcast_rope = False,
+            fix_embeddings = False,
+            do_forced_float32 = do_forced_float32,
+        )
+        model, tokenizer = patch_tokenizer(model, tokenizer)
+        model = post_patch_loss_function(model)
 
         # Log Unsloth version for future fastpaths for inference
-        # if hasattr(model, "config"):
-        #     model.config.update({"unsloth_version" : __version__})
-        # pass
-        # patch_saving_functions(model, vision = True)
-        # patch_saving_functions(tokenizer, vision = True)
+        if hasattr(model, "config"):
+            model.config.update({"unsloth_version" : __version__})
+        pass
+        patch_saving_functions(model, vision = True)
+        patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation
-        # from transformers.trainer import Trainer
-        # patch_gradient_accumulation_fix(Trainer)
+        from transformers.trainer import Trainer
+        patch_gradient_accumulation_fix(Trainer)
 
         # Save tokenizer for inference purposes
-        # tokenizer.padding_side = "left" # Force inference
-        # if hasattr(tokenizer, "tokenizer"):
-        #     tokenizer.tokenizer.padding_side = "left" # Force inference
-        # m = model
-        # while hasattr(m, "model"):
-        #     m.max_seq_length = max_seq_length
-        #     m._saved_temp_tokenizer = tokenizer
-        #     # Also set is_loaded_in_8bit to disable incorrect DDP
-        #     m.is_loaded_in_8bit = True if not full_finetuning else False
-        #     m = m.model
-        # pass
-        # m.max_seq_length = max_seq_length
-        # m._saved_temp_tokenizer = tokenizer
-        # # Also set is_loaded_in_8bit to disable incorrect DDP
-        # m.is_loaded_in_8bit = True if not full_finetuning else False
+        tokenizer.padding_side = "left" # Force inference
+        if hasattr(tokenizer, "tokenizer"):
+            tokenizer.tokenizer.padding_side = "left" # Force inference
+        m = model
+        while hasattr(m, "model"):
+            m.max_seq_length = max_seq_length
+            m._saved_temp_tokenizer = tokenizer
+            # Also set is_loaded_in_8bit to disable incorrect DDP
+            m.is_loaded_in_8bit = True if not full_finetuning else False
+            m = m.model
+        pass
+        m.max_seq_length = max_seq_length
+        m._saved_temp_tokenizer = tokenizer
+        # Also set is_loaded_in_8bit to disable incorrect DDP
+        m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
         if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0":
@@ -438,10 +438,10 @@ class FastBaseModel:
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
         pass
         # Post patches
-        # model = FastBaseModel.post_patch_model(
-        #     model,
-        #     use_gradient_checkpointing = use_gradient_checkpointing,
-        # )
+        model = FastBaseModel.post_patch_model(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+        )
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()

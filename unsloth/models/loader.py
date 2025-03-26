@@ -481,8 +481,8 @@ class FastModel(FastBaseModel):
             dtype = torch.float16
         assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
-        # patch_compiled_autograd()
-        # patch_compiling_bitsandbytes()
+        patch_compiled_autograd()
+        patch_compiling_bitsandbytes()
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
