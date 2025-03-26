@@ -242,6 +242,11 @@ class FastBaseModel:
         use_gradient_checkpointing = "unsloth",
         **kwargs,
     ):
+        if model_types is None:
+            raise RuntimeError(
+                "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
+            )
+
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
             print(
