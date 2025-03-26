@@ -392,22 +392,22 @@ class FastBaseModel:
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
         pass
         # Fix other stuff like BnB compute data types
-        model, tokenizer = patch_model_and_tokenizer(
-            model,
-            tokenizer,
-            downcast_rope = False,
-            fix_embeddings = False,
-            do_forced_float32 = do_forced_float32,
-        )
-        model, tokenizer = patch_tokenizer(model, tokenizer)
-        model = post_patch_loss_function(model)
+        # model, tokenizer = patch_model_and_tokenizer(
+        #     model,
+        #     tokenizer,
+        #     downcast_rope = False,
+        #     fix_embeddings = False,
+        #     do_forced_float32 = do_forced_float32,
+        # )
+        # model, tokenizer = patch_tokenizer(model, tokenizer)
+        # model = post_patch_loss_function(model)
 
         # Log Unsloth version for future fastpaths for inference
-        if hasattr(model, "config"):
-            model.config.update({"unsloth_version" : __version__})
-        pass
-        patch_saving_functions(model, vision = True)
-        patch_saving_functions(tokenizer, vision = True)
+        # if hasattr(model, "config"):
+        #     model.config.update({"unsloth_version" : __version__})
+        # pass
+        # patch_saving_functions(model, vision = True)
+        # patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation
         from transformers.trainer import Trainer
@@ -438,10 +438,10 @@ class FastBaseModel:
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
         pass
         # Post patches
-        model = FastBaseModel.post_patch_model(
-            model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-        )
+        # model = FastBaseModel.post_patch_model(
+        #     model,
+        #     use_gradient_checkpointing = use_gradient_checkpointing,
+        # )
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
