@@ -198,7 +198,7 @@ pass
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.3.16"):
+    if Version(unsloth_zoo_version) < Version("2025.3.17"):
         print(
             "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
             "To disable this, set `os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'`"

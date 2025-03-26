@@ -79,7 +79,7 @@ def sft_trainer_prepare_dataset(function_name, function):
         function_name != "_prepare_dataset": return function
 
     fast_sft_prepare_dataset = RL_REPLACEMENTS.get("sft_prepare_dataset", None)
-    if fast_sft_prepare_dataset is not None and "pack_examples" in function:
+    if fast_sft_prepare_dataset is not None:
         params = inspect.signature(fast_sft_prepare_dataset).parameters.keys()
         params = ".*?".join(params)
         matched = re.match(
