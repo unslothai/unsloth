@@ -201,7 +201,8 @@ def unsloth_base_fast_generate(
         kwargs["cache_implementation"] = cache_implementation
         kwargs["compile_config"] = _compile_config
     pass
-    print(args, kwargs)
+    import pprint
+    pprint.pprint(args, kwargs)
 
     try:
         with torch.inference_mode(), autocaster:
