@@ -42,7 +42,7 @@ def train_model(
         batch_size=args.per_device_train_batch_size,
         iters=args.max_steps,
         val_batches=25,
-        steps_per_report=10,
+        steps_per_report=args.logging_steps,
         steps_per_eval=200,
         steps_per_save=100,
         adapter_file=adapter_file,
