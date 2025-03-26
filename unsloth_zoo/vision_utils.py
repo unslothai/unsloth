@@ -356,6 +356,11 @@ class UnslothVisionDataCollator:
                     {"role": "assistant", "content": "How can I help you?"}
                 ])
                 self.assistant_single_content = True
+                print(
+                    f"Unsloth: {processor.__class__.__name__} only accepts 1 "\
+                    "text field for assistant roles!\n"\
+                    "We will auto fix the data collator to support it!"
+                )
             except Exception as e:
                 raise RuntimeError(e)
         return
