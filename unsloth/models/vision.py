@@ -145,8 +145,11 @@ def unsloth_base_fast_generate(
         kwargs[key] = 1
     global PROMPT_LOOPKUP
     if arch not in PROMPT_LOOPKUP:
-        PROMPT_LOOPKUP[arch] = True
-
+        # Only works for VLMs and not LLMs!
+        if is_vlm:
+            PROMPT_LOOPKUP[arch] = False
+        else:
+            PROMPT_LOOPKUP[arch] = True
     if bsz == 1 and PROMPT_LOOPKUP[arch]:
         kwargs["prompt_lookup_num_tokens"] = 3
 
@@ -201,8 +204,6 @@ def unsloth_base_fast_generate(
         kwargs["cache_implementation"] = cache_implementation
         kwargs["compile_config"] = _compile_config
     pass
-    import pprint
-    pprint.pprint(args, kwargs)
 
     try:
         with torch.inference_mode(), autocaster:
