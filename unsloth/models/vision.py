@@ -431,11 +431,12 @@ class FastBaseModel:
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
-        if model.generate.__name__ != "unsloth_base_fast_generate":
-            model._old_generate = model.generate
-            unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_base_fast_generate, model)
-
+        if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0":
+            if model.generate.__name__ != "unsloth_base_fast_generate":
+                model._old_generate = model.generate
+                unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
+                model.generate = types.MethodType(unsloth_base_fast_generate, model)
+        pass
         # Post patches
         model = FastBaseModel.post_patch_model(
             model,
