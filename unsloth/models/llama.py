@@ -2024,6 +2024,14 @@ class FastLlamaModel:
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
+            # Check for other PEFT args in kwargs
+            for (peft_arg, flag) in (
+                ("finetune_vision_layers", False),
+                ("finetune_language_layers", True),
+                ("finetune_attention_modules", True),
+                ("finetune_mlp_modules", True),
+            ):
+                if peft_arg not in kwargs: kwargs[peft_arg] = flag
             return FastBaseModel.get_peft_model(
                 model                      = model,
                 r                          = r,
@@ -2031,10 +2039,6 @@ class FastLlamaModel:
                 lora_alpha                 = lora_alpha,
                 lora_dropout               = lora_dropout,
                 bias                       = bias,
-                finetune_vision_layers     = False,
-                finetune_language_layers   = True,
-                finetune_attention_modules = True,
-                finetune_mlp_modules       = True,
                 layers_to_transform        = layers_to_transform,
                 layers_pattern             = layers_pattern,
                 use_gradient_checkpointing = use_gradient_checkpointing,
