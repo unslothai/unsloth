@@ -1346,12 +1346,12 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
 
     batches = create_batches(inputs, n_batches)
     kwargs["lora_request"] = lora_request
-    outputs = []
+    output_list = []
     for batch in batches:
         outputs = llm.generate(batch, *args, **kwargs)
-        outputs += list(outputs)
+        output_list += list(outputs)
     pass
-    return outputs
+    return output_list
 pass
 
 

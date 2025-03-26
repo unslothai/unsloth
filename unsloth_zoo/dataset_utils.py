@@ -334,7 +334,10 @@ def train_on_responses_only(
     if hasattr(trainer, "train_dataset") and trainer.train_dataset is not None:
         if not hasattr(trainer.train_dataset, "map"):
             raise TypeError("Unsloth: train_on_responses_only does not work on lists!")
-        trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batched = True, num_proc = num_proc)
+        if isinstance(trainer.train_dataset, IterableDataset):
+            trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batch_size = trainer.train_dataset._ex_iterable.batch_size, batched = True)
+        else:
+            trainer.train_dataset = trainer.train_dataset.map(_train_on_responses_only, batched = True, num_proc = num_proc)
     pass
     
     if hasattr(trainer, "eval_dataset")  and trainer.eval_dataset  is not None:
@@ -343,11 +346,17 @@ def train_on_responses_only(
             for key, value in trainer.eval_dataset.items():
                 if not hasattr(value, "map"):
                     raise TypeError("Unsloth: train_on_responses_only does not work on lists!")
-                trainer.eval_dataset[key] = value.map(_train_on_responses_only, batched = True, num_proc = num_proc)
+                if isinstance(trainer.eval_dataset, IterableDataset):
+                    trainer.eval_dataset[key] = value.map(_train_on_responses_only, batch_size = trainer.eval_dataset._ex_iterable.batch_size, batched = True)
+                else:
+                    trainer.eval_dataset[key] = value.map(_train_on_responses_only, batched = True, num_proc = num_proc)
         else:
             if not hasattr(trainer.eval_dataset, "map"):
                 raise TypeError("Unsloth: train_on_responses_only does not work on lists!")
-            trainer.eval_dataset = trainer.eval_dataset.map(_train_on_responses_only, batched = True, num_proc = num_proc)
+            if isinstance(trainer.eval_dataset, IterableDataset):
+                trainer.eval_dataset = trainer.eval_dataset.map(_train_on_responses_only, batch_size = trainer.eval_dataset._ex_iterable.batch_size, batched = True)
+            else:
+                trainer.eval_dataset = trainer.eval_dataset.map(_train_on_responses_only, batched = True, num_proc = num_proc)
         pass
     pass
 
@@ -531,14 +540,14 @@ def sft_prepare_dataset(
     if do_tokenize:
         # Check double BOS tokens
         if do_formatting_func:
-            test_text = formatting_func(dataset[0])
+            test_text = formatting_func(next(iter(dataset)))
             if not isinstance(test_text, list):
                 raise ValueError(
                     "Unsloth: The `formatting_func` should return a list of processed strings."
                 )
             test_text = test_text[0]
         else:
-            test_text = dataset[0][dataset_text_field]
+            test_text = next(iter(dataset))[dataset_text_field][0]
 
         # Get chat template
         chat_template = getattr(processing_class, 'chat_template', '')
@@ -570,7 +579,11 @@ def sft_prepare_dataset(
             )
         pass
 
-        map_kwargs["num_proc"] = getattr(args, "dataset_num_proc", 2)
+        if not isinstance(dataset, IterableDataset):
+            map_kwargs["num_proc"] = getattr(args, "dataset_num_proc", 2)
+        else:
+            map_kwargs["batch_size"] = dataset._ex_iterable.batch_size
+            
         if use_desc: map_kwargs["desc"] = f'Unsloth: Tokenizing ["{dataset_text_field}"]'
         dataset = dataset.map(_tokenize, batched = True, **map_kwargs)
 
