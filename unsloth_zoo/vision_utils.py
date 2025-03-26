@@ -363,6 +363,8 @@ class UnslothVisionDataCollator:
                 )
             except Exception as e:
                 raise RuntimeError(e)
+        except Exception as e:
+            raise RuntimeError(e)
         return
     pass
 
