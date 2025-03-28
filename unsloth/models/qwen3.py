@@ -19,12 +19,25 @@ from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
 )
-from transformers.models.qwen3.modeling_qwen3 import (
-    Qwen3Attention,
-    Qwen3DecoderLayer,
-    Qwen3Model,
-    Qwen3ForCausalLM,
-)
+try:
+    from transformers.models.qwen3.modeling_qwen3 import (
+        Qwen3Attention,
+        Qwen3DecoderLayer,
+        Qwen3Model,
+        Qwen3ForCausalLM,
+    )
+except:
+    from packaging.version import Version
+    transformers_version = Version(transformers_version)
+    if not transformers_version >= Version("4.50.3"): #TODO: Update when transformers is updated
+        raise ImportError(
+            f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3 and Qwen3Moe.\n"\
+            f"The minimum required version is 4.50.3.\n"\
+            f'Try `pip install --upgrade "transformers>=4.50.3"`\n'\
+            f"to obtain the latest transformers build, then restart this session."\
+        )
+    pass
+
 # For Pytorch 2.1.1
 try:
     from transformers.models.qwen3.modeling_qwen3 import (
