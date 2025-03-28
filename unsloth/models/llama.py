@@ -106,7 +106,7 @@ def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **
             past_key_values = None
             kwargs["past_key_values"] = None
         else:
-            bs, sequence_length = input_ids.shape
+            bs, cache_length = input_ids.shape
             input_ids = input_ids[:,[-1]]
             
             # Get to the base model
@@ -118,10 +118,10 @@ def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **
                 attention_mask = base_model._prepare_4d_causal_attention_mask_with_cache_position(
                     attention_mask,
                     sequence_length=1,
-                    target_length=sequence_length,
+                    target_length=cache_length,
                     dtype=self.dtype,
                     device=input_ids.device,
-                    cache_position=torch.arange(sequence_length, sequence_length+1, device=input_ids.device),
+                    cache_position=torch.arange(cache_length, cache_length+1, device=input_ids.device),
                     batch_size=bs,
                     config=self.config,
                     past_key_values=past_key_values,
