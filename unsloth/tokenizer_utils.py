@@ -582,6 +582,13 @@ def load_correct_tokenizer(
 
         chat_template = old_chat_template
 
+    # Also check models with <instruction> and </instruction> special tokens
+    elif old_chat_template is not None and \
+        "<instruction>" in old_chat_template and "</instruction>" in old_chat_template and \
+        "bos_token" in old_chat_template and "eos_token" in old_chat_template:
+
+        chat_template = old_chat_template
+
     else:
         chat_template = fix_chat_template(tokenizer)
         if old_chat_template is not None and chat_template is None:
