@@ -11,8 +11,7 @@ from unsloth.model_registry import (
     get_qwen_models,
     get_qwen_vl_models,
 )
-
-from .utils.hf_hub import get_model_info
+from unsloth.utils.hf_hub import get_model_info
 
 MODEL_NAMES = [
     "llama",
