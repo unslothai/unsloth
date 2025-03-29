@@ -468,6 +468,9 @@ class FastModel(FastBaseModel):
         revision                   = None,
         return_logits              = False, # Return logits
         fullgraph                  = True, # No graph breaks
+        auto_model                 = None,
+        whisper_language           = None,
+        whisper_task               = None,
         use_exact_model_name       = False,
         *args, **kwargs,
     ):
@@ -709,7 +712,8 @@ class FastModel(FastBaseModel):
         # Check if VLM
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
-        auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+        if not auto_model:
+            auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
@@ -727,6 +731,8 @@ class FastModel(FastBaseModel):
             auto_model        = auto_model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             supports_sdpa     = supports_sdpa,
+            whisper_language  = whisper_language,
+            whisper_task      = whisper_task,            
             *args, **kwargs,
         )
 
