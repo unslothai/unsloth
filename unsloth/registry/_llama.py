@@ -1,4 +1,4 @@
-from unsloth.registry.registry import ModelInfo, ModelMeta, _register_models
+from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register_models
 
 _IS_LLAMA_REGISTERED = False
 _IS_LLAMA_VISION_REGISTERED = False
@@ -30,7 +30,7 @@ LlamaMeta3_1 = ModelMeta(
     model_sizes=[8],
     model_info_cls=LlamaModelInfo,
     is_multimodal=False,
-    quant_types=[None, "bnb", "unsloth"],
+    quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
 # Llama 3.2
@@ -42,7 +42,7 @@ LlamaMeta3_2 = ModelMeta(
     model_sizes=[1, 3],
     model_info_cls=LlamaModelInfo,
     is_multimodal=False,
-    quant_types=[None, "bnb", "unsloth"],
+    quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
 # Llama 3.2 Vision
@@ -54,7 +54,7 @@ LlamaMeta3_2_Vision = ModelMeta(
     model_sizes=[11, 90],
     model_info_cls=LlamaVisionModelInfo,
     is_multimodal=True,
-    quant_types=[None, "bnb", "unsloth"],
+    quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
 
