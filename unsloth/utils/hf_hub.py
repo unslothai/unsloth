@@ -1,6 +1,6 @@
 from huggingface_hub import HfApi, ModelInfo
 
-api = HfApi()
+api: HfApi
 
 POPULARITY_PROPERTIES = [
     "downloads",
@@ -32,6 +32,9 @@ def get_model_info(
     Default properties: ["safetensors", "lastModified"], only retrieves minimal information.
     Set to None to retrieve the full model information.
     """
+    global api
+    if api is None:
+        api = HfApi()
     try:
         model_info: ModelInfo = api.model_info(model_id, expand=properties)
     except Exception as e:
@@ -58,6 +61,9 @@ def retrieve_models(
     search: str = The search query for filtering models.
 
     """
+    global api
+    if api is None:
+        api = HfApi()
     if full:
         properties = None
 
