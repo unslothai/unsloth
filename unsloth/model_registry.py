@@ -19,7 +19,9 @@ _IS_PHI_REGISTERED = False
 _IS_PHI_INSTRUCT_REGISTERED = False
 
 
-def construct_model_key(org, base_name, version, size, quant_type, instruct_tag):
+def construct_model_key(
+    org, base_name, version, size, quant_type, instruct_tag
+):
     key = f"{org}/{base_name}-{version}-{size}B"
     if instruct_tag:
         key = "-".join([key, instruct_tag])
@@ -58,7 +60,9 @@ class ModelInfo:
         return key
 
     @staticmethod
-    def append_quant_type(key: str, quant_type: Literal["bnb", "unsloth"] = None):
+    def append_quant_type(
+        key: str, quant_type: Literal["bnb", "unsloth"] = None
+    ):
         if quant_type:
             if quant_type == "bnb":
                 key = "-".join([key, BNB_QUANTIZED_TAG])
@@ -67,7 +71,9 @@ class ModelInfo:
         return key
 
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(
+        cls, base_name, version, size, quant_type, instruct_tag
+    ):
         raise NotImplementedError("Subclass must implement this method")
 
     @property
@@ -79,7 +85,9 @@ class ModelInfo:
 
 class LlamaModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(
+        cls, base_name, version, size, quant_type, instruct_tag
+    ):
         key = f"{base_name}-{version}-{size}B"
         key = cls.append_instruct_tag(key, instruct_tag)
         key = cls.append_quant_type(key, quant_type)
@@ -88,7 +96,9 @@ class LlamaModelInfo(ModelInfo):
 
 class LlamaVisionModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(
+        cls, base_name, version, size, quant_type, instruct_tag
+    ):
         key = f"{base_name}-{version}-{size}B-Vision"
         key = cls.append_instruct_tag(key, instruct_tag)
         key = cls.append_quant_type(key, quant_type)
@@ -97,7 +107,9 @@ class LlamaVisionModelInfo(ModelInfo):
 
 class QwenModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(
+        cls, base_name, version, size, quant_type, instruct_tag
+    ):
         key = f"{base_name}{version}-{size}B"
         key = cls.append_instruct_tag(key, instruct_tag)
         key = cls.append_quant_type(key, quant_type)
@@ -106,7 +118,9 @@ class QwenModelInfo(ModelInfo):
 
 class QwenVLModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(
+        cls, base_name, version, size, quant_type, instruct_tag
+    ):
         key = f"{base_name}{version}-VL-{size}B"
         key = cls.append_instruct_tag(key, instruct_tag)
         key = cls.append_quant_type(key, quant_type)
@@ -115,58 +129,62 @@ class QwenVLModelInfo(ModelInfo):
 
 class PhiModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(
+        cls, base_name, version, size, quant_type, instruct_tag
+    ):
         key = f"{base_name}-{version}"
         key = cls.append_instruct_tag(key, instruct_tag)
         key = cls.append_quant_type(key, quant_type)
         return key
 
+
 @dataclass
-class ModelMetaBase:
+class ModelMeta:
     org: str
     base_name: str
-
-@dataclass
-class ModelMeta(ModelMetaBase):
-    instruct_tags: list[str]
     model_version: str
-    model_sizes: list[str]
-    is_multimodal: bool
     model_info_cls: type[ModelInfo]
-    quant_types: list[Literal[None, "bnb", "unsloth", "GGUF"]]
-
-@dataclass
-class LlamaMetaBase(ModelMetaBase):
-    org: str = "meta-llama"
-    base_name: str = "Llama"
-
-@dataclass
-class LlamaMeta3_1(LlamaMetaBase, ModelMeta):
-    instruct_tags: list[str] = [None, "Instruct"]
-    model_version: str = "3.1"
-    model_sizes: list[str] = [8]
+    model_sizes: list[str] = field(default_factory=list)
+    instruct_tags: list[str] = field(default_factory=list)
+    quant_types: list[Literal[None, "bnb", "unsloth"]] = field(
+        default_factory=list
+    )
     is_multimodal: bool = False
-    quant_types: list[Literal[None, "bnb", "unsloth"]] = [None]
-    model_info_cls: type[ModelInfo] = LlamaModelInfo
-@dataclass
-class LlamaMeta3_2(LlamaMetaBase, ModelMeta):
-    instruct_tags: list[str] = [None, "Instruct"]
-    model_version: str = "3.2"
-    model_sizes: list[str] = [1, 3]
-    is_multimodal: bool = False
-    quant_types: list[Literal[None, "bnb", "unsloth"]] = [None]
-    model_info_cls: type[ModelInfo] = LlamaModelInfo
 
-# Llama text only models
-_LLAMA_INFO = {
-    "org": "meta-llama",
-    "base_name": "Llama",
-    "instruct_tags": [None, "Instruct"],
-    "model_versions": ["3.2", "3.1"],
-    "model_sizes": {"3.2": [1, 3], "3.1": [8]},
-    "is_multimodal": False,
-    "model_info_cls": LlamaModelInfo,
-}
+
+LlamaMeta3_1 = ModelMeta(
+    org="meta-llama",
+    base_name="Llama",
+    instruct_tags=[None, "Instruct"],
+    model_version="3.1",
+    model_sizes=[8],
+    model_info_cls=LlamaModelInfo,
+    is_multimodal=False,
+    quant_types=[None, "bnb", "unsloth"],
+)
+
+LlamaMeta3_2 = ModelMeta(
+    org="meta-llama",
+    base_name="Llama",
+    instruct_tags=[None, "Instruct"],
+    model_version="3.2",
+    model_sizes=[1, 3],
+    model_info_cls=LlamaModelInfo,
+    is_multimodal=False,
+    quant_types=[None, "bnb", "unsloth"],
+)
+
+
+# # Llama text only models
+# _LLAMA_INFO = {
+#     "org": "meta-llama",
+#     "base_name": "Llama",
+#     "instruct_tags": [None, "Instruct"],
+#     "model_versions": ["3.2", "3.1"],
+#     "model_sizes": {"3.2": [1, 3], "3.1": [8]},
+#     "is_multimodal": False,
+#     "model_info_cls": LlamaModelInfo,
+# }
 
 _LLAMA_VISION_INFO = {
     "org": "meta-llama",
@@ -293,6 +311,7 @@ def register_model(
 #                         is_multimodal=is_multimodal,
 #                     )
 
+
 def _register_models(model_meta: ModelMeta):
     org = model_meta.org
     base_name = model_meta.base_name
@@ -317,6 +336,7 @@ def _register_models(model_meta: ModelMeta):
                     quant_type=quant_type,
                     is_multimodal=is_multimodal,
                 )
+
 
 def register_llama_models():
     global _IS_LLAMA_REGISTERED
@@ -387,7 +407,9 @@ def get_llama_models():
     if not _IS_LLAMA_REGISTERED:
         register_llama_models()
 
-    return _get_models(partial(_base_name_filter, base_name=_LLAMA_INFO["base_name"]))
+    return _get_models(
+        partial(_base_name_filter, base_name=_LLAMA_INFO["base_name"])
+    )
 
 
 def get_llama_vision_models():
@@ -395,7 +417,8 @@ def get_llama_vision_models():
         register_llama_vision_models()
 
     return _get_models(
-        lambda model_info: model_info.base_name == _LLAMA_VISION_INFO["base_name"]
+        lambda model_info: model_info.base_name
+        == _LLAMA_VISION_INFO["base_name"]
         and model_info.is_multimodal
     )
 
@@ -438,12 +461,34 @@ def get_phi_instruct_models():
     if not _IS_PHI_INSTRUCT_REGISTERED:
         register_phi_instruct_models()
     return _get_models(
-        lambda model_info: model_info.base_name == _PHI_INSTRUCT_INFO["base_name"]
+        lambda model_info: model_info.base_name
+        == _PHI_INSTRUCT_INFO["base_name"]
     )
 
 
 if __name__ == "__main__":
-    register_llama_models()
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+
+    def get_model_info(
+        model_id: str, properties: list[str] = None
+    ) -> ModelInfo:
+        try:
+            model_info: ModelInfo = api.model_info(model_id, expand=properties)
+        except Exception as e:
+            print(f"Error getting model info for {model_id}: {e}")
+            model_info = None
+        return model_info
+
+    test_model = LlamaMeta3_2
+    _register_models(test_model)
+
     for k, v in MODEL_REGISTRY.items():
-        print(f"{k}: {v}")
-        print(v.model_path)
+        model_info = get_model_info(v.model_path)
+        if model_info is None:
+            # print unicode cross mark followed by model k
+            print(f"\u2718 {k}")
+        else:
+            # print unicode checkmark followed by model k
+            print(f"\u2713 {k} found")
