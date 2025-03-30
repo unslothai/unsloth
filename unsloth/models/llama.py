@@ -1534,7 +1534,15 @@ def unsloth_fast_generate(
 ):
     FastLlamaModel.for_inference(self)
 
+    # Fix handling of dtype to properly handle string dtype values
     dtype = _get_dtype(self.config.torch_dtype)
+    if isinstance(dtype, str):
+        if dtype == "float16":
+            dtype = torch.float16
+        elif dtype == "bfloat16":
+            dtype = torch.bfloat16
+        elif dtype == "float32":
+            dtype = torch.float32
 
     if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
         if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
@@ -1544,12 +1552,6 @@ def unsloth_fast_generate(
                     'You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`.'
                 )
     pass
-
-    # Must patch accelerate for Xformers
-    # if accelerate_new_send_to_device is not None:
-    #     import accelerate.utils.operations
-    #     accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
-    # pass
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
@@ -1569,15 +1571,24 @@ def unsloth_fast_generate(
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    # Mixed precision autocast
-    with torch.inference_mode(), torch.autocast(device_type = "cuda", dtype = dtype):
-        output = self._old_generate(*args, **kwargs)
-    pass
-
-    # Return accelerate back
-    # if accelerate_new_send_to_device is not None:
-    #     accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
-    # pass
+    # Mixed precision autocast - with error handling for Qwen models
+    try:
+        device_type = "cuda" if torch.cuda.is_available() else "cpu"
+        with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=dtype):
+            output = self._old_generate(*args, **kwargs)
+    except TypeError as e:
+        if "str" in str(e) and "not callable" in str(e):
+            # Fall back to standard generation if there's a TypeError with 'str' object not callable
+            print("Unsloth: Using fallback generation method due to compatibility issue.")
+            with torch.inference_mode():
+                if hasattr(self.model, "generate"):
+                    output = self.model.generate(*args, **kwargs)
+                else:
+                    from transformers.generation.utils import GenerationMixin
+                    output = GenerationMixin.generate(self, *args, **kwargs)
+        else:
+            # If it's some other TypeError, re-raise it
+            raise
 
     FastLlamaModel.for_training(self)
 
@@ -2679,6 +2690,10 @@ class FastLlamaModel:
         if not hasattr(model, "parameters"):
             raise TypeError("Unsloth: I think you're passing a tokenizer, not the model to for_inference!")
 
+        # Check if this is a Qwen2 model and needs special handling
+        model_type = getattr(model.config, "model_type", "")
+        is_qwen2 = model_type.lower() == "qwen2"
+        
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"): m.gradient_checkpointing = False
             if hasattr(m, "training"): m.training = False
@@ -2702,6 +2717,12 @@ class FastLlamaModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"): embeddings.training = False
         pass
+        
+        # For Qwen2 models, ensure we have a proper generate method
+        if is_qwen2 and hasattr(model, "generate") and not hasattr(model, "_old_generate"):
+            # Save the original generate method
+            model._old_generate = model.generate
+        
         return model
     pass
 
