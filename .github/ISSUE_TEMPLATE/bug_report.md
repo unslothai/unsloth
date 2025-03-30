@@ -14,7 +14,7 @@ A clear and concise description of what the bug is.
    - OS: [e.g., Ubuntu 20.04]
    - Python Version: [e.g., 3.8.10]
    - Frameworks/Libraries: past output of `pip freeze` here
-   - Colab / Script
+   - Colab / Script - was this run in colab or as a script?
 
 2. **Dataset Details:**
    - Dataset Name: 
