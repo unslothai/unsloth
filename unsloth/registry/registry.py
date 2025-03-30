@@ -13,13 +13,12 @@ BNB_QUANTIZED_TAG = "bnb-4bit"
 UNSLOTH_DYNAMIC_QUANT_TAG = "unsloth" + "-" + BNB_QUANTIZED_TAG
 GGUF_TAG = "GGUF"
 
-QUANT_TYPE_MAP = {
+QUANT_TAG_MAP = {
     QuantType.BNB: BNB_QUANTIZED_TAG,
     QuantType.UNSLOTH: UNSLOTH_DYNAMIC_QUANT_TAG,
     QuantType.GGUF: GGUF_TAG,
     QuantType.NONE: None,
 }
-QUANT_TYPES = list(QUANT_TYPE_MAP.keys())
 
 
 @dataclass
@@ -52,13 +51,8 @@ class ModelInfo:
     def append_quant_type(
         key: str, quant_type: QuantType = None
     ):
-        if quant_type:
-            if quant_type == "bnb":
-                key = "-".join([key, QUANT_TYPE_MAP["bnb"]])
-            elif quant_type == "unsloth":
-                key = "-".join([key, QUANT_TYPE_MAP["unsloth"]])
-            elif quant_type == "GGUF":
-                key = "-".join([key, QUANT_TYPE_MAP["GGUF"]])
+        if quant_type != QuantType.NONE:
+            key = "-".join([key, QUANT_TAG_MAP[quant_type]])
         return key
 
     @classmethod
@@ -108,7 +102,7 @@ def register_model(
     key = f"{org}/{name}"
 
     if key in MODEL_REGISTRY:
-        raise ValueError(f"Model {key} already registered")
+        raise ValueError(f"Model {key} already registered, current keys: {MODEL_REGISTRY.keys()}")
 
     MODEL_REGISTRY[key] = model_info_cls(
         org=org,
