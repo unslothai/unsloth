@@ -121,6 +121,41 @@ class PhiModelInfo(ModelInfo):
         key = cls.append_quant_type(key, quant_type)
         return key
 
+@dataclass
+class ModelMetaBase:
+    org: str
+    base_name: str
+
+@dataclass
+class ModelMeta(ModelMetaBase):
+    instruct_tags: list[str]
+    model_version: str
+    model_sizes: list[str]
+    is_multimodal: bool
+    model_info_cls: type[ModelInfo]
+    quant_types: list[Literal[None, "bnb", "unsloth", "GGUF"]]
+
+@dataclass
+class LlamaMetaBase(ModelMetaBase):
+    org: str = "meta-llama"
+    base_name: str = "Llama"
+
+@dataclass
+class LlamaMeta3_1(LlamaMetaBase, ModelMeta):
+    instruct_tags: list[str] = [None, "Instruct"]
+    model_version: str = "3.1"
+    model_sizes: list[str] = [8]
+    is_multimodal: bool = False
+    quant_types: list[Literal[None, "bnb", "unsloth"]] = [None]
+    model_info_cls: type[ModelInfo] = LlamaModelInfo
+@dataclass
+class LlamaMeta3_2(LlamaMetaBase, ModelMeta):
+    instruct_tags: list[str] = [None, "Instruct"]
+    model_version: str = "3.2"
+    model_sizes: list[str] = [1, 3]
+    is_multimodal: bool = False
+    quant_types: list[Literal[None, "bnb", "unsloth"]] = [None]
+    model_info_cls: type[ModelInfo] = LlamaModelInfo
 
 # Llama text only models
 _LLAMA_INFO = {
@@ -233,31 +268,55 @@ def register_model(
     )
 
 
-def _register_models(model_info: dict):
-    org = model_info["org"]
-    base_name = model_info["base_name"]
-    instruct_tags = model_info["instruct_tags"]
-    model_versions = model_info["model_versions"]
-    model_sizes = model_info["model_sizes"]
-    is_multimodal = model_info["is_multimodal"]
-    model_info_cls = model_info["model_info_cls"]
+# def _register_models(model_info: dict):
+#     org = model_info["org"]
+#     base_name = model_info["base_name"]
+#     instruct_tags = model_info["instruct_tags"]
+#     model_versions = model_info["model_versions"]
+#     model_sizes = model_info["model_sizes"]
+#     is_multimodal = model_info["is_multimodal"]
+#     model_info_cls = model_info["model_info_cls"]
 
-    for version in model_versions:
-        for size in model_sizes[version]:
-            for instruct_tag in instruct_tags:
-                for quant_type in QUANT_TYPES:
-                    _org = "unsloth" if quant_type is not None else org
-                    register_model(
-                        model_info_cls=model_info_cls,
-                        org=_org,
-                        base_name=base_name,
-                        version=version,
-                        size=size,
-                        instruct_tag=instruct_tag,
-                        quant_type=quant_type,
-                        is_multimodal=is_multimodal,
-                    )
+#     for version in model_versions:
+#         for size in model_sizes[version]:
+#             for instruct_tag in instruct_tags:
+#                 for quant_type in QUANT_TYPES:
+#                     _org = "unsloth" if quant_type is not None else org
+#                     register_model(
+#                         model_info_cls=model_info_cls,
+#                         org=_org,
+#                         base_name=base_name,
+#                         version=version,
+#                         size=size,
+#                         instruct_tag=instruct_tag,
+#                         quant_type=quant_type,
+#                         is_multimodal=is_multimodal,
+#                     )
 
+def _register_models(model_meta: ModelMeta):
+    org = model_meta.org
+    base_name = model_meta.base_name
+    instruct_tags = model_meta.instruct_tags
+    model_version = model_meta.model_version
+    model_sizes = model_meta.model_sizes
+    is_multimodal = model_meta.is_multimodal
+    quant_types = model_meta.quant_types
+    model_info_cls = model_meta.model_info_cls
+
+    for size in model_sizes:
+        for instruct_tag in instruct_tags:
+            for quant_type in quant_types:
+                _org = "unsloth" if quant_type is not None else org
+                register_model(
+                    model_info_cls=model_info_cls,
+                    org=_org,
+                    base_name=base_name,
+                    version=model_version,
+                    size=size,
+                    instruct_tag=instruct_tag,
+                    quant_type=quant_type,
+                    is_multimodal=is_multimodal,
+                )
 
 def register_llama_models():
     global _IS_LLAMA_REGISTERED
