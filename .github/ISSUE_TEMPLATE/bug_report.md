@@ -13,12 +13,12 @@ A clear and concise description of what the bug is.
 1. **Environment Setup:**
    - OS: [e.g., Ubuntu 20.04]
    - Python Version: [e.g., 3.8.10]
-   - Frameworks/Libraries: past output of `pip freeze` here
-   - Colab / Script - was this run in colab or as a script?
+   - Frameworks/Libraries: please paste output of `pip freeze` here
+   - `colab` / script - was this run in colab or as a script?
 
 2. **Dataset Details:**
    - Dataset Name: 
-   - Data Preprocessing Steps: [e.g., Tokenization with specific parameters]
+   - Data Preprocessing Steps: [e.g., tokenization, formatting funcs, data collators, etc.]
 
 3. **Model Details:**
    - Model ID:
@@ -29,11 +29,13 @@ A clear and concise description of what the bug is.
 
 5. **Reproduction Steps:**
    - Minimal script to reproduce error
+   - If using a `colab`, please provide the link to the notebook and describe any changes made.
 
 6. **Expected Behavior:**
-
+   
 7. **Actual Behavior:**
    - [e.g., Description of the error, unexpected results, or performance issues encountered]
    - [e.g., Error messages or logs]
 
 8. **Additional notes:**
+   - Any additional information that might help us reproduce the bug.
