@@ -113,13 +113,18 @@ def register_model(
 def _check_model_info(model_id: str, properties: list[str] = ["lastModified"]):
     from huggingface_hub import HfApi
     from huggingface_hub import ModelInfo as HfModelInfo
+    from huggingface_hub.utils import RepositoryNotFoundError
     api = HfApi()
 
     try:
         model_info: HfModelInfo = api.model_info(model_id, expand=properties)
     except Exception as e:
-        print(f"Error getting model info for {model_id}: {e}")
-        model_info = None
+        
+        if isinstance(e, RepositoryNotFoundError):
+            print(f"\u2718 {model_id} not found")
+            model_info = None
+        else:
+            raise e
     return model_info
 
 
