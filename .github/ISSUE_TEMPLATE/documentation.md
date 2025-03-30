@@ -7,6 +7,9 @@ assignees: ''
 
 ---
 
+- [ ] Report incorrect documentation
+- [ ] Report needed documentation
+
 ## Report incorrect documentation
 
 **Location of incorrect documentation**
