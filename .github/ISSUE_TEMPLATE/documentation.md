@@ -17,7 +17,6 @@ assignees: ''
 **Describe the problems or issues found in the documentation**
 
 **Steps taken to verify documentation is incorrect**
-List any steps you have taken:
 
 **Suggested fix**
 
