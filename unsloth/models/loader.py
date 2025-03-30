@@ -663,7 +663,7 @@ class FastModel(FastBaseModel):
 
         with redirector:
             patch_loss_functions(torch_compile = False)
-            model_types = unsloth_compile_transformers(
+            model_types, supports_sdpa = unsloth_compile_transformers(
                 dtype                   = dtype,
                 model_name              = model_name,
                 model_types             = model_types,
@@ -726,6 +726,7 @@ class FastModel(FastBaseModel):
             tokenizer_name    = tokenizer_name,
             auto_model        = auto_model,
             use_gradient_checkpointing = use_gradient_checkpointing,
+            supports_sdpa     = supports_sdpa,
             *args, **kwargs,
         )
 
