@@ -1,12 +1,23 @@
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Literal
+
+
+class QuantType(Enum):
+    BNB = "bnb"
+    UNSLOTH = "unsloth"
+    GGUF = "GGUF"
+    NONE = "none"
 
 BNB_QUANTIZED_TAG = "bnb-4bit"
 UNSLOTH_DYNAMIC_QUANT_TAG = "unsloth" + "-" + BNB_QUANTIZED_TAG
+GGUF_TAG = "GGUF"
+
 QUANT_TYPE_MAP = {
-    "bnb": BNB_QUANTIZED_TAG,
-    "unsloth": UNSLOTH_DYNAMIC_QUANT_TAG,
-    "GGUF": "GGUF",
+    QuantType.BNB: BNB_QUANTIZED_TAG,
+    QuantType.UNSLOTH: UNSLOTH_DYNAMIC_QUANT_TAG,
+    QuantType.GGUF: GGUF_TAG,
+    QuantType.NONE: None,
 }
 QUANT_TYPES = list(QUANT_TYPE_MAP.keys())
 
@@ -110,16 +121,17 @@ def register_model(
         name=name,
     )
 
+
 def _check_model_info(model_id: str, properties: list[str] = ["lastModified"]):
     from huggingface_hub import HfApi
     from huggingface_hub import ModelInfo as HfModelInfo
     from huggingface_hub.utils import RepositoryNotFoundError
+
     api = HfApi()
 
     try:
         model_info: HfModelInfo = api.model_info(model_id, expand=properties)
     except Exception as e:
-        
         if isinstance(e, RepositoryNotFoundError):
             print(f"\u2718 {model_id} not found")
             model_info = None
