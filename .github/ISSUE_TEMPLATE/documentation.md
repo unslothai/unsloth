@@ -1,5 +1,5 @@
 ---
-name: Documentation request
+name: Documentation
 about: Report incorrect or needed documentation to improve unsloth!
 title: "[DOC]"
 labels: documentation
