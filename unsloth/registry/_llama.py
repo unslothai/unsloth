@@ -1,6 +1,7 @@
 from unsloth.registry.registry import ModelInfo, ModelMeta, _register_models
 
 _IS_LLAMA_REGISTERED = False
+_IS_LLAMA_VISION_REGISTERED = False
 
 class LlamaModelInfo(ModelInfo):
     @classmethod
@@ -65,7 +66,16 @@ def register_llama_models():
     _register_models(LlamaMeta3_2)
     _IS_LLAMA_REGISTERED = True
 
+
+def register_llama_vision_models():
+    global _IS_LLAMA_VISION_REGISTERED
+    if _IS_LLAMA_VISION_REGISTERED:
+        return
+    _register_models(LlamaMeta3_2_Vision)
+    _IS_LLAMA_VISION_REGISTERED = True
+
 register_llama_models()
+register_llama_vision_models()
 
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
