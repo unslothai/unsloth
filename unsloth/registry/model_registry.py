@@ -1,11 +1,8 @@
-from dataclasses import dataclass, field
 from functools import partial
 from typing import Callable, Literal
 
-BNB_QUANTIZED_TAG = "bnb-4bit"
-UNSLOTH_DYNAMIC_QUANT_TAG = "unsloth" + "-" + BNB_QUANTIZED_TAG
-INSTRUCT_TAG = "Instruct"
-QUANT_TYPES = [None, "bnb", "unsloth"]
+from unsloth.registry._llama import LlamaMeta3_1, LlamaMeta3_2
+from unsloth.registry.common import ModelInfo, ModelMeta
 
 _IS_LLAMA_REGISTERED = False
 _IS_LLAMA_VISION_REGISTERED = False
@@ -19,222 +16,97 @@ _IS_PHI_REGISTERED = False
 _IS_PHI_INSTRUCT_REGISTERED = False
 
 
-@dataclass
-class ModelInfo:
-    org: str
-    base_name: str
-    version: str
-    size: int
-    name: str = None  # full model name, constructed from base_name, version, and size unless provided
-    is_multimodal: bool = False
-    instruct_tag: str = None
-    quant_type: Literal["bnb", "unsloth"] = None
 
-    def __post_init__(self):
-        self.name = self.name or self.construct_model_name(
-            self.base_name,
-            self.version,
-            self.size,
-            self.quant_type,
-            self.instruct_tag,
-        )
-
-    @staticmethod
-    def append_instruct_tag(key: str, instruct_tag: str = None):
-        if instruct_tag:
-            key = "-".join([key, instruct_tag])
-        return key
-
-    @staticmethod
-    def append_quant_type(
-        key: str, quant_type: Literal["bnb", "unsloth"] = None
-    ):
-        if quant_type:
-            if quant_type == "bnb":
-                key = "-".join([key, BNB_QUANTIZED_TAG])
-            elif quant_type == "unsloth":
-                key = "-".join([key, UNSLOTH_DYNAMIC_QUANT_TAG])
-        return key
-
-    @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
-        raise NotImplementedError("Subclass must implement this method")
-
-    @property
-    def model_path(
-        self,
-    ) -> str:
-        return f"{self.org}/{self.name}"
+# class QwenModelInfo(ModelInfo):
+#     @classmethod
+#     def construct_model_name(
+#         cls, base_name, version, size, quant_type, instruct_tag
+#     ):
+#         key = f"{base_name}{version}-{size}B"
+#         key = cls.append_instruct_tag(key, instruct_tag)
+#         key = cls.append_quant_type(key, quant_type)
+#         return key
 
 
-class LlamaModelInfo(ModelInfo):
-    @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
-        key = f"{base_name}-{version}-{size}B"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+# class QwenVLModelInfo(ModelInfo):
+#     @classmethod
+#     def construct_model_name(
+#         cls, base_name, version, size, quant_type, instruct_tag
+#     ):
+#         key = f"{base_name}{version}-VL-{size}B"
+#         key = cls.append_instruct_tag(key, instruct_tag)
+#         key = cls.append_quant_type(key, quant_type)
+#         return key
 
 
-class LlamaVisionModelInfo(ModelInfo):
-    @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
-        key = f"{base_name}-{version}-{size}B-Vision"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+# class PhiModelInfo(ModelInfo):
+#     @classmethod
+#     def construct_model_name(
+#         cls, base_name, version, size, quant_type, instruct_tag
+#     ):
+#         key = f"{base_name}-{version}"
+#         key = cls.append_instruct_tag(key, instruct_tag)
+#         key = cls.append_quant_type(key, quant_type)
+#         return key
 
 
-class QwenModelInfo(ModelInfo):
-    @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
-        key = f"{base_name}{version}-{size}B"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
 
 
-class QwenVLModelInfo(ModelInfo):
-    @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
-        key = f"{base_name}{version}-VL-{size}B"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
 
-
-class PhiModelInfo(ModelInfo):
-    @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
-        key = f"{base_name}-{version}"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
-
-
-@dataclass
-class ModelMeta:
-    org: str
-    base_name: str
-    model_version: str
-    model_info_cls: type[ModelInfo]
-    model_sizes: list[str] = field(default_factory=list)
-    instruct_tags: list[str] = field(default_factory=list)
-    quant_types: list[Literal[None, "bnb", "unsloth"]] = field(
-        default_factory=list
-    )
-    is_multimodal: bool = False
-
-
-LlamaMeta3_1 = ModelMeta(
-    org="meta-llama",
-    base_name="Llama",
-    instruct_tags=[None, "Instruct"],
-    model_version="3.1",
-    model_sizes=[8],
-    model_info_cls=LlamaModelInfo,
-    is_multimodal=False,
-    quant_types=[None, "bnb", "unsloth"],
-)
-
-LlamaMeta3_2 = ModelMeta(
-    org="meta-llama",
-    base_name="Llama",
-    instruct_tags=[None, "Instruct"],
-    model_version="3.2",
-    model_sizes=[1, 3],
-    model_info_cls=LlamaModelInfo,
-    is_multimodal=False,
-    quant_types=[None, "bnb", "unsloth"],
-)
-
-
-# # Llama text only models
-# _LLAMA_INFO = {
-#     "org": "meta-llama",
-#     "base_name": "Llama",
+# # Qwen text only models
+# # NOTE: Qwen vision models will be registered separately
+# _QWEN_INFO = {
+#     "org": "Qwen",
+#     "base_name": "Qwen",
 #     "instruct_tags": [None, "Instruct"],
-#     "model_versions": ["3.2", "3.1"],
-#     "model_sizes": {"3.2": [1, 3], "3.1": [8]},
+#     "model_versions": ["2.5"],
+#     "model_sizes": {"2.5": [3, 7]},
 #     "is_multimodal": False,
-#     "model_info_cls": LlamaModelInfo,
+#     "model_info_cls": QwenModelInfo,
 # }
 
-_LLAMA_VISION_INFO = {
-    "org": "meta-llama",
-    "base_name": "Llama",
-    "instruct_tags": [None, "Instruct"],
-    "model_versions": ["3.2"],
-    "model_sizes": {"3.2": [11, 90]},
-    "is_multimodal": True,
-    "model_info_cls": LlamaVisionModelInfo,
-}
-# Qwen text only models
-# NOTE: Qwen vision models will be registered separately
-_QWEN_INFO = {
-    "org": "Qwen",
-    "base_name": "Qwen",
-    "instruct_tags": [None, "Instruct"],
-    "model_versions": ["2.5"],
-    "model_sizes": {"2.5": [3, 7]},
-    "is_multimodal": False,
-    "model_info_cls": QwenModelInfo,
-}
+# _QWEN_VL_INFO = {
+#     "org": "Qwen",
+#     "base_name": "Qwen",
+#     "instruct_tags": ["Instruct"],  # No base, only instruction tuned
+#     "model_versions": ["2.5"],
+#     "model_sizes": {"2.5": [3, 7, 32, 72]},
+#     "is_multimodal": True,
+#     "instruction_tuned_only": True,
+#     "model_info_cls": QwenVLModelInfo,
+# }
 
-_QWEN_VL_INFO = {
-    "org": "Qwen",
-    "base_name": "Qwen",
-    "instruct_tags": ["Instruct"],  # No base, only instruction tuned
-    "model_versions": ["2.5"],
-    "model_sizes": {"2.5": [3, 7, 32, 72]},
-    "is_multimodal": True,
-    "instruction_tuned_only": True,
-    "model_info_cls": QwenVLModelInfo,
-}
+# _GEMMA_INFO = {
+#     "org": "google",
+#     "base_name": "gemma",
+#     "instruct_tags": ["pt", "it"],  # pt = base, it = instruction tuned
+#     "model_versions": ["3"],
+#     "model_sizes": {"3": [1, 4, 12, 27]},
+#     "is_multimodal": True,
+# }
 
-_GEMMA_INFO = {
-    "org": "google",
-    "base_name": "gemma",
-    "instruct_tags": ["pt", "it"],  # pt = base, it = instruction tuned
-    "model_versions": ["3"],
-    "model_sizes": {"3": [1, 4, 12, 27]},
-    "is_multimodal": True,
-}
+# _PHI_INFO = {
+#     "org": "microsoft",
+#     "base_name": "phi",
+#     "model_versions": ["4"],
+#     "model_sizes": {"4": [None]},  # -1 means only 1 size
+#     "instruct_tags": [None],
+#     "is_multimodal": False,
+#     "model_info_cls": PhiModelInfo,
+# }
 
-_PHI_INFO = {
-    "org": "microsoft",
-    "base_name": "phi",
-    "model_versions": ["4"],
-    "model_sizes": {"4": [None]},  # -1 means only 1 size
-    "instruct_tags": [None],
-    "is_multimodal": False,
-    "model_info_cls": PhiModelInfo,
-}
-
-_PHI_INSTRUCT_INFO = {
-    "org": "microsoft",
-    "base_name": "Phi",
-    "model_versions": ["4"],
-    "model_sizes": {"4": [None]},  # -1 means only 1 size
-    "instruct_tags": ["mini-instruct"],
-    "is_multimodal": False,
-    "model_info_cls": PhiModelInfo,
-}
+# _PHI_INSTRUCT_INFO = {
+#     "org": "microsoft",
+#     "base_name": "Phi",
+#     "model_versions": ["4"],
+#     "model_sizes": {"4": [None]},  # -1 means only 1 size
+#     "instruct_tags": ["mini-instruct"],
+#     "is_multimodal": False,
+#     "model_info_cls": PhiModelInfo,
+# }
 
 
-MODEL_REGISTRY = {}
+MODEL_REGISTRY: dict[str, ModelInfo] = {}
 
 
 def register_model(
@@ -243,9 +115,9 @@ def register_model(
     base_name: str,
     version: str,
     size: int,
+    instruct_tag: str = None,
     quant_type: Literal["bnb", "unsloth"] = None,
     is_multimodal: bool = False,
-    instruct_tag: str = INSTRUCT_TAG,
     name: str = None,
 ):
     name = name or model_info_cls.construct_model_name(
@@ -322,7 +194,6 @@ def _register_models(model_meta: ModelMeta):
                     quant_type=quant_type,
                     is_multimodal=is_multimodal,
                 )
-
 
 def register_llama_models():
     global _IS_LLAMA_REGISTERED
