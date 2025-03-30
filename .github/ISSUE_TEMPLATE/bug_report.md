@@ -8,13 +8,13 @@ assignees: ''
 ---
 
 **Describe the bug**
-A clear and concise description of what the bug is.
+A clear and concise description of what the bug is.  Please fill out the following sections and provide a minimal reproduction script so that we can provide a solution as quickly as possible!
 
 1. **Environment Setup:**
    - OS: [e.g., Ubuntu 20.04]
    - Python Version: [e.g., 3.8.10]
    - Frameworks/Libraries: please paste output of `pip freeze` here
-   - `colab` / script - was this run in colab or as a script?
+   - `colab` / script - was this run in `colab` or as a script?
 
 2. **Dataset Details:**
    - Dataset Name: 
