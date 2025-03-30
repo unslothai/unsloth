@@ -1,8 +1,8 @@
 ---
 name: Documentation request
-about: Report incorrect or needed documentation to improve CUTLASS
+about: Report incorrect or needed documentation to improve unsloth!
 title: "[DOC]"
-labels: "? - Needs Triage, documentation"
+labels: documentation
 assignees: ''
 
 ---
