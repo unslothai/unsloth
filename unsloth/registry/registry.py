@@ -31,7 +31,7 @@ class ModelInfo:
     name: str = None  # full model name, constructed from base_name, version, and size unless provided
     is_multimodal: bool = False
     instruct_tag: str = None
-    quant_type: Literal["bnb", "unsloth"] = None
+    quant_type: QuantType = None
 
     def __post_init__(self):
         self.name = self.name or self.construct_model_name(
@@ -50,7 +50,7 @@ class ModelInfo:
 
     @staticmethod
     def append_quant_type(
-        key: str, quant_type: Literal["bnb", "unsloth", "GGUF"] = None
+        key: str, quant_type: QuantType = None
     ):
         if quant_type:
             if quant_type == "bnb":
@@ -80,7 +80,7 @@ class ModelMeta:
     model_info_cls: type[ModelInfo]
     model_sizes: list[str] = field(default_factory=list)
     instruct_tags: list[str] = field(default_factory=list)
-    quant_types: list[Literal[None, "bnb", "unsloth"]] = field(default_factory=list)
+    quant_types: list[QuantType] = field(default_factory=list)
     is_multimodal: bool = False
 
 
@@ -94,7 +94,7 @@ def register_model(
     version: str,
     size: int,
     instruct_tag: str = None,
-    quant_type: Literal["bnb", "unsloth"] = None,
+    quant_type: QuantType = None,
     is_multimodal: bool = False,
     name: str = None,
 ):
