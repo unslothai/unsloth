@@ -8,7 +8,7 @@ assignees: ''
 ---
 
 **What features would you like to see? Is it related to a problem or a new feature you'd like to see? Please describe.**
-A clear and concise description of what we can do to improve `unsloth`!
+What we can do to improve `unsloth`?
 
 **Additional context**
-Add any other context or screenshots here.
+Feel free to add any other context, links, or screenshots here.
