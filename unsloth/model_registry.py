@@ -342,7 +342,8 @@ def register_llama_models():
     global _IS_LLAMA_REGISTERED
     if _IS_LLAMA_REGISTERED:
         return
-    _register_models(_LLAMA_INFO)
+    _register_models(LlamaMeta3_1)
+    _register_models(LlamaMeta3_2)
     _IS_LLAMA_REGISTERED = True
 
 
@@ -403,13 +404,18 @@ def _get_models(filter_func: Callable[[ModelInfo], bool] = _base_name_filter):
     return {k: v for k, v in MODEL_REGISTRY.items() if filter_func(v)}
 
 
-def get_llama_models():
+def get_llama_models(version: str = None):
     if not _IS_LLAMA_REGISTERED:
         register_llama_models()
 
-    return _get_models(
-        partial(_base_name_filter, base_name=_LLAMA_INFO["base_name"])
+    llama_models: dict[str, ModelInfo] = _get_models(
+        partial(_base_name_filter, base_name=LlamaMeta3_1.base_name)
     )
+    if version is not None:
+        llama_models = {
+            k: v for k, v in llama_models.items() if v.version == version
+        }
+    return llama_models
 
 
 def get_llama_vision_models():
@@ -481,14 +487,17 @@ if __name__ == "__main__":
             model_info = None
         return model_info
 
-    test_model = LlamaMeta3_2
-    _register_models(test_model)
+    register_llama_models()
 
-    for k, v in MODEL_REGISTRY.items():
+    llama3_1_models = get_llama_models(version="3.2")
+    missing_models = []
+    for k, v in llama3_1_models.items():
         model_info = get_model_info(v.model_path)
         if model_info is None:
             # print unicode cross mark followed by model k
             print(f"\u2718 {k}")
-        else:
-            # print unicode checkmark followed by model k
-            print(f"\u2713 {k} found")
+            missing_models.append(k)
+    
+    if len(missing_models) == 0:
+        # print unicode checkmark
+        print(f"\u2713 All models found!")
