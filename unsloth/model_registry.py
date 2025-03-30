@@ -19,20 +19,6 @@ _IS_PHI_REGISTERED = False
 _IS_PHI_INSTRUCT_REGISTERED = False
 
 
-def construct_model_key(
-    org, base_name, version, size, quant_type, instruct_tag
-):
-    key = f"{org}/{base_name}-{version}-{size}B"
-    if instruct_tag:
-        key = "-".join([key, instruct_tag])
-    if quant_type:
-        if quant_type == "bnb":
-            key = "-".join([key, BNB_QUANTIZED_TAG])
-        elif quant_type == "unsloth":
-            key = "-".join([key, UNSLOTH_DYNAMIC_QUANT_TAG])
-    return key
-
-
 @dataclass
 class ModelInfo:
     org: str
