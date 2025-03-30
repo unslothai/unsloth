@@ -9,9 +9,6 @@ assignees: ''
 
 **Describe the bug**
 A clear and concise description of what the bug is.
-## Issue Type
-
-## Steps to Reproduce
 
 1. **Environment Setup:**
    - OS: [e.g., Ubuntu 20.04]
