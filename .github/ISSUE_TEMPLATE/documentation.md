@@ -12,27 +12,24 @@ assignees: ''
 
 ## Report incorrect documentation
 
-**Location of incorrect documentation**
-Provide links and line numbers if applicable.
+**Location of incorrect documentation -- provide links and line numbers if possible.**
 
 **Describe the problems or issues found in the documentation**
-A clear and concise description of what you found to be incorrect.
 
 **Steps taken to verify documentation is incorrect**
 List any steps you have taken:
 
-**Suggested fix for documentation**
-Detail proposed changes to fix the documentation if you have any.
+**Suggested fix**
 
 ---
 
 ## Report needed documentation
 
-**Report needed documentation**
-A clear and concise description of what documentation you believe it is needed and why.
+**What's missing?**
 
-**Describe the documentation you'd like**
-A clear and concise description of what you want to happen.
 
-**Steps taken to search for needed documentation**
-List any steps you have taken:
+**Describe the documentation you'd like -- how can we make using `unsloth` easier?**
+
+
+**Help us understand how we can make finding the needed info easier!**
+List any steps you have taken, e.g. searching the repo, reading the docs, etc.  
