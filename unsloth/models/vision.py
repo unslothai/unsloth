@@ -270,7 +270,8 @@ class FastBaseModel:
            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free license: http://github.com/unslothai/unsloth'
-        print(statistics)
+        if "DISABLE_ADS" not in os.environ:
+            print(statistics)
 
         # Warn about fast transfers
         if "HF_HUB_ENABLE_HF_TRANSFER" in os.environ:
@@ -279,7 +280,7 @@ class FastBaseModel:
             if old_hf_transfer in ("True",  "true" ): old_hf_transfer = "1"
         else:
             old_hf_transfer = "0"
-        if old_hf_transfer == "1":
+        if old_hf_transfer == "1" and "DISABLE_ADS" not in os.environ:
             print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
         pass
         if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
@@ -338,7 +339,7 @@ class FastBaseModel:
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
-            if dtype == torch.bfloat16:
+            if dtype == torch.bfloat16 and "DISABLE_ADS" not in os.environ:
                 print("Unsloth: Using bfloat16 full finetuning which cuts memory usage by 50%.")
             else:
                 print("Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32.")

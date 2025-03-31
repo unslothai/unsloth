@@ -1680,7 +1680,8 @@ class FastLlamaModel:
            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
            f' "-____-"     Free license: http://github.com/unslothai/unsloth'
-        print(statistics)
+        if "DISABLE_ADS" not in os.environ:
+            print(statistics)
 
         # Warn about fast transfers
         if "HF_HUB_ENABLE_HF_TRANSFER" in os.environ:
@@ -1689,7 +1690,7 @@ class FastLlamaModel:
             if old_hf_transfer in ("True",  "true" ): old_hf_transfer = "1"
         else:
             old_hf_transfer = "0"
-        if old_hf_transfer == "1":
+        if old_hf_transfer == "1" and "DISABLE_ADS" not in os.environ:
             print("Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!")
         pass
         if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
@@ -2112,7 +2113,8 @@ class FastLlamaModel:
                 # Offload!
                 # [TODO] First offload lm_head and embed_tokens to CPU (should be disk!!)
                 if "embed_tokens" in new_target_modules:
-                    print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
+                    if "DISABLE_ADS" not in os.environ:
+                        print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
                     new_dtype = model.get_input_embeddings().modules_to_save.default.weight.dtype
                     if new_dtype == torch.float16:
@@ -2132,7 +2134,8 @@ class FastLlamaModel:
                 pass
 
                 if "lm_head" in new_target_modules:
-                    print("Unsloth: Training lm_head in mixed precision to save VRAM")
+                    if "DISABLE_ADS" not in os.environ:
+                        print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
                     new_dtype = model.get_output_embeddings().modules_to_save.default.weight.dtype
                     if new_dtype == torch.float16:
@@ -2359,7 +2362,8 @@ class FastLlamaModel:
 
         if use_gradient_checkpointing == "unsloth":
             if train_embed_tokens:
-                print("Unsloth: Offloading input_embeddings to disk to save VRAM")
+                if "DISABLE_ADS" not in os.environ:
+                    print("Unsloth: Offloading input_embeddings to disk to save VRAM")
                 offload_input_embeddings(model, temporary_location)
             pass
 
@@ -2370,7 +2374,8 @@ class FastLlamaModel:
             pass
 
             if train_lm_head:
-                print("Unsloth: Offloading output_embeddings to disk to save VRAM")
+                if "DISABLE_ADS" not in os.environ:
+                    print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
             pass
 
@@ -2388,7 +2393,8 @@ class FastLlamaModel:
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
 
         if train_embed_tokens:
-            print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
+            if "DISABLE_ADS" not in os.environ:
+                print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
             assert(hasattr(model.get_input_embeddings(), "modules_to_save"))
 
             new_dtype = model.get_input_embeddings().modules_to_save.default.weight.dtype
@@ -2404,7 +2410,8 @@ class FastLlamaModel:
         pass
 
         if train_lm_head:
-            print("Unsloth: Training lm_head in mixed precision to save VRAM")
+            if "DISABLE_ADS" not in os.environ:
+                print("Unsloth: Training lm_head in mixed precision to save VRAM")
             assert(hasattr(model.get_output_embeddings(), "modules_to_save"))
 
             new_dtype = model.get_output_embeddings().modules_to_save.default.weight.dtype
