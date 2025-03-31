@@ -10,9 +10,7 @@ class DeepseekV3ModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-V{version}"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 class DeepseekR1ModelInfo(ModelInfo):
     @classmethod
@@ -20,9 +18,7 @@ class DeepseekR1ModelInfo(ModelInfo):
         key = f"{base_name}-{version}" if version else base_name
         if size:
             key = f"{key}-{size}B"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
     
 # Deepseek V3 Model Meta
 DeepseekV3Meta = ModelMeta(
