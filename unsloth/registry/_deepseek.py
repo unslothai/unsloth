@@ -53,6 +53,16 @@ DeepseekR1Meta = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BF16, QuantType.GGUF],
 )
 
+DeepseekR1ZeroMeta = ModelMeta(
+    org="deepseek-ai",
+    base_name="DeepSeek-R1",
+    instruct_tags=[None],
+    model_version="Zero",
+    model_sizes=[""],
+    model_info_cls=DeepseekR1ModelInfo,
+    is_multimodal=False,
+    quant_types=[QuantType.NONE, QuantType.GGUF],
+)
 def register_deepseek_v3_models(include_original_model: bool = False):
     global _IS_DEEPSEEKV3_REGISTERED
     if _IS_DEEPSEEKV3_REGISTERED:
@@ -67,6 +77,7 @@ def register_deepseek_r1_models(include_original_model: bool = False):
     if _IS_DEEPSEEKR1_REGISTERED:
         return
     _register_models(DeepseekR1Meta, include_original_model=include_original_model)
+    _register_models(DeepseekR1ZeroMeta, include_original_model=include_original_model)
     _IS_DEEPSEEKR1_REGISTERED = True
 
 #register_deepseek_v3_models(include_original_model=True)
