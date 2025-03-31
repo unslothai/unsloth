@@ -8,17 +8,20 @@ class QuantType(Enum):
     UNSLOTH = "unsloth" # dynamic 4-bit quantization
     GGUF = "GGUF"
     NONE = "none"
+    BF16 = "bf16" # only for Deepseek V3
 
 # Tags for Hugging Face model paths
 BNB_QUANTIZED_TAG = "bnb-4bit"
 UNSLOTH_DYNAMIC_QUANT_TAG = "unsloth" + "-" + BNB_QUANTIZED_TAG
 GGUF_TAG = "GGUF"
+BF16_TAG = "bf16"
 
 QUANT_TAG_MAP = {
     QuantType.BNB: BNB_QUANTIZED_TAG,
     QuantType.UNSLOTH: UNSLOTH_DYNAMIC_QUANT_TAG,
     QuantType.GGUF: GGUF_TAG,
     QuantType.NONE: None,
+    QuantType.BF16: BF16_TAG,
 } 
 
 # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH
