@@ -34,7 +34,17 @@ class QwenQwQModelInfo(ModelInfo):
         key = cls.append_quant_type(key, quant_type)
         return key
     
-# Qwen Model Meta
+class QwenQVQPreviewModelInfo(ModelInfo):
+    @classmethod
+    def construct_model_name(
+        cls, base_name, version, size, quant_type, instruct_tag
+    ):
+        key = f"{base_name}-{size}B-Preview"
+        key = cls.append_instruct_tag(key, instruct_tag)
+        key = cls.append_quant_type(key, quant_type)
+        return key
+    
+# Qwen2.5 Model Meta
 QwenMeta = ModelMeta(
     org="Qwen",
     base_name="Qwen",
@@ -46,7 +56,7 @@ QwenMeta = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
-# Qwen VL Model Meta
+# Qwen2.5 VL Model Meta
 QwenVLMeta = ModelMeta(
     org="Qwen",
     base_name="Qwen",
@@ -70,25 +80,38 @@ QwenQwQMeta = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
 )
 
+# Qwen QVQ Preview Model Meta
+QwenQVQPreviewMeta = ModelMeta(
+    org="Qwen",
+    base_name="QVQ",
+    instruct_tags=[None],
+    model_version="",
+    model_sizes=["72"],
+    model_info_cls=QwenQVQPreviewModelInfo,
+    is_multimodal=True,
+    quant_types=[QuantType.NONE, QuantType.BNB],
+)
+
 def register_qwen_models(include_original_model: bool = False):
     global _IS_QWEN_REGISTERED
     if _IS_QWEN_REGISTERED:
         return
-    _register_models(QwenMeta, include_original_model)
+    _register_models(QwenMeta, include_original_model=include_original_model)
     _IS_QWEN_REGISTERED = True
 
 def register_qwen_vl_models(include_original_model: bool = False):
     global _IS_QWEN_VL_REGISTERED
     if _IS_QWEN_VL_REGISTERED:
         return
-    _register_models(QwenVLMeta, include_original_model)
+    _register_models(QwenVLMeta, include_original_model=include_original_model)
     _IS_QWEN_VL_REGISTERED = True
 
 def register_qwen_qwq_models(include_original_model: bool = False):
     global _IS_QWEN_QWQ_REGISTERED
     if _IS_QWEN_QWQ_REGISTERED:
         return
-    _register_models(QwenQwQMeta, include_original_model)
+    _register_models(QwenQwQMeta, include_original_model=include_original_model)
+    _register_models(QwenQVQPreviewMeta, include_original_model=include_original_model)
     _IS_QWEN_QWQ_REGISTERED = True
 
 # register_qwen_models()
