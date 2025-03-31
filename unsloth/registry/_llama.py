@@ -8,18 +8,14 @@ class LlamaModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{version}-{size}B"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 class LlamaVisionModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{version}-{size}B-Vision"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 # Llama 3.1

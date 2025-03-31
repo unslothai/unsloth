@@ -36,7 +36,7 @@ class ModelInfo:
     instruct_tag: str = None
     quant_type: QuantType = None
     description: str = None
-    
+
     def __post_init__(self):
         self.name = self.name or self.construct_model_name(
             self.base_name,
@@ -61,8 +61,10 @@ class ModelInfo:
         return key
 
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
-        raise NotImplementedError("Subclass must implement this method")
+    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag, key=""):
+        key = cls.append_instruct_tag(key, instruct_tag)
+        key = cls.append_quant_type(key, quant_type)
+        return key
 
     @property
     def model_path(

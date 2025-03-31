@@ -5,44 +5,28 @@ _IS_QWEN_VL_REGISTERED = False
 _IS_QWEN_QWQ_REGISTERED = False
 class QwenModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
+    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}{version}-{size}B"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 class QwenVLModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
+    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}{version}-VL-{size}B"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 class QwenQwQModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
+    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{size}B"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
     
 class QwenQVQPreviewModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(
-        cls, base_name, version, size, quant_type, instruct_tag
-    ):
+    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{size}B-Preview"
-        key = cls.append_instruct_tag(key, instruct_tag)
-        key = cls.append_quant_type(key, quant_type)
-        return key
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
     
 # Qwen2.5 Model Meta
 QwenMeta = ModelMeta(
