@@ -4,39 +4,17 @@ from typing import Callable, Literal
 from unsloth.registry._llama import LlamaMeta3_1, LlamaMeta3_2
 from unsloth.registry.common import ModelInfo, ModelMeta
 
-_IS_LLAMA_REGISTERED = False
-_IS_LLAMA_VISION_REGISTERED = False
+# _IS_LLAMA_REGISTERED = False
+# _IS_LLAMA_VISION_REGISTERED = False
 
-_IS_QWEN_REGISTERED = False
-_IS_QWEN_VL_REGISTERED = False
+# _IS_QWEN_REGISTERED = False
+# _IS_QWEN_VL_REGISTERED = False
 
 _IS_GEMMA_REGISTERED = False
 
 _IS_PHI_REGISTERED = False
 _IS_PHI_INSTRUCT_REGISTERED = False
 
-
-
-# class QwenModelInfo(ModelInfo):
-#     @classmethod
-#     def construct_model_name(
-#         cls, base_name, version, size, quant_type, instruct_tag
-#     ):
-#         key = f"{base_name}{version}-{size}B"
-#         key = cls.append_instruct_tag(key, instruct_tag)
-#         key = cls.append_quant_type(key, quant_type)
-#         return key
-
-
-# class QwenVLModelInfo(ModelInfo):
-#     @classmethod
-#     def construct_model_name(
-#         cls, base_name, version, size, quant_type, instruct_tag
-#     ):
-#         key = f"{base_name}{version}-VL-{size}B"
-#         key = cls.append_instruct_tag(key, instruct_tag)
-#         key = cls.append_quant_type(key, quant_type)
-#         return key
 
 
 # class PhiModelInfo(ModelInfo):
@@ -55,35 +33,6 @@ _IS_PHI_INSTRUCT_REGISTERED = False
 
 # # Qwen text only models
 # # NOTE: Qwen vision models will be registered separately
-# _QWEN_INFO = {
-#     "org": "Qwen",
-#     "base_name": "Qwen",
-#     "instruct_tags": [None, "Instruct"],
-#     "model_versions": ["2.5"],
-#     "model_sizes": {"2.5": [3, 7]},
-#     "is_multimodal": False,
-#     "model_info_cls": QwenModelInfo,
-# }
-
-# _QWEN_VL_INFO = {
-#     "org": "Qwen",
-#     "base_name": "Qwen",
-#     "instruct_tags": ["Instruct"],  # No base, only instruction tuned
-#     "model_versions": ["2.5"],
-#     "model_sizes": {"2.5": [3, 7, 32, 72]},
-#     "is_multimodal": True,
-#     "instruction_tuned_only": True,
-#     "model_info_cls": QwenVLModelInfo,
-# }
-
-# _GEMMA_INFO = {
-#     "org": "google",
-#     "base_name": "gemma",
-#     "instruct_tags": ["pt", "it"],  # pt = base, it = instruction tuned
-#     "model_versions": ["3"],
-#     "model_sizes": {"3": [1, 4, 12, 27]},
-#     "is_multimodal": True,
-# }
 
 # _PHI_INFO = {
 #     "org": "microsoft",
