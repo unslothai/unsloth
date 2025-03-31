@@ -5,10 +5,11 @@ from enum import Enum
 
 class QuantType(Enum):
     BNB = "bnb"
-    UNSLOTH = "unsloth"
+    UNSLOTH = "unsloth" # dynamic 4-bit quantization
     GGUF = "GGUF"
     NONE = "none"
 
+# Tags for Hugging Face model paths
 BNB_QUANTIZED_TAG = "bnb-4bit"
 UNSLOTH_DYNAMIC_QUANT_TAG = "unsloth" + "-" + BNB_QUANTIZED_TAG
 GGUF_TAG = "GGUF"
@@ -18,9 +19,9 @@ QUANT_TAG_MAP = {
     QuantType.UNSLOTH: UNSLOTH_DYNAMIC_QUANT_TAG,
     QuantType.GGUF: GGUF_TAG,
     QuantType.NONE: None,
-}
+} 
 
-
+# NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH
 @dataclass
 class ModelInfo:
     org: str
@@ -152,6 +153,7 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
             else:
                 _quant_types = quant_types
             for quant_type in _quant_types:
+                # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH
                 _org = "unsloth" # unsloth models -- these are all quantized versions of the original model
                 register_model(
                     model_info_cls=model_info_cls,
