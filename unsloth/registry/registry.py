@@ -74,7 +74,7 @@ class ModelMeta:
     model_info_cls: type[ModelInfo]
     model_sizes: list[str] = field(default_factory=list)
     instruct_tags: list[str] = field(default_factory=list)
-    quant_types: list[QuantType] = field(default_factory=list)
+    quant_types: list[QuantType] | dict[str, list[QuantType]] = field(default_factory=list)
     is_multimodal: bool = False
 
 
@@ -146,7 +146,12 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
 
     for size in model_sizes:
         for instruct_tag in instruct_tags:
-            for quant_type in quant_types:
+            # Handle quant types per model size
+            if isinstance(quant_types, dict):
+                _quant_types = quant_types[size]
+            else:
+                _quant_types = quant_types
+            for quant_type in _quant_types:
                 _org = "unsloth" # unsloth models -- these are all quantized versions of the original model
                 register_model(
                     model_info_cls=model_info_cls,
