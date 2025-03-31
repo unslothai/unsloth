@@ -35,7 +35,8 @@ class ModelInfo:
     is_multimodal: bool = False
     instruct_tag: str = None
     quant_type: QuantType = None
-
+    description: str = None
+    
     def __post_init__(self):
         self.name = self.name or self.construct_model_name(
             self.base_name,
