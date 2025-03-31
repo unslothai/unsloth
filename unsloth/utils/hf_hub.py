@@ -1,6 +1,6 @@
 from huggingface_hub import HfApi, ModelInfo
 
-api: HfApi
+_HFAPI: HfApi = None
 
 POPULARITY_PROPERTIES = [
     "downloads",
@@ -32,27 +32,27 @@ def get_model_info(
     Default properties: ["safetensors", "lastModified"], only retrieves minimal information.
     Set to None to retrieve the full model information.
     """
-    global api
-    if api is None:
-        api = HfApi()
+    global _HFAPI
+    if _HFAPI is None:
+        _HFAPI = HfApi()
     try:
-        model_info: ModelInfo = api.model_info(model_id, expand=properties)
+        model_info: ModelInfo = _HFAPI.model_info(model_id, expand=properties)
     except Exception as e:
         print(f"Error getting model info for {model_id}: {e}")
         model_info = None
     return model_info
 
 
-def retrieve_models(
+def list_models(
     properties: list[str] = None,
     full: bool = False,
     sort: str = "downloads",
     author: str = "unsloth",
     search: str = None,
     limit: int = 10,
-) -> ModelInfo:
+) -> list[ModelInfo]:
     """
-    Retrieve models from the Hugging Face Hub.
+    Retrieve model information from the Hugging Face Hub.
 
     properties: list[str] = See https://huggingface.co/docs/huggingface_hub/api-ref/hf_hub/hf_api/list_models
     full: bool = Whether to retrieve the full model information, if True properties will be ignored.
@@ -61,13 +61,13 @@ def retrieve_models(
     search: str = The search query for filtering models.
 
     """
-    global api
-    if api is None:
-        api = HfApi()
+    global _HFAPI
+    if _HFAPI is None:
+        _HFAPI = HfApi()
     if full:
         properties = None
 
-    models: list[ModelInfo] = api.list_models(
+    models: list[ModelInfo] = _HFAPI.list_models(
         author=author,
         search=search,
         sort=sort,
