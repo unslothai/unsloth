@@ -1,6 +1,6 @@
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
 
 
 class QuantType(Enum):
@@ -127,7 +127,7 @@ def _check_model_info(model_id: str, properties: list[str] = ["lastModified"]):
         model_info: HfModelInfo = api.model_info(model_id, expand=properties)
     except Exception as e:
         if isinstance(e, RepositoryNotFoundError):
-            print(f"\u2718 {model_id} not found")
+            warnings.warn(f"{model_id} not found on Hugging Face")
             model_info = None
         else:
             raise e
