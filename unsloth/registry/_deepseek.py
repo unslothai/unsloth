@@ -3,7 +3,9 @@ from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register
 _IS_DEEPSEEKV3_REGISTERED = False
 _IS_DEEPSEEKR1_REGISTERED = False
 _IS_DEEPSEEKR1_ZERO_REGISTERED = False
-_IS_DEEPSEEKR1_DISTILL_REGISTERED = False
+_IS_DEEPSEEKR1_DISTILL_LLAMA_REGISTERED = False
+_IS_DEEPSEEKR1_DISTILL_QWEN_REGISTERED = False
+
 class DeepseekV3ModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
@@ -67,7 +69,7 @@ DeepseekR1ZeroMeta = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.GGUF],
 )
 
-DeepseekR1DistillMeta = ModelMeta(
+DeepseekR1DistillLlamaMeta = ModelMeta(
     org="deepseek-ai",
     base_name="DeepSeek-R1-Distill",
     instruct_tags=[None],
@@ -78,16 +80,27 @@ DeepseekR1DistillMeta = ModelMeta(
     quant_types={"8": [QuantType.UNSLOTH, QuantType.GGUF], "70": [QuantType.GGUF]},
 )
 
+# Deepseek R1 Distill Qwen Model Meta
+DeepseekR1DistillQwenMeta = ModelMeta(
+    org="deepseek-ai",
+    base_name="DeepSeek-R1-Distill",
+    instruct_tags=[None],
+    model_version="Qwen",
+    model_sizes=["1.5", "7", "14", "32"],
+    model_info_cls=DeepseekR1ModelInfo,
+    is_multimodal=False,
+    quant_types=[QuantType.NONE, QuantType.UNSLOTH, QuantType.BNB, QuantType.GGUF]
+)
+
         # "Qwen-7B-unsloth-bnb-4bit",
         # "Qwen-1.5B-unsloth-bnb-4bit",
         # "Qwen-32B-GGUF",
-        # "Llama-8B-GGUF",
+        
         # "Qwen-14B-GGUF",
         # "Qwen-32B-bnb-4bit",
         # "Qwen-1.5B-GGUF",
         # "Qwen-14B-unsloth-bnb-4bit",
-        # "Llama-70B-GGUF"
-
+        
 def register_deepseek_v3_models(include_original_model: bool = False):
     global _IS_DEEPSEEKV3_REGISTERED
     if _IS_DEEPSEEKV3_REGISTERED:
@@ -102,23 +115,50 @@ def register_deepseek_r1_models(include_original_model: bool = False):
     if _IS_DEEPSEEKR1_REGISTERED:
         return
     _register_models(DeepseekR1Meta, include_original_model=include_original_model)
-    _register_models(DeepseekR1ZeroMeta, include_original_model=include_original_model)
-    _register_models(DeepseekR1DistillMeta, include_original_model=include_original_model)
     _IS_DEEPSEEKR1_REGISTERED = True
 
-#register_deepseek_v3_models(include_original_model=True)
+def register_deepseek_r1_zero_models(include_original_model: bool = False):
+    global _IS_DEEPSEEKR1_ZERO_REGISTERED
+    if _IS_DEEPSEEKR1_ZERO_REGISTERED:
+        return
+    _register_models(DeepseekR1ZeroMeta, include_original_model=include_original_model)
+    _IS_DEEPSEEKR1_ZERO_REGISTERED = True
+
+def register_deepseek_r1_distill_llama_models(include_original_model: bool = False):
+    global _IS_DEEPSEEKR1_DISTILL_LLAMA_REGISTERED
+    if _IS_DEEPSEEKR1_DISTILL_LLAMA_REGISTERED:
+        return
+    _register_models(DeepseekR1DistillLlamaMeta, include_original_model=include_original_model)
+    _IS_DEEPSEEKR1_DISTILL_LLAMA_REGISTERED = True
+
+def register_deepseek_r1_distill_qwen_models(include_original_model: bool = False):
+    global _IS_DEEPSEEKR1_DISTILL_QWEN_REGISTERED
+    if _IS_DEEPSEEKR1_DISTILL_QWEN_REGISTERED:
+        return
+    _register_models(DeepseekR1DistillQwenMeta, include_original_model=include_original_model)
+    _IS_DEEPSEEKR1_DISTILL_QWEN_REGISTERED = True
+
+def register_deepseek_r1_distill_models(include_original_model: bool = False):
+    register_deepseek_r1_distill_qwen_models(include_original_model=include_original_model)
+    register_deepseek_r1_distill_llama_models(include_original_model=include_original_model)
+
+register_deepseek_v3_models(include_original_model=True)
 register_deepseek_r1_models(include_original_model=True)
+register_deepseek_r1_distill_models(include_original_model=True)
 
 def _list_deepseek_r1_distill_models():
     from unsloth.utils.hf_hub import ModelInfo as HfModelInfo
     from unsloth.utils.hf_hub import list_models
-    models: list[HfModelInfo] = list_models(author="unsloth", search="Distill")
+    models: list[HfModelInfo] = list_models(author="unsloth", search="Distill", limit=1000)
+    distill_models = []
     for model in models:
         model_id = model.id
         model_name = model_id.split("/")[-1]
         # parse out only the version
         version = model_name.removeprefix("DeepSeek-R1-Distill-")
-        print(version)
+        distill_models.append(version)
+
+    return distill_models
 
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
@@ -128,3 +168,7 @@ if __name__ == "__main__":
             print(f"\u2718 {model_id}")
         else:
             print(f"\u2713 {model_id}")
+    # distill_models = _list_deepseek_r1_distill_models()
+    # for model in sorted(distill_models):
+    #     if "qwen" in model.lower():
+    #         print(model)
