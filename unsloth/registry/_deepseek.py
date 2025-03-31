@@ -138,10 +138,6 @@ def register_deepseek_r1_distill_models(include_original_model: bool = False):
     register_deepseek_r1_distill_qwen_models(include_original_model=include_original_model)
     register_deepseek_r1_distill_llama_models(include_original_model=include_original_model)
 
-register_deepseek_v3_models(include_original_model=True)
-register_deepseek_r1_models(include_original_model=True)
-register_deepseek_r1_distill_models(include_original_model=True)
-
 def _list_deepseek_r1_distill_models():
     from unsloth.utils.hf_hub import ModelInfo as HfModelInfo
     from unsloth.utils.hf_hub import list_models
@@ -155,6 +151,11 @@ def _list_deepseek_r1_distill_models():
         distill_models.append(version)
 
     return distill_models
+
+
+register_deepseek_v3_models(include_original_model=True)
+register_deepseek_r1_models(include_original_model=True)
+register_deepseek_r1_distill_models(include_original_model=True)
 
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
