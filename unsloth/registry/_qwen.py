@@ -2,7 +2,7 @@ from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register
 
 _IS_QWEN_REGISTERED = False
 _IS_QWEN_VL_REGISTERED = False
-
+_IS_QWEN_QWQ_REGISTERED = False
 class QwenModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(
@@ -24,7 +24,16 @@ class QwenVLModelInfo(ModelInfo):
         key = cls.append_quant_type(key, quant_type)
         return key
 
-
+class QwenQwQModelInfo(ModelInfo):
+    @classmethod
+    def construct_model_name(
+        cls, base_name, version, size, quant_type, instruct_tag
+    ):
+        key = f"{base_name}-{size}B"
+        key = cls.append_instruct_tag(key, instruct_tag)
+        key = cls.append_quant_type(key, quant_type)
+        return key
+    
 # Qwen Model Meta
 QwenMeta = ModelMeta(
     org="Qwen",
@@ -49,23 +58,42 @@ QwenVLMeta = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
-def register_qwen_models():
+# Qwen QwQ Model Meta
+QwenQwQMeta = ModelMeta(
+    org="Qwen",
+    base_name="QwQ",
+    instruct_tags=[None],
+    model_version="",
+    model_sizes=[32],
+    model_info_cls=QwenQwQModelInfo,
+    is_multimodal=False,
+    quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
+)
+
+def register_qwen_models(include_original_model: bool = False):
     global _IS_QWEN_REGISTERED
     if _IS_QWEN_REGISTERED:
         return
-    _register_models(QwenMeta)
+    _register_models(QwenMeta, include_original_model)
     _IS_QWEN_REGISTERED = True
 
-def register_qwen_vl_models():
+def register_qwen_vl_models(include_original_model: bool = False):
     global _IS_QWEN_VL_REGISTERED
     if _IS_QWEN_VL_REGISTERED:
         return
-    _register_models(QwenVLMeta)
+    _register_models(QwenVLMeta, include_original_model)
     _IS_QWEN_VL_REGISTERED = True
 
-register_qwen_models()
-register_qwen_vl_models()
+def register_qwen_qwq_models(include_original_model: bool = False):
+    global _IS_QWEN_QWQ_REGISTERED
+    if _IS_QWEN_QWQ_REGISTERED:
+        return
+    _register_models(QwenQwQMeta, include_original_model)
+    _IS_QWEN_QWQ_REGISTERED = True
 
+# register_qwen_models()
+# register_qwen_vl_models()
+register_qwen_qwq_models(include_original_model=True)
 
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info

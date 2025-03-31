@@ -134,7 +134,7 @@ def _check_model_info(model_id: str, properties: list[str] = ["lastModified"]):
     return model_info
 
 
-def _register_models(model_meta: ModelMeta):
+def _register_models(model_meta: ModelMeta, include_original_model: bool = False):
     org = model_meta.org
     base_name = model_meta.base_name
     instruct_tags = model_meta.instruct_tags
@@ -147,7 +147,7 @@ def _register_models(model_meta: ModelMeta):
     for size in model_sizes:
         for instruct_tag in instruct_tags:
             for quant_type in quant_types:
-                _org = "unsloth" if quant_type is not None else org
+                _org = "unsloth" # unsloth models -- these are all quantized versions of the original model
                 register_model(
                     model_info_cls=model_info_cls,
                     org=_org,
@@ -156,5 +156,17 @@ def _register_models(model_meta: ModelMeta):
                     size=size,
                     instruct_tag=instruct_tag,
                     quant_type=quant_type,
+                    is_multimodal=is_multimodal,
+                )
+            # include original model from releasing organization
+            if include_original_model:
+                register_model(
+                    model_info_cls=model_info_cls,
+                    org=org,
+                    base_name=base_name,
+                    version=model_version,
+                    size=size,
+                    instruct_tag=instruct_tag,
+                    quant_type=QuantType.NONE,
                     is_multimodal=is_multimodal,
                 )
