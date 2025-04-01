@@ -53,8 +53,11 @@ def register_gemma_models(include_original_model: bool = False):
 
 
 if __name__ == "__main__":
-    register_gemma_models(include_original_model=True)
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
+    MODEL_REGISTRY.clear()
+    
+    register_gemma_models(include_original_model=True)
+    
     for model_id, model_info in MODEL_REGISTRY.items():
         model_info = _check_model_info(model_id)
         if model_info is None:
