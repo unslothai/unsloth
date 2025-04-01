@@ -93,15 +93,6 @@ DeepseekR1DistillQwenMeta = ModelMeta(
         "32": [QuantType.GGUF, QuantType.BNB],
     },
 )
-
-        # "Qwen-7B-unsloth-bnb-4bit",
-        # "Qwen-1.5B-unsloth-bnb-4bit",
-        # "Qwen-32B-GGUF",
-        
-        # "Qwen-14B-GGUF",
-        # "Qwen-32B-bnb-4bit",
-        # "Qwen-1.5B-GGUF",
-        # "Qwen-14B-unsloth-bnb-4bit",
         
 def register_deepseek_v3_models(include_original_model: bool = False):
     global _IS_DEEPSEEK_V3_REGISTERED

@@ -1,7 +1,7 @@
 from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register_models
 
-_IS_PHI_REGISTERED = False
-_IS_PHI_INSTRUCT_REGISTERED = False
+_IS_PHI_4_REGISTERED = False
+_IS_PHI_4_INSTRUCT_REGISTERED = False
 
 class PhiModelInfo(ModelInfo):
     @classmethod
@@ -10,7 +10,7 @@ class PhiModelInfo(ModelInfo):
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 # Phi Model Meta
-PhiMeta = ModelMeta(
+PhiMeta4 = ModelMeta(
     org="microsoft",
     base_name="phi",
     instruct_tags=[None],
@@ -22,7 +22,7 @@ PhiMeta = ModelMeta(
 )
 
 # Phi Instruct Model Meta
-PhiInstructMeta = ModelMeta(
+PhiInstructMeta4 = ModelMeta(
     org="microsoft",
     base_name="phi",
     instruct_tags=["mini-instruct"],
@@ -33,24 +33,26 @@ PhiInstructMeta = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
 )
 
+def register_phi_4_models(include_original_model: bool = False):
+    global _IS_PHI_4_REGISTERED
+    if _IS_PHI_4_REGISTERED:
+        return
+    _register_models(PhiMeta4, include_original_model=include_original_model)
+    _IS_PHI_4_REGISTERED = True
+
+def register_phi_4_instruct_models(include_original_model: bool = False):
+    global _IS_PHI_4_INSTRUCT_REGISTERED
+    if _IS_PHI_4_INSTRUCT_REGISTERED:
+        return
+    _register_models(PhiInstructMeta4, include_original_model=include_original_model)
+    _IS_PHI_4_INSTRUCT_REGISTERED = True
+
 def register_phi_models(include_original_model: bool = False):
-    global _IS_PHI_REGISTERED
-    if _IS_PHI_REGISTERED:
-        return
-    _register_models(PhiMeta, include_original_model=include_original_model)
-    _IS_PHI_REGISTERED = True
-
-def register_phi_instruct_models(include_original_model: bool = False):
-    global _IS_PHI_INSTRUCT_REGISTERED
-    if _IS_PHI_INSTRUCT_REGISTERED:
-        return
-    _register_models(PhiInstructMeta, include_original_model=include_original_model)
-    _IS_PHI_INSTRUCT_REGISTERED = True
-
-register_phi_models(include_original_model=True)
-register_phi_instruct_models(include_original_model=True)
+    register_phi_4_models(include_original_model=include_original_model)
+    register_phi_4_instruct_models(include_original_model=include_original_model)
 
 if __name__ == "__main__":
+    register_phi_models(include_original_model=True)
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
     for model_id, model_info in MODEL_REGISTRY.items():
         model_info = _check_model_info(model_id)

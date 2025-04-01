@@ -42,21 +42,22 @@ MistralSmall_2501_Base_Meta.model_version = _MISTRAL_SMALL_01_25_VERSION
 MistralSmall_2501_Instruct_Meta = copy.deepcopy(MistralSmall_2503_Instruct_Meta)
 MistralSmall_2501_Instruct_Meta.model_version = _MISTRAL_SMALL_01_25_VERSION
 
-def register_mistral_small_models():
+def register_mistral_small_models(include_original_model: bool = False):
     global _IS_MISTRAL_SMALL_REGISTERED
     if _IS_MISTRAL_SMALL_REGISTERED:
         return
-    _register_models(MistralSmall_2503_Base_Meta)
-    _register_models(MistralSmall_2503_Instruct_Meta)
-    _register_models(MistralSmall_2501_Base_Meta)
-    _register_models(MistralSmall_2501_Instruct_Meta)
+    _register_models(MistralSmall_2503_Base_Meta, include_original_model=include_original_model)
+    _register_models(MistralSmall_2503_Instruct_Meta, include_original_model=include_original_model)
+    _register_models(MistralSmall_2501_Base_Meta, include_original_model=include_original_model)
+    _register_models(MistralSmall_2501_Instruct_Meta, include_original_model=include_original_model)
 
     _IS_MISTRAL_SMALL_REGISTERED = True
 
-register_mistral_small_models()
-
+def register_mistral_models(include_original_model: bool = False):
+    register_mistral_small_models(include_original_model=include_original_model)
 
 if __name__ == "__main__":
+    register_mistral_models(include_original_model=True)
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
     for model_id, model_info in MODEL_REGISTRY.items():
         model_info = _check_model_info(model_id)
