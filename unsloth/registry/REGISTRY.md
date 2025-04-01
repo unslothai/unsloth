@@ -91,3 +91,20 @@ Prints the following (abridged) output:
 ...
 ```
 
+### TODO
+- Model Collections
+    - [x] Gemma3
+    - [ ] Llama3.1
+    - [x] Llama3.2
+    - [x] MistralSmall
+    - [x] Qwen2.5
+    - [x] Qwen2.5-VL
+    - [ ] Qwen2.5 Coder
+    - [x] QwenQwQ-32B
+    - [x] Deepseek v3
+    - [x] Deepseek R1
+    - [x] Phi-4
+    - [ ] Unsloth 4-bit Dynamic Quants
+    - [ ] Vision/multimodal models
+- Sync model uploads with registry
+- Add utility methods for tracking model stats
