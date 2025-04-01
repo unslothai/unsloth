@@ -102,7 +102,7 @@ def register_llama_models(include_original_model: bool = False):
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
     MODEL_REGISTRY.clear()
-    
+
     register_llama_models(include_original_model=True)
 
     for model_id, model_info in MODEL_REGISTRY.items():
