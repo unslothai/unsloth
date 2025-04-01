@@ -1,6 +1,7 @@
 from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register_models
 
-_IS_GEMMA_REGISTERED = False
+_IS_GEMMA_3_BASE_REGISTERED = False
+_IS_GEMMA_3_INSTRUCT_REGISTERED = False
 
 class GemmaModelInfo(ModelInfo):
     @classmethod
@@ -32,17 +33,27 @@ GemmaMeta3Instruct = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
 )
 
-def register_gemma_models(include_original_model: bool = False):
-    global _IS_GEMMA_REGISTERED
-    if _IS_GEMMA_REGISTERED:
+def register_gemma_3_base_models(include_original_model: bool = False):
+    global _IS_GEMMA_3_BASE_REGISTERED
+    if _IS_GEMMA_3_BASE_REGISTERED:
         return
     _register_models(GemmaMeta3Base, include_original_model=include_original_model)
-    _register_models(GemmaMeta3Instruct, include_original_model=include_original_model)
-    _IS_GEMMA_REGISTERED = True
+    _IS_GEMMA_3_BASE_REGISTERED = True
 
-register_gemma_models(include_original_model=True)
+def register_gemma_3_instruct_models(include_original_model: bool = False):
+    global _IS_GEMMA_3_INSTRUCT_REGISTERED
+    if _IS_GEMMA_3_INSTRUCT_REGISTERED:
+        return
+    _register_models(GemmaMeta3Instruct, include_original_model=include_original_model)
+    _IS_GEMMA_3_INSTRUCT_REGISTERED = True
+
+def register_gemma_models(include_original_model: bool = False):
+    register_gemma_3_base_models(include_original_model=include_original_model)
+    register_gemma_3_instruct_models(include_original_model=include_original_model)
+
 
 if __name__ == "__main__":
+    register_gemma_models(include_original_model=True)
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
     for model_id, model_info in MODEL_REGISTRY.items():
         model_info = _check_model_info(model_id)

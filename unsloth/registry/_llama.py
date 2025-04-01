@@ -1,7 +1,7 @@
 from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register_models
 
-_IS_LLAMA_REGISTERED = False
-_IS_LLAMA_VISION_REGISTERED = False
+_IS_LLAMA_3_REGISTERED = False
+_IS_LLAMA_3_2_VISION_REGISTERED = False
 
 
 class LlamaModelInfo(ModelInfo):
@@ -19,7 +19,7 @@ class LlamaVisionModelInfo(ModelInfo):
 
 
 # Llama 3.1
-LlamaMeta3_1 = ModelMeta(
+LlamaMeta_3_1 = ModelMeta(
     org="meta-llama",
     base_name="Llama",
     instruct_tags=[None, "Instruct"],
@@ -31,7 +31,7 @@ LlamaMeta3_1 = ModelMeta(
 )
 
 # Llama 3.2 Base Models
-LlamaMeta3_2_Base = ModelMeta(
+LlamaMeta_3_2_Base = ModelMeta(
     org="meta-llama",
     base_name="Llama",
     instruct_tags=[None],
@@ -43,7 +43,7 @@ LlamaMeta3_2_Base = ModelMeta(
 )
 
 # Llama 3.2 Instruction Tuned Models
-LlamaMeta3_2_Instruct = ModelMeta(
+LlamaMeta_3_2_Instruct = ModelMeta(
     org="meta-llama",
     base_name="Llama",
     instruct_tags=["Instruct"],
@@ -55,7 +55,7 @@ LlamaMeta3_2_Instruct = ModelMeta(
 )
 
 # Llama 3.2 Vision
-LlamaMeta3_2_Vision = ModelMeta(
+LlamaMeta_3_2_Vision = ModelMeta(
     org="meta-llama",
     base_name="Llama",
     instruct_tags=[None, "Instruct"],
@@ -70,28 +70,29 @@ LlamaMeta3_2_Vision = ModelMeta(
 )
 
 
+def register_llama_3_models(include_original_model: bool = False):
+    global _IS_LLAMA_3_REGISTERED
+    if _IS_LLAMA_3_REGISTERED:
+        return
+    _register_models(LlamaMeta_3_1, include_original_model=include_original_model)
+    _register_models(LlamaMeta_3_2_Base, include_original_model=include_original_model)
+    _register_models(LlamaMeta_3_2_Instruct, include_original_model=include_original_model)
+    _IS_LLAMA_3_REGISTERED = True
+
+def register_llama_3_2_vision_models(include_original_model: bool = False):
+    global _IS_LLAMA_3_2_VISION_REGISTERED
+    if _IS_LLAMA_3_2_VISION_REGISTERED:
+        return
+    _register_models(LlamaMeta_3_2_Vision, include_original_model=include_original_model)
+    _IS_LLAMA_3_2_VISION_REGISTERED = True
+
+
 def register_llama_models(include_original_model: bool = False):
-    global _IS_LLAMA_REGISTERED
-    if _IS_LLAMA_REGISTERED:
-        return
-    _register_models(LlamaMeta3_1, include_original_model=include_original_model)
-    _register_models(LlamaMeta3_2_Base, include_original_model=include_original_model)
-    _register_models(LlamaMeta3_2_Instruct, include_original_model=include_original_model)
-    _IS_LLAMA_REGISTERED = True
-
-
-def register_llama_vision_models(include_original_model: bool = False):
-    global _IS_LLAMA_VISION_REGISTERED
-    if _IS_LLAMA_VISION_REGISTERED:
-        return
-    _register_models(LlamaMeta3_2_Vision, include_original_model=include_original_model)
-    _IS_LLAMA_VISION_REGISTERED = True
-
-
-register_llama_models(include_original_model=True)
-#register_llama_vision_models(include_original_model=True)
+    register_llama_3_models(include_original_model=include_original_model)
+    register_llama_3_2_vision_models(include_original_model=include_original_model)
 
 if __name__ == "__main__":
+    register_llama_models(include_original_model=True)
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
 
     for model_id, model_info in MODEL_REGISTRY.items():
