@@ -22,7 +22,7 @@ def register_models():
 
     _ARE_MODELS_REGISTERED = True
 
-def get_model_info(org: str = None, base_name: str = None, version: str = None, size: str = None, quant_types: list[QuantType] = None, search_pattern: str = None) -> list[ModelInfo]:
+def search_models(org: str = None, base_name: str = None, version: str = None, size: str = None, quant_types: list[QuantType] = None, search_pattern: str = None) -> list[ModelInfo]:
     """
     Get model info from the registry.
 

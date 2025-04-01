@@ -1,6 +1,16 @@
 ## Model Registry
 
 ### Structure
+```
+unsloth
+    -registry
+        __init__.py
+        registry.py
+        _llama.py
+        _mistral.py
+        _phi.py
+        ...
+```
 
 Each model is registered in a separate file within the `registry` module (e.g. `registry/_llama.py`).
 
@@ -41,5 +51,43 @@ class LlamaModelInfo(ModelInfo):
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 ```
 
-Once these constructs are defined, the model is registered in the `registry` module by calling `register_models` with the `ModelMeta` and `ModelInfo` classes.
+Once these constructs are defined, the model is registered by writing a register_xx_models function.
+```python
+def register_llama_3_1_models(include_original_model: bool = False):
+    global _IS_LLAMA_3_1_REGISTERED
+    if _IS_LLAMA_3_1_REGISTERED:
+        return
+    _register_models(LlamaMeta_3_1, include_original_model=include_original_model)
+    _IS_LLAMA_3_1_REGISTERED = True
+```
+
+`_register_models` is a helper function that registers the model with the registry.  The global `_IS_XX_REGISTERED` is used to prevent duplicate registration.
+
+Once a model is registered, registry.registry.MODEL_REGISTRY is updated with the model info and can be searched with `registry.search_models`.
+
+### Tests
+
+The `tests/test_model_registry.py` file contains tests for the model registry.
+
+Also, each model registration file is an executable module that checks that all registered models are available on `huggingface_hub`.
+```python
+python unsloth.registry._llama.py
+```
+
+Prints the following (abridged) output:
+```bash
+✓ unsloth/Llama-3.1-8B
+✓ unsloth/Llama-3.1-8B-bnb-4bit
+✓ unsloth/Llama-3.1-8B-unsloth-bnb-4bit
+✓ meta-llama/Llama-3.1-8B
+✓ unsloth/Llama-3.1-8B-Instruct
+✓ unsloth/Llama-3.1-8B-Instruct-bnb-4bit
+✓ unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit
+✓ meta-llama/Llama-3.1-8B-Instruct
+✓ unsloth/Llama-3.2-1B
+✓ unsloth/Llama-3.2-1B-bnb-4bit
+✓ unsloth/Llama-3.2-1B-unsloth-bnb-4bit
+✓ meta-llama/Llama-3.2-1B
+...
+```
 

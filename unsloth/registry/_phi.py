@@ -52,8 +52,11 @@ def register_phi_models(include_original_model: bool = False):
     register_phi_4_instruct_models(include_original_model=include_original_model)
 
 if __name__ == "__main__":
-    register_phi_models(include_original_model=True)
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
+    MODEL_REGISTRY.clear()
+    
+    register_phi_models(include_original_model=True)
+    
     for model_id, model_info in MODEL_REGISTRY.items():
         model_info = _check_model_info(model_id)
         if model_info is None:
