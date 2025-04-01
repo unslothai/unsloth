@@ -306,4 +306,4 @@ if __name__ == "__main__":
     
     if len(missing_models) == 0:
         # print unicode checkmark
-        print(f"\u2713 All models found!")
+        print("\u2713 All models found!")
