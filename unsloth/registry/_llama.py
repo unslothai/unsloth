@@ -1,6 +1,7 @@
 from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register_models
 
-_IS_LLAMA_3_REGISTERED = False
+_IS_LLAMA_3_1_REGISTERED = False
+_IS_LLAMA_3_2_REGISTERED = False
 _IS_LLAMA_3_2_VISION_REGISTERED = False
 
 
@@ -70,14 +71,20 @@ LlamaMeta_3_2_Vision = ModelMeta(
 )
 
 
-def register_llama_3_models(include_original_model: bool = False):
-    global _IS_LLAMA_3_REGISTERED
-    if _IS_LLAMA_3_REGISTERED:
+def register_llama_3_1_models(include_original_model: bool = False):
+    global _IS_LLAMA_3_1_REGISTERED
+    if _IS_LLAMA_3_1_REGISTERED:
         return
     _register_models(LlamaMeta_3_1, include_original_model=include_original_model)
+    _IS_LLAMA_3_1_REGISTERED = True
+
+def register_llama_3_2_models(include_original_model: bool = False):
+    global _IS_LLAMA_3_2_REGISTERED
+    if _IS_LLAMA_3_2_REGISTERED:
+        return
     _register_models(LlamaMeta_3_2_Base, include_original_model=include_original_model)
     _register_models(LlamaMeta_3_2_Instruct, include_original_model=include_original_model)
-    _IS_LLAMA_3_REGISTERED = True
+    _IS_LLAMA_3_2_REGISTERED = True
 
 def register_llama_3_2_vision_models(include_original_model: bool = False):
     global _IS_LLAMA_3_2_VISION_REGISTERED
@@ -88,7 +95,8 @@ def register_llama_3_2_vision_models(include_original_model: bool = False):
 
 
 def register_llama_models(include_original_model: bool = False):
-    register_llama_3_models(include_original_model=include_original_model)
+    register_llama_3_1_models(include_original_model=include_original_model)
+    register_llama_3_2_models(include_original_model=include_original_model)
     register_llama_3_2_vision_models(include_original_model=include_original_model)
 
 if __name__ == "__main__":
