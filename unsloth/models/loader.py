@@ -306,7 +306,7 @@ class FastLanguageModel(FastLlamaModel):
         #     dispatch_model = FastGraniteModel
         else:
             return FastModel.from_pretrained(
-                model_name                 = model_name,
+                model_name                 = old_model_name,
                 max_seq_length             = max_seq_length,
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
