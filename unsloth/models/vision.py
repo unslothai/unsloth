@@ -306,7 +306,8 @@ class FastBaseModel:
             do_forced_float32 = True
         pass
         # Stop SDPA for some archs like Pixtral / Mistral3
-        kwargs["attn_implementation"] = "sdpa"
+        if not ("attn_implementation" in kwargs):
+            kwargs["attn_implementation"] = "sdpa"
         if not supports_sdpa:
             print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to eager!")
             del kwargs["attn_implementation"]
@@ -505,7 +506,7 @@ class FastBaseModel:
             finetune_attention_modules = True
             finetune_mlp_modules       = True
         pass
-        if target_modules is None:
+        if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
                 finetune_vision_layers     = finetune_vision_layers,
@@ -516,7 +517,7 @@ class FastBaseModel:
         else:
             assert(type(target_modules) in (list, tuple,))
         pass
-
+        
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
