@@ -76,7 +76,7 @@ def Qwen3MoeSparseMoeBlock_fast_forward(self, X, temp_gate = None, temp_up = Non
         # the current expert. We need to make sure to multiply the output hidden
         # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
         current_state = X[None, top_x].reshape(-1, hd)
-        current_X = expert_layer(current_state) * routing_weights[top_x, idx, None]
+        current_X = expert_layer(current_state) * routing_weights[top_x, idx, None] # Qwen3MoeMLP.forward = fast_swiglu_inference takes care of making this faster. Analogous to Dense models' MLP
 
         # However `index_add_` only support torch tensors for indexing so we'll use
         # the `top_x` tensor here.
@@ -119,10 +119,10 @@ def Qwen3MoeDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # Fully Connected
+        # MoE Router MLP
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
-        hidden_states = Qwen3MoeSparseMoeBlock_fast_forward(self.mlp, hidden_states)
+        hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(self.mlp, hidden_states)
         hidden_states = residual + hidden_states
     else:
         residual = hidden_states
@@ -140,15 +140,16 @@ def Qwen3MoeDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # Fully Connected
+        # MoE Router MLP
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states, router_logits = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
     pass
 
     outputs = (hidden_states,)
     if output_attentions: outputs += (self_attn_weights,)
+    if output_router_logits: outputs += (router_logits,)
     if use_cache: outputs += (present_key_value,)
     return outputs
 
@@ -173,7 +174,7 @@ class FastQwen3MoeModel(FastQwen3Model):
         # Qwen3FlashAttention2 .forward = Qwen3Attention_fast_forward
         Qwen3MoeSparseMoeBlock .forward = Qwen3MoeSparseMoeBlock_fast_forward
         Qwen3MoeMLP            .forward = fast_swiglu_inference # This is analogous to Dense models' MLP
-        Qwen3MoeDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
+        Qwen3MoeDecoderLayer   .forward = Qwen3MoeDecoderLayer_fast_forward
         Qwen3MoeModel          .forward = LlamaModel_fast_forward
         Qwen3MoeForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
