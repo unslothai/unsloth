@@ -32,6 +32,10 @@ include-package-data = false
 exclude = ["images*", "tests*"]
 
 [project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
 triton = [
     "triton-windows ; platform_system == 'Windows'",
 ]
