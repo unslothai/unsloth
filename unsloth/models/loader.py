@@ -468,14 +468,15 @@ class FastModel(FastBaseModel):
         revision                   = None,
         return_logits              = False, # Return logits
         fullgraph                  = True, # No graph breaks
+        use_exact_model_name       = False,
         auto_model                 = None,
         whisper_language           = None,
         whisper_task               = None,
-        use_exact_model_name       = False,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
-
+        if whisper_language is not None: assert(type(whisper_language) is str)
+        if whisper_task is not None: assert(type(whisper_task) is str)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -712,7 +713,7 @@ class FastModel(FastBaseModel):
         # Check if VLM
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
-        if not auto_model:
+        if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
 
         model, tokenizer = FastBaseModel.from_pretrained(

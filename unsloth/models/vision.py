@@ -371,7 +371,9 @@ class FastBaseModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        auto_processor = AutoProcessor if (auto_model is AutoModelForVision2Seq ) or (whisper_language and whisper_task) else AutoTokenizer
+        is_vlm = (auto_model is AutoModelForVision2Seq)
+        is_whisper = (whisper_language is not None and whisper_task is not None)
+        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
         if whisper_language and whisper_task:
            tokenizer = auto_processor.from_pretrained(
                 tokenizer_name,
@@ -482,7 +484,7 @@ class FastBaseModel:
         modules_to_save            = None,
         init_lora_weights          = True,
         loftq_config               = {},
-        task_type                = TaskType.CAUSAL_LM,
+        task_type                  = TaskType.CAUSAL_LM,
         temporary_location         = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
