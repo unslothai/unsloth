@@ -382,7 +382,7 @@ dpo_trainer.train()
 </details>
 
 ## 🥇 Performance Benchmarking
-- For our most detailed benchmarks, read our [Llama 3.3 Blog](https://unsloth.ai/blog/llama3-3).
+- For our most detailed benchmarks, read our blogs on [Llama 3.3](https://unsloth.ai/blog/llama3-3) and [Gemma 3](https://unsloth.ai/blog/gemma3).
 - Benchmarking of Unsloth was also conducted by [🤗Hugging Face](https://huggingface.co/blog/unsloth-trl).
 
 We tested using the Alpaca  Dataset, a batch size of 2, gradient accumulation steps of 4, rank = 32, and applied QLoRA on all linear layers (q, k, v, o, gate, up, down):
@@ -391,6 +391,7 @@ We tested using the Alpaca  Dataset, a batch size of 2, gradient accumulation st
 |----------------|-------|-----------------|----------------|----------------|--------------------|
 | Llama 3.3 (70B)| 80GB  | 2x              | >75%           | 13x longer     | 1x                 |
 | Llama 3.1 (8B) | 80GB  | 2x              | >70%           | 12x longer     | 1x                 |
+| Gemma 3 (12B)  | 24GB  | 1.7x            | >60%           | 6x longer      | 1x                 |
 
 ### Context length benchmarks
 
