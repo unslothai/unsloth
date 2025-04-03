@@ -104,11 +104,27 @@ def patch_Gemma3Processor():
                 )
 
             # Pop num_crops, converting potential tensors/numpy arrays to Python objects
-            batch_num_crops = to_py_obj(image_inputs.pop("num_crops", None)) # Added default None
+            batch_num_crops_raw = image_inputs.pop("num_crops", None) # Get raw value first
+            batch_num_crops = to_py_obj(batch_num_crops_raw) # Added default None
+            print(f"\n--- Debug: batch_num_crops AFTER to_py_obj ---")
+            print(f"Raw value popped: {batch_num_crops_raw} (type: {type(batch_num_crops_raw)})")
+            print(f"Value after to_py_obj: {batch_num_crops} (type: {type(batch_num_crops)})")
+            print(f"Length of batched_images: {len(batched_images)}")
+            print(f"Length of text: {len(text)}")
+            # Check if batch_num_crops is iterable BEFORE the zip
+            is_iterable = hasattr(batch_num_crops, '__iter__') and not isinstance(batch_num_crops, (str, bytes))
+            print(f"Is batch_num_crops iterable (before loop)? {is_iterable}")
+            print(f"--- End Debug ---\n")
             if batch_num_crops is None:
-                 logger.warning("'num_crops' not found in image_processor output. Assuming 0 crops.")
+                logger.warning("'num_crops' not found in image_processor output. Assuming 0 crops.")
                  # Create a list of zeros matching the batch size if batch_num_crops was missing
-                 batch_num_crops = [0] * len(batched_images)
+                batch_num_crops = [0] * len(batched_images)
+            elif not (hasattr(batch_num_crops, '__iter__') and not isinstance(batch_num_crops, (str, bytes))):
+                logger.error(f"CRITICAL: batch_num_crops is NOT iterable after to_py_obj! Type: {type(batch_num_crops)}, Value: {batch_num_crops}. Forcing to list of zeros.")
+                batch_num_crops = [0] * len(batched_images)
+            elif len(batch_num_crops) != len(batched_images):
+                logger.error(f"CRITICAL: batch_num_crops length ({len(batch_num_crops)}) != batch size ({len(batched_images)}). Forcing to list of zeros.")
+                batch_num_crops = [0] * len(batched_images)
 
 
             # Use list(text) to create a mutable copy for modification
