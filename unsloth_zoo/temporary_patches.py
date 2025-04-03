@@ -182,7 +182,6 @@ def patch_Gemma3Processor():
 
         return_tensors = output_kwargs["text_kwargs"].pop("return_tensors", None)
 
-        # Fix double BOS tokens - adding robustness checks
         if text: # Check if text is not None or empty
             bos = self.tokenizer.bos_token
             if bos: 
@@ -191,10 +190,8 @@ def patch_Gemma3Processor():
         else: 
              if text is None: text = [""] * len(batched_images) if batched_images else []
 
-
         text_inputs = self.tokenizer(text=text, **output_kwargs["text_kwargs"])
 
-        # Add token type ids manually using safer list comprehension and getattr
         if images is not None: # Only add if images were processed
              input_ids = text_inputs["input_ids"]
              image_token_id = getattr(self, "image_token_id", None) # Safer way to get attribute
@@ -210,7 +207,6 @@ def patch_Gemma3Processor():
 
         return BatchFeature(data={**text_inputs, **image_inputs}, tensor_type=return_tensors)
 
-    # Patching logic remains the same
     try:
         original_signature = inspect.signature(transformers.models.gemma3.processing_gemma3.Gemma3Processor.__call__)
         new_signature = inspect.signature(__call__)
@@ -219,15 +215,14 @@ def patch_Gemma3Processor():
         if orig_params != new_params:
              logger.warning(f"Unsloth: Signature mismatch patching Gemma3Processor. Patching anyway. Check compatibility.")
         transformers.models.gemma3.processing_gemma3.Gemma3Processor.__call__ = __call__
-        logger.info("Unsloth: Successfully patched Gemma3Processor.__call__.") # Use logger
+        logger.info("Unsloth: Successfully patched Gemma3Processor.__call__.")
     except AttributeError:
-        logger.error("Unsloth: Failed to find original Gemma3Processor.__call__ to patch.") # Use logger
+        logger.error("Unsloth: Failed to find original Gemma3Processor.__call__ to patch.") 
     except Exception as e:
-        logger.error(f"Unsloth: An error occurred during Gemma3Processor patching: {e}") # Use logger
+        logger.error(f"Unsloth: An error occurred during Gemma3Processor patching: {e}") 
 
     return
 pass
-# Add the patch function to the list
 TEMPORARY_PATCHES.append(patch_Gemma3Processor)
 
 def patch_Gemma3ForConditionalGeneration():
