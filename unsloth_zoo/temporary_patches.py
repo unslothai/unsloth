@@ -106,11 +106,6 @@ def patch_Gemma3Processor():
             # Pop num_crops, converting potential tensors/numpy arrays to Python objects
             batch_num_crops_raw = image_inputs.pop("num_crops", None) # Get raw value first
             batch_num_crops = to_py_obj(batch_num_crops_raw) # Added default None
-            print(f"\n--- Debug: batch_num_crops AFTER to_py_obj ---")
-            print(f"Raw value popped: {batch_num_crops_raw} (type: {type(batch_num_crops_raw)})")
-            print(f"Value after to_py_obj: {batch_num_crops} (type: {type(batch_num_crops)})")
-            print(f"Length of batched_images: {len(batched_images)}")
-            print(f"Length of text: {len(text)}")
             # Check if batch_num_crops is iterable BEFORE the zip
             is_iterable = hasattr(batch_num_crops, '__iter__') and not isinstance(batch_num_crops, (str, bytes))
             print(f"Is batch_num_crops iterable (before loop)? {is_iterable}")
@@ -142,9 +137,8 @@ def patch_Gemma3Processor():
                         f"but received {len(current_images)} images."
                     )
 
-                # <<< --- START FIX --- >>>
-                processed_num_crops = [] # Initialize list to hold crop numbers for this item
-                pairs_to_process = []    # Initialize list for zip result
+                processed_num_crops = []
+                pairs_to_process = [] 
 
                 # Check the type of num_crops_for_item received for THIS batch item
                 if isinstance(num_crops_for_item, int):
