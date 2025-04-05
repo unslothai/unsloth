@@ -56,7 +56,6 @@ def patch_Gemma3Processor():
     try:
         import transformers.models.gemma3.processing_gemma3
     except:
-        logger.info("Gemma3 processor not found. Skipping patch.") # Use logger
         return
     from transformers.models.gemma3.processing_gemma3 import (
         ImageInput,
@@ -90,137 +89,92 @@ def patch_Gemma3Processor():
             try:
                 batched_images = make_nested_list_of_images(images)
             except ValueError as e:
+                # Maybe it's texts and not images? Gemma3 defaults to images
                 if text is None:
-                    # Use logger for warning
-                    logger.warning("Input provided to 'images' argument failed image processing. Assuming it's text.", exc_info=e)
                     text = images
                     images = None
-                    # batched_images remains None
                 else:
-                    raise ValueError(f"Error processing 'images' input: {e}") from e
+                    raise ValueError(e)
         pass
-        # Ensure text is a list of strings if provided
-        if text is not None: # Added check if text is not None
-            if isinstance(text, str):
-                text = [text]
-            # Original check had a potential index error if text was empty list, corrected:
-            elif not isinstance(text, list) or (text and not isinstance(text[0], str)):
-                raise ValueError("Invalid input text. Please provide a string, or a list of strings")
+        if isinstance(text, str):
+            text = [text]
+        elif not isinstance(text, list) and not isinstance(text[0], str):
+            raise ValueError("Invalid input text. Please provide a string, or a list of strings")
 
         image_inputs = {}
         if images is not None:
-            # Assuming batched_images is correctly populated if images is not None
+            # batched_images = make_nested_list_of_images(images)
             image_inputs = self.image_processor(batched_images, **output_kwargs["images_kwargs"])
 
-            # Create empty text only if text was initially None or empty
+            # Create empty text to be replaced with placeholders
             if not text:
-                # Original logic might error if batched_images is empty or nested incorrectly
-                text = [" ".join([self.boi_token] * len(img_list)) for img_list in batched_images]
+                text = [" ".join([self.boi_token] * len(images)) for images in batched_images]
 
             if len(batched_images) != len(text):
                 raise ValueError(
                     f"Received inconsistently sized batches of images ({len(batched_images)}) and text ({len(text)})."
                 )
 
-            # Pop num_crops, provide default if key missing
-            batch_num_crops_raw = image_inputs.pop("num_crops", None)
-            batch_num_crops = to_py_obj(batch_num_crops_raw)
-
-            # Ensure batch_num_crops is a list matching batch size if not None
-            if batch_num_crops is None:
-                batch_num_crops = [0] * len(batched_images) # Default to list of 0s
-            elif not isinstance(batch_num_crops, list):
-                 # If to_py_obj returned something other than list (e.g. single int for batch size 1)
-                 # or if it failed somehow, force to list of 0s.
-                 logger.warning(f"batch_num_crops after to_py_obj was not a list (type: {type(batch_num_crops)}). Forcing to list of zeros.")
-                 batch_num_crops = [0] * len(batched_images)
-            elif len(batch_num_crops) != len(batched_images):
-                 logger.error(f"CRITICAL: batch_num_crops length ({len(batch_num_crops)}) != batch size ({len(batched_images)}). Forcing to list of zeros.")
-                 batch_num_crops = [0] * len(batched_images)
-
-
-            # Ensure text_with_crops is a mutable list copy
-            text_with_crops = list(text)
+            # Replace image tokens by the full expanded sequence
+            batch_num_crops = to_py_obj(image_inputs.pop("num_crops"))
+            text_with_crops = text
             for batch_idx, (prompt, images_for_item, num_crops_for_item) in enumerate(zip(text, batched_images, batch_num_crops)):
                 image_indexes = [m.start() for m in re.finditer(self.boi_token, prompt)]
 
                 if len(images_for_item) != len(image_indexes):
-                     # Use images_for_item in error message
                     raise ValueError(
-                        f"Batch item {batch_idx}: Prompt contained {len(image_indexes)} image tokens but received {len(images_for_item)} images."
+                        f"Prompt contained {len(image_indexes)} image tokens but received {len(images_for_item)} images."
                     )
                 
-                # Ensure num_crops_for_item used in zip is iterable and structured correctly
-                iterable_num_crops_for_item = num_crops_for_item
+                iterable_num_crops = num_crops_for_item
+                
                 if isinstance(num_crops_for_item, int):
-                    # If int, create a list: [int_value, 0, 0,...] matching length of image_indexes
-                    if len(image_indexes) > 0:
-                         iterable_num_crops_for_item = [num_crops_for_item] + [0] * (len(image_indexes) - 1)
-                    else:
-                         iterable_num_crops_for_item = [] # No image tokens found
-                elif not hasattr(num_crops_for_item, '__iter__') or isinstance(num_crops_for_item, (str, bytes)):
-                    # Handle other non-iterable types if necessary (e.g., log and create default)
-                    logger.warning(f"Batch item {batch_idx}: Unexpected type/structure for num_crops: {type(num_crops_for_item)}. Assuming no crops.")
-                    iterable_num_crops_for_item = [0] * len(image_indexes) # Default to list of 0s
-                    pass 
+                        if len(image_indexes) > 0:
+                            iterable_num_crops = [num_crops_for_item] + [0] * (len(image_indexes) - 1)
+                        else:
+                            iterable_num_crops = []
 
-                # Use the processed variable 'iterable_num_crops_for_item' in the zip
-                current_prompt = prompt # Work on a copy for modification within this inner loop
-                for num, idx in reversed(list(zip(iterable_num_crops_for_item, image_indexes))):
-                    # Ensure num is treated as an integer for the check and range
-                    if isinstance(num, int) and num > 0: # Check if it's a positive integer
+                # Insert additional image tokens for Pan-and-Scan crops
+                for num, idx in reversed(list(zip(iterable_num_crops, image_indexes))):
+                    if isinstance(num, int) and num > 0:
                         formatted_image_text = (
                             f"Here is the original image {self.boi_token} and here are some crops to help you see better "
                             + " ".join([self.boi_token] * num)
                         )
-                        current_prompt = current_prompt[:idx] + formatted_image_text + current_prompt[idx + len(self.boi_token) :]
-                # Update the list text_with_crops with the potentially modified prompt
-                text_with_crops[batch_idx] = current_prompt
+                        prompt = prompt[:idx] + formatted_image_text + prompt[idx + len(self.boi_token) :]
+                        text_with_crops[batch_idx] = prompt
 
-            # Use the modified list for replacing placeholders
-            text = [p.replace(self.boi_token, self.full_image_sequence) for p in text_with_crops]
+            # Expand placeholder image tokens to the full image token sequence
+            text = [prompt.replace(self.boi_token, self.full_image_sequence) for prompt in text]
 
         return_tensors = output_kwargs["text_kwargs"].pop("return_tensors", None)
+        # text_inputs = self.tokenizer(text=text, **output_kwargs["text_kwargs"], return_tensors="np")
 
-        if text: # Check if text is not None or empty
-            bos = self.tokenizer.bos_token
-            if bos: 
-                 n = len(bos)
-                 text = [x[i + n:] if (i := x.find(bos)) != -1 and x.startswith(bos) else x for x in text]
-        else: 
-             if text is None: text = [""] * len(batched_images) if batched_images else []
+        # Fix double BOS tokens
+        bos = self.tokenizer.bos_token
+        n = len(bos)
+        text = [x[i + n:] if (i := x.find(bos)) != -1 else x for x in text]
 
         text_inputs = self.tokenizer(text=text, **output_kwargs["text_kwargs"])
 
-        if images is not None: # Only add if images were processed
-             input_ids = text_inputs["input_ids"]
-             image_token_id = getattr(self, "image_token_id", None) # Safer way to get attribute
-             if image_token_id is not None:
-                  mm_token_type_ids = [[1 if y == image_token_id else 0 for y in x] for x in input_ids]
-                  text_inputs["token_type_ids"] = mm_token_type_ids
-             else:
-                  logger.warning("image_token_id not found in processor. Cannot generate token_type_ids.")
-
-        # Combine text and image inputs
-        if 'pixel_values' not in image_inputs and images is not None:
-             logger.warning("pixel_values missing from image_inputs after processing.")
-
+        # Add token type ids manually, as tokenizer can't do arbitrary position token types
+        # [TODO] FAILS for batched tokens since text_inputs["input_ids"] is a list of lists, so np.array creates an object!
+        input_ids = text_inputs["input_ids"]
+        image_token_id = self.image_token_id
+        mm_token_type_ids = [[1 if y == image_token_id else 0 for y in x] for x in input_ids]
+        # array_ids = np.array(text_inputs["input_ids"])
+        # mm_token_type_ids = np.zeros_like(text_inputs["input_ids"])
+        # mm_token_type_ids[array_ids == self.image_token_id] = 1
+        # text_inputs = {k: v.tolist() for k, v in text_inputs.items()}  # in case user requested list inputs
+        text_inputs["token_type_ids"] = mm_token_type_ids#.tolist()
         return BatchFeature(data={**text_inputs, **image_inputs}, tensor_type=return_tensors)
-
-    try:
-        original_signature = inspect.signature(transformers.models.gemma3.processing_gemma3.Gemma3Processor.__call__)
-        new_signature = inspect.signature(__call__)
-        orig_params = {p.name: p.kind for p in original_signature.parameters.values()}
-        new_params = {p.name: p.kind for p in new_signature.parameters.values()}
-        if orig_params != new_params:
-             logger.warning(f"Unsloth: Signature mismatch patching Gemma3Processor. Patching anyway. Check compatibility.")
+    pass
+    old_keys = inspect.signature(transformers.models.gemma3.processing_gemma3.Gemma3Processor.__call__).parameters
+    new_keys = inspect.signature(__call__).parameters
+    if old_keys != new_keys:
+        print("Unsloth: Failed to patch Gemma3Processor.")
+    else:
         transformers.models.gemma3.processing_gemma3.Gemma3Processor.__call__ = __call__
-        logger.info("Unsloth: Successfully patched Gemma3Processor.__call__.")
-    except AttributeError:
-        logger.error("Unsloth: Failed to find original Gemma3Processor.__call__ to patch.") 
-    except Exception as e:
-        logger.error(f"Unsloth: An error occurred during Gemma3Processor patching: {e}") 
-
     return
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3Processor)
