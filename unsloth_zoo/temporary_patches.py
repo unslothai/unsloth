@@ -37,21 +37,6 @@ torch_compile_options = {
 global TEMPORARY_PATCHES
 TEMPORARY_PATCHES = []
 
-# Unsloth Zoo - Utilities for Unsloth
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-# ... (License header remains the same) ...
-
-import re
-from typing import Union, List, Any, Tuple, Dict, Callable, Optional
-import inspect
-import torch
-import os
-import logging # Use logging instead of print for warnings/errors if desired
-
-logger = logging.getLogger(__name__) # Added logger setup
-
-# ... (Compile options and TEMPORARY_PATCHES setup remains the same) ...
-
 def patch_Gemma3Processor():
     try:
         import transformers.models.gemma3.processing_gemma3
