@@ -44,8 +44,15 @@ def patch_Gemma3Processor():
     except:
         return
     from transformers.models.gemma3.processing_gemma3 import (
-        BatchFeature, Gemma3ProcessorKwargs, ImageInput, PreTokenizedInput,
-        TextInput, Unpack, make_nested_list_of_images, to_py_obj)
+        BatchFeature,
+        Gemma3ProcessorKwargs,
+        ImageInput,
+        PreTokenizedInput,
+        TextInput,
+        Unpack,
+        make_nested_list_of_images,
+        to_py_obj,
+    )
 
     def __call__(
         self,
@@ -185,8 +192,12 @@ def patch_Gemma3ForConditionalGeneration():
     except:
         return
     from transformers.models.gemma3.modeling_gemma3 import (
-        Cache, Gemma3CausalLMOutputWithPast, HybridCache,
-        is_torchdynamo_compiling, logger)
+        Cache,
+        Gemma3CausalLMOutputWithPast,
+        HybridCache,
+        is_torchdynamo_compiling,
+        logger,
+    )
 
     def forward(
         self,
@@ -395,8 +406,7 @@ def patch_Gemma3ForConditionalGeneration_causal_mask():
         import transformers.models.gemma3.modeling_gemma3
     except:
         return
-    from transformers.models.gemma3.modeling_gemma3 import (HybridCache,
-                                                            StaticCache)
+    from transformers.models.gemma3.modeling_gemma3 import HybridCache, StaticCache
 
     def _update_causal_mask(
         self,
@@ -609,8 +619,14 @@ def patch_Gemma3Attention():
     except:
         return
     from transformers.models.gemma3.modeling_gemma3 import (
-        ALL_ATTENTION_FUNCTIONS, Cache, FlashAttentionKwargs, Unpack,
-        apply_rotary_pos_emb, eager_attention_forward, logger)
+        ALL_ATTENTION_FUNCTIONS,
+        Cache,
+        FlashAttentionKwargs,
+        Unpack,
+        apply_rotary_pos_emb,
+        eager_attention_forward,
+        logger,
+    )
 
     scaled_dot_product_attention = torch.nn.functional.scaled_dot_product_attention
 
@@ -724,10 +740,14 @@ def patch_SmolVLMForConditionalGeneration_forward():
     from typing import List, Optional, Tuple, Union
 
     from transformers.models.smolvlm.modeling_smolvlm import (
-        CrossEntropyLoss, SmolVLMCausalLMOutputWithPast,
-        SmolVLMForConditionalGeneration)
+        CrossEntropyLoss,
+        SmolVLMCausalLMOutputWithPast,
+        SmolVLMForConditionalGeneration,
+    )
 
-    # Check if already patched
+    # Check if the fix is already present (either from Transformers library or previous Unsloth patch)
+    # We look for the specific device handling code that fixes torch.compile indentation errors,
+    # rather than an Unsloth marker, to handle cases where the fix comes from upstream
     current_forward_source = inspect.getsource(
         transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward
     )
