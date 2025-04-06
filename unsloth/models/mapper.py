@@ -738,6 +738,16 @@ __INT_TO_FLOAT_MAPPER = \
         "canopylabs/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
     ),
+    "unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-dynamic-bnb-4bit" : (
+        "unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth",
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-bnb-4bit",
+    ),
+    "unsloth/Llama-4-Scout-17B-16E-unsloth-dynamic-bnb-4bit" : (
+        "unsloth/Llama-4-Scout-17B-16E-unsloth",
+        "meta-llama/Llama-4-Scout-17B-16E",
+        "unsloth/Llama-4-Scout-17B-16E-unsloth-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
