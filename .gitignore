@@ -1,0 +1,86 @@
+# Python bytecode files
+*.pyc
+*.pyo
+__pycache__/
+
+# Distribution/Packaging
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+bin/
+pip-wheel-metadata/
+
+# PyInstaller
+#  Typically, pyinstaller will put a lot of files in the `dist/` directory.
+#  These are temporary files that can be ignored.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.coverage
+*.cover
+nosetests.xml
+coverage.xml
+*.hypothesis/
+*.pytest_cache/
+
+# Pyre type checker
+.pyre/
+
+# mypy type checker
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# dotenv files
+.env
+.env.*
+
+# Virtualenv
+venv/
+.venv
+ENV/
+env/
+venv.bak/
+env.bak/
+
+# poetry
+*.toml.lock
+
+# conda
+.conda/
+
+# Eclipse
+.project
+
+# JetBrains IDEs
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# Pytest
+*.log
+
+# Black configuration file
+black/
