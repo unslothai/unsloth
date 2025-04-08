@@ -66,11 +66,6 @@ __all__ = [
     "FastBaseModel",
 ]
 
-global FORCE_EAGER_ATTENTION
-FORCE_EAGER_ATTENTION = [
-    "pixtral",    # Pixtral SDPA not implemented
-]
-
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 global PROMPT_LOOPKUP
@@ -145,8 +140,11 @@ def unsloth_base_fast_generate(
         kwargs[key] = 1
     global PROMPT_LOOPKUP
     if arch not in PROMPT_LOOPKUP:
-        PROMPT_LOOPKUP[arch] = True
-
+        # Only works for VLMs and not LLMs!
+        if is_vlm:
+            PROMPT_LOOPKUP[arch] = False
+        else:
+            PROMPT_LOOPKUP[arch] = True
     if bsz == 1 and PROMPT_LOOPKUP[arch]:
         kwargs["prompt_lookup_num_tokens"] = 3
 
@@ -237,8 +235,14 @@ class FastBaseModel:
         tokenizer_name    = None,
         auto_model        = AutoModelForVision2Seq,
         use_gradient_checkpointing = "unsloth",
+        supports_sdpa     = True,
         **kwargs,
     ):
+        if model_types is None:
+            raise RuntimeError(
+                "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
+            )
+
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
             print(
@@ -299,16 +303,11 @@ class FastBaseModel:
             bnb_compute_dtype = torch.float16
             do_forced_float32 = True
         pass
-
-        global FORCE_EAGER_ATTENTION
-        attn_implementation = "sdpa"
-        for disable_name in FORCE_EAGER_ATTENTION:
-            if (disable_name.lower() == model_type_arch.lower() or \
-                disable_name.lower() in model_name.lower()):
-
-                print(f"Unsloth: {model_type_arch} does not support SDPA - switching to eager!")
-                attn_implementation = "eager"
-                break
+        # Stop SDPA for some archs like Pixtral / Mistral3
+        kwargs["attn_implementation"] = "sdpa"
+        if not supports_sdpa:
+            print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to eager!")
+            del kwargs["attn_implementation"]
         pass
 
         bnb_config = None
@@ -347,8 +346,6 @@ class FastBaseModel:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         pass
 
-        kwargs.pop("attn_implementation", None); # No need since we auto call it
-
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
@@ -362,7 +359,7 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = attn_implementation,
+            # attn_implementation   = attn_implementation,
             **kwargs,
         )
         # Return old flag
@@ -431,11 +428,12 @@ class FastBaseModel:
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
-        if model.generate.__name__ != "unsloth_base_fast_generate":
-            model._old_generate = model.generate
-            unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_base_fast_generate, model)
-
+        if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0":
+            if model.generate.__name__ != "unsloth_base_fast_generate":
+                model._old_generate = model.generate
+                unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
+                model.generate = types.MethodType(unsloth_base_fast_generate, model)
+        pass
         # Post patches
         model = FastBaseModel.post_patch_model(
             model,
