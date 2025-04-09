@@ -1,6 +1,6 @@
 ---
-name: Feature request
-about: "Suggest an idea: new algorithm, model, kernel, etc."
+name: 🚀 Feature request
+about: "Suggest an idea: new model, algorithm or feature etc."
 title: "[Feature]"
 labels: "feature request"
 assignees: ''
