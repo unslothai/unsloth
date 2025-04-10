@@ -1,7 +1,7 @@
 ---
-name: Submit question
+name: ❓ Submit question
 about: Ask a general question about unsloth
-title: "[QST]"
+title: "[Question]"
 labels: "question"
 assignees: ''
 
