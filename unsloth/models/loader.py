@@ -339,8 +339,10 @@ class FastLanguageModel(FastLlamaModel):
 
         if fast_inference:
             import platform
-            if platform.system().lower() == 'windows':
-                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+            from transformers.utils.import_utils import _is_package_available
+            _vllm_available = _is_package_available("vllm")
+            if _vllm_available == False:
+                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             pass
             from unsloth_zoo.vllm_utils import (
