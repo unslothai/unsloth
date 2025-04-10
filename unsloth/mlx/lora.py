@@ -53,7 +53,7 @@ def train_model(
     mx.random.seed(args.seed)
     model.train()
     if args.lr_scheduler_type == "linear":
-        arguments = [0.0,args.learning_rate,args.warmup_steps]
+        arguments = [args.learning_rate,0.0,args.max_steps-args.warmup_steps]
     elif args.lr_scheduler_type == "exponential_decay":
         arguments = [args.learning_rate,args.weight_decay]
     elif args.lr_scheduler_type == "step_decay":
