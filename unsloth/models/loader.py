@@ -561,6 +561,7 @@ class FastModel(FastBaseModel):
         except Exception as error:
             peft_error = str(error)
             is_peft = False
+            print("Unsloth: Failed to get peft config: {peft_error}.")
         pass
 
         # Both config.json and adapter_config.json should not exist!
