@@ -1,0 +1,3 @@
+runpod
+unsloth[cu118-torch240]
+tensorboardx

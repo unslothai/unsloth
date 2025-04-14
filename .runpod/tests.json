@@ -1,0 +1,37 @@
+{
+  "tests": [
+    {
+      "name": "unsloth_tiny_sft_test",
+      "input": {
+        "model_name": "unsloth/tinyllama-bnb-4bit",
+        "load_in_4bit": true,
+        "dataset": "vicgalle/alpaca-gpt4",
+        "output_dir": "/workspace/out/unsloth-test",
+        "adapter": "qlora",
+        "num_epochs": 1,
+        "batch_size": 1
+      },
+      "timeout": 100000
+    }
+  ],
+  "config": {
+    "gpuTypeId": "NVIDIA GeForce RTX 4090",
+    "gpuCount": 1,
+    "env": [
+      {
+        "key": "DISABLE_LOG_STATS",
+        "value": "true"
+      }
+    ],
+    "allowedCudaVersions": [
+      "12.7",
+      "12.6",
+      "12.5",
+      "12.4",
+      "12.3",
+      "12.2",
+      "12.1",
+      "12.0"
+    ]
+  }
+}

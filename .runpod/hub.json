@@ -1,0 +1,178 @@
+{
+  "title": "Unsloth Fine-Tuning",
+  "description": "Memory-efficient, lightning-fast fine-tuning of LLMs using Unsloth and QLoRA. Built for serverless execution on Runpod.",
+  "type": "serverless",
+  "category": "language",
+  "iconUrl": "https://cdn-avatars.huggingface.co/v1/production/uploads/62ecdc18b72a69615d6bd857/E4lkPz1TZNLzIFr_dR273.png",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 200,
+    "gpuCount": 1,
+    "allowedCudaVersions": [
+      "12.7",
+      "12.6",
+      "12.5",
+      "12.4",
+      "12.3",
+      "12.2",
+      "12.1",
+      "12.0",
+      "11.8"
+    ],
+    "presets": [],
+    "env": [
+      {
+        "key": "HF_TOKEN",
+        "input": {
+          "name": "Hugging Face Token",
+          "type": "string",
+          "description": "Your Hugging Face access token.",
+          "default": "",
+          "advanced": false
+        }
+      },
+      {
+        "key": "WANDB_API_KEY",
+        "input": {
+          "name": "Weights & Biases API Key",
+          "type": "string",
+          "description": "API key for Weights & Biases logging.",
+          "default": "",
+          "advanced": false
+        }
+      },
+      {
+        "key": "UNSLOTH_RETURN_LOGITS",
+        "input": {
+          "name": "Return Logits",
+          "type": "boolean",
+          "description": "Return logits from model outputs (useful for evaluation).",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_COMPILE_DISABLE",
+        "input": {
+          "name": "Disable Auto Compiler",
+          "type": "boolean",
+          "description": "Disables the auto torch compiler (for debugging).",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_DISABLE_FAST_GENERATION",
+        "input": {
+          "name": "Disable Fast Generation",
+          "type": "boolean",
+          "description": "Disables fast generation behavior for generic models.",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_ENABLE_LOGGING",
+        "input": {
+          "name": "Enable Logging",
+          "type": "boolean",
+          "description": "Enable detailed logging for compiler internals.",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_FORCE_FLOAT32",
+        "input": {
+          "name": "Force Float32",
+          "type": "boolean",
+          "description": "Force float32 precision instead of mixed float16.",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_STUDIO_DISABLED",
+        "input": {
+          "name": "Disable Unsloth Studio",
+          "type": "boolean",
+          "description": "Disables Unsloth Studio features.",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_COMPILE_DEBUG",
+        "input": {
+          "name": "Compile Debug Logs",
+          "type": "boolean",
+          "description": "Enable verbose debug logs for compilation.",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_COMPILE_MAXIMUM",
+        "input": {
+          "name": "Max Compile Optimizations",
+          "type": "boolean",
+          "description": "Enable maximum compilation optimizations (experimental).",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_COMPILE_IGNORE_ERRORS",
+        "input": {
+          "name": "Ignore Compile Errors",
+          "type": "boolean",
+          "description": "Allow ignoring compile errors (disables fullgraph mode).",
+          "default": true,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_FULLGRAPH",
+        "input": {
+          "name": "Enable Fullgraph",
+          "type": "boolean",
+          "description": "Enable fullgraph mode in torch.compile.",
+          "default": false,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      },
+      {
+        "key": "UNSLOTH_DISABLE_AUTO_UPDATES",
+        "input": {
+          "name": "Disable Auto Updates",
+          "type": "boolean",
+          "description": "Disables automatic updates to the Unsloth model zoo.",
+          "default": true,
+          "trueValue": "1",
+          "falseValue": "0",
+          "advanced": true
+        }
+      }
+    ]
+  }
+}
