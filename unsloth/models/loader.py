@@ -14,6 +14,7 @@
 
 from ._utils import (
     is_bfloat16_supported,
+    is_vLLM_available,
     HAS_FLASH_ATTENTION,
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
@@ -338,10 +339,7 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
-            import platform
-            from transformers.utils.import_utils import _is_package_available
-            _vllm_available = _is_package_available("vllm")
-            if _vllm_available == False:
+            if is_vLLM_available() == False:
                 print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             pass
