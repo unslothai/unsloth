@@ -698,7 +698,7 @@ class FastModel(FastBaseModel):
                 disable                 = False,
                 return_logits           = return_logits,
                 trust_remote_code       = trust_remote_code,
-                unsloth_force_compile = unsloth_force_compile,
+                unsloth_force_compile   = unsloth_force_compile,
             )
         pass
 
