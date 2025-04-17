@@ -16,18 +16,10 @@ import warnings, importlib, sys
 from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
-import torch
+
 # Check if modules that need patching are already imported
 critical_modules = ['trl', 'transformers', 'peft']
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
-
-def get_device_type():
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.xpu.is_available():
-        return "xpu"
-
-DEVICE_TYPE = get_device_type()
 
 # This check is critical because Unsloth optimizes these libraries by modifying
 # their code at import time. If they're imported first, the original (slower, 
@@ -83,6 +75,14 @@ except ModuleNotFoundError:
 except Exception as exception:
     raise exception
 pass
+
+def get_device_type():
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.xpu.is_available():
+        return "xpu"
+
+DEVICE_TYPE = get_device_type()
 
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
