@@ -46,13 +46,6 @@ pass
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
-# Reduce VRAM usage by reducing fragmentation
-# And optimize pinning of memory
-if DEVICE_TYPE == "cuda":
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
-        "expandable_segments:True,"\
-        "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-
 # [TODO] Check why some GPUs don't work
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
@@ -83,6 +76,13 @@ def get_device_type():
         return "xpu"
 
 DEVICE_TYPE = get_device_type()
+
+# Reduce VRAM usage by reducing fragmentation
+# And optimize pinning of memory
+if DEVICE_TYPE == "cuda":
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
+        "expandable_segments:True,"\
+        "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
 
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
