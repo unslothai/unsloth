@@ -1160,6 +1160,7 @@ def unsloth_compile_transformers(
     import_from_cache       = False,
     disable                 = False,
     return_logits           = False,
+    unsloth_force_compile   = False
 ):
     if Version(torch_version) < Version("2.4.0"):
         print(
@@ -1170,12 +1171,12 @@ def unsloth_compile_transformers(
         )
         return
     pass
-    if trust_remote_code:
+    if trust_remote_code and unsloth_force_compile == False:
         print(
             "Unsloth: We can't trace models if `trust_remote_code = True`, "\
             "so turning off some optimizations!"
         )
-        return
+        return model_types, False
     model_types = list(dict().fromkeys(model_types).keys())
     if disable: return model_types, False
 
