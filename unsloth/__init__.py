@@ -86,7 +86,7 @@ pass
 if major_torch == 2 and minor_torch >= 6:
     DEVICE_TYPE = torch.accelerate.current_accelerator().device_type
 else:
-    DEVICE_TYPE = None
+    DEVICE_TYPE = "cuda" if torch.cuda.is_avaliable() else None
 
 # First check if CUDA is available ie a NVIDIA GPU is seen
 if DEVICE_TYPE is None:
