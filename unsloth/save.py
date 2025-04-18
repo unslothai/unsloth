@@ -895,7 +895,7 @@ def install_llama_cpp_old(version = -10):
         raise RuntimeError(
             "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
             "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
-            "But we expect this file to exist! Check if the file exists under llama.cp and investigate the building process of llama.cpp (make/cmake)"
+            "But we expect this file to exist! Check if the file exists under llama.cpp and investigate the building process of llama.cpp (make/cmake)"
         )
     pass
 pass
@@ -1093,7 +1093,7 @@ def save_to_gguf(
             raise RuntimeError(
                 "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
                 "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
-                "But we expect this file to exist! Check if the file exists under llama.cp and investigate the building process of llama.cpp (make/cmake)"
+                "But we expect this file to exist! Check if the file exists under llama.cpp and investigate the building process of llama.cpp (make/cmake)"
             )
         pass
 
