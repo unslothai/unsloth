@@ -69,21 +69,6 @@ except Exception as exception:
     raise exception
 pass
 
-def get_device_type():
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.xpu.is_available():
-        return "xpu"
-
-DEVICE_TYPE = get_device_type()
-
-# Reduce VRAM usage by reducing fragmentation
-# And optimize pinning of memory
-if DEVICE_TYPE == "cuda":
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
-        "expandable_segments:True,"\
-        "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
 torch_version = torch.__version__.split(".")
@@ -97,9 +82,24 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
+# torch.accelerate are supported after torch2.6
+if major_torch == 2 and minor_torch >= 6:
+    DEVICE_TYPE = torch.accelerate.current_accelerator().device_type
+else:
+    DEVICE_TYPE = None
+
 # First check if CUDA is available ie a NVIDIA GPU is seen
+if DEVICE_TYPE is None:
+    raise NotImplementedError("Unsloth: Unsloth should use GPU accelerators.\n")
 if not torch.cuda.is_available() and not torch.xpu.is_available():
     raise NotImplementedError("Unsloth: No NVIDIA GPU or Intel XPU found? Unsloth currently only supports NVIDIA GPU or Intel XPU!")
+
+# Reduce VRAM usage by reducing fragmentation
+# And optimize pinning of memory
+if DEVICE_TYPE == "cuda":
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
+        "expandable_segments:True,"\
+        "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
 
 # Fix Xformers performance issues since 0.0.25
 import importlib.util
