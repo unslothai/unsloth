@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .llama   import FastLlamaModel
-from .loader  import FastLanguageModel, FastVisionModel, FastTextModel, FastModel
-from .mistral import FastMistralModel
-from .qwen2   import FastQwen2Model
-from .granite import FastGraniteModel
-from .dpo     import PatchDPOTrainer, PatchKTOTrainer
-from ._utils  import is_bfloat16_supported, __version__
-from .rl      import PatchFastRL, vLLMSamplingParams
+from .llama     import FastLlamaModel
+from .loader    import FastLanguageModel, FastVisionModel, FastTextModel, FastModel
+from .mistral   import FastMistralModel
+from .qwen2     import FastQwen2Model
+from .qwen3     import FastQwen3Model
+from .qwen3_moe import FastQwen3MoeModel
+from .granite   import FastGraniteModel
+from .dpo       import PatchDPOTrainer, PatchKTOTrainer
+from ._utils    import is_bfloat16_supported, __version__
+from .rl        import PatchFastRL, vLLMSamplingParams
