@@ -1090,11 +1090,11 @@ def save_to_gguf(
         elif os.path.exists("llama.cpp/build/bin/quantize"):
             quantize_location = "llama.cpp/build/bin/quantize"
         else:
-        raise RuntimeError(
-            "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
-            "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
-            "But we expect this file to exist! Check if the file exists under llama.cp and investigate the building process of llama.cpp (make/cmake)"
-        )
+            raise RuntimeError(
+                "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
+                "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
+                "But we expect this file to exist! Check if the file exists under llama.cp and investigate the building process of llama.cpp (make/cmake)"
+            )
         pass
 
         # See https://github.com/unslothai/unsloth/pull/730
