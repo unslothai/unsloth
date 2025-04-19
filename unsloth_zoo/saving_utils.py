@@ -622,16 +622,14 @@ def merge_and_overwrite_lora(
     elif save_method == "merged_4bit":
         print(f"Unsloth: Saving model 4bit...")
         base_model = base_model.merge_and_unload()
+        skipped_modules, quantized_modules = find_skipped_quantized_modules(base_model)
+        if len(skipped_modules) > 0:
+            # Reconstruct skipped modules so that it can be loaded
+            base_model.config.quantization_config["llm_int8_skip_modules"] = skipped_modules
+
         base_model.save_pretrained(
             save_directory = save_directory,
         )
-        skipped_modules, quantized_modules = find_skipped_quantized_modules(base_model)
-
-        if len(skipped_modules) > 0:
-            base_model.config.quantization_config["llm_int8_skip_modules"] = skipped_modules
-            base_model.save_pretrained(
-                save_directory = save_directory,
-            )
     # Remove the quantization_config in the config.json file if it exists,
     # as we are exporting the model in 16-bit format.
 
