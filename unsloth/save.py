@@ -2301,6 +2301,17 @@ def unsloth_generic_save(
     maximum_memory_usage : float = 0.9,
 ):
     if token is None and push_to_hub: token = get_token()
+
+    if save_method == "merged_4bit":
+        raise RuntimeError(
+            "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"\
+            "to merge to GGUF or others later on. I suggest you to do this as a final step\n"\
+            "if you're planning to do multiple saves.\n"\
+            "If you are certain, change `save_method` to `merged_4bit_forced`."
+        )
+    elif save_method == "merged_4bit_forced":
+        save_method = "merged_4bit"
+    
     merge_and_overwrite_lora(
         get_model_name,
         model                = model,
@@ -2309,6 +2320,7 @@ def unsloth_generic_save(
         push_to_hub          = push_to_hub,
         private              = private,
         token                = token,
+        save_method          = save_method,
         output_dtype         = None,
         low_disk_space_usage = True,
         use_temp_file        = False,
