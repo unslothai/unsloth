@@ -84,8 +84,9 @@ pass
 
 # First check if accelerator (NVIDIA GPU or INTEL GPU) is available
 # torch.accelerator is only supported after torch2.6, will crush here if torch.version < 2.6
-# this pr is only an example for torch.accelerator, if we use this as an solution
-# should add more check and provide better way to support torch before 2.6
+# this pr is only an example for torch.accelerator, if we use torch.accelerator as an solution
+# should add more check and provide a better way to support torch before 2.6
+# for more info related to torch.accelerator, please check: https://pytorch.org/docs/stable/accelerator.html
 if not torch.accelerator.is_available():
     raise NotImplementedError("Unsloth: Unsloth should use GPU accelerators, didn't found accelerator\n")
 
@@ -205,7 +206,7 @@ if torch.accelerate.current_accelerator().device_type == "cuda":
             )
     pass
 elif torch.accelerate.current_accelerator().device_type == "xpu":
-    # currently intel xpu will not support bnb
+    # currently intel xpu will not support bnb, will add support in the future
     # TODO: check triton for intel installed properly.
     pass
 
