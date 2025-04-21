@@ -146,18 +146,14 @@ if DEVICE_TYPE == "cuda":
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
 elif DEVICE_TYPE == "xpu":
-    # all xpu device support BF16
-    SUPPORTS_BFLOAT16 = False
-
-    def is_bf16_supported(): 
-        return SUPPORTS_BFLOAT16
-    torch.xpu.is_bf16_supported = is_bf16_supported
+    SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 
 
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
+# here we did not change cuda specific code, only add a if check and tab for python grammar
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
