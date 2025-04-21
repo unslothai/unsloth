@@ -142,6 +142,8 @@ if torch.accelerate.current_accelerator().device_type == "cuda":
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
 elif torch.accelerate.current_accelerator().device_type == "xpu":
+    # torch.xpu.is_bf16_supported() didn't have including_emulation
+    # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 
 
