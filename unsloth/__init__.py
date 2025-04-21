@@ -148,6 +148,7 @@ elif torch.accelerate.current_accelerator().device_type == "xpu":
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
+# here we did not change cuda specific code, only add a if check and tab for python grammar
 import triton
 if torch.accelerate.current_accelerator().device_type == "cuda":
     libcuda_dirs = lambda: None
