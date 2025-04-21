@@ -82,21 +82,16 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
-# torch.accelerate are supported after torch2.6
-if major_torch == 2 and minor_torch >= 6:
-    DEVICE_TYPE = torch.accelerate.current_accelerator().device_type
-else:
-    DEVICE_TYPE = "cuda" if torch.cuda.is_avaliable() else None
-
-# First check if CUDA is available ie a NVIDIA GPU is seen
-if DEVICE_TYPE is None:
-    raise NotImplementedError("Unsloth: Unsloth should use GPU accelerators.\n")
-if not torch.cuda.is_available() and not torch.xpu.is_available():
-    raise NotImplementedError("Unsloth: No NVIDIA GPU or Intel XPU found? Unsloth currently only supports NVIDIA GPU or Intel XPU!")
+# First check if accelerator (NVIDIA GPU or INTEL GPU) is available
+# torch.accelerator is only supported after torch2.6, will crush here if torch.version < 2.6
+# this pr is only an example for torch.accelerator, if we use this as an solution
+# should add more check and provide better way to support torch before 2.6
+if not torch.accelerator.is_available():
+    raise NotImplementedError("Unsloth: Unsloth should use GPU accelerators, didn't found accelerator\n")
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
-if DEVICE_TYPE == "cuda":
+if torch.accelerate.current_accelerator().device_type == "cuda":
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
@@ -132,7 +127,7 @@ except:
 pass
 
 # Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda":
+if torch.accelerate.current_accelerator().device_type == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = (major_version >= 8)
 
@@ -145,20 +140,15 @@ if DEVICE_TYPE == "cuda":
         def is_bf16_supported(): return SUPPORTS_BFLOAT16
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
-elif DEVICE_TYPE == "xpu":
-    # all xpu device support BF16
-    SUPPORTS_BFLOAT16 = False
-
-    def is_bf16_supported(): 
-        return SUPPORTS_BFLOAT16
-    torch.xpu.is_bf16_supported = is_bf16_supported
+elif torch.accelerate.current_accelerator().device_type == "xpu":
+    SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 
 
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
-if DEVICE_TYPE == "cuda":
+if torch.accelerate.current_accelerator().device_type == "cuda":
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
         try: from triton.backends.nvidia.driver import libcuda_dirs
@@ -214,7 +204,7 @@ if DEVICE_TYPE == "cuda":
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
     pass
-elif DEVICE_TYPE == "xpu":
+elif torch.accelerate.current_accelerator().device_type == "xpu":
     # currently intel xpu will not support bnb
     # TODO: check triton for intel installed properly.
     pass
