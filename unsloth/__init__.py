@@ -97,7 +97,7 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
-# First check if CUDA is available ie a NVIDIA GPU is seen
+# First check if NVIDIA GPU or INTEL GPU is available
 if not torch.cuda.is_available() and not torch.xpu.is_available():
     raise NotImplementedError("Unsloth: No NVIDIA GPU or Intel XPU found? Unsloth currently only supports NVIDIA GPU or Intel XPU!")
 
@@ -146,6 +146,8 @@ if DEVICE_TYPE == "cuda":
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
 elif DEVICE_TYPE == "xpu":
+    # torch.xpu.is_bf16_supported() didn't have including_emulation
+    # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 
 
