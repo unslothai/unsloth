@@ -211,7 +211,7 @@ if DEVICE_TYPE == "cuda":
             )
     pass
 elif DEVICE_TYPE == "xpu":
-    # currently intel xpu will not support bnb
+    # currently intel xpu will not support bnb, will add support in the future
     # TODO: check triton for intel installed properly.
     pass
 
