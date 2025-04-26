@@ -37,7 +37,7 @@ triton = [
 ]
 
 huggingface = [
-    "unsloth_zoo>=2025.3.17",
+    "unsloth_zoo>=2025.4.1",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
