@@ -1,7 +1,7 @@
 ---
-name: Documentation
-about: Report incorrect or needed documentation to improve unsloth!
-title: "[DOC]"
+name: 📚 Documentation
+about: Report incorrect or needed docs for https://docs.unsloth.ai/
+title: "[Docs]"
 labels: documentation
 assignees: ''
 
