@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.3.17",
+    "unsloth_zoo>=2025.4.1",
     "torch>=2.4.0",
     "xformers>=0.0.27.post2",
     "bitsandbytes",
@@ -288,7 +288,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.3.17",
+    "unsloth_zoo>=2025.4.1",
     "packaging",
     "tyro",
     "transformers>=4.46.1,!=4.47.0",
