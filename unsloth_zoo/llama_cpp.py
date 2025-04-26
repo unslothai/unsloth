@@ -31,16 +31,6 @@ from functools import lru_cache
 import inspect
 import contextlib
 import os
-import importlib.util
-import tempfile
-import logging
-
-# Get a logger instance
-logger = logging.getLogger(__name__)
-# Configure logging basic level if not already configured elsewhere
-if not logger.hasHandlers():
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s: %(message)s')
-
 
 LLAMA_CPP_CONVERT_FILE = \
     "https://github.com/ggerganov/llama.cpp/raw/refs/heads/master/convert_hf_to_gguf.py"
@@ -350,203 +340,116 @@ def install_llama_cpp(
     return quantizer, converter
 pass
 
-# --- Helper to load module ---
-# Defined outside the main function for clarity
-def _load_module_from_path(filepath, module_name):
-    spec = importlib.util.spec_from_file_location(module_name, filepath)
-    if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load spec for module {module_name} at {filepath}")
-    module = importlib.util.module_from_spec(spec)
-    # Register module before execution to handle circular imports within the script if any
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception as e:
-        # Clean up registry if exec fails
-        del sys.modules[module_name]
-        raise ImportError(f"Failed to execute module {module_name} from {filepath}") from e
-    return module
-# --- End Helper ---
-
-
 
 @lru_cache(1)
 def _download_convert_hf_to_gguf(
     name = "unsloth_convert_hf_to_gguf",
 ):
     # All Unsloth Zoo code licensed under LGPLv3
-    # Downloads from llama.cpp's Github report
-
-    # Ensure llama.cpp directory exists
-    os.makedirs("llama.cpp", exist_ok=True)
-
-    supported_types = frozenset() # Initialize outside try block
-    temp_original_file_path = None # Initialize for finally block
-
+    # Downloads from llama.cpp's Github repo
     try:
-        # 1. Download the file
-        response = requests.get(LLAMA_CPP_CONVERT_FILE)
-        response.raise_for_status()
-        original_content = response.content
+        converter_latest = requests.get(LLAMA_CPP_CONVERT_FILE).content
+    except:
+        raise RuntimeError(
+            f"Unsloth: Could not obtain `{LLAMA_CPP_CONVERT_FILE}`.\n"\
+            f"Maybe you don't have internet ocnnection?"
+        )
 
-        # 2. Introspect Original Script for Supported Architectures
-        logger.info("Unsloth: Introspecting original downloaded script for architectures...")
-        with tempfile.NamedTemporaryFile(
-            mode='wb', suffix=".py", prefix="original_gguf_", dir="llama.cpp", delete=False
-        ) as temp_file:
-            temp_original_file_path = temp_file.name
-            temp_file.write(original_content)
-            temp_file.flush()
+    # Get all supported models
+    supported_types = re.findall(rb"@Model\.register\(([^)]{1,})\)", converter_latest)
+    supported_types = b", ".join(supported_types).decode("utf-8")
+    supported_types = re.findall(r"[\'\"]([^\'\"]{1,})[\'\"]", supported_types)
+    supported_types = frozenset(supported_types)
 
-        logger.debug(f"Loading module from temporary file: {temp_original_file_path}")
-        original_module_name = f"convert_hf_to_gguf_original_{os.path.basename(temp_original_file_path).split('.')[0]}"
-        module = _load_module_from_path(temp_original_file_path, original_module_name)
+    # Sometimes gguf.x cannot be found!
+    archs = list(set(re.findall(rb"[\n\s]gguf\.([\.A-Z\_0-9]{3,})[\n\s\,]", converter_latest)))
+    archs = [x.decode("utf-8") for x in archs]
+    all_edits = "\n\n".join(
+        f"try: gguf.{x}\nexcept: gguf.{x} = None"
+        for x in archs
+    ).encode("utf-8")
 
-        # --- Extract Supported Architectures (TEXT and VISION) ---
-        ModelBase = getattr(module, 'ModelBase', None)
-        ModelType = getattr(module, 'ModelType', None)
-
-        if ModelBase is None or ModelType is None:
-            logger.warning(
-                f"Unsloth: Failed to find 'ModelBase' or 'ModelType' in the original downloaded script. "
-                f"Structure might have changed. Cannot determine supported architectures."
+    # Make main() become main(args)
+    changes = [
+        (b"import gguf", b"import gguf\n" + all_edits,),
+        # (b"def main()",  b"def main(args)",),
+        # (b"args = parse_args()", b"",),
+    ]
+    for old, new in changes:
+        if old not in converter_latest:
+            raise RuntimeError(
+                f"Unsloth: Could not patch `{old}` - Report immediately as a bug - llama.cpp is broken!"
             )
-        elif not hasattr(ModelBase, '_model_classes') or not isinstance(ModelBase._model_classes, dict):
-             logger.warning(
-                f"Unsloth: 'ModelBase._model_classes' not found or not a dictionary in original script."
-                 " Cannot determine supported architectures."
-            )
-        else:
-            # Check for TEXT models
-            if hasattr(ModelType, 'TEXT') and ModelType.TEXT in ModelBase._model_classes:
-                if isinstance(ModelBase._model_classes[ModelType.TEXT], dict):
-                    text_archs = set(ModelBase._model_classes[ModelType.TEXT].keys())
-                    logger.info(f"Unsloth: Found supported TEXT architectures: {list(text_archs)}")
-                    supported_types.update(text_archs)
-                else:
-                    logger.warning("Unsloth: ModelBase._model_classes[ModelType.TEXT] is not a dictionary.")
-            else:
-                logger.info("Unsloth: No TEXT model architectures found registered in the original script.")
-
-            # Check for VISION models
-            if hasattr(ModelType, 'VISION') and ModelType.VISION in ModelBase._model_classes:
-                if isinstance(ModelBase._model_classes[ModelType.VISION], dict):
-                    vision_archs = set(ModelBase._model_classes[ModelType.VISION].keys())
-                    logger.info(f"Unsloth: Found supported VISION architectures: {list(vision_archs)}")
-                    supported_types.update(vision_archs)
-                else:
-                    logger.warning("Unsloth: ModelBase._model_classes[ModelType.VISION] is not a dictionary.")
-            else:
-                 logger.info("Unsloth: No VISION model architectures found registered in the original script.")
-        # --- End Architecture Extraction ---
-
-        # Convert final set to frozenset for immutability (good practice for cache keys/return values)
-        supported_types = frozenset(supported_types)
-
-        if not supported_types:
-             logger.warning(
-                f"Unsloth: No supported architectures (TEXT or VISION) could be determined from the original script."
-            )
-
-        # Cleanup module reference
-        if original_module_name in sys.modules:
-             del sys.modules[original_module_name]
-
-    except Exception as e:
-         logger.error(f"Unsloth: Error during download or introspection of original script: {e}", exc_info=True)
-         if temp_original_file_path and os.path.exists(temp_original_file_path):
-             try: os.remove(temp_original_file_path)
-             except OSError as remove_error: logger.warning(f"Could not remove temp file {temp_original_file_path}: {remove_error}")
-         raise RuntimeError(f"Failed during download/introspection of original script: {e}") from e
-    finally:
-        if temp_original_file_path and os.path.exists(temp_original_file_path):
-            try:
-                os.remove(temp_original_file_path)
-                logger.debug(f"Cleaned up temporary file: {temp_original_file_path}")
-            except OSError as remove_error:
-                logger.warning(f"Could not remove temporary file {temp_original_file_path}: {remove_error}")
-
-
-    # --- Proceed with patching and saving ---
-    try:
-        patched_content = original_content # Start patching from original
-
-        # 3. Apply Patches (gguf attributes, metadata branding - same logic as before)
-        logger.info("Unsloth: Applying patches...")
-        # Patch 1: gguf Attribute Handling
-        try:
-            archs = list(set(re.findall(rb"[\n\s]gguf\.([\.A-Z\_0-9]{3,})[\n\s\,]", patched_content)))
-            archs = [x.decode("utf-8") for x in archs if not x.startswith("_")]
-            if archs:
-                all_edits = "\n".join(f"try: gguf.{x}\nexcept AttributeError: gguf.{x} = None" for x in archs).encode("utf-8")
-                patched_content = re.sub(rb"(import gguf\s*\n)", rb"\1" + all_edits + b"\n\n", patched_content, count=1)
-                if original_content == patched_content and archs: logger.warning("Unsloth: gguf attribute patch did not seem to apply.")
-            else: logger.info("Unsloth: No specific gguf attributes found to patch.")
-        except Exception as e: logger.error(f"Unsloth: Error applying gguf attribute patch: {e}", exc_info=True); raise
-
-
-
-        # Patch 2: Metadata Branding
-        try:
-            metadata_patch_applied = False
-            new_patched_content = re.sub(
-                rb"(self\.metadata \= gguf\.Metadata\.load\(.+?\))([\n\r]+([\s\t]{4,}))",
-                rb"\1\n"
-                rb"\3if hasattr(self.metadata, 'quantized_by'): self.metadata.quantized_by = 'Unsloth'\n"
-                rb"\3if hasattr(self.metadata, 'repo_url'): self.metadata.repo_url = 'https://huggingface.co/unsloth'\n"
-                rb"\3if hasattr(self.metadata, 'tags'): self.metadata.tags = ['unsloth', 'llama.cpp']\n"
-                rb"\2",
-                patched_content, count=1, flags=re.MULTILINE
-            )
-            if new_patched_content != patched_content: patched_content = new_patched_content; metadata_patch_applied = True
-            if not metadata_patch_applied:
-                 if re.search(rb"self\.metadata \= gguf\.Metadata\.load\(", patched_content): logger.warning("Unsloth: Metadata branding patch target found, but regex failed to apply.")
-                 else: logger.warning("Unsloth: Metadata branding patch target 'self.metadata = gguf.Metadata.load(...)' not found.")
-        except Exception as e: logger.error(f"Unsloth: Error applying metadata branding patch: {e}", exc_info=True); raise
-
-
-        # 4. Write Patched File
-        patched_filename = f"llama.cpp/{name}.py"
-        logger.info(f"Unsloth: Saving patched script to {patched_filename}")
-        with open(patched_filename, "wb") as file:
-            file.write(patched_content)
-
-        # 5. Parse Flags from Patched Content (same logic as before)
-        logger.info("Unsloth: Parsing arguments from patched script...")
-        flags = re.findall(rb"parser\.add_argument\([\s]*[\"\']([^\"\']{1,})[\'\"]", patched_content)
-        if not flags: raise RuntimeError(f"Unsloth: Failed parsing {patched_filename} - no arguments found.")
-        defaults = re.findall(rb"parser\.add_argument\([\s]*[\"\']([^\"\']{1,})[\'\"][^\)]*(?:action=|default=)[\s]*([^,\s\)]+)", patched_content)
-        all_flags = {}
-        for flag_bytes, default_bytes in defaults:
-            flag = flag_bytes.decode("utf-8").lstrip('-').replace("-", "_")
-            default_str = default_bytes.decode("utf-8")
-            try:
-                if default_str == "store_true": default_val = False
-                elif default_str == "store_false": default_val = True
-                elif default_str == "None": default_val = None
-                else: default_val = eval(default_str)
-            except Exception: logger.warning(f"Could not eval default '{default_str}' for '{flag}'. Setting None."); default_val = None
-            all_flags[flag] = default_val
-        rest_flags = [fb.decode("utf-8").lstrip('-').replace("-", "_") for fb in flags if fb.decode("utf-8").lstrip('-').replace("-", "_") not in all_flags]
-        essential_flags = ["model", "outfile", "outtype"]
-        for flag in rest_flags:
-            if flag not in essential_flags: all_flags[flag] = None
-        for flag in essential_flags:
-             if flag not in all_flags and flag not in rest_flags: logger.warning(f"Essential flag '{flag}' potentially missing."); all_flags[flag] = None
-        logger.info("Unsloth: Successfully processed convert_hf_to_gguf.py.")
-        # Return path to PATCHED file and combined architectures set
-        return patched_filename, supported_types
-
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Unsloth: Network error downloading `{LLAMA_CPP_CONVERT_FILE}`: {e}") from e
-    except ImportError as e:
-         raise RuntimeError(f"Unsloth: Import error during module loading: {e}") from e
-    except Exception as e:
-        logger.error(f"Unsloth: Unexpected error after introspection: {e}", exc_info=True)
-        raise RuntimeError(f"Unsloth: Failed during patching/parsing of script content: {e}") from e
-
-
+        converter_latest = converter_latest.replace(old, new, 1)
     pass
+
+    # Fix metadata
+    converter_latest = re.sub(
+        rb"(self\.metadata \= .+?\(.+?\)"\
+        rb"[\n]{1,}([\s]{4,}))",
+        rb"\1"\
+        rb"if hasattr(self.metadata, 'quantized_by'): self.metadata.quantized_by = 'Unsloth'\n"\
+        rb"\2if hasattr(self.metadata, 'repo_url'): self.metadata.repo_url = 'https://huggingface.co/unsloth'\n"\
+        rb"\2if hasattr(self.metadata, 'tags'): self.metadata.tags = ['unsloth', 'llama.cpp']\n"\
+        rb"\2",
+        converter_latest,
+    )
+
+    # Write file
+    with open(f"llama.cpp/{name}.py", "wb") as file:
+        file.write(converter_latest)
+    filename = f"llama.cpp/{name}.py"
+
+    # Get all flags in parser
+    flags = re.findall(
+        rb"parser\.add_argument\([\s]{4,}[\"\']([^\"\']{1,})[\'\"]", converter_latest,
+    )
+    if len(flags) == 0:
+        raise RuntimeError("Unsloth: Failed parsing convert_hf_to_gguf.py with no flags found.")
+
+    # Get defaults
+    defaults = re.findall(
+        rb"parser\.add_argument\([\s]{4,}[\"\']([^\"\']{1,})[\'\"]"\
+        rb"[^\)]{1,}(?:action|default)[\s\=]{1,}([^\s\,]{1,})", converter_latest,
+    )
+    all_flags = {}
+    for flag, default in defaults:
+        flag = flag.decode("utf-8")
+        if flag.startswith("--"): flag = flag[2:]
+        flag = flag.replace("-", "_")
+
+        default = eval(default.decode("utf-8"))
+        if   default == "store_true":  default = True
+        elif default == "store_false": default = False
+        all_flags[flag] = default
+    pass
+
+    # Rest of flags
+    rest_flags = []
+    for flag in flags:
+        flag = flag.decode("utf-8")
+        if flag.startswith("--"): flag = flag[2:]
+        flag = flag.replace("-", "_")
+        if flag not in all_flags:
+            rest_flags.append(flag)
+    pass
+
+    for flag in ["outfile", "model"]:
+        if flag not in rest_flags:
+            raise RuntimeError(f"Unsloth: Failed parsing convert_hf_to_gguf.py with no `{flag}` found.")
+        else: rest_flags = [x for x in rest_flags if x != flag]
+    pass
+
+    # Rest are just None
+    for flag in rest_flags: all_flags[flag] = None
+
+    # Check mandatory flags:
+    for flag in ["outtype", "split_max_size", "dry_run"]:
+        if flag not in all_flags:
+            raise RuntimeError(f"Unsloth: Failed parsing convert_hf_to_gguf.py with no `{flag}` found.")
+    pass
+    return filename, supported_types
+pass
 
 
 def _split_str_to_n_bytes(split_str: str) -> int:
