@@ -43,6 +43,7 @@ dependencies = [
     "cut_cross_entropy",
     "pillow",
     "regex",
+    "gguf",
 ]
 
 [tool.setuptools.dynamic]
