@@ -66,11 +66,6 @@ __all__ = [
     "FastBaseModel",
 ]
 
-global FORCE_EAGER_ATTENTION
-FORCE_EAGER_ATTENTION = [
-    "pixtral",    # Pixtral SDPA not implemented
-]
-
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 global PROMPT_LOOPKUP
@@ -145,8 +140,11 @@ def unsloth_base_fast_generate(
         kwargs[key] = 1
     global PROMPT_LOOPKUP
     if arch not in PROMPT_LOOPKUP:
-        PROMPT_LOOPKUP[arch] = True
-
+        # Only works for VLMs and not LLMs!
+        if is_vlm:
+            PROMPT_LOOPKUP[arch] = False
+        else:
+            PROMPT_LOOPKUP[arch] = True
     if bsz == 1 and PROMPT_LOOPKUP[arch]:
         kwargs["prompt_lookup_num_tokens"] = 3
 
@@ -237,8 +235,16 @@ class FastBaseModel:
         tokenizer_name    = None,
         auto_model        = AutoModelForVision2Seq,
         use_gradient_checkpointing = "unsloth",
+        supports_sdpa     = True,
+        whisper_language  = None,
+        whisper_task      = None,
         **kwargs,
     ):
+        if model_types is None:
+            raise RuntimeError(
+                "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
+            )
+
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
             print(
@@ -299,16 +305,12 @@ class FastBaseModel:
             bnb_compute_dtype = torch.float16
             do_forced_float32 = True
         pass
-
-        global FORCE_EAGER_ATTENTION
-        attn_implementation = "sdpa"
-        for disable_name in FORCE_EAGER_ATTENTION:
-            if (disable_name.lower() == model_type_arch.lower() or \
-                disable_name.lower() in model_name.lower()):
-
-                print(f"Unsloth: {model_type_arch} does not support SDPA - switching to eager!")
-                attn_implementation = "eager"
-                break
+        # Stop SDPA for some archs like Pixtral / Mistral3
+        if not ("attn_implementation" in kwargs):
+            kwargs["attn_implementation"] = "sdpa"
+        if not supports_sdpa:
+            print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to eager!")
+            del kwargs["attn_implementation"]
         pass
 
         bnb_config = None
@@ -347,14 +349,13 @@ class FastBaseModel:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         pass
 
-        kwargs.pop("attn_implementation", None); # No need since we auto call it
-
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
         if do_forced_float32: torch_dtype = torch.bfloat16
+
         model = auto_model.from_pretrained(
             model_name,
             device_map              = device_map,
@@ -362,7 +363,7 @@ class FastBaseModel:
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
-            attn_implementation     = attn_implementation,
+            # attn_implementation   = attn_implementation,
             **kwargs,
         )
         # Return old flag
@@ -370,12 +371,23 @@ class FastBaseModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        auto_processor = AutoProcessor if auto_model is AutoModelForVision2Seq else AutoTokenizer
-        tokenizer = auto_processor.from_pretrained(
-            tokenizer_name,
-            padding_side = "right",
-            token        = token,
-        )
+        is_vlm = (auto_model is AutoModelForVision2Seq)
+        is_whisper = (whisper_language is not None and whisper_task is not None)
+        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
+        if whisper_language and whisper_task:
+           tokenizer = auto_processor.from_pretrained(
+                tokenizer_name,
+                padding_side = "right",
+                token        = token,
+                language     = whisper_language,
+                task         = whisper_task,
+            )
+        else:
+            tokenizer = auto_processor.from_pretrained(
+                tokenizer_name,
+                padding_side = "right",
+                token        = token,
+            )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
@@ -431,11 +443,12 @@ class FastBaseModel:
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
-        if model.generate.__name__ != "unsloth_base_fast_generate":
-            model._old_generate = model.generate
-            unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
-            model.generate = types.MethodType(unsloth_base_fast_generate, model)
-
+        if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0":
+            if model.generate.__name__ != "unsloth_base_fast_generate":
+                model._old_generate = model.generate
+                unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
+                model.generate = types.MethodType(unsloth_base_fast_generate, model)
+        pass
         # Post patches
         model = FastBaseModel.post_patch_model(
             model,
@@ -471,6 +484,7 @@ class FastBaseModel:
         modules_to_save            = None,
         init_lora_weights          = True,
         loftq_config               = {},
+        task_type                  = TaskType.CAUSAL_LM,
         temporary_location         = "_unsloth_temporary_saved_buffers",
         **kwargs,
     ):
@@ -494,7 +508,7 @@ class FastBaseModel:
             finetune_attention_modules = True
             finetune_mlp_modules       = True
         pass
-        if target_modules is None:
+        if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
                 finetune_vision_layers     = finetune_vision_layers,
@@ -505,7 +519,7 @@ class FastBaseModel:
         else:
             assert(type(target_modules) in (list, tuple,))
         pass
-
+        
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
@@ -518,7 +532,7 @@ class FastBaseModel:
             target_modules  = target_modules,
             lora_dropout    = lora_dropout,
             bias            = bias,
-            task_type       = TaskType.CAUSAL_LM,
+            task_type       = task_type,
         )
         model = prepare_model_for_kbit_training(
             model,
