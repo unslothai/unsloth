@@ -1654,7 +1654,7 @@ class FastLlamaModel:
             )
         pass
         if fast_inference:
-            if is_vLLM_available() == False:
+            if not is_vLLM_available():
                 print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             major_version, minor_version = torch.cuda.get_device_capability()

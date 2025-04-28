@@ -339,7 +339,7 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
-            if is_vLLM_available() == False:
+            if not is_vLLM_available():
                 print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             pass
