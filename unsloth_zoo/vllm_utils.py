@@ -59,7 +59,7 @@ pass
 
 def _return_nothing(*args, **kwargs): return None
 def _return_self(self, *args, **kwargs): return self
-
+def _return_self_tokenizer(self, *args, **kwargs): return self.tokenizer
 
 if importlib.util.find_spec("vllm") is not None:
 
@@ -195,9 +195,10 @@ if importlib.util.find_spec("vllm") is not None:
         except:
             pass
         try:
+            # New vLLM is now a class!
             import vllm.transformers_utils.tokenizer_group
-            vllm.transformers_utils.tokenizer_group.TokenizerGroup.get_lora_tokenizer = _return_nothing
-            vllm.transformers_utils.tokenizer_group.TokenizerGroup.get_lora_tokenizer_async = _return_nothing
+            vllm.transformers_utils.tokenizer_group.TokenizerGroup.get_lora_tokenizer = _return_self_tokenizer
+            vllm.transformers_utils.tokenizer_group.TokenizerGroup.get_lora_tokenizer_async = _return_self_tokenizer
         except:
             pass
     pass
