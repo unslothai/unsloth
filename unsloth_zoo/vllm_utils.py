@@ -198,6 +198,8 @@ if importlib.util.find_spec("vllm") is not None:
             import vllm.transformers_utils.tokenizer_group
             vllm.transformers_utils.tokenizer_group.TokenizerGroup.get_lora_tokenizer = _return_nothing
             vllm.transformers_utils.tokenizer_group.TokenizerGroup.get_lora_tokenizer_async = _return_nothing
+        except:
+            pass
     pass
 
     from .vllm_lora_request import LoRARequest as PatchedLoRARequest
