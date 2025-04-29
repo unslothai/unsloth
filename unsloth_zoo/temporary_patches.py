@@ -693,16 +693,18 @@ def patch_SmolVLMForConditionalGeneration_forward():
     new_keys = inspect.signature(forward).parameters
 
     if old_keys != new_keys:
-        print(
-            "Unsloth: Failed to patch SmolVLMForConditionalGeneration forward function."
-        )
+        pass
+        # print(
+        #     "Unsloth: Failed to patch SmolVLMForConditionalGeneration forward function."
+        # )
     else:
         transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward = (
             forward
         )
-        print(
-            "Unsloth: Successfully patched SmolVLMForConditionalGeneration for better torch.compile compatibility."
-        )
+        pass
+        # print(
+        #     "Unsloth: Successfully patched SmolVLMForConditionalGeneration for better torch.compile compatibility."
+        # )
 
     return
 
