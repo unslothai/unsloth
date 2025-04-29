@@ -738,6 +738,40 @@ __INT_TO_FLOAT_MAPPER = \
         "canopylabs/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
     ),
+    "unsloth/Qwen3-0.6B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-0.6B",
+        "Qwen/Qwen3-0.6B",
+        "unsloth/Qwen3-0.6B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-1.7B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-1.7B",
+        "Qwen/Qwen3-1.7B",
+        "unsloth/Qwen3-1.7B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-4B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-4B",
+        "Qwen/Qwen3-4B",
+        "unsloth/Qwen3-4B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-8B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-8B",
+        "Qwen/Qwen3-8B",
+        "unsloth/Qwen3-8B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-14B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-14B",
+        "Qwen/Qwen3-14B",
+        "unsloth/Qwen3-14B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-32B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-32B",
+        "Qwen/Qwen3-32B",
+        "unsloth/Qwen3-32B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-30B-A3B-bnb-4bit" : (
+        "unsloth/Qwen3-30B-A3B",
+        "Qwen/Qwen3-30B-A3B",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
