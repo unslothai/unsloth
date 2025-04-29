@@ -24,15 +24,15 @@ import os
 import requests
 import torch
 import gc
+import time
+
 
 def check_vllm_status():
     try:
         response = requests.get("http://localhost:8000/metrics")
         if response.status_code == 200:
-            print("vllm server is running")
             return True
     except requests.exceptions.ConnectionError:
-        print("vllm server is not running")
         return False
     pass
 pass
@@ -75,7 +75,12 @@ def async_load_vllm(
     pass
     if vllm_process is None:
         raise RuntimeError("Unsloth: vllm_process failed to load!")
-    check_vllm_status()
+    trial = 0
+    while not check_vllm_status():
+        if trial >= 100:
+            raise RuntimeError("Unsloth: vllm_process failed to load!")
+        trial += 1
+        time.sleep(1)
     return vllm_process
 pass
 
