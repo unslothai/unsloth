@@ -34,6 +34,7 @@ from .synthetic_configs import (
 
 class SyntheticDataKit:
     def __init__(
+        self,
         model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
         max_seq_length = 2048,
         gpu_memory_utilization = 0.9,
@@ -126,6 +127,19 @@ class SyntheticDataKit:
             time.sleep(1)
         self.vllm_process = vllm_process
         return
+    pass
+
+    def from_pretrained(
+        self,
+        model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
+        max_seq_length = 2048,
+        gpu_memory_utilization = 0.9,
+        float8_kv_cache = False,
+        conservativeness = 1.0,
+        token = None,
+        **kwargs,
+    ):
+        return self.__init__(*args, **kwargs)
     pass
 
     @staticmethod
