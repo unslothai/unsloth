@@ -19,19 +19,19 @@ synthetic_qa_config = """\
 paths:
   # Input data locations
   input:
-    pdf: "data/pdf"
-    html: "data/html"
-    youtube: "data/youtube"
-    docx: "data/docx"
-    ppt: "data/ppt"
-    txt: "data/txt"
+    pdf: "{data_output_location}/pdf"
+    html: "{data_output_location}/html"
+    youtube: "{data_output_location}/youtube"
+    docx: "{data_output_location}/docx"
+    ppt: "{data_output_location}/ppt"
+    txt: "{data_output_location}/txt"
 
   # Output locations
   output:
-    parsed: "data/output"      # Where parsed text files are saved
-    generated: "data/generated" # Where generated content is saved
-    cleaned: "data/cleaned"     # Where cleaned content is saved
-    final: "data/final"         # Where final formatted content is saved
+    parsed: "{data_output_location}/output"      # Where parsed text files are saved
+    generated: "{data_output_location}/generated" # Where generated content is saved
+    cleaned: "{data_output_location}/cleaned"     # Where cleaned content is saved
+    final: "{data_output_location}/final"         # Where final formatted content is saved
 
 # VLLM server configuration
 vllm:

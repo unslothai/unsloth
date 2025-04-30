@@ -26,16 +26,17 @@ import torch
 import gc
 import time
 from unsloth_zoo.vllm_utils import load_vllm
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoTokenizer
+import signal
+import atexit
+import weakref
 
 from .sythetic_configs import (
     synthetic_qa_config,
 )
 
 class SyntheticDataKit:
-
-    def __init__()
-    def load_model(
+    def __init__(
         model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
         max_seq_length = 2048,
         gpu_memory_utilization = 0.9,
@@ -54,13 +55,17 @@ class SyntheticDataKit:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
 
-        config = AutoConfig.from_pretrained(
+        self.config = AutoConfig.from_pretrained(
+            model_name,
+            token = token,
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             token = token,
         )
         engine_args = load_vllm(
             model_name             = model_name,
-            config                 = config,
+            config                 = self.config,
             gpu_memory_utilization = gpu_memory_utilization,
             max_seq_length         = max_seq_length,
             disable_log_stats      = True,
@@ -70,6 +75,7 @@ class SyntheticDataKit:
             enable_lora            = False,
             **kwargs,
         )
+
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
         if "compilation_config" in engine_args: del engine_args["compilation_config"]
@@ -89,13 +95,15 @@ class SyntheticDataKit:
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass
-        print(subprocess_commands)
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
+        atexit.register(self.destroy_vllm)
+        self._finalizer = weakref.finalize(self, self.destroy_vllm)
+
         ready_message_part = b"Starting vLLM API server on"
         ready = False
         while vllm_process.poll() is None:
@@ -134,8 +142,10 @@ class SyntheticDataKit:
         pass
     pass
 
-    @staticmethod
-    def destroy_vllm(vllm_process):
+    def destroy_vllm(self):
+        if not hasattr(self, vllm_process): return
+
+        vllm_process = self.vllm_process
         print("Attempting to terminate the VLLM server gracefully...")
         try:
             vllm_process.terminate()
@@ -161,40 +171,78 @@ class SyntheticDataKit:
             gc.collect()
     pass
 
-
-
-
-
-def configure_synthetic_data_kit(
-    model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
-    output_folder = "synthetic_data_output",
-    temperature = 0.7,
-    top_p = 0.95,
-    chunk_size = 4000,
-    overlap = 200,
-    max_tokens = 512,
-    default_num_pairs = 25,
-    cleanup_threshold = 1.0,
-    cleanup_batch_size = 4,
-    cleanup_temperature = 0.3,
-):
-    locations = "pdf,html,youtube,docx,ppt,txt,output,generated,cleaned,final"
-    locations = locations.split(",")
-    for path in locations:
-        os.makedirs(os.path.join(output_folder, path), exist_ok = True)
+    def __enter__(self): return self
+    def __exit__(self, *exc): self.destroy_vllm()
+    def __del__(self):
+        try:
+            self.destroy_vllm()
+        except Exception:
+            pass
     pass
 
-    config = synthetic_config_string\
-        .replace("{model_name}", str(model_name))\
-        .replace("{temperature}", str(temperature))\
-        .replace("{top_p}", str(top_p))\
-        .replace("{chunk_size}", str(chunk_size))\
-        .replace("{overlap}", str(overlap))\
-        .replace("{max_tokens}", str(max_tokens))\
-        .replace("{default_num_pairs}", str(default_num_pairs))\
-        .replace("{cleanup_threshold}", str(cleanup_threshold))\
-        .replace("{cleanup_batch_size}", str(cleanup_batch_size))\
-        .replace("{cleanup_temperature}", str(cleanup_temperature))
+    def truncate(self, filename = None):
+        # Truncates by summary and max generation
+        assert(filename is not None)
+        assert(os.path.exists(filename))
+        assert(hasattr(self, "tokenizer"))
 
-    return config
+        with open(filename, "r") as f: text = f.read()
+
+        max_tokens = self.max_seq_length - self.max_generation_tokens + self.max_generation_tokens + 2
+        input_ids = self.tokenizer(text).input_ids
+        length = len(text)
+        original_length = len(text)
+        original_n_tokens = len(input_ids)
+
+        if len(input_ids) > max_tokens:
+            # Will fix later, but for now we simply naively truncate by 10% increments
+            ratio = 0.9
+            length = original_length
+            while True:
+                input_ids = self.tokenizer(text[:length]).input_ids
+                if len(input_ids) < max_tokens or length == 0: break
+                length = int(original_length * ratio)
+                length = max(length, 0)
+                ratio -= 0.1
+            pass
+            print(f"Unsloth: Will truncate your data which has {original_n_tokens} tokens to {len(input_ids)} tokens.")
+
+            with open(filename, "w") as f: text = f.read()
+        pass
+        return filename
+    pass
+
+    def configure_synthetic_data_kit(
+        output_folder = "synthetic_data_output",
+        max_generation_tokens = 512,
+        temperature = 0.7,
+        top_p = 0.95,
+        chunk_size = 4000,
+        overlap = 200,
+        default_num_pairs = 25,
+        cleanup_threshold = 1.0,
+        cleanup_batch_size = 4,
+        cleanup_temperature = 0.3,
+    ):
+        locations = "pdf,html,youtube,docx,ppt,txt,output,generated,cleaned,final"
+        locations = locations.split(",")
+        for path in locations:
+            os.makedirs(os.path.join(output_folder, path), exist_ok = True)
+        pass
+
+        config = synthetic_config_string\
+            .replace("{data_output_location}", str(output_folder))\
+            .replace("{model_name}", str(model_name))\
+            .replace("{temperature}", str(temperature))\
+            .replace("{top_p}", str(top_p))\
+            .replace("{chunk_size}", str(chunk_size))\
+            .replace("{overlap}", str(overlap))\
+            .replace("{max_tokens}", str(max_generation_tokens))\
+            .replace("{default_num_pairs}", str(default_num_pairs))\
+            .replace("{cleanup_threshold}", str(cleanup_threshold))\
+            .replace("{cleanup_batch_size}", str(cleanup_batch_size))\
+            .replace("{cleanup_temperature}", str(cleanup_temperature))
+
+        with open("synthetic_data_kit_config.yaml", "w") as f: f.write(config)
+    pass
 pass
