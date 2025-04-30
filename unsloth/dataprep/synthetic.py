@@ -232,6 +232,8 @@ class SyntheticDataKit:
             os.makedirs(os.path.join(output_folder, path), exist_ok = True)
         pass
 
+        self.max_generation_tokens = max_generation_tokens
+
         config = synthetic_qa_config\
             .replace("{data_output_location}", str(output_folder))\
             .replace("{model_name}", str(self.model_name))\
