@@ -185,7 +185,7 @@ class SyntheticDataKit:
 
         with open(filename, "r") as f: text = f.read()
 
-        max_tokens = self.max_seq_length - self.max_generation_tokens + self.max_generation_tokens + 2
+        max_tokens = self.max_seq_length - self.max_generation_tokens - self.max_generation_tokens + 2
         input_ids = self.tokenizer(text).input_ids
         length = len(text)
         original_length = len(text)
