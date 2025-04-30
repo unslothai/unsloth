@@ -129,8 +129,8 @@ class SyntheticDataKit:
         return
     pass
 
+    @staticmethod
     def from_pretrained(
-        self,
         model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
         max_seq_length = 2048,
         gpu_memory_utilization = 0.9,
@@ -139,7 +139,8 @@ class SyntheticDataKit:
         token = None,
         **kwargs,
     ):
-        return self.__init__(self, *args, **kwargs)
+        generator = self.__init__(*args, **kwargs)
+        return generator
     pass
 
     @staticmethod
