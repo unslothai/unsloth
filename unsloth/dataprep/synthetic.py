@@ -139,7 +139,7 @@ class SyntheticDataKit:
         token = None,
         **kwargs,
     ):
-        return cls(*args, **kwargs)
+        return SyntheticDataKit(*args, **kwargs)
     pass
 
     @staticmethod
