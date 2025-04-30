@@ -157,7 +157,7 @@ class SyntheticDataKit:
         pass
     pass
 
-    def destroy_vllm(self):
+    def cleanup(self):
         if not hasattr(self, "vllm_process"): return
 
         vllm_process = self.vllm_process
@@ -187,8 +187,8 @@ class SyntheticDataKit:
     pass
 
     def __enter__(self): return self
-    def __exit__(self, *exc): self.destroy_vllm()
-    def __del__(self): self.destroy_vllm()
+    def __exit__(self, *exc): self.cleanup()
+    def __del__(self): self.cleanup()
 
     def truncate(self, filename = None):
         # Truncates by summary and max generation
