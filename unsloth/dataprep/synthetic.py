@@ -31,7 +31,7 @@ import signal
 import atexit
 import weakref
 
-from .sythetic_configs import (
+from .synthetic_configs import (
     synthetic_qa_config,
 )
 
@@ -213,6 +213,7 @@ class SyntheticDataKit:
     pass
 
     def configure_synthetic_data_kit(
+        self,
         output_folder = "synthetic_data_output",
         max_generation_tokens = 512,
         temperature = 0.7,
