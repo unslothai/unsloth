@@ -738,15 +738,39 @@ __INT_TO_FLOAT_MAPPER = \
         "canopylabs/orpheus-3b-0.1-ft",
         "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
     ),
-    "unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-dynamic-bnb-4bit" : (
-        "unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth",
-        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        "unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-bnb-4bit",
+    "unsloth/Qwen3-0.6B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-0.6B",
+        "Qwen/Qwen3-0.6B",
+        "unsloth/Qwen3-0.6B-bnb-4bit",
     ),
-    "unsloth/Llama-4-Scout-17B-16E-unsloth-dynamic-bnb-4bit" : (
-        "unsloth/Llama-4-Scout-17B-16E-unsloth",
-        "meta-llama/Llama-4-Scout-17B-16E",
-        "unsloth/Llama-4-Scout-17B-16E-unsloth-bnb-4bit",
+    "unsloth/Qwen3-1.7B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-1.7B",
+        "Qwen/Qwen3-1.7B",
+        "unsloth/Qwen3-1.7B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-4B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-4B",
+        "Qwen/Qwen3-4B",
+        "unsloth/Qwen3-4B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-8B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-8B",
+        "Qwen/Qwen3-8B",
+        "unsloth/Qwen3-8B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-14B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-14B",
+        "Qwen/Qwen3-14B",
+        "unsloth/Qwen3-14B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-32B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-32B",
+        "Qwen/Qwen3-32B",
+        "unsloth/Qwen3-32B-bnb-4bit",
+    ),
+    "unsloth/Qwen3-30B-A3B-bnb-4bit" : (
+        "unsloth/Qwen3-30B-A3B",
+        "Qwen/Qwen3-30B-A3B",
     ),
 }
 
