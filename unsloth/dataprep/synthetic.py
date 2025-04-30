@@ -69,18 +69,17 @@ def async_load_vllm(
         "vllm", "serve", str(model_name),
     ]
     for key, value in engine_args.items():
-        flag  = "--" + key.replace("_", "-")
+        flag  = key.replace("_", "-")
         which = str(value).lower().replace("torch.", "")
         if which == "true":
             # Ignore --enforce-eager True
-            subprocess_commands += [flag,]
+            subprocess_commands += ["--" + flag,]
         elif which == "false":
             # Add --no-enforce-eager
-            subprocess_commands += ["no-" + flag,]
+            subprocess_commands += ["--no-" + flag,]
         else:
-            subprocess_commands += [flag, which,]
+            subprocess_commands += ["--" + flag, which,]
     pass
-    print(subprocess_commands)
     vllm_process = subprocess.Popen(
         subprocess_commands,
         stdout = subprocess.PIPE,
