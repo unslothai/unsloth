@@ -204,7 +204,7 @@ class SyntheticDataKit:
             pass
             print(f"Unsloth: Will truncate your data which has {original_n_tokens} tokens to {len(input_ids)} tokens.")
 
-            with open(filename, "w") as f: text = f.read()
+            with open(filename, "w") as f: f.write(text[:length])
         pass
         return filename
     pass
