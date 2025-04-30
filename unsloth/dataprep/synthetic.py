@@ -192,9 +192,7 @@ class SyntheticDataKit:
 
     def __enter__(self): return self
     def __exit__(self, *exc): self.destroy_vllm()
-    def __del__(self):
-        self.destroy_vllm()
-    pass
+    def __del__(self): self.destroy_vllm()
 
     def truncate(self, filename = None):
         # Truncates by summary and max generation
