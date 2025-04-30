@@ -224,8 +224,8 @@ class SyntheticDataKit:
     ):
         assert(hasattr(self, "model_name"))
         assert(hasattr(self, "max_seq_length"))
-        assert(hasattr(max_generation_tokens < self.max_seq_length))
-        
+        assert(max_generation_tokens < self.max_seq_length)
+
         locations = "pdf,html,youtube,docx,ppt,txt,output,generated,cleaned,final"
         locations = locations.split(",")
         for path in locations:
