@@ -162,7 +162,7 @@ class SyntheticDataKit:
     pass
 
     def destroy_vllm(self):
-        if not hasattr(self, vllm_process): return
+        if not hasattr(self, "vllm_process"): return
 
         vllm_process = self.vllm_process
         print("Attempting to terminate the VLLM server gracefully...")
