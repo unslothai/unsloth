@@ -13,10 +13,7 @@
 # limitations under the License.
 
 __all__ = [
-    "check_vllm_status",
-    "async_load_vllm",
-    "destroy_vllm",
-    "configure_synthetic_data_kit",
+    "SyntheticDataKit",
 ]
 import subprocess
 import time
@@ -122,7 +119,7 @@ class SyntheticDataKit:
         if vllm_process is None:
             raise RuntimeError("Unsloth: vllm_process failed to load!")
         trial = 0
-        while not check_vllm_status():
+        while not self.check_vllm_status():
             if trial >= 100:
                 raise RuntimeError("Unsloth: vllm_process failed to load!")
             trial += 1
