@@ -58,6 +58,7 @@ huggingface = [
     "huggingface_hub",
     "hf_transfer",
     "unsloth[triton]",
+    "msgspec",
 ]
 windows=[
     "unsloth[huggingface]",
@@ -370,6 +371,7 @@ colab-new = [
     "hf_transfer",
     "bitsandbytes>=0.43.3",
     "unsloth[triton]",
+    "msgspec",
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
