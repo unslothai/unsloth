@@ -91,6 +91,8 @@ class SyntheticDataKit:
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass
+        print(" ".join(subprocess_commands))
+        return
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
