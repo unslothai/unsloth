@@ -238,6 +238,7 @@ prompts:
 
 def configure_synthetic_data_kit(
     model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
+    output_folder = "synthetic_data_output",
     temperature = 0.7,
     top_p = 0.95,
     chunk_size = 4000,
@@ -248,6 +249,12 @@ def configure_synthetic_data_kit(
     cleanup_batch_size = 4,
     cleanup_temperature = 0.3,
 ):
+    locations = "pdf,html,youtube,docx,ppt,txt,output,generated,cleaned,final"
+    locations = locations.split(",")
+    for path in locations:
+        os.makedirs(os.path.join(output_folder, path), exist_ok = True)
+    pass
+    
     config = synthetic_config_string\
         .replace("{model_name}", str(model_name))\
         .replace("{temperature}", str(temperature))\
