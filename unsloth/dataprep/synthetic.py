@@ -205,13 +205,13 @@ class SyntheticDataKit:
         original_n_tokens = len(input_ids)
 
         if len(input_ids) > max_tokens:
-            # Will fix later, but for now we simply naively truncate by 100 in length
+            # Will fix later, but for now we simply naively truncate by ratios
             length = original_length
             while True:
                 input_ids = self.tokenizer(text[:length]).input_ids
                 if len(input_ids) < max_tokens or length == 0: break
-                length -= 100
-                length = max(length, 0)
+                length = length * (max_tokens/len(input_ids))
+                length = max(int(length), 0)
             pass
             print(f"Unsloth: Will truncate your data which has {original_n_tokens} tokens to {len(input_ids)} tokens.")
 
