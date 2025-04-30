@@ -222,6 +222,10 @@ class SyntheticDataKit:
         cleanup_batch_size = 4,
         cleanup_temperature = 0.3,
     ):
+        assert(hasattr(self, "model_name"))
+        assert(hasattr(self, "max_seq_length"))
+        assert(hasattr(max_generation_tokens < self.max_seq_length))
+        
         locations = "pdf,html,youtube,docx,ppt,txt,output,generated,cleaned,final"
         locations = locations.split(",")
         for path in locations:
@@ -230,7 +234,7 @@ class SyntheticDataKit:
 
         config = synthetic_config_string\
             .replace("{data_output_location}", str(output_folder))\
-            .replace("{model_name}", str(model_name))\
+            .replace("{model_name}", str(self.model_name))\
             .replace("{temperature}", str(temperature))\
             .replace("{top_p}", str(top_p))\
             .replace("{chunk_size}", str(chunk_size))\
