@@ -100,8 +100,6 @@ class SyntheticDataKit:
             start_new_session = True,
         )
         self.vllm_process = vllm_process
-        atexit.register(self.destroy_vllm)
-        self._finalizer = weakref.finalize(self, self.destroy_vllm)
 
         ready_message_part = b"Starting vLLM API server on"
         ready = False
@@ -192,7 +190,9 @@ class SyntheticDataKit:
 
     def __enter__(self): return self
     def __exit__(self, *exc): self.destroy_vllm()
-    def __del__(self): self.destroy_vllm()
+    def __del__(self):
+        print("In del")
+        self.destroy_vllm()
 
     def truncate(self, filename = None):
         # Truncates by summary and max generation
