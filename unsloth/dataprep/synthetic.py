@@ -209,7 +209,7 @@ class SyntheticDataKit:
         return filename
     pass
 
-    def configure_synthetic_data_kit(
+    def prepare_qa_generation(
         self,
         output_folder = "synthetic_data_output",
         max_generation_tokens = 512,
@@ -232,7 +232,7 @@ class SyntheticDataKit:
             os.makedirs(os.path.join(output_folder, path), exist_ok = True)
         pass
 
-        config = synthetic_config_string\
+        config = synthetic_qa_config\
             .replace("{data_output_location}", str(output_folder))\
             .replace("{model_name}", str(self.model_name))\
             .replace("{temperature}", str(temperature))\
