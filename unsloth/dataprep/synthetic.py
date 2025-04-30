@@ -139,7 +139,15 @@ class SyntheticDataKit:
         token = None,
         **kwargs,
     ):
-        return SyntheticDataKit(*args, **kwargs)
+        return SyntheticDataKit(
+            model_name = model_name,
+            max_seq_length = max_seq_length,
+            gpu_memory_utilization = gpu_memory_utilization,
+            float8_kv_cache = float8_kv_cache,
+            conservativeness = conservativeness,
+            token = token,
+            **kwargs,
+        )
     pass
 
     @staticmethod
