@@ -42,7 +42,7 @@ pass
 def async_load_vllm(
     model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
     max_seq_length = 2048,
-    gpu_memory_utilization = 0.85,
+    gpu_memory_utilization = 0.9,
     float8_kv_cache = False,
     conservativeness = 1.0,
     token = None,
@@ -80,6 +80,7 @@ def async_load_vllm(
         else:
             subprocess_commands += ["--" + flag, which,]
     pass
+    print(subprocess_commands)
     vllm_process = subprocess.Popen(
         subprocess_commands,
         stdout = subprocess.PIPE,
