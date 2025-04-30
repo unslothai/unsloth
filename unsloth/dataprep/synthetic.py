@@ -25,7 +25,8 @@ import requests
 import torch
 import gc
 import time
-
+from unsloth_zoo.vllm_utils import load_vllm
+from transformers import AutoConfig
 
 def check_vllm_status():
     try:
@@ -40,20 +41,41 @@ pass
 
 def async_load_vllm(
     model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
-    max_model_len = 10000,
+    max_seq_length = 2048,
     gpu_memory_utilization = 0.85,
+    float8_kv_cache = False,
+    conservativeness = 1.0,
+    token = None,
 ):
-    vllm_process = subprocess.Popen([
-            'vllm', 'serve',
-            str(model_name),
-            '--trust-remote-code',
-            '--dtype', 'half',
-            '--max-model-len', str(max_model_len),
-            '--enable-chunked-prefill', 'true',
-            '--quantization', 'bitsandbytes',
-            '--gpu-memory-utilization', str(gpu_memory_utilization),
-            '--swap_space', '4',
-        ],
+    config = AutoConfig.from_pretrained(
+        model_name,
+        token = token,
+    )
+    engine_args = load_vllm(
+        model_name             = model_name,
+        config                 = config,
+        gpu_memory_utilization = gpu_memory_utilization,
+        max_seq_length         = max_seq_length,
+        disable_log_stats      = True,
+        float8_kv_cache        = float8_kv_cache,
+        conservativeness       = conservativeness,
+        return_args            = True,
+        enable_lora            = False,
+    )
+    if "device" in engine_args: del engine_args["device"]
+    if "model"  in engine_args: del engine_args["model"]
+
+    subprocess_commands = [
+        "vllm", "serve", str(model_name),
+    ]
+    for key, value in engine_args.items():
+        flag  = "--" + key.replace("_", "-")
+        which = str(value).lower().replace("torch.", "")
+        subprocess_commands += [flag, which,]
+    pass
+
+    vllm_process = subprocess.Popen(
+        subprocess_commands,
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
         start_new_session = True,
