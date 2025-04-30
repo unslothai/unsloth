@@ -91,8 +91,6 @@ class SyntheticDataKit:
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass
-        print(" ".join(subprocess_commands))
-        return
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
@@ -200,7 +198,7 @@ class SyntheticDataKit:
 
         with open(filename, "r") as f: text = f.read()
 
-        max_tokens = self.max_seq_length - self.max_generation_tokens - self.max_generation_tokens + 2
+        max_tokens = self.max_seq_length - self.max_generation_tokens*2 - 2
         input_ids = self.tokenizer(text).input_ids
         length = len(text)
         original_length = len(text)
@@ -219,7 +217,7 @@ class SyntheticDataKit:
 
             with open(filename, "w") as f: f.write(text[:length])
         pass
-        return filename
+        return filename, length
     pass
 
     def prepare_qa_generation(
@@ -228,8 +226,7 @@ class SyntheticDataKit:
         max_generation_tokens = 512,
         temperature = 0.7,
         top_p = 0.95,
-        chunk_size = 4000,
-        overlap = 200,
+        overlap = 64,
         default_num_pairs = 25,
         cleanup_threshold = 1.0,
         cleanup_batch_size = 4,
@@ -252,7 +249,7 @@ class SyntheticDataKit:
             .replace("{model_name}", str(self.model_name))\
             .replace("{temperature}", str(temperature))\
             .replace("{top_p}", str(top_p))\
-            .replace("{chunk_size}", str(chunk_size))\
+            .replace("{chunk_size}", str(self.max_seq_length - max_generation_tokens*2 - 2))\
             .replace("{overlap}", str(overlap))\
             .replace("{max_tokens}", str(max_generation_tokens))\
             .replace("{default_num_pairs}", str(default_num_pairs))\
