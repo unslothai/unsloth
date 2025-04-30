@@ -71,9 +71,12 @@ def async_load_vllm(
     for key, value in engine_args.items():
         flag  = "--" + key.replace("_", "-")
         which = str(value).lower().replace("torch.", "")
-        if which == "true" or which == "false":
-            # Ignore --enforce-eager True / False
+        if which == "true":
+            # Ignore --enforce-eager True
             subprocess_commands += [flag,]
+        elif which == "false":
+            # Add --no-enforce-eager
+            subprocess_commands += ["no-" + flag,]
         else:
             subprocess_commands += [flag, which,]
     pass
@@ -254,7 +257,7 @@ def configure_synthetic_data_kit(
     for path in locations:
         os.makedirs(os.path.join(output_folder, path), exist_ok = True)
     pass
-    
+
     config = synthetic_config_string\
         .replace("{model_name}", str(model_name))\
         .replace("{temperature}", str(temperature))\
