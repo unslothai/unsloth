@@ -211,7 +211,7 @@ class SyntheticDataKit:
 
     def prepare_qa_generation(
         self,
-        output_folder = "synthetic_data_output",
+        output_folder = "data",
         max_generation_tokens = 512,
         temperature = 0.7,
         top_p = 0.95,
