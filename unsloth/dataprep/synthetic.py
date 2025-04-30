@@ -25,8 +25,6 @@ import time
 from unsloth_zoo.vllm_utils import load_vllm
 from transformers import AutoConfig, AutoTokenizer
 import signal
-import atexit
-import weakref
 
 from .synthetic_configs import (
     synthetic_qa_config,
