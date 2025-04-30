@@ -74,13 +74,9 @@ def async_load_vllm(
         if which == "true":
             # Ignore --enforce-eager True
             subprocess_commands += ["--" + flag,]
-        elif which == "false":
-            # Add --no-enforce-eager
-            subprocess_commands += ["--no-" + flag,]
         else:
             subprocess_commands += ["--" + flag, which,]
     pass
-    print(subprocess_commands)
     vllm_process = subprocess.Popen(
         subprocess_commands,
         stdout = subprocess.PIPE,
