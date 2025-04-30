@@ -37,7 +37,7 @@ class SyntheticDataKit:
         self,
         model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
         max_seq_length = 2048,
-        gpu_memory_utilization = 0.9,
+        gpu_memory_utilization = 0.98,
         float8_kv_cache = False,
         conservativeness = 1.0,
         token = None,
@@ -99,6 +99,7 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
+        self.vllm_process = vllm_process
         atexit.register(self.destroy_vllm)
         self._finalizer = weakref.finalize(self, self.destroy_vllm)
 
@@ -125,7 +126,6 @@ class SyntheticDataKit:
                 raise RuntimeError("Unsloth: vllm_process failed to load!")
             trial += 1
             time.sleep(1)
-        self.vllm_process = vllm_process
         return
     pass
 
