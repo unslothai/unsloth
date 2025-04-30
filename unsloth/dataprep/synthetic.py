@@ -139,8 +139,7 @@ class SyntheticDataKit:
         token = None,
         **kwargs,
     ):
-        generator = self.__init__(*args, **kwargs)
-        return generator
+        return classmethod(*args, **kwargs)
     pass
 
     @staticmethod
