@@ -218,6 +218,7 @@ class SyntheticDataKit:
 
         # Get extension of filename like .txt
         filename, extension = os.path.splitext(filename)
+        if filename.endswith("/"): filename = filename[:-1]
 
         all_filenames = []
         for i, (left, right) in enumerate(boundaries):
