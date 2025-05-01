@@ -86,10 +86,10 @@ class SyntheticDataKit:
         for key, value in engine_args.items():
             flag  = key.replace("_", "-")
             which = str(value).replace("torch.", "")
-            if which == "true":
+            if which == "True":
                 # Ignore --enforce-eager True
                 subprocess_commands += ["--" + flag,]
-            elif which == "false":
+            elif which == "False":
                 # Ignore flag
                 pass
             else:
