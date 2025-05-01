@@ -85,7 +85,7 @@ class SyntheticDataKit:
         ]
         for key, value in engine_args.items():
             flag  = key.replace("_", "-")
-            which = str(value).lower().replace("torch.", "")
+            which = str(value).replace("torch.", "")
             if which == "true":
                 # Ignore --enforce-eager True
                 subprocess_commands += ["--" + flag,]
@@ -95,8 +95,6 @@ class SyntheticDataKit:
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass
-        print(" ".join(subprocess_commands))
-        raise
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
