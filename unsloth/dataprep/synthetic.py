@@ -73,6 +73,7 @@ class SyntheticDataKit:
             conservativeness       = conservativeness,
             return_args            = True,
             enable_lora            = False,
+            use_bitsandbytes       = False,
             **kwargs,
         )
 
