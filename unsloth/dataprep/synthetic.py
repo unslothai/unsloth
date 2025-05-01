@@ -22,7 +22,10 @@ import requests
 import torch
 import gc
 import time
-from unsloth_zoo.vllm_utils import load_vllm
+from unsloth_zoo.vllm_utils import (
+    load_vllm,
+    patch_vllm,
+)
 from transformers import AutoConfig, AutoTokenizer
 import numpy as np
 
@@ -59,6 +62,7 @@ class SyntheticDataKit:
             model_name,
             token = token,
         )
+        patch_vllm()
         engine_args = load_vllm(
             model_name             = model_name,
             config                 = self.config,
@@ -91,7 +95,7 @@ class SyntheticDataKit:
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass
-        return subprocess_commands
+        print("\n".join(subprocess_commands))
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
