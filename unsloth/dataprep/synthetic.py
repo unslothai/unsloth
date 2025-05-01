@@ -211,9 +211,9 @@ class SyntheticDataKit:
 
         # Get left and right boundaries
         length = len(input_ids)
-        n_chunks = int(np.ceil(length / (max_tokens - overlap)))
-        boundaries = np.ceil(np.linspace(0, length - overlap, n_chunks)).astype(int)
-        boundaries = np.stack((boundaries[:-1], (boundaries + overlap)[1:])).T
+        n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
+        boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
+        boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
         boundaries = np.minimum(boundaries, length).tolist()
 
         # Get extension of filename like .txt
