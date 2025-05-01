@@ -78,7 +78,6 @@ class SyntheticDataKit:
 
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
-        if "compilation_config" in engine_args: del engine_args["compilation_config"]
 
         subprocess_commands = [
             "vllm", "serve", str(model_name),
