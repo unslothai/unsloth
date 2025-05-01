@@ -18,7 +18,7 @@ from packaging.version import Version as V
 v = V(torch.__version__)
 cuda = str(torch.version.cuda)
 is_ampere = torch.cuda.get_device_capability()[0] >= 8
-if cuda != "12.1" and cuda != "11.8" and cuda != "12.4" and cuda != "12.6": raise RuntimeError(f"CUDA = {cuda} not supported!")
+if cuda != "12.1" and cuda != "11.8" and cuda != "12.4" and cuda != "12.6" and cuda != "12.8": raise RuntimeError(f"CUDA = {cuda} not supported!")
 if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
 elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
 elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
@@ -28,6 +28,7 @@ elif v  < V('2.5.0'): x = 'cu{}{}-torch240'
 elif v  < V('2.5.1'): x = 'cu{}{}-torch250'
 elif v <= V('2.5.1'): x = 'cu{}{}-torch251'
 elif v  < V('2.7.0'): x = 'cu{}{}-torch260'
+elif v  < V('2.8.0'): x = 'cu{}{}-torch270'
 else: raise RuntimeError(f"Torch = {v} too new!")
 x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
