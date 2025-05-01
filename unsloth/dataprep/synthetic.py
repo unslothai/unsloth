@@ -27,7 +27,6 @@ from unsloth_zoo.vllm_utils import (
     load_vllm,
     patch_vllm,
 )
-from transformers import AutoConfig, AutoTokenizer
 import numpy as np
 
 from .synthetic_configs import (
@@ -55,6 +54,7 @@ class SyntheticDataKit:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
 
+        from transformers import AutoConfig, AutoTokenizer
         self.config = AutoConfig.from_pretrained(
             model_name,
             token = token,
