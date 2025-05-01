@@ -801,15 +801,6 @@ if not has_mps:
             "Qwen/Qwen3-14B-Base",
             "unsloth/Qwen3-14B-Base-bnb-4bit",
         ),
-        "unsloth/Qwen3-32B-Base-unsloth-bnb-4bit" : (
-            "unsloth/Qwen3-32B-Base",
-            "Qwen/Qwen3-32B-Base",
-            "unsloth/Qwen3-32B-Base-bnb-4bit",
-        ),
-        "unsloth/Qwen3-30B-A3B-Base-bnb-4bit" : (
-            "unsloth/Qwen3-30B-A3B-Base",
-            "Qwen/Qwen3-30B-A3B-Base",
-        ),
     }
 else:
     __INT_TO_FLOAT_MAPPER = \
