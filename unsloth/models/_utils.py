@@ -74,7 +74,6 @@ import numpy as np
 import contextlib
 import re
 import warnings, subprocess, re, inspect, psutil, os, math
-from packaging.version import Version
 from unsloth import devices
 from unsloth_zoo.utils import Version
 

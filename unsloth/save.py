@@ -2221,14 +2221,15 @@ pass
 
 
 from .models.loader_utils import get_model_name
-from unsloth_zoo.saving_utils import (
-    merge_and_overwrite_lora,
-    prepare_saving,
-)
-from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
-    convert_to_gguf as _convert_to_gguf,
-)
+if not has_mps():
+    from unsloth_zoo.saving_utils import (
+        merge_and_overwrite_lora,
+        prepare_saving,
+    )
+    from unsloth_zoo.llama_cpp import (
+        install_llama_cpp,
+        convert_to_gguf as _convert_to_gguf,
+    )
 
 @torch.inference_mode
 def save_to_gguf_generic(
