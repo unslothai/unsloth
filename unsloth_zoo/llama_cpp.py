@@ -356,7 +356,7 @@ def _download_convert_hf_to_gguf(
         )
 
     # Get all supported models
-    supported_types = re.findall(rb"@Model\.register\(([^)]{1,})\)", converter_latest)
+    supported_types = re.findall(rb"@(?:Model|ModelBase)\.register\(\s*([^)]+?)\s*\)",converter_latest)
     supported_types = b", ".join(supported_types).decode("utf-8")
     supported_types = re.findall(r"[\'\"]([^\'\"]{1,})[\'\"]", supported_types)
     supported_types = frozenset(supported_types)
