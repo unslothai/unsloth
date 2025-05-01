@@ -10,7 +10,7 @@
 <a href="https://discord.com/invite/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="48"></a>
 <a href="https://docs.unsloth.ai"><img src="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/images/Documentation%20Button.png" height="48"></a>
 
-### Finetune Llama 4, Gemma 3, Phi-4, Qwen 2.5 & Mistral 2x faster with 80% less VRAM!
+### Finetune Qwen3, Llama 4, Gemma 3, Phi-4 & Mistral 2x faster with 80% less VRAM!
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
