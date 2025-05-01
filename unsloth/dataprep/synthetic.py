@@ -206,7 +206,9 @@ class SyntheticDataKit:
 
         with open(filename, "r") as f: text = f.read()
 
-        max_tokens = self.max_seq_length - self.max_generation_tokens*2 - 2
+        max_tokens = self.max_seq_length - self.max_generation_tokens*3 # * 3 to reduce errors
+        if max_tokens <= 5:
+            raise RuntimeError("Generation length is way too long!")
         input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
         # Get left and right boundaries
