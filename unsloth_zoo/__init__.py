@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-__version__ = "2025.4.3"
+__version__ = "2025.4.4"
 
 from importlib.util import find_spec
 if find_spec("unsloth") is None:
