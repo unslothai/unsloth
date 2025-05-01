@@ -223,7 +223,7 @@ class SyntheticDataKit:
         all_filenames = []
         for i, (left, right) in enumerate(boundaries):
             chunked_text = self.tokenizer.decode(input_ids[left : right])
-            new_filename = os.path.join(filename + f"_{i}", extension)
+            new_filename = f"{filename}_{i}{extension}"
             all_filenames.append(new_filename)
             with open(new_filename, "w") as f: f.write(chunked_text)
         pass
