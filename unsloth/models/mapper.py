@@ -767,10 +767,6 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen3-32B",
         "Qwen/Qwen3-32B",
     ),
-    "unsloth/Qwen3-30B-A3B-bnb-4bit" : (
-        "unsloth/Qwen3-30B-A3B",
-        "Qwen/Qwen3-30B-A3B",
-    ),
     "unsloth/Qwen3-0.6B-Base-unsloth-bnb-4bit" : (
         "unsloth/Qwen3-0.6B-Base",
         "Qwen/Qwen3-0.6B-Base",
