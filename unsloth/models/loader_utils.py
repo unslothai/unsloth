@@ -77,7 +77,7 @@ def __get_model_name(
         return new_model_name
     pass
 
-    return None
+    return model_name
 pass
 
 
