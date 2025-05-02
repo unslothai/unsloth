@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.4.4"
+__version__ = "2025.4.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -190,6 +190,13 @@ try:
 except:
     pass
 
+# Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed.
+try:
+    from huggingface_hub.file_download import logger as hub_logger
+    hub_logger.addFilter(HideLoggingMessage("hf_xet"))
+    del hub_logger
+except:
+    pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
