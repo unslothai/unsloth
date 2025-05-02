@@ -190,6 +190,13 @@ try:
 except:
     pass
 
+# Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed.
+try:
+    from huggingface_hub.file_download import logger as hub_logger
+    hub_logger.addFilter(HideLoggingMessage("hf_xet"))
+    del hub_logger
+except:
+    pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
