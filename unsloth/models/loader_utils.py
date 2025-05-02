@@ -21,9 +21,9 @@ SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 
 BAD_MAPPINGS = \
 {
-    "unsloth/qwen3-32B-unsloth-bnb-4bit"     : "unsloth/Qwen3-32B-bnb-4bit", # 32B dynamic quant is way too big
-    "unsloth/qwen3-30B-A3B-unsloth-bnb-4bit" : "unsloth/qwen3-30B-A3B",      # HF loads MoEs too slowly
-    "unsloth/qwen3-30B-A3B-bnb-4bit"         : "unsloth/qwen3-30B-A3B",      # We rather do it on the fly
+    "unsloth/qwen3-32B-unsloth-bnb-4bit".lower()     : "unsloth/Qwen3-32B-bnb-4bit".lower(), # 32B dynamic quant is way too big
+    "unsloth/qwen3-30B-A3B-unsloth-bnb-4bit".lower() : "unsloth/qwen3-30B-A3B".lower(),      # HF loads MoEs too slowly
+    "unsloth/qwen3-30B-A3B-bnb-4bit".lower()         : "unsloth/qwen3-30B-A3B".lower(),      # We rather do it on the fly
 }
 
 def __get_model_name(
