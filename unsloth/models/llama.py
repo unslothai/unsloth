@@ -23,6 +23,7 @@ from ._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
 IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
@@ -1771,6 +1772,7 @@ class FastLlamaModel:
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         pass
 
