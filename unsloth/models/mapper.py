@@ -772,9 +772,10 @@ if not has_mps:
             "Qwen/Qwen3-32B",
             "unsloth/Qwen3-32B-bnb-4bit",
         ),
-        "unsloth/Qwen3-30B-A3B-bnb-4bit" : (
+        "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit" : (
             "unsloth/Qwen3-30B-A3B",
             "Qwen/Qwen3-30B-A3B",
+            "unsloth/Qwen3-30B-A3B-bnb-4bit",
         ),
         "unsloth/Qwen3-0.6B-Base-unsloth-bnb-4bit" : (
             "unsloth/Qwen3-0.6B-Base",
@@ -800,6 +801,25 @@ if not has_mps:
             "unsloth/Qwen3-14B-Base",
             "Qwen/Qwen3-14B-Base",
             "unsloth/Qwen3-14B-Base-bnb-4bit",
+        ),
+        "unsloth/Qwen3-30B-A3B-Base-bnb-4bit" : (
+            "unsloth/Qwen3-30B-A3B-Base",
+            "Qwen/Qwen3-30B-A3B-Base",
+        ),
+        "unsloth/phi-4-reasoning-unsloth-bnb-4bit" : (
+            "unsloth/phi-4-reasoning",
+            "microsoft/Phi-4-reasoning",
+            "unsloth/phi-4-reasoning-bnb-4bit",
+        ),
+        "unsloth/phi-4-reasoning-plus-unsloth-bnb-4bit" : (
+            "unsloth/phi-4-reasoning-plus",
+            "microsoft/Phi-4-reasoning-plus",
+            "unsloth/phi-4-reasoning-plus-bnb-4bit",
+        ),
+        "unsloth/phi-4-mini-reasoning-unsloth-bnb-4bit" : (
+            "unsloth/phi-4-mini-reasoning",
+            "microsoft/Phi-4-mini-reasoning",
+            "unsloth/phi-4-mini-reasoning-bnb-4bit",
         ),
     }
 else:

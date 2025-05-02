@@ -18,13 +18,16 @@ __all__ = [
 import subprocess
 import time
 import os
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 import requests
 import torch
 import gc
 import time
-from unsloth_zoo.vllm_utils import load_vllm
-from transformers import AutoConfig, AutoTokenizer
-import signal
+from unsloth_zoo.vllm_utils import (
+    load_vllm,
+    patch_vllm,
+)
+import numpy as np
 
 from .synthetic_configs import (
     synthetic_qa_config,
@@ -51,6 +54,7 @@ class SyntheticDataKit:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
 
+        from transformers import AutoConfig, AutoTokenizer
         self.config = AutoConfig.from_pretrained(
             model_name,
             token = token,
@@ -59,6 +63,7 @@ class SyntheticDataKit:
             model_name,
             token = token,
         )
+        patch_vllm()
         engine_args = load_vllm(
             model_name             = model_name,
             config                 = self.config,
@@ -69,23 +74,23 @@ class SyntheticDataKit:
             conservativeness       = conservativeness,
             return_args            = True,
             enable_lora            = False,
+            use_bitsandbytes       = False,
             **kwargs,
         )
 
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
-        if "compilation_config" in engine_args: del engine_args["compilation_config"]
 
         subprocess_commands = [
             "vllm", "serve", str(model_name),
         ]
         for key, value in engine_args.items():
             flag  = key.replace("_", "-")
-            which = str(value).lower().replace("torch.", "")
-            if which == "true":
+            which = str(value).replace("torch.", "")
+            if which == "True":
                 # Ignore --enforce-eager True
                 subprocess_commands += ["--" + flag,]
-            elif which == "false":
+            elif which == "False":
                 # Ignore flag
                 pass
             else:
@@ -190,34 +195,42 @@ class SyntheticDataKit:
     def __exit__(self, *exc): self.cleanup()
     def __del__(self): self.cleanup()
 
-    def truncate(self, filename = None):
-        # Truncates by summary and max generation
+    def chunk_data(self, filename = None):
+        # Chunks data by max tokens and generation length
         assert(filename is not None)
         assert(os.path.exists(filename))
         assert(hasattr(self, "tokenizer"))
+        if not hasattr(self, "max_seq_length"):
+            raise RuntimeError("Please use SynthetidDataKit.from_pretrained(...) first!")
+        if not hasattr(self, "overlap") or not hasattr(self, "max_generation_tokens"):
+            raise RuntimeError("Please use prepare_qa_generation first!")
 
         with open(filename, "r") as f: text = f.read()
 
-        max_tokens = self.max_seq_length - self.max_generation_tokens*2 - 2
-        input_ids = self.tokenizer(text).input_ids
-        length = len(text)
-        original_length = len(text)
-        original_n_tokens = len(input_ids)
+        max_tokens = self.max_seq_length - self.max_generation_tokens*2 - 128 # -128 to reduce errors
+        if max_tokens <= 5:
+            raise RuntimeError("Generation length is way too long!")
+        input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
-        if len(input_ids) > max_tokens:
-            # Will fix later, but for now we simply naively truncate by ratios
-            length = original_length
-            while True:
-                input_ids = self.tokenizer(text[:length]).input_ids
-                if len(input_ids) < max_tokens or length == 0: break
-                length = length * (max_tokens/len(input_ids))
-                length = max(int(length), 0)
-            pass
-            print(f"Unsloth: Will truncate your data which has {original_n_tokens} tokens to {len(input_ids)} tokens.")
+        # Get left and right boundaries
+        length = len(input_ids)
+        n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
+        boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
+        boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
+        boundaries = np.minimum(boundaries, length).tolist()
 
-            with open(filename, "w") as f: f.write(text[:length])
+        # Get extension of filename like .txt
+        filename, extension = os.path.splitext(filename)
+        if filename.endswith("/"): filename = filename[:-1]
+
+        all_filenames = []
+        for i, (left, right) in enumerate(boundaries):
+            chunked_text = self.tokenizer.decode(input_ids[left : right])
+            new_filename = f"{filename}_{i}{extension}"
+            all_filenames.append(new_filename)
+            with open(new_filename, "w") as f: f.write(chunked_text)
         pass
-        return filename, length
+        return all_filenames
     pass
 
     def prepare_qa_generation(
@@ -258,5 +271,7 @@ class SyntheticDataKit:
             .replace("{cleanup_temperature}", str(cleanup_temperature))
 
         with open("synthetic_data_kit_config.yaml", "w") as f: f.write(config)
+
+        self.overlap = overlap
     pass
 pass
