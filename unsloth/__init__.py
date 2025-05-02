@@ -60,6 +60,9 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
 if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 pass
+if "HF_XET_HIGH_PERFORMANCE" not in os.environ:
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+pass
 
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
