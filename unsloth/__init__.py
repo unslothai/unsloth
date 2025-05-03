@@ -12,16 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import importlib
-import inspect
-import os
-import re
-import subprocess
-import sys
-import warnings
-
-import numpy as np
+import warnings, importlib, sys
 from packaging.version import Version
+import os, re, subprocess, inspect
+import numpy as np
 
 # Check if modules that need patching are already imported
 critical_modules = ['trl', 'transformers', 'peft']
@@ -100,11 +94,9 @@ if not torch.cuda.is_available():
 
 # Fix Xformers performance issues since 0.0.25
 import importlib.util
-from importlib.metadata import version as importlib_version
 from pathlib import Path
-
+from importlib.metadata import version as importlib_version
 from packaging.version import Version
-
 try:
     xformers_version = importlib_version("xformers")
     if Version(xformers_version) < Version("0.0.29"):
@@ -147,7 +139,6 @@ pass
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
-
 libcuda_dirs = lambda: None
 if Version(triton.__version__) >= Version("3.0.0"):
     try: from triton.backends.nvidia.driver import libcuda_dirs
@@ -156,7 +147,6 @@ else: from triton.common.build import libcuda_dirs
 
 # Try loading bitsandbytes and triton
 import bitsandbytes as bnb
-
 try:
     cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
     libcuda_dirs()
@@ -227,10 +217,10 @@ except:
     raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
 pass
 
-from .chat_templates import *
 from .models import *
 from .models import __version__
 from .save import *
+from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
 
