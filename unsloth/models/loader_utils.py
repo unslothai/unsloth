@@ -110,7 +110,8 @@ def get_model_name(model_name, load_in_4bit = True):
     )
     # In the rare case, we convert bad model names to other names
     # For eg too large dynamic quants or MoEs
-    if new_model_name.lower() in BAD_MAPPINGS:
+    if new_model_name is not None and type(new_model_name) is str and \
+        new_model_name.lower() in BAD_MAPPINGS:
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
 
     if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
