@@ -19,6 +19,9 @@ from typing import Union, List, Any, Tuple, Dict, Callable, Optional
 import inspect
 import torch
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
@@ -100,17 +103,25 @@ def patch_Gemma3Processor():
             # Replace image tokens by the full expanded sequence
             batch_num_crops = to_py_obj(image_inputs.pop("num_crops"))
             text_with_crops = text
-            for batch_idx, (prompt, images, num_crops) in enumerate(zip(text, batched_images, batch_num_crops)):
+            for batch_idx, (prompt, images_for_item, num_crops_for_item) in enumerate(zip(text, batched_images, batch_num_crops)):
                 image_indexes = [m.start() for m in re.finditer(self.boi_token, prompt)]
 
-                if len(images) != len(image_indexes):
+                if len(images_for_item) != len(image_indexes):
                     raise ValueError(
-                        f"Prompt contained {len(image_indexes)} image tokens but received {len(images)} images."
+                        f"Prompt contained {len(image_indexes)} image tokens but received {len(images_for_item)} images."
                     )
+                
+                iterable_num_crops = num_crops_for_item
+                
+                if isinstance(num_crops_for_item, int):
+                        if len(image_indexes) > 0:
+                            iterable_num_crops = [num_crops_for_item] + [0] * (len(image_indexes) - 1)
+                        else:
+                            iterable_num_crops = []
 
                 # Insert additional image tokens for Pan-and-Scan crops
-                for num, idx in reversed(list(zip(num_crops, image_indexes))):
-                    if num:
+                for num, idx in reversed(list(zip(iterable_num_crops, image_indexes))):
+                    if isinstance(num, int) and num > 0:
                         formatted_image_text = (
                             f"Here is the original image {self.boi_token} and here are some crops to help you see better "
                             + " ".join([self.boi_token] * num)
@@ -152,7 +163,6 @@ def patch_Gemma3Processor():
     return
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3Processor)
-
 
 def patch_Gemma3ForConditionalGeneration():
     try:
