@@ -36,6 +36,8 @@ SKIP_QUANTIZATION_MODULES = [
     "multi_modal_projector", # Llama 3.2 Vision, Pixtral, Llava
     "merger",                # Qwen2 VL
     "modality_projection",   # Idefics, SmolVLM
+    "router",                # MoE Router
+    "gate",                  # MoE Router
 ]
 
 def get_peft_regex(
