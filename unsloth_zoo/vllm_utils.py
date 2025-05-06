@@ -47,7 +47,7 @@ import contextlib
 import inspect
 from functools import partial
 from .utils import _get_dtype
-from .patching_utils import patch_model_and_tokenizer
+# from .patching_utils import patch_model_and_tokenizer
 global LORA_REQUEST_ID
 
 # Ignore logging messages
