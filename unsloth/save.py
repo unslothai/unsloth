@@ -70,6 +70,7 @@ LLAMA_WEIGHTS = (
 LLAMA_LAYERNORMS = (
     "input_layernorm", "post_attention_layernorm",
     "pre_feedforward_layernorm", "post_feedforward_layernorm",
+    "self_attn.q_norm", "self_attn.k_norm",
 )
 
 # https://github.com/ggerganov/llama.cpp/blob/master/examples/quantize/quantize.cpp#L19

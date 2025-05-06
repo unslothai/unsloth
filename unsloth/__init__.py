@@ -61,6 +61,15 @@ if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 pass
 
+# XET is slower in Colab - investigate why
+keynames = "\n" + "\n".join(os.environ.keys())
+if "HF_XET_HIGH_PERFORMANCE" not in os.environ:
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+pass
+if "\nCOLAB_" in keynames:
+    os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = "0"
+pass
+
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
