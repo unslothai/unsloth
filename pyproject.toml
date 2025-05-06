@@ -29,7 +29,7 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = false
 
 [tool.setuptools.packages.find]
-exclude = ["images*", "tests*"]
+exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 triton = [
@@ -37,10 +37,10 @@ triton = [
 ]
 
 huggingface = [
-    "unsloth_zoo>=2025.3.17",
+    "unsloth_zoo>=2025.4.4",
     "packaging",
     "tyro",
-    "transformers>=4.46.1,!=4.47.0",
+    "transformers>=4.51.3,!=4.47.0",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -57,7 +57,7 @@ huggingface = [
 ]
 windows=[
     "unsloth[huggingface]",
-    "bitsandbytes>=0.41.1 ; platform_system == 'Windows'",
+    "bitsandbytes>=0.45.5 ; platform_system == 'Windows'",
     "xformers>=0.0.22.post7 ; platform_system == 'Windows'",
 ]
 cu118only = [
@@ -204,134 +204,164 @@ cu126onlytorch260 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.29.post3-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.29.post3-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
 ]
+cu126onlytorch270 = [
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp39-cp39-win_amd64.whl ; python_version=='3.9' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp310-cp310-win_amd64.whl ; python_version=='3.10' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
+]
+cu128onlytorch270 = [
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.30-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.30-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.30-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.30-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12' and platform_system == 'Linux'",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.30-cp39-cp39-win_amd64.whl ; python_version=='3.9' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.30-cp310-cp310-win_amd64.whl ; python_version=='3.10' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.30-cp311-cp311-win_amd64.whl ; python_version=='3.11' and platform_system == 'Windows'",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.30-cp312-cp312-win_amd64.whl ; python_version=='3.12' and platform_system == 'Windows'",
+]
 cu118 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118only]",
 ]
 cu121 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121only]",
 ]
 cu118-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes==0.45.5",
     "unsloth[cu118onlytorch211]",
 ]
 cu121-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch211]",
 ]
 cu118-torch212 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes==0.45.5",
     "unsloth[cu118onlytorch212]",
 ]
 cu121-torch212 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch212]",
 ]
 cu118-torch220 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch220]",
 ]
 cu121-torch220 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch220]",
 ]
 cu118-torch230 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch230]",
 ]
 cu121-torch230 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch230]",
 ]
 cu118-torch240 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch240]",
 ]
 cu121-torch240 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch240]",
 ]
 cu124-torch240 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch240]",
 ]
 cu118-torch250 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch250]",
 ]
 cu121-torch250 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch250]",
 ]
 cu124-torch250 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch250]",
 ]
 cu118-torch251 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch251]",
 ]
 cu121-torch251 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch251]",
 ]
 cu124-torch251 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch251]",
 ]
 cu118-torch260 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.45.1",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch260]",
 ]
 cu124-torch260 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.45.1",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch260]",
 ]
 cu126-torch260 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.45.1",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu126onlytorch260]",
+]
+cu126-torch270 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5",
+    "unsloth[cu126onlytorch270]",
+]
+cu128-torch270 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5",
+    "unsloth[cu128onlytorch270]",
 ]
 kaggle = [
     "unsloth[huggingface]",
 ]
 kaggle-new = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
 ]
 conda = [
     "unsloth[huggingface]",
 ]
 colab-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch211]",
 ]
 colab-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch211]",
     "packaging",
     "ninja",
@@ -339,22 +369,22 @@ colab-ampere-torch211 = [
 ]
 colab-torch220 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch220]",
 ]
 colab-ampere-torch220 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch220]",
     "packaging",
     "ninja",
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.3.17",
+    "unsloth_zoo>=2025.4.4",
     "packaging",
     "tyro",
-    "transformers>=4.46.1,!=4.47.0",
+    "transformers>=4.51.3,!=4.47.0",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -364,7 +394,7 @@ colab-new = [
     "protobuf<4.0.0",
     "huggingface_hub",
     "hf_transfer",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[triton]",
 ]
 colab-no-deps = [
@@ -372,7 +402,7 @@ colab-no-deps = [
     "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,!=0.15.0,<=0.15.2",
     "peft>=0.7.1",
     "xformers",
-    "bitsandbytes>=0.46.1",
+    "bitsandbytes>=0.45.5",
     "protobuf<4.0.0",
 ]
 colab = [
@@ -389,122 +419,134 @@ colab-ampere = [
 ]
 cu118-ampere = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118only]",
     "unsloth[flashattention]",
 ]
 cu121-ampere = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121only]",
     "unsloth[flashattention]",
 ]
 cu118-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes==0.45.5",
     "unsloth[cu118onlytorch211]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes==0.45.5",
     "unsloth[cu121onlytorch211]",
     "unsloth[flashattention]",
 ]
 cu118-ampere-torch220 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch220]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch220 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch220]",
     "unsloth[flashattention]",
 ]
 cu118-ampere-torch230 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch230]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch230 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch230]",
     "unsloth[flashattention]",
 ]
 cu118-ampere-torch240 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch240]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch240 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch240]",
     "unsloth[flashattention]",
 ]
 cu124-ampere-torch240 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch240]",
     "unsloth[flashattention]",
 ]
 cu118-ampere-torch250 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch250]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch250 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch250]",
     "unsloth[flashattention]",
 ]
 cu124-ampere-torch250 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch250]",
     "unsloth[flashattention]",
 ]
 cu118-ampere-torch251 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch251]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch251 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu121onlytorch251]",
     "unsloth[flashattention]",
 ]
 cu124-ampere-torch251 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.43.3",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch251]",
     "unsloth[flashattention]",
 ]
 cu118-ampere-torch260 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.45.1",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu118onlytorch260]",
     "unsloth[flashattention]",
 ]
 cu124-ampere-torch260 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.45.1",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch260]",
     "unsloth[flashattention]",
 ]
 cu126-ampere-torch260 = [
     "unsloth[huggingface]",
-    "bitsandbytes>=0.45.1",
+    "bitsandbytes>=0.45.5",
     "unsloth[cu126onlytorch260]",
+    "unsloth[flashattention]",
+]
+cu126-ampere-torch270 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5",
+    "unsloth[cu126onlytorch270]",
+    "unsloth[flashattention]",
+]
+cu128-ampere-torch270 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5",
+    "unsloth[cu128onlytorch270]",
     "unsloth[flashattention]",
 ]
 

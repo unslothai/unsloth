@@ -19,6 +19,12 @@ from transformers import __version__ as transformers_version
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
 
+BAD_MAPPINGS = \
+{
+    "unsloth/qwen3-32B-unsloth-bnb-4bit".lower()     : "unsloth/Qwen3-32B-bnb-4bit".lower(), # 32B dynamic quant is way too big
+    "unsloth/qwen3-30B-A3B-unsloth-bnb-4bit".lower() : "unsloth/qwen3-30B-A3B".lower(),      # HF loads MoEs too slowly
+    "unsloth/qwen3-30B-A3B-bnb-4bit".lower()         : "unsloth/qwen3-30B-A3B".lower(),      # We rather do it on the fly
+}
 
 def __get_model_name(
     model_name,
@@ -102,6 +108,12 @@ def get_model_name(model_name, load_in_4bit = True):
         FLOAT_TO_INT_MAPPER  = FLOAT_TO_INT_MAPPER,
         MAP_TO_UNSLOTH_16bit = MAP_TO_UNSLOTH_16bit,
     )
+    # In the rare case, we convert bad model names to other names
+    # For eg too large dynamic quants or MoEs
+    if new_model_name is not None and type(new_model_name) is str and \
+        new_model_name.lower() in BAD_MAPPINGS:
+        new_model_name = BAD_MAPPINGS[new_model_name.lower()]
+
     if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
         # Try checking if a new Unsloth version allows it!
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = _get_new_mapper()

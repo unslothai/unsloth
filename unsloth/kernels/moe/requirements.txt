@@ -1,0 +1,5 @@
+torch
+git+https://github.com/huggingface/transformers.git@main
+pytest
+pandas
+ruff

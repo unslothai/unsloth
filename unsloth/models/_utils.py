@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.19"
+__version__ = "2025.4.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -190,6 +190,13 @@ try:
 except:
     pass
 
+# Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed.
+try:
+    from huggingface_hub.file_download import logger as hub_logger
+    hub_logger.addFilter(HideLoggingMessage("hf_xet"))
+    del hub_logger
+except:
+    pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
@@ -243,13 +250,16 @@ pass
 
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
-model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite"]
+model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe"]
 
 for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title()}Config"
-    exec(f"from {config_filepath} import {config_filename}", globals())
+    config_filename = f"{model_name.title().replace('_','')}Config" # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
+    try:
+        exec(f"from {config_filepath} import {config_filename}", globals())
+    except:
+        continue
 
     try:
         config = inspect.getsource(eval(config_filename))

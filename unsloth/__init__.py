@@ -61,6 +61,15 @@ if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 pass
 
+# XET is slower in Colab - investigate why
+keynames = "\n" + "\n".join(os.environ.keys())
+if "HF_XET_HIGH_PERFORMANCE" not in os.environ:
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+pass
+if "\nCOLAB_" in keynames:
+    os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = "0"
+pass
+
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
@@ -198,19 +207,20 @@ pass
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.3.17"):
-        print(
-            "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
-            "To disable this, set `os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'`"
-        )
-        if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
-            try:
-                os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-            except:
-                try:
-                    os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
-                except:
-                    raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
+    if Version(unsloth_zoo_version) < Version("2025.4.1"):
+        pass
+        # print(
+        #     "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
+        #     "To disable this, set `os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'`"
+        # )
+        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
+        #     try:
+        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
+        #     except:
+        #         try:
+        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+        #         except:
+        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
     import unsloth_zoo
 except:
     raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")

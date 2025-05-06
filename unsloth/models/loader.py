@@ -23,6 +23,8 @@ from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
+from .qwen3   import FastQwen3Model
+from .qwen3_moe import FastQwen3MoeModel
 from .cohere  import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
@@ -51,6 +53,8 @@ SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
 SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
 SUPPORTS_LLAMA32 = transformers_version  > Version("4.45.0")
 SUPPORTS_GRANITE = transformers_version >= Version("4.46.0")
+SUPPORTS_QWEN3   = transformers_version >= Version("4.50.3")
+SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -298,6 +302,15 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
+        elif model_type == "qwen3":# or model_type == "qwen3_moe":
+            if not SUPPORTS_QWEN3 or not SUPPORTS_QWEN3_MOE:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.\n"\
+                    f"The minimum required version is 4.50.3.\n"\
+                    f'Try `pip install --upgrade "transformers>=4.50.3"`\n'\
+                    f"to obtain the latest transformers build, then restart this session."\
+                )
+            dispatch_model = FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
         # Temporary disable optimized Cohere until errors match
         # elif model_type == "cohere":
         #     dispatch_model = FastCohereModel
@@ -469,10 +482,14 @@ class FastModel(FastBaseModel):
         return_logits              = False, # Return logits
         fullgraph                  = True, # No graph breaks
         use_exact_model_name       = False,
+        auto_model                 = None,
+        whisper_language           = None,
+        whisper_task               = None,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
-
+        if whisper_language is not None: assert(type(whisper_language) is str)
+        if whisper_task is not None: assert(type(whisper_task) is str)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -709,7 +726,8 @@ class FastModel(FastBaseModel):
         # Check if VLM
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
-        auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+        if auto_model is None:
+            auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
@@ -727,6 +745,8 @@ class FastModel(FastBaseModel):
             auto_model        = auto_model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             supports_sdpa     = supports_sdpa,
+            whisper_language  = whisper_language,
+            whisper_task      = whisper_task,            
             *args, **kwargs,
         )
 
