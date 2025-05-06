@@ -113,7 +113,11 @@ class ColocateWorkerExtension:
         torch.cuda.synchronize()
 
     def get_model_runner(self):
-        return self.model_runner.model
+        vllm_model = self.model_runner.model
+        names = []
+        for name, p in self.model_runner.model.named_parameters():
+            names.append(name)
+        return names
 
     def check_weights_changed(self):
         """
