@@ -19,6 +19,9 @@ from typing import Union, List, Any, Tuple, Dict, Callable, Optional
 import inspect
 import torch
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
@@ -100,17 +103,25 @@ def patch_Gemma3Processor():
             # Replace image tokens by the full expanded sequence
             batch_num_crops = to_py_obj(image_inputs.pop("num_crops"))
             text_with_crops = text
-            for batch_idx, (prompt, images, num_crops) in enumerate(zip(text, batched_images, batch_num_crops)):
+            for batch_idx, (prompt, images_for_item, num_crops_for_item) in enumerate(zip(text, batched_images, batch_num_crops)):
                 image_indexes = [m.start() for m in re.finditer(self.boi_token, prompt)]
 
-                if len(images) != len(image_indexes):
+                if len(images_for_item) != len(image_indexes):
                     raise ValueError(
-                        f"Prompt contained {len(image_indexes)} image tokens but received {len(images)} images."
+                        f"Prompt contained {len(image_indexes)} image tokens but received {len(images_for_item)} images."
                     )
+                
+                iterable_num_crops = num_crops_for_item
+                
+                if isinstance(num_crops_for_item, int):
+                        if len(image_indexes) > 0:
+                            iterable_num_crops = [num_crops_for_item] + [0] * (len(image_indexes) - 1)
+                        else:
+                            iterable_num_crops = []
 
                 # Insert additional image tokens for Pan-and-Scan crops
-                for num, idx in reversed(list(zip(num_crops, image_indexes))):
-                    if num:
+                for num, idx in reversed(list(zip(iterable_num_crops, image_indexes))):
+                    if isinstance(num, int) and num > 0:
                         formatted_image_text = (
                             f"Here is the original image {self.boi_token} and here are some crops to help you see better "
                             + " ".join([self.boi_token] * num)
@@ -153,7 +164,6 @@ def patch_Gemma3Processor():
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3Processor)
 
-
 def patch_Gemma3ForConditionalGeneration():
     try:
         import transformers.models.gemma3.modeling_gemma3
@@ -168,8 +178,8 @@ def patch_Gemma3ForConditionalGeneration():
     )
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
-        pixel_values: torch.FloatTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Union[List[torch.FloatTensor], Cache]] = None,
@@ -180,7 +190,6 @@ def patch_Gemma3ForConditionalGeneration():
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         **lm_kwargs,
     ) -> Union[Tuple, Gemma3CausalLMOutputWithPast]:
@@ -191,7 +200,6 @@ def patch_Gemma3ForConditionalGeneration():
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         is_training = token_type_ids is not None and labels is not None
 
@@ -212,8 +220,6 @@ def patch_Gemma3ForConditionalGeneration():
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
 
-        if position_ids is None:
-            position_ids = cache_position.unsqueeze(0) + 1  # Gemma3 positions are 1-indexed
 
         # Merge text and images
         if pixel_values is not None:
@@ -261,7 +267,6 @@ def patch_Gemma3ForConditionalGeneration():
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             cache_position=cache_position,
             logits_to_keep=logits_to_keep,
             **lm_kwargs,
@@ -292,9 +297,6 @@ def patch_Gemma3ForConditionalGeneration():
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
         loss = outputs.loss
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
 
         return Gemma3CausalLMOutputWithPast(
             loss=loss,
@@ -571,3 +573,151 @@ def patch_Gemma3Attention():
     return
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3Attention)
+
+def patch_SmolVLMForConditionalGeneration_forward():
+    try:
+        import transformers.models.smolvlm.modeling_smolvlm
+    except:
+        return
+
+    from typing import List, Optional, Tuple, Union
+
+    from transformers.models.smolvlm.modeling_smolvlm import (
+        CrossEntropyLoss,
+        SmolVLMCausalLMOutputWithPast,
+        SmolVLMForConditionalGeneration,
+    )
+
+    # Check if the fix is already present (either from Transformers library or previous Unsloth patch)
+    # We look for the specific device handling code that fixes torch.compile indentation errors,
+    # rather than an Unsloth marker, to handle cases where the fix comes from upstream
+    current_forward_source = inspect.getsource(
+        transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward
+    )
+    if "shift_labels.view(-1).to(shift_logits.device)" in current_forward_source:
+        return  # Already patched
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        pixel_attention_mask: Optional[torch.BoolTensor] = None,
+        image_hidden_states: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        return_dict: Optional[bool] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+    ) -> Union[Tuple, SmolVLMCausalLMOutputWithPast]:
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
+        )
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            pixel_values=pixel_values,
+            pixel_attention_mask=pixel_attention_mask,
+            image_hidden_states=image_hidden_states,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            cache_position=cache_position,
+            return_dict=return_dict,
+        )
+
+        hidden_states = outputs[0]
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        slice_indices = (
+            slice(-logits_to_keep, None)
+            if isinstance(logits_to_keep, int)
+            else logits_to_keep
+        )
+        logits = self.lm_head(hidden_states[:, slice_indices, :])
+
+        loss = None
+        if labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
+            logits = logits.float()
+            labels = labels.to(logits.device)
+            # Shift so that tokens < n predict n
+            if attention_mask is not None:
+                # we use the input attention mask to shift the logits and labels, because it is 2D.
+                # we also crop attn mask in case it is longer, which happens in PrefixTuning with peft
+                shift_attention_mask = attention_mask[:, -(logits.shape[1] - 1) :].to(
+                    logits.device
+                )
+                shift_logits = logits[..., :-1, :][
+                    shift_attention_mask != 0
+                ].contiguous()
+                shift_labels = labels[..., 1:][shift_attention_mask != 0].contiguous()
+            else:
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1).to(
+                    shift_logits.device
+                ),  # The fix is here - explicit device conversion
+            )
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        return SmolVLMCausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+            image_hidden_states=outputs.image_hidden_states,
+        )
+
+    # Check if we can patch the model by comparing signatures
+    old_keys = inspect.signature(
+        transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward
+    ).parameters
+    new_keys = inspect.signature(forward).parameters
+
+    if old_keys != new_keys:
+        pass
+        # print(
+        #     "Unsloth: Failed to patch SmolVLMForConditionalGeneration forward function."
+        # )
+    else:
+        transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward = (
+            forward
+        )
+        pass
+        # print(
+        #     "Unsloth: Successfully patched SmolVLMForConditionalGeneration for better torch.compile compatibility."
+        # )
+
+    return
+
+
+# Add the patch to the TEMPORARY_PATCHES list
+TEMPORARY_PATCHES.append(patch_SmolVLMForConditionalGeneration_forward)
