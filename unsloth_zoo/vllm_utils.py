@@ -189,13 +189,12 @@ if importlib.util.find_spec("vllm") is not None:
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesLinearMethod._apply_4bit_weight = _apply_4bit_weight
 
         # Disable all not supported messages
-        # Interestingly below filters all vLLM >= 0.8.5 messages away.
-        # from vllm.config import logger as vllm_config_logger
-        # vllm_config_logger.addFilter(HideLoggingMessage("not supported"))
-        # vllm_config_logger.addFilter(HideLoggingMessage("is not tested"))
-        # vllm_config_logger.addFilter(HideLoggingMessage("is not fully optimized"))
-        # vllm_config_logger.addFilter(HideLoggingMessage("not set"))
-        # del vllm_config_logger
+        from vllm.config import logger as vllm_config_logger
+        vllm_config_logger.addFilter(HideLoggingMessage("not supported"))
+        vllm_config_logger.addFilter(HideLoggingMessage("is not tested"))
+        vllm_config_logger.addFilter(HideLoggingMessage("is not fully optimized"))
+        vllm_config_logger.addFilter(HideLoggingMessage("not set"))
+        del vllm_config_logger
     pass
 
     class BitsAndBytesConfig(
@@ -395,8 +394,8 @@ pass
 
 
 def patch_vllm():
-    patch_bitsandbytes_quant_state()
-    patch_vllm_bitsandbytes()
+    # patch_bitsandbytes_quant_state()
+    # patch_vllm_bitsandbytes()
     patch_vllm_lora_tokenizer()
     patch_vllm_lora_load_tensors()
     global LORA_REQUEST_ID
