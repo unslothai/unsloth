@@ -189,12 +189,13 @@ if importlib.util.find_spec("vllm") is not None:
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesLinearMethod._apply_4bit_weight = _apply_4bit_weight
 
         # Disable all not supported messages
-        from vllm.config import logger as vllm_config_logger
-        vllm_config_logger.addFilter(HideLoggingMessage("not supported"))
-        vllm_config_logger.addFilter(HideLoggingMessage("is not tested"))
-        vllm_config_logger.addFilter(HideLoggingMessage("is not fully optimized"))
-        vllm_config_logger.addFilter(HideLoggingMessage("not set"))
-        del vllm_config_logger
+        # Interestingly below filters all vLLM >= 0.8.5 messages away.
+        # from vllm.config import logger as vllm_config_logger
+        # vllm_config_logger.addFilter(HideLoggingMessage("not supported"))
+        # vllm_config_logger.addFilter(HideLoggingMessage("is not tested"))
+        # vllm_config_logger.addFilter(HideLoggingMessage("is not fully optimized"))
+        # vllm_config_logger.addFilter(HideLoggingMessage("not set"))
+        # del vllm_config_logger
     pass
 
     class BitsAndBytesConfig(
@@ -872,7 +873,7 @@ def load_vllm(
     max_loras              : int  = 1,
     use_async              : bool = False,
     use_engine             : bool = False,
-    disable_log_stats      : bool = True,
+    disable_log_stats      : bool = False,
     enforce_eager          : bool = False, # Good for debugging
     enable_prefix_caching  : bool = True,
     compilation_config     : int  = 3, # -O3 for maximum performance
