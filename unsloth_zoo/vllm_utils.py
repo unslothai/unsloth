@@ -80,58 +80,106 @@ if importlib.util.find_spec("vllm") is not None:
         return vllm_check or unsloth_check
     pass
 
-    # Fix force using torch.bfloat16 all the time and make it dynamic
-    def _apply_4bit_weight(
-        self,
-        layer: torch.nn.Module,
-        x: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        # only load the bitsandbytes module when needed
-        from bitsandbytes import matmul_4bit
+    import vllm.model_executor.layers.quantization.bitsandbytes
 
-        original_type = x.dtype
-        original_shape = x.shape
-        reshape_after_matmul = False
-        if x.ndim > 2:
-            x = x.reshape(-1, x.size(-1))
-            reshape_after_matmul = True
+    if not hasattr(
+        vllm.model_executor.layers.quantization.bitsandbytes,
+        "apply_bnb_4bit"
+    ):
+        # Fix force using torch.bfloat16 all the time and make it dynamic
+        def _apply_4bit_weight(
+            self,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            bias: Optional[torch.Tensor] = None,
+        ) -> torch.Tensor:
+            # only load the bitsandbytes module when needed
+            from bitsandbytes import matmul_4bit
 
-        qweight = layer.weight
-        quant_states = qweight.bnb_quant_state
-        offsets = qweight.bnb_shard_offsets
-        inference_dtype = quant_states[0].dtype
-        bf_x = x.to(inference_dtype) # Originally used bfloat16
+            original_type = x.dtype
+            original_shape = x.shape
+            reshape_after_matmul = False
+            if x.ndim > 2:
+                x = x.reshape(-1, x.size(-1))
+                reshape_after_matmul = True
 
-        out_dim_0 = x.shape[0]
-        out_dim_1 = sum(
-            [quant_state[1].shape[0] for quant_state in quant_states.items()])
-        out = torch.empty(out_dim_0,
-                            out_dim_1,
-                            dtype=inference_dtype,
-                            device=x.device)
+            qweight = layer.weight
+            quant_states = qweight.bnb_quant_state
+            offsets = qweight.bnb_shard_offsets
+            inference_dtype = quant_states[0].dtype
+            bf_x = x.to(inference_dtype) # Originally used bfloat16
 
-        current_index = 0
-        for i in range(len(quant_states)):
-            output_size = quant_states[i].shape[0]
-            # It is more efficient to use out kwarg like
-            # matmul_4bit(..., out = ...).  Infeasible now due to the bug
-            # https://github.com/TimDettmers/bitsandbytes/issues/1235.
-            # Need to change  after the bug is fixed.
-            out[:, current_index:current_index + output_size] = matmul_4bit(
-                bf_x, qweight[offsets[i]:offsets[i + 1]].t(), quant_states[i])
+            out_dim_0 = x.shape[0]
+            out_dim_1 = sum(
+                [quant_state[1].shape[0] for quant_state in quant_states.items()])
+            out = torch.empty(out_dim_0,
+                              out_dim_1,
+                              dtype=inference_dtype,
+                              device=x.device)
 
-            current_index += output_size
+            current_index = 0
+            for i in range(len(quant_states)):
+                output_size = quant_states[i].shape[0]
+                # It is more efficient to use out kwarg like
+                # matmul_4bit(..., out = ...).  Infeasible now due to the bug
+                # https://github.com/TimDettmers/bitsandbytes/issues/1235.
+                # Need to change  after the bug is fixed.
+                out[:, current_index:current_index + output_size] = matmul_4bit(
+                    bf_x, qweight[offsets[i]:offsets[i + 1]].t(), quant_states[i])
 
-        out = out.to(original_type)
+                current_index += output_size
 
-        if reshape_after_matmul:
-            out = out.view(*original_shape[:-1], out.size(-1))
+            out = out.to(original_type)
 
-        if bias is not None:
-            out += bias
+            if reshape_after_matmul:
+                out = out.view(*original_shape[:-1], out.size(-1))
 
-        return out
+            if bias is not None:
+                out += bias
+
+            return out
+        pass
+    else:
+        # Newer vLLM versions have _apply_bnb_4bit
+        apply_bnb_4bit = vllm.model_executor.layers.quantization.bitsandbytes.apply_bnb_4bit
+        def _apply_4bit_weight_new(
+            self,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            bias: Optional[torch.Tensor] = None,
+        ) -> torch.Tensor:
+            # only load the bitsandbytes module when needed
+            original_type = x.dtype
+            original_shape = x.shape
+            reshape_after_matmul = False
+            if x.ndim > 2:
+                x = x.reshape(-1, x.size(-1))
+                reshape_after_matmul = True
+
+            qweight = layer.weight
+            quant_states = qweight.bnb_quant_state
+            offsets = qweight.bnb_shard_offsets
+            inference_dtype = quant_states[0].dtype
+            bf_x = x.to(inference_dtype) # Originally used bfloat16
+
+            out_dim_0 = x.shape[0]
+            out_dim_1 = sum(
+                [quant_state[1].shape[0] for quant_state in quant_states.items()])
+            out = torch.empty(out_dim_0,
+                              out_dim_1,
+                              dtype=inference_dtype,
+                              device=x.device)
+            apply_bnb_4bit(bf_x, qweight, offsets, out)
+            out = out.to(original_type)
+
+            if reshape_after_matmul:
+                out = out.view(*original_shape[:-1], out.size(-1))
+
+            if bias is not None:
+                out += bias
+
+            return out
+        pass
     pass
 
     def patch_vllm_bitsandbytes():
@@ -149,7 +197,6 @@ if importlib.util.find_spec("vllm") is not None:
         del vllm_config_logger
     pass
 
-    import vllm.model_executor.layers.quantization.bitsandbytes
     class BitsAndBytesConfig(
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig
     ):
