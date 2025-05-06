@@ -112,6 +112,9 @@ class ColocateWorkerExtension:
         self.model_runner.model.load_weights(weights=weights)
         torch.cuda.synchronize()
 
+    def get_model_runner(self):
+        return self.model_runner.model
+
     def check_weights_changed(self):
         """
         Check if the weights are updated to 0.
