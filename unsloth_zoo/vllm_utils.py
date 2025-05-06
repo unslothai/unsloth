@@ -142,7 +142,7 @@ if importlib.util.find_spec("vllm") is not None:
     else:
         # Newer vLLM versions have _apply_bnb_4bit
         apply_bnb_4bit = vllm.model_executor.layers.quantization.bitsandbytes.apply_bnb_4bit
-        def _apply_4bit_weight_new(
+        def _apply_4bit_weight(
             self,
             layer: torch.nn.Module,
             x: torch.Tensor,
