@@ -149,28 +149,28 @@ if importlib.util.find_spec("vllm") is not None:
         del vllm_config_logger
     pass
 
+    import vllm.model_executor.layers.quantization.bitsandbytes
+    class BitsAndBytesConfig(
+        vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig
+    ):
+        # All Unsloth Zoo code licensed under LGPLv3
+        def __init__(self, *args, **kwargs):
+            dtype = os.environ.get("UNSLOTH_bnb_4bit_compute_dtype", kwargs["bnb_4bit_compute_dtype"])
+            kwargs["bnb_4bit_compute_dtype"] = dtype
+            print(f"Unsloth: vLLM Bitsandbytes config using kwargs = {kwargs}")
+            super().__init__(*args, **kwargs)
+        pass
+    pass
+
     def patch_vllm_compute_dtype(dtype = torch.float16):
         # All Unsloth Zoo code licensed under LGPLv3
         # vLLM defaults to using the model config file's compute_dtype
         # We shall fix it dynamically!
-        import vllm.model_executor.layers.quantization.bitsandbytes
         old_config = vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig
 
         dtype = str(dtype)
         if dtype.startswith("torch."): dtype = dtype[len("torch."):]
         os.environ["UNSLOTH_bnb_4bit_compute_dtype"] = dtype
-
-        class BitsAndBytesConfig(
-            vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig
-        ):
-            # All Unsloth Zoo code licensed under LGPLv3
-            def __init__(self, *args, **kwargs):
-                dtype = os.environ.get("UNSLOTH_bnb_4bit_compute_dtype", kwargs["bnb_4bit_compute_dtype"])
-                kwargs["bnb_4bit_compute_dtype"] = dtype
-                print(f"Unsloth: vLLM Bitsandbytes config using kwargs = {kwargs}")
-                super().__init__(*args, **kwargs)
-            pass
-        pass
 
         vllm.model_executor.layers.quantization.bitsandbytes.BitsAndBytesConfig = BitsAndBytesConfig
         return old_config
@@ -1369,7 +1369,7 @@ def generate_batches(llm, inputs, n_batches = None, lora_request = None, *args, 
 pass
 
 
-def delete_vllm(llm):
+def delete_vllm(llm = None):
     # From https://github.com/vllm-project/vllm/issues/1908
     import ray
     from vllm.distributed.parallel_state import (
@@ -1379,13 +1379,16 @@ def delete_vllm(llm):
     # Delete the llm object and free the memory
     destroy_model_parallel()
     destroy_distributed_environment()
-    del llm.llm_engine.model_executor
-    del llm
+    if llm is not None:
+        del llm.llm_engine.model_executor
+        del llm
+        llm = None
     with contextlib.suppress(AssertionError):
         torch.distributed.destroy_process_group()
     gc.collect()
     torch.cuda.empty_cache()
     ray.shutdown()
+    return llm
 pass
 
 
