@@ -114,10 +114,10 @@ class ColocateWorkerExtension:
 
     def get_model_runner(self):
         vllm_model = self.model_runner.model
-        names = []
-        for name, p in self.model_runner.model.named_parameters():
-            names.append(name)
-        return names
+        parameters = []
+        for name, param in self.model_runner.model.named_parameters():
+            parameters.append((name, param))
+        return parameters
 
     def check_weights_changed(self):
         """
