@@ -114,12 +114,16 @@ class ColocateWorkerExtension:
 
     def get_model_runner(self):
         vllm_model = self.model_runner.model
+        model_loras_A, model_loras_B = [], []
+        vllm_loras_A,  vllm_loras_B  = [], []
         parameters = []
-        for name, param in self.model_runner.model.named_parameters():
-            print(name, param)
-            parameters.append(name)
+        for v_layer in vllm_model.model.layers:
+            vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[0])
+            vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[1])
+            vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[2])
+
             # parameters.append((name, param))
-        return parameters
+        return vllm_loras_A
 
     def check_weights_changed(self):
         """
