@@ -240,7 +240,7 @@ print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://git
 > unsloth_cli.py also supports `UNSLOTH_USE_MODELSCOPE=1` to download models and datasets. please remember to use the model and dataset id in the ModelScope community.
 
 ```python
-from unsloth import FastLanguageModel 
+from unsloth import FastLanguageModel, FastModel
 import torch
 from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
