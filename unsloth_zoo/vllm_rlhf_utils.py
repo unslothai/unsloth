@@ -118,6 +118,7 @@ class ColocateWorkerExtension:
         vllm_loras_A,  vllm_loras_B  = [], []
         parameters = []
         for v_layer in vllm_model.model.layers:
+            print(v_layer.self_attn.qkv_proj.lora_a_stacked[0])
             vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[0])
             vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[1])
             vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[2])
