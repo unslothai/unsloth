@@ -124,6 +124,7 @@ class ColocateWorkerExtension:
             vllm_loras_A .append(v_layer.self_attn.qkv_proj.lora_a_stacked[2])
 
             # parameters.append((name, param))
+        torch.cuda.synchronize()
         return vllm_loras_A
 
     def check_weights_changed(self):
