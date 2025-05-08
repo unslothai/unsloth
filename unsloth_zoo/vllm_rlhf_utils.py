@@ -136,3 +136,14 @@ class ColocateWorkerExtension:
             weights_updated = weights_updated and torch.allclose(
                 p, torch.zeros_like(p))
         return weights_updated
+
+    def get_weight_ipc_handles(self):
+        from torch.multiprocessing.reductions import reduce_tensor
+        data = {}
+        for name, p in self.model.named_parameters():
+            # the training actor might only have a subset of the weights
+            # and need to all-gather the weights from all the actors.
+            # for demonstration, here we assume all training actors have
+            # the full weights.
+            data[name] = reduce_tensor(p.detach())
+        return {self.device_uuid: data}
