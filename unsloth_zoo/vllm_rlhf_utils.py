@@ -140,7 +140,8 @@ class ColocateWorkerExtension:
     def get_weight_ipc_handles(self):
         from torch.multiprocessing.reductions import reduce_tensor
         data = {}
-        for name, p in self.model.named_parameters():
+        vllm_model = self.model_runner.model
+        for name, p in vllm_model.named_parameters():
             # the training actor might only have a subset of the weights
             # and need to all-gather the weights from all the actors.
             # for demonstration, here we assume all training actors have
