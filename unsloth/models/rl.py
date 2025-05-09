@@ -230,6 +230,7 @@ def PatchRL(FastLanguageModel):
             logits = logits[0]
 
         return (loss, logits, labels)
+
     
     from trl.trainer.utils import generate, batch_generation,pad, forward
     from transformers import GenerationConfig
@@ -346,7 +347,7 @@ def PatchRL(FastLanguageModel):
     batch_gen  = "batch_generation"
     forward_function = "forward"
     #This is only for RLOO and PPO
-    gen  = "generate"
+
     for trainer in trainers:
         #breakpoint()
         try: current_trainer = eval(f"trl.trainer.{trainer}")
@@ -365,10 +366,14 @@ def PatchRL(FastLanguageModel):
         if hasattr(current_trainer, unwrap):
             try: exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
             except: continue
+
+        if hasattr(current_trainer, _get_reward):
+            try: exec(f"trl.trainer.{trainer}.{_get_reward} = unsloth_{_get_reward}")
+            except: continue
     exec(f"Trainer.prediction_step=unsloth_prediction_step")
     pass
 pass
-
+#To do, also in trl/trainer/callbacks.py make that unwrap compatible
 
 RLTrainer_replacement = '''
 import os
