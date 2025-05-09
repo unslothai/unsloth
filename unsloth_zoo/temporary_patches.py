@@ -721,3 +721,127 @@ def patch_SmolVLMForConditionalGeneration_forward():
 
 # Add the patch to the TEMPORARY_PATCHES list
 TEMPORARY_PATCHES.append(patch_SmolVLMForConditionalGeneration_forward)
+
+
+def patch_CsmBackboneModelEmbeddings_forward():
+    try:
+        import transformers.models.csm.modeling_csm
+    except:
+        return
+
+
+    def forward(self, input_ids):
+        input_embeds = self.embed_audio_tokens(input_ids + self.audio_tokens_offsets)
+        # fix for dtype cast
+        dtype = input_embeds.dtype
+        input_embeds = input_embeds.sum(dim=2).to(dtype)
+        return input_embeds
+
+    old_keys = inspect.signature(
+        transformers.models.csm.modeling_csm.CsmBackboneModelEmbeddings.forward
+    ).parameters
+    new_keys = inspect.signature(forward).parameters
+
+    if old_keys != new_keys:
+        print("Unsloth: Failed to patch CsmBackboneModelEmbeddings forward.")
+    else:
+        transformers.models.csm.modeling_csm.CsmBackboneModelEmbeddings.forward = forward
+
+    
+TEMPORARY_PATCHES.append(patch_CsmBackboneModelEmbeddings_forward)
+
+def patch_CsmDepthDecoderForCausalLM_forward():
+    try:
+        import transformers.models.csm.modeling_csm
+    except:
+        return
+
+    from transformers.modeling_outputs import CausalLMOutputWithPast 
+    from transformers.models.csm.modeling_csm import Cache, Unpack, KwargsForCausalLM
+    from transformers.loss.loss_utils import ForCausalLMLoss
+    # do your imports
+    # check if patched already
+
+    # def forward
+    # make sure to inspect the signature old vs new
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        backbone_last_hidden_state: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+        **kwargs: Unpack[KwargsForCausalLM],
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            backbone_last_hidden_state=backbone_last_hidden_state,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            cache_position=cache_position,
+            **kwargs,
+        )
+
+        hidden_states = outputs[0]
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        if isinstance(logits_to_keep, int):
+            if logits_to_keep == 0:
+                # skip idx 0 logits since it's for the concatenated backbone last hidden state
+                slice_indices = slice(1, None)
+            else:
+                slice_indices = slice(-logits_to_keep, None)
+        else:
+            slice_indices = logits_to_keep
+
+        logits = self.codebooks_head(
+            hidden_states[:, slice_indices, :], cache_position[slice_indices] if cache_position is not None else None
+        )
+        logits = logits.contiguous()
+
+        loss = None
+        if labels is not None:
+            shift_labels = labels[..., 1:].contiguous()
+            loss_fct = ForCausalLMLoss
+            loss = loss_fct(
+                logits=logits, labels=None, vocab_size=self.config.vocab_size, shift_labels=shift_labels, **kwargs
+            )
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+    
+    old_keys = inspect.signature(
+        transformers.models.csm.modeling_csm.CsmDepthDecoderForCausalLM.forward
+    ).parameters
+    new_keys = inspect.signature(forward).parameters
+
+    if old_keys != new_keys:
+        print("Unsloth: Failed to patch CsmDepthDecoderForCausalLM forward.")
+    else:
+        transformers.models.csm.modeling_csm.CsmDepthDecoderForCausalLM.forward = forward
+
+    
+TEMPORARY_PATCHES.append(patch_CsmDepthDecoderForCausalLM_forward)
