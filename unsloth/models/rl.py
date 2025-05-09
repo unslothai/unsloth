@@ -59,15 +59,19 @@ def PatchRL(FastLanguageModel):
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
+        if "UnslothPolicyAndValueWrapper" in str(type(model)):
+            model = model.policy
+
         with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
             # Put the model in inference mode.
-            FastLanguageModel.for_inference(model)
+            FastLanguageModel.for_inference(unwrapped_model)
 
             # We must use .clone for Unsloth since we force inference_mode
             # Rather we should have used no_grad
             original_generate = unwrapped_model.generate
             def generate_with_clone(*args, **kwargs):
                 out = original_generate(*args, **kwargs)
+                #breakpoint()
                 if isinstance(out, torch.Tensor):
                     return out.clone()
                 return out
@@ -227,6 +231,112 @@ def PatchRL(FastLanguageModel):
 
         return (loss, logits, labels)
 
+    
+    from trl.trainer.utils import generate, batch_generation,pad, forward
+    from transformers import GenerationConfig
+ 
+    def unsloth_forward(
+        model: torch.nn.Module,
+        query_responses: torch.Tensor,
+        pad_token_id: int,
+    ) -> torch.nn.Module:
+        """
+        Performs a forward pass through the model with the given query responses and pad token ID.
+
+        Args:
+            model (`torch.nn.Module`):
+                The model to perform the forward pass.
+            query_responses (`torch.Tensor`):
+                The tensor containing the query responses.
+            pad_token_id (`int`):
+                The token ID representing the pad token.
+
+        Returns:
+            `torch.nn.Module`:
+                The output of the model, including hidden states.
+        """
+        attention_mask = query_responses != pad_token_id
+        position_ids = attention_mask.cumsum(1) - attention_mask.long()
+        input_ids = torch.masked_fill(query_responses, ~attention_mask, 0)
+
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, position_ids = position_ids)
+
+        return outputs
+
+    @torch.no_grad()
+    def unsloth_batch_generation(
+        model: torch.nn.Module,
+        queries,
+        local_rollout_forward_batch_size: int,
+        pad_token_id: int,
+        eos_token_id: int, 
+        processing_class,
+        generation_config: GenerationConfig,
+    ):
+        logitss = []
+
+        context_length =queries.shape[1]
+        batch_size =  queries.shape[0]
+        from unsloth import FastLanguageModel
+
+        sampling_params = vLLMSamplingParams()
+        # Ensure sampling is enabled and update necessary parameters
+        sampling_params.temperature = generation_config.temperature
+        sampling_params.max_tokens = generation_config.max_new_tokens
+        sampling_params.top_p = 1.0
+        sampling_params.top_k = -1
+        
+        sampling_params.min_tokens = 0 
+
+        eos_token_id = eos_token_id
+        pad_token_id = pad_token_id
+
+        # Load the latest weights
+        tokenized_query = queries
+        queries = [processing_class.decode(query) for query in queries]
+
+        pass
+
+        pass
+
+        outputs = model.fast_generate(queries, sampling_params, use_tqdm=False, lora_request = model.load_lora('ppo_trainer_lora_model', load_tensors = True))
+
+        completion_ids = [list(output.outputs[i].token_ids) for i in range(1) for output in outputs]
+        prompt_ids = [list(output.prompt_token_ids) for _ in range(1) for output in outputs]
+
+        max_prompt_length = max(len(ids) for ids in prompt_ids)
+        prompt_mask = [[0] * (max_prompt_length - len(ids)) + [1] * len(ids) for ids in prompt_ids]
+        prompt_ids = [[pad_token_id] * (max_prompt_length - len(ids)) + ids for ids in prompt_ids]
+        max_tokens = sampling_params.max_tokens
+        completion_mask = [[1] * len(ids) + [0] * (max_tokens - len(ids)) for ids in completion_ids]
+
+        completion_ids = [
+            ids + [eos_token_id] if ids[-1] != eos_token_id and len(ids) < max_tokens else ids
+            for ids in completion_ids
+        ]
+        completion_ids = [ids + [pad_token_id] * (max_tokens - len(ids)) for ids in completion_ids]
+
+        cuda_id = os.environ.get("CUDA_VISIBLE_DEVICES", "0")  
+        device = torch.device(f"cuda:{cuda_id}")
+
+        completion_ids = torch.tensor(completion_ids, device="cuda:0")
+
+        padded_query_responses = torch.cat((tokenized_query, completion_ids), dim=1)
+
+        FastLanguageModel.for_training(model)
+        for i in range(0, batch_size, local_rollout_forward_batch_size):
+            padded_query_response = padded_query_responses[i : i + local_rollout_forward_batch_size]
+            #breakpoint()
+            output = forward(model, padded_query_response, pad_token_id)
+            logits = output.logits[:, context_length - 1 : -1]
+            logits /= generation_config.temperature + 1e-7
+            logitss.append(logits)
+        
+
+        concatenated_tensor = torch.cat(logitss, dim=0)
+
+        return padded_query_responses, concatenated_tensor
+     
     import trl.trainer
     trainers = dir(trl.trainer)
 
@@ -234,12 +344,29 @@ def PatchRL(FastLanguageModel):
     trainers.append("callbacks")
     unwrap = "unwrap_model_for_generation"
     _get_reward = "get_reward"
+    batch_gen  = "batch_generation"
+    forward_function = "forward"
+    #This is only for RLOO and PPO
+
     for trainer in trainers:
+        #breakpoint()
         try: current_trainer = eval(f"trl.trainer.{trainer}")
         except: continue
+
+        if hasattr(current_trainer, _get_reward):
+            try: exec(f"trl.trainer.{trainer}.{_get_reward} = unsloth_{_get_reward}")
+            except: continue
+
+        if trainer == "rloo_trainer" or trainer == "ppo_trainer":
+            if hasattr(current_trainer, batch_gen):
+                try: 
+                    exec(f"trl.trainer.{trainer}.{batch_gen} = unsloth_{batch_gen}")
+                    exec(f"trl.trainer.{trainer}.{forward_function} = unsloth_{forward_function}")
+                except: continue
         if hasattr(current_trainer, unwrap):
             try: exec(f"trl.trainer.{trainer}.{unwrap} = unsloth_{unwrap}")
             except: continue
+
         if hasattr(current_trainer, _get_reward):
             try: exec(f"trl.trainer.{trainer}.{_get_reward} = unsloth_{_get_reward}")
             except: continue
@@ -257,8 +384,6 @@ import torch
 import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
-from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
-
 torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : False,
@@ -309,6 +434,136 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
 {RLTrainer_post}
 pass
 '''
+
+RLTrainer_replacement_rloo = '''
+import os
+from typing import *
+from dataclasses import dataclass, field
+from packaging.version import Version
+import torch
+import numpy as np
+from contextlib import nullcontext
+from torch.nn import functional as F
+torch_compile_options = {{
+    "epilogue_fusion"   : True,
+    "max_autotune"      : False,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}}
+
+{selective_log_softmax_code}
+{RL_pre}
+
+@dataclass
+class Unsloth{RLConfig_name}({RLConfig_name}):
+    """
+    {__RLConfig_doc__}
+    """
+    vllm_sampling_params: Optional[Any] = field(
+        default = None,
+        metadata = {{'help': 'vLLM SamplingParams'}},
+    )
+    unsloth_num_chunks : Optional[int] = field(
+        default = -1,
+        metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
+    )
+    def __init__({RLConfig_arguments},
+        vllm_sampling_params = None,
+        unsloth_num_chunks = -1,
+        **kwargs,
+    ):
+{RLConfig_extra_args}
+        super().__init__({RLConfig_call_args}{RLConfig_kwargs})
+        self.vllm_sampling_params = vllm_sampling_params
+        self.unsloth_num_chunks = unsloth_num_chunks
+pass
+
+{RLTrainer_extras}
+
+class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
+    """
+    {__RLTrainer_doc__}
+    """
+    def __init__({RLTrainer_arguments},
+        **kwargs
+    ):
+        if config:
+            args = config
+        if policy: 
+            model = policy
+        if args is None: args = Unsloth{RLConfig_name}()
+{RLTrainer_extra_args}
+        data_collator.tokenizer.padding_side = "left"
+        super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
+{RLTrainer_post}
+pass
+'''
+
+RLTrainer_replacement_ppo = '''
+import os
+from typing import *
+from dataclasses import dataclass, field
+from packaging.version import Version
+import torch
+import numpy as np
+from contextlib import nullcontext
+from torch.nn import functional as F
+import torch.nn as nn
+from trl.trainer.utils import forward
+
+torch_compile_options = {{
+    "epilogue_fusion"   : True,
+    "max_autotune"      : False,
+    "shape_padding"     : True,
+    "trace.enabled"     : False,
+    "triton.cudagraphs" : False,
+}}
+
+{selective_log_softmax_code}
+{RL_pre}
+
+@dataclass
+class Unsloth{RLConfig_name}({RLConfig_name}):
+    """
+    {__RLConfig_doc__}
+    """
+    vllm_sampling_params: Optional[Any] = field(
+        default = None,
+        metadata = {{'help': 'vLLM SamplingParams'}},
+    )
+    unsloth_num_chunks : Optional[int] = field(
+        default = -1,
+        metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
+    )
+    def __init__({RLConfig_arguments},
+        vllm_sampling_params = None,
+        unsloth_num_chunks = -1,
+        **kwargs,
+    ):
+{RLConfig_extra_args}
+        super().__init__({RLConfig_call_args}{RLConfig_kwargs})
+        self.vllm_sampling_params = vllm_sampling_params
+        self.unsloth_num_chunks = unsloth_num_chunks
+pass
+
+{RLTrainer_extras}
+
+class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
+    """
+    {__RLTrainer_doc__}
+    """
+    def __init__({RLTrainer_arguments},
+        **kwargs
+    ):
+        if args is None: args = Unsloth{RLConfig_name}()
+{RLTrainer_extra_args}
+        data_collator.tokenizer.padding_side = "left"
+        super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
+{RLTrainer_post}
+pass
+'''
+
 
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Patch for vLLM and Unsloth PEFT
@@ -515,7 +770,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"\
         "    if hasattr(args, 'dataset_text_field'): args.dataset_text_field = ''\n"\
         "    if hasattr(args, 'dataset_kwargs'): args.dataset_kwargs = {'skip_prepare_dataset': True}\n"
-        extra_args += data_collator_check
+        if trainer_file != "ppo_trainer":
+            extra_args += data_collator_check
 
         # Also check if .pad exists -> if not, and is VLM, then change it!
         pad_check = \
@@ -525,7 +781,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "            data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
         "        else:\n"\
         "            data_collator = DataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False)\n"
-        extra_args += pad_check
+        if trainer_file != "ppo_trainer":
+            extra_args += pad_check
     pass
 
     # Check NEFTune
@@ -671,28 +928,208 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Selective log softmax
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
 
-    # Get final source code
-    RLTrainer_source = RLTrainer_replacement.format(
-        RLTrainer_name       = RLTrainer_name,
-        __RLTrainer_doc__    = __RLTrainer_doc__,
-        RLTrainer_arguments  = RLTrainer_arguments,
-        RLTrainer_extra_args = RLTrainer_extra_args,
-        RLTrainer_call_args  = RLTrainer_call_args,
-        RLTrainer_kwargs     = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0:],
+    if RLTrainer_name == "RLOOTrainer" or RLTrainer_name == "PPOTrainer":
+        #breakpoint()
+        #selective_log_softmax_code = "from trl.trainer.utils import selective_log_softmax"
+        if RLTrainer_name == "RLOOTrainer":
+            RLTrainer_source = RLTrainer_replacement_rloo.format(
+                RLTrainer_name       = RLTrainer_name,
+                __RLTrainer_doc__    = __RLTrainer_doc__,
+                RLTrainer_arguments  = RLTrainer_arguments,
+                RLTrainer_extra_args = RLTrainer_extra_args,
+                RLTrainer_call_args  = RLTrainer_call_args,
+                RLTrainer_kwargs     = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0:],
 
-        RLConfig_name        = RLConfig_name,
-        __RLConfig_doc__     = __RLConfig_doc__,
-        RLConfig_arguments   = RLConfig_arguments,
-        RLConfig_extra_args  = RLConfig_extra_args,
-        RLConfig_call_args   = RLConfig_call_args,
-        RLConfig_kwargs      = ",**kwargs"[1 if RLConfig_call_args .endswith(",") else 0:],
+                RLConfig_name        = RLConfig_name,
+                __RLConfig_doc__     = __RLConfig_doc__,
+                RLConfig_arguments   = RLConfig_arguments,
+                RLConfig_extra_args  = RLConfig_extra_args,
+                RLConfig_call_args   = RLConfig_call_args,
+                RLConfig_kwargs      = ",**kwargs"[1 if RLConfig_call_args .endswith(",") else 0:],
 
-        RLTrainer_extras     = RLTrainer_extras,
-        RLTrainer_post       = RLTrainer_post,
-        RL_pre               = RL_pre,
+                RLTrainer_extras     = RLTrainer_extras,
+                RLTrainer_post       = RLTrainer_post,
+                RL_pre               = RL_pre,
 
-        selective_log_softmax_code = selective_log_softmax_code,
-    )
+                selective_log_softmax_code = selective_log_softmax_code,
+            )
+        else:
+            selective_log_softmax_code = "from trl.trainer.utils import selective_log_softmax"
+            RLTrainer_source = RLTrainer_replacement_ppo.format(
+                RLTrainer_name       = RLTrainer_name,
+                __RLTrainer_doc__    = __RLTrainer_doc__,
+                RLTrainer_arguments  = RLTrainer_arguments,
+                RLTrainer_extra_args = RLTrainer_extra_args,
+                RLTrainer_call_args  = RLTrainer_call_args,
+                RLTrainer_kwargs     = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0:],
+
+                RLConfig_name        = RLConfig_name,
+                __RLConfig_doc__     = __RLConfig_doc__,
+                RLConfig_arguments   = RLConfig_arguments,
+                RLConfig_extra_args  = RLConfig_extra_args,
+                RLConfig_call_args   = RLConfig_call_args,
+                RLConfig_kwargs      = ",**kwargs"[1 if RLConfig_call_args .endswith(",") else 0:],
+
+                RLTrainer_extras     = RLTrainer_extras,
+                RLTrainer_post       = RLTrainer_post,
+                RL_pre               = RL_pre,
+
+                selective_log_softmax_code = selective_log_softmax_code,
+            )
+            #breakpoint()
+
+        # original_string = """torch_compile_options = {
+        #     "epilogue_fusion"   : True,
+        #     "max_autotune"      : False,
+        #     "shape_padding"     : True,
+        #     "trace.enabled"     : False,
+        #     "triton.cudagraphs" : False,
+        # }
+
+        # @torch.compile(dynamic = True, fullgraph = True, options = torch_compile_options,)
+        # def selective_log_softmax(logits, index):
+        #     logits = logits.to(torch.float32)
+        #     selected_logits = torch.gather(logits, dim = -1, index = index.unsqueeze(-1)).squeeze(-1)
+        #     # loop to reduce peak mem consumption
+        #     # logsumexp_values = torch.stack([torch.logsumexp(lg, dim=-1) for lg in logits])
+        #     logsumexp_values = torch.logsumexp(logits, dim = -1)
+        #     per_token_logps = selected_logits - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
+        #     return per_token_logps
+        # """
+
+        # new_string = "from trl.trainer.utils import selective_log_softmax"
+
+        # RLTrainer_source = RLTrainer_source.replace(original_string, new_string)
+
+
+        string_conversions = """context_length = queries.shape[1]
+               queries = [self.processing_class.decode(query) for query in queries]"""
+        if RLTrainer_name == "RLOOTrainer":
+            new_arguments = """unwrapped_model,
+                    \t\tqueries,
+                    \t\targs.local_rollout_forward_batch_size,
+                    \t\tprocessing_class.pad_token_id,
+                    \t\tprocessing_class.eos_token_id,
+                    \t\tprocessing_class,
+                    \t\tgeneration_config"""
+            # Use regex to replace the function arguments
+            RLTrainer_source = re.sub(
+                r"batch_generation\((.*?)\)",  # Match function call
+                rf"batch_generation({new_arguments})",  # Replace with new arguments
+                RLTrainer_source,
+                flags=re.DOTALL  # Allows matching across multiple lines
+            )
+        else: 
+            new_arguments = """unwrapped_model,
+                    \t\tqueries,
+                    \t\targs.local_rollout_forward_batch_size,
+                    \t\tprocessing_class.pad_token_id,
+                    \t\tprocessing_class.eos_token_id,
+                    \t\tprocessing_class,
+                    \t\tgeneration_config"""
+            # Use regex to replace the query with queries
+            # Use regex to replace the query with queries
+            # Corrected version
+            # Define the old and new strings
+            # old_string = 'query = batch["input_ids"]'
+            # new_string = 'queries = batch["input_ids"]'
+
+            # # Perform the replacement
+            # RLTrainer_source = RLTrainer_source.replace(old_string, new_string)
+            # Use regex to replace the function arguments
+            RLTrainer_source = re.sub(
+                r"query_responses, logitss = batch_generation\((.*?)\)",  # Match function call
+                rf"query_responses, logitss = batch_generation({new_arguments})",  # Replace with new arguments
+                RLTrainer_source,
+                flags=re.DOTALL  # Allows matching across multiple lines
+            )
+            new_arguments = """unwrapped_model,
+                    \t\tquery,
+                    \t\targs.local_rollout_forward_batch_size,
+                    \t\tprocessing_class.pad_token_id,
+                    \t\tprocessing_class.eos_token_id,
+                    \t\tprocessing_class,
+                    \t\tgeneration_config"""
+            RLTrainer_source = re.sub(
+                r"query_response, _ = batch_generation\((.*?)\)",  # Match function call
+                rf"query_response, _ = batch_generation({new_arguments})",  # Replace with new arguments
+                RLTrainer_source,
+                flags=re.DOTALL  # Allows matching across multiple lines
+            )
+
+        if RLTrainer_name == "PPOTrainer":
+            #breakpoint()
+            # Use precise pattern matching without extra whitespace
+            old_policy_value_wrapper = r"self\.model = PolicyAndValueWrapper\(self\.policy_model, self\.value_model\)"
+            
+            # Define replacement with exactly the indentation you want in the final code
+            new_policy_value_wrapper = r"""class UnslothPolicyAndValueWrapper(nn.Module):
+            def __init__(self, policy, value_model) -> None:
+                super().__init__()
+                self.policy = policy
+                self.value_model = value_model
+                self.critic_backbone = getattr(value_model, value_model.base_model_prefix)
+
+            def forward(self, **kwargs):
+                from unsloth import FastLanguageModel
+                FastLanguageModel.reset_functions()
+                output = self.critic_backbone(**kwargs)
+                logits = self.value_model.score(output.hidden_states[-1])
+                FastLanguageModel.set_functions()
+                #breakpoint()
+                
+                #policy_logits = forward(self.policy, kwargs["input_ids"], 128004)
+                policy_logits = self.policy(**kwargs)
+                
+                return policy_logits, logits
+        self.model = UnslothPolicyAndValueWrapper(self.policy_model, self.value_model)"""
+
+            # Perform the replacement
+            RLTrainer_source = re.sub(old_policy_value_wrapper, new_policy_value_wrapper, RLTrainer_source)
+
+
+            #breakpoint()
+        # replacement = r"""with torch.no_grad():
+        #                 with model.disable_adapter(): ref_output = forward(model, query_response, processing_class.pad_token_id)"""        
+        # code = """#self.ref_policy = self.ref_policy.to(self.accelerator.device)"""
+        # RLTrainer_source = re.sub(r"ref_output = forward\(ref_policy, query_response, processing_class\.pad_token_id\)", replacement, RLTrainer_source)
+        # #RLTrainer_source = re.sub(r"ref_output = forward\(ref_policy, query_response, processing_class\.pad_token_id\)", replacement, RLTrainer_source)
+        # RLTrainer_source = re.sub(r"self\.ref_policy = self\.ref_policy\.to\(self.accelerator\.device\)", code, RLTrainer_source)
+
+        peft_replace = """unwrapped_model,"""
+
+        # old_logits_calc = """logits = logitss[i : i + args.local_rollout_forward_batch_size]"""
+        # new_logits_calc = """# logits = logitss[i : i + args.local_rollout_forward_batch_size]
+        # output = forward(model, padded_query_response, pad_token_id) 
+        # logits = output.logits[:, context_length - 1 : -1] 
+        # logits /= generation_config.temperature + 1e-7
+        # """
+        # RLTrainer_source = RLTrainer_source.replace(old_logits_calc, new_logits_calc)
+
+        #RLTrainer_source = RLTrainer_source.replace("context_length = queries.shape[1]", string_conversions)
+    else:
+        RLTrainer_source = RLTrainer_replacement.format(
+            RLTrainer_name       = RLTrainer_name,
+            __RLTrainer_doc__    = __RLTrainer_doc__,
+            RLTrainer_arguments  = RLTrainer_arguments,
+            RLTrainer_extra_args = RLTrainer_extra_args,
+            RLTrainer_call_args  = RLTrainer_call_args,
+            RLTrainer_kwargs     = ",**kwargs"[1 if RLTrainer_call_args.endswith(",") else 0:],
+
+            RLConfig_name        = RLConfig_name,
+            __RLConfig_doc__     = __RLConfig_doc__,
+            RLConfig_arguments   = RLConfig_arguments,
+            RLConfig_extra_args  = RLConfig_extra_args,
+            RLConfig_call_args   = RLConfig_call_args,
+            RLConfig_kwargs      = ",**kwargs"[1 if RLConfig_call_args .endswith(",") else 0:],
+
+            RLTrainer_extras     = RLTrainer_extras,
+            RLTrainer_post       = RLTrainer_post,
+            RL_pre               = RL_pre,
+
+            selective_log_softmax_code = selective_log_softmax_code,
+        )
+
 
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
