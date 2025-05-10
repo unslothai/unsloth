@@ -46,12 +46,6 @@ pass
 # Fixes https://github.com/unslothai/unsloth/issues/1266
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
-# Reduce VRAM usage by reducing fragmentation
-# And optimize pinning of memory
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
-    "expandable_segments:True,"\
-    "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-
 # [TODO] Check why some GPUs don't work
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
@@ -84,6 +78,21 @@ except Exception as exception:
     raise exception
 pass
 
+def get_device_type():
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.xpu.is_available():
+        return "xpu"
+
+DEVICE_TYPE = get_device_type()
+
+# Reduce VRAM usage by reducing fragmentation
+# And optimize pinning of memory
+if DEVICE_TYPE == "cuda":
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
+        "expandable_segments:True,"\
+        "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
+
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
 torch_version = torch.__version__.split(".")
@@ -97,9 +106,9 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
-# First check if CUDA is available ie a NVIDIA GPU is seen
-if not torch.cuda.is_available():
-    raise NotImplementedError("Unsloth: No NVIDIA GPU found? Unsloth currently only supports GPUs!")
+# First check if NVIDIA GPU or INTEL GPU is available
+if not torch.cuda.is_available() and not torch.xpu.is_available():
+    raise NotImplementedError("Unsloth: No NVIDIA GPU or Intel XPU found? Unsloth currently only supports NVIDIA GPU or Intel XPU!")
 
 # Fix Xformers performance issues since 0.0.25
 import importlib.util
@@ -132,77 +141,90 @@ except:
 pass
 
 # Torch 2.4 has including_emulation
-major_version, minor_version = torch.cuda.get_device_capability()
-SUPPORTS_BFLOAT16 = (major_version >= 8)
+if DEVICE_TYPE == "cuda":
+    major_version, minor_version = torch.cuda.get_device_capability()
+    SUPPORTS_BFLOAT16 = (major_version >= 8)
 
-old_is_bf16_supported = torch.cuda.is_bf16_supported
-if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
-    def is_bf16_supported(including_emulation = False):
-        return old_is_bf16_supported(including_emulation)
-    torch.cuda.is_bf16_supported = is_bf16_supported
-else:
-    def is_bf16_supported(): return SUPPORTS_BFLOAT16
-    torch.cuda.is_bf16_supported = is_bf16_supported
-pass
+    old_is_bf16_supported = torch.cuda.is_bf16_supported
+    if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
+        def is_bf16_supported(including_emulation = False):
+            return old_is_bf16_supported(including_emulation)
+        torch.cuda.is_bf16_supported = is_bf16_supported
+    else:
+        def is_bf16_supported(): return SUPPORTS_BFLOAT16
+        torch.cuda.is_bf16_supported = is_bf16_supported
+    pass
+elif DEVICE_TYPE == "xpu":
+    # torch.xpu.is_bf16_supported() didn't have including_emulation
+    # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
+    SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+
+
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
-libcuda_dirs = lambda: None
-if Version(triton.__version__) >= Version("3.0.0"):
-    try: from triton.backends.nvidia.driver import libcuda_dirs
-    except: pass
-else: from triton.common.build import libcuda_dirs
+# here we did not change cuda specific code, only add a if check and tab for python grammar
+if DEVICE_TYPE == "cuda":
+    libcuda_dirs = lambda: None
+    if Version(triton.__version__) >= Version("3.0.0"):
+        try: from triton.backends.nvidia.driver import libcuda_dirs
+        except: pass
+    else: from triton.common.build import libcuda_dirs
 
-# Try loading bitsandbytes and triton
-import bitsandbytes as bnb
-try:
-    cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
-    libcuda_dirs()
-except:
-    warnings.warn(
-        "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
-    )
-
-    if os.path.exists("/usr/lib64-nvidia"):
-        os.system("ldconfig /usr/lib64-nvidia")
-    elif os.path.exists("/usr/local"):
-        # Sometimes bitsandbytes cannot be linked properly in Runpod for example
-        possible_cudas = subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
-        find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
-        possible_cudas = [find_cuda.search(x) for x in possible_cudas]
-        possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
-
-        # Try linking cuda folder, or everything in local
-        if len(possible_cudas) == 0:
-            os.system("ldconfig /usr/local/")
-        else:
-            find_number = re.compile(r"([\d\.]{2,})")
-            latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
-            latest_cuda = possible_cudas[latest_cuda]
-            os.system(f"ldconfig /usr/local/{latest_cuda}")
-    pass
-
-    importlib.reload(bnb)
-    importlib.reload(triton)
+    # Try loading bitsandbytes and triton
+    import bitsandbytes as bnb
     try:
-        libcuda_dirs = lambda: None
-        if Version(triton.__version__) >= Version("3.0.0"):
-            try: from triton.backends.nvidia.driver import libcuda_dirs
-            except: pass
-        else: from triton.common.build import libcuda_dirs
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
         warnings.warn(
-            "Unsloth: CUDA is not linked properly.\n"\
-            "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"\
-            "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
-            "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"\
-            "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
-            "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
+            "Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA."\
         )
-pass
+
+        if os.path.exists("/usr/lib64-nvidia"):
+            os.system("ldconfig /usr/lib64-nvidia")
+        elif os.path.exists("/usr/local"):
+            # Sometimes bitsandbytes cannot be linked properly in Runpod for example
+            possible_cudas = subprocess.check_output(["ls", "-al", "/usr/local"]).decode("utf-8").split("\n")
+            find_cuda = re.compile(r"[\s](cuda\-[\d\.]{2,})$")
+            possible_cudas = [find_cuda.search(x) for x in possible_cudas]
+            possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
+
+            # Try linking cuda folder, or everything in local
+            if len(possible_cudas) == 0:
+                os.system("ldconfig /usr/local/")
+            else:
+                find_number = re.compile(r"([\d\.]{2,})")
+                latest_cuda = np.argsort([float(find_number.search(x).group(1)) for x in possible_cudas])[::-1][0]
+                latest_cuda = possible_cudas[latest_cuda]
+                os.system(f"ldconfig /usr/local/{latest_cuda}")
+        pass
+
+        importlib.reload(bnb)
+        importlib.reload(triton)
+        try:
+            libcuda_dirs = lambda: None
+            if Version(triton.__version__) >= Version("3.0.0"):
+                try: from triton.backends.nvidia.driver import libcuda_dirs
+                except: pass
+            else: from triton.common.build import libcuda_dirs
+            cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
+            libcuda_dirs()
+        except:
+            warnings.warn(
+                "Unsloth: CUDA is not linked properly.\n"\
+                "Try running `python -m bitsandbytes` then `python -m xformers.info`\n"\
+                "We tried running `ldconfig /usr/lib64-nvidia` ourselves, but it didn't work.\n"\
+                "You need to run in your terminal `sudo ldconfig /usr/lib64-nvidia` yourself, then import Unsloth.\n"\
+                "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
+                "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
+            )
+    pass
+elif DEVICE_TYPE == "xpu":
+    # currently intel xpu will not support bnb, will add support in the future
+    # TODO: check triton for intel installed properly.
+    pass
 
 # Check for unsloth_zoo
 try:
