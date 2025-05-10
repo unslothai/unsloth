@@ -170,7 +170,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.num_warps  = num_warps
         ctx.GEMMA = gemma
-        ctx.save_for_backward(X, W, r)
+        ctx.save_for_backward(X, W.clone(), r)
         return Y.view(*shape)
     pass
 

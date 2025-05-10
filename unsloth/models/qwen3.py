@@ -91,7 +91,7 @@ def Qwen3Attention_fast_forward(
     K = K.view(bsz, q_len, n_kv_heads, head_dim)#.transpose(1, 2) # we will transpose after normalisation
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
 
-    #Qwen3 has QKNorm. This seems to be the only difference from Qwen2.
+    # Qwen3 has QKNorm. This seems to be the only difference from Qwen2.
     # Note that using fast_layernorm_compiled causes issues as the dimensions don't match up.
     # I tried to add a compiled version of the new norm but the numbers don't match up with Transformers
     # TODO: Check on the differences here.
