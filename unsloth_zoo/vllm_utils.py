@@ -543,15 +543,15 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
             f"model.layers.{kk}.self_attn.q_norm", # Qwen3, Gemma3
             f"model.layers.{kk}.self_attn.k_norm", # Qwen3, Gemma3
         ]:
-            layernorm_name = layernorm_name + ".weight"
             vllm_name = layernorm_name.replace(f".{kk}.", f"[{kk}].")
             vllm_name = f"vllm_internals.{vllm_name}"
             try:
                 layernorm = eval(vllm_name).state_dict()["weight"]
+                layernorm_name = layernorm_name + ".weight"
                 state_dict[layernorm_name] = layernorm
                 quant_state_dict[layernorm_name] = state_dict[layernorm_name]
-            except:
-                print(f"vllm_internals.{layernorm_name}")
+            except Exception as e:
+                print(layernorm_name, str(e))
         pass
     pass
 
