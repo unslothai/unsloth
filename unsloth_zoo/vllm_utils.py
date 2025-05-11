@@ -397,6 +397,7 @@ def patch_vllm():
     # Temporary patch to disable multiprocessing for vLLM
     # Allows accessing model_executor
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+    os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
     patch_vllm_lora_tokenizer()
