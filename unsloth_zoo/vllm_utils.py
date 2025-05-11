@@ -1087,8 +1087,8 @@ def load_vllm(
         kv_cache_dtype         = "fp8" if float8_kv_cache else "auto",
         dtype                  = dtype,
 
-        max_num_batched_tokens = chunked_prefill_tokens, # Max tokens for chunked prefill default 2048
-        max_num_seqs           = approx_max_num_seqs, # vLLM default uses 256 -> reduce if OOM
+        # max_num_batched_tokens = chunked_prefill_tokens, # Max tokens for chunked prefill default 2048
+        # max_num_seqs           = approx_max_num_seqs, # vLLM default uses 256 -> reduce if OOM
         max_logprobs           = max_logprobs, # Disallow logprobs being returned
         seed                   = random_state, # Default is 0
 
@@ -1100,11 +1100,11 @@ def load_vllm(
         disable_log_stats      = disable_log_stats,
         enable_prefix_caching  = enable_prefix_caching,
         # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
-        max_seq_len_to_capture = min(8192, max_seq_length + 256), # Default is 8192 for CUDAGraphs
-        compilation_config     = compilation_config, # 0, 1, 2, 3
-        enforce_eager          = enforce_eager,
-        swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
-        device                 = device,
+        # max_seq_len_to_capture = min(8192, max_seq_length + 256), # Default is 8192 for CUDAGraphs
+        # compilation_config     = compilation_config, # 0, 1, 2, 3
+        # enforce_eager          = enforce_eager,
+        # swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
+        # device                 = device,
         # New vLLM versions need to pass this in!
         # worker_extension_cls   = "unsloth_zoo.vllm_rlhf_utils.ColocateWorkerExtension",
     )
