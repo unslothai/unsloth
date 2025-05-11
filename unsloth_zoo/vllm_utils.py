@@ -663,10 +663,18 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
         "model.layers.{kk}.mlp.down_proj",
         "model.layers.{kk}.input_layernorm",
         "model.layers.{kk}.post_attention_layernorm",
+        "model.layers.{kk}.pre_feedforward_layernorm", # Gemma3
+        "model.layers.{kk}.post_feedforward_layernorm", # Gemma3
+        "model.layers.{kk}.self_attn.q_norm", # Qwen3, Gemma3
+        "model.layers.{kk}.self_attn.k_norm", # Qwen3, Gemma3
     ]
     layernorm_names = [
         "input_layernorm",
         "post_attention_layernorm",
+        "pre_feedforward_layernorm",
+        "post_feedforward_layernorm",
+        "q_norm",
+        "k_norm",
     ]
     # Override .to("cuda") to disable it otherwise we'll get
     # ValueError: Blockwise quantization only supports 16/32-bit floats, but got torch.uint8
@@ -715,8 +723,15 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
                 # Layernorms
                 weight = torch.nn.Parameter(weight, requires_grad = False)
                 layer_name = re.sub(r"\.([\d]{1,})\.", r"[\1].", layer_name)
-                exec(f"new_model.{layer_name}.weight = None")
-                exec(f"new_model.{layer_name}.weight = weight")
+                try:
+                    # We first must access if the layernorm / item exists
+                    exec(f"new_model.{layer_name}")
+
+                    # If it succeeds, then try will enter the below:
+                    exec(f"new_model.{layer_name}.weight = None")
+                    exec(f"new_model.{layer_name}.weight = weight")
+                except:
+                    pass
                 continue
             pass
             
