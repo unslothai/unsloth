@@ -793,7 +793,7 @@ elif self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not N
         output_labels        = labels,
         logit_scale_multiply = (\\2) if (\\2) != () else 0,
         logit_scale_divide   = (\\3) if (\\3) != () else 0,
-        logit_softcapping    = (\\4) if (\\4) != () else 0,
+        logit_softcapping    = (\\4) if (\\4) is not None or (\\4) != () else 0,
         vocab_size           = (\\8),
         n_items              = n_items if n_items is not None else 0,
     )
@@ -803,7 +803,7 @@ else:
         logits = logits * (\\2)
     if (\\3) != ():
         logits = logits / (\\3)
-    if (\\4) != ():
+    if (\\4) is not None or (\\4) != ():
         logits = logits / (\\4)
         logits = torch.tanh(logits)
         logits = logits * (\\4)
@@ -904,7 +904,7 @@ if labels is not None:
         mask                 = \\5,
         logit_scale_multiply = (\\1) if (\\1) != () else 0,
         logit_scale_divide   = (\\2) if (\\2) != () else 0,
-        logit_softcapping    = (\\3) if (\\3) != () else 0,
+        logit_softcapping    = (\\3) if (\\3) is not None or (\\3) != () else 0,
         vocab_size           = (\\6),
         n_items              = n_items if n_items is not None else 0,
     )
