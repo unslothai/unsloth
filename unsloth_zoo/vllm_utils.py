@@ -1101,7 +1101,7 @@ def load_vllm(
         enable_prefix_caching  = enable_prefix_caching,
         # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
         # max_seq_len_to_capture = min(8192, max_seq_length + 256), # Default is 8192 for CUDAGraphs
-        # compilation_config     = compilation_config, # 0, 1, 2, 3
+        compilation_config     = compilation_config, # 0, 1, 2, 3
         # enforce_eager          = enforce_eager,
         # swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
         # device                 = device,
