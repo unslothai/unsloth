@@ -690,6 +690,8 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
             layer_name = layer_name.format(kk = kk)
             if f"{layer_name}.weight" not in quant_state_dict:
                 print(f"{layer_name}.weight")
+                continue
+            pass
             weight = quant_state_dict[f"{layer_name}.weight"]
 
             if f"{layer_name}.bias" in quant_state_dict:
