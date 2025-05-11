@@ -402,7 +402,7 @@ def patch_vllm():
     patch_vllm_lora_tokenizer()
     patch_vllm_lora_load_tensors()
     global LORA_REQUEST_ID
-    LORA_REQUEST_ID = 0
+    LORA_REQUEST_ID = 1
 pass
 
 
@@ -1385,10 +1385,10 @@ def load_lora(model, save_directory, load_tensors = False):
 
     # All Unsloth Zoo code licensed under LGPLv3
     global LORA_REQUEST_ID
-    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
+    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 1
 
     # Check if path exists
-    if not os.path.exists(save_directory) or LORA_REQUEST_ID == 0:
+    if not os.path.exists(save_directory) or LORA_REQUEST_ID == 1:
         if load_tensors:
             # We need to save and load the config file once!
             model.peft_config["default"].save_pretrained(save_directory)
