@@ -729,15 +729,8 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
                 # Layernorms
                 weight = torch.nn.Parameter(weight, requires_grad = False)
                 layer_name = re.sub(r"\.([\d]{1,})\.", r"[\1].", layer_name)
-                try:
-                    # We first must access if the layernorm / item exists
-                    exec(f"new_model.{layer_name}")
-
-                    # If it succeeds, then try will enter the below:
-                    exec(f"new_model.{layer_name}.weight = None")
-                    exec(f"new_model.{layer_name}.weight = weight")
-                except:
-                    pass
+                exec(f"new_model.{layer_name}.weight = None")
+                exec(f"new_model.{layer_name}.weight = weight")
                 continue
             pass
             
