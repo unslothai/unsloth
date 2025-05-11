@@ -549,8 +549,7 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
                 layernorm = eval(vllm_name).state_dict()["weight"]
                 state_dict[layernorm_name + ".weight"] = layernorm
             except:
-                pass
-                # print(f"vllm_internals.{layernorm_name}")
+                print(f"vllm_internals.{layernorm_name}")
         pass
     pass
 
