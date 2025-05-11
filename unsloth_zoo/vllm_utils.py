@@ -47,7 +47,7 @@ import contextlib
 import inspect
 from functools import partial
 from .utils import _get_dtype
-# from .patching_utils import patch_model_and_tokenizer
+from .patching_utils import patch_model_and_tokenizer
 global LORA_REQUEST_ID
 
 # Ignore logging messages
@@ -394,8 +394,11 @@ pass
 
 
 def patch_vllm():
-    # patch_bitsandbytes_quant_state()
-    # patch_vllm_bitsandbytes()
+    # Temporary patch to disable multiprocessing for vLLM
+    # Allows accessing model_executor
+    os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+    patch_bitsandbytes_quant_state()
+    patch_vllm_bitsandbytes()
     patch_vllm_lora_tokenizer()
     patch_vllm_lora_load_tensors()
     global LORA_REQUEST_ID
@@ -442,12 +445,28 @@ pass
 def get_vllm_state_dict(llm, return_state_dict = False, config = None):
     # All Unsloth Zoo code licensed under LGPLv3
     # Unmerges vLLM modules and returns HF equivalent state_dict
+    # vllm_state_dict = {}
     try:
         llm_engine = getattr(llm, "llm_engine", getattr(llm, "engine", llm))
         vllm_internals = llm_engine.model_executor.driver_worker.model_runner.model
+
+        # for name, p in vllm_internals.named_parameters():
+        #     vllm_state_dict[name] = p
     except:
-        raise RuntimeError("Unsloth: Failed to access llm.llm_engine.model_executor.driver_worker.model_runner.model")
+        # Using a new VLLM version must use collective_rpc
+        try:
+            vllm_state_dict = {}
+            gpu_ids = llm.collective_rpc("report_device_id", args = tuple())
+            weights = llm.collective_rpc("get_weight_ipc_handles", args = tuple())[0]
+            weights = weights[gpu_ids[0]]
+            for weight_name, (to_cuda_fx, cuda_data,) in weights.items():
+                vllm_state_dict[weight_name] = to_cuda_fx(*cuda_data)
+            pass
+            raise NotImplementedError("Unsloth: Currently vLLM RPC is not yet fully enabled!")
+        except Exception as e:
+            raise RuntimeError(f"Unsloth: Cannot get internal vLLM states with error = {str(e)}")
     pass
+
     assert(config is not None)
     vocab_size = config.vocab_size
 
@@ -516,15 +535,22 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
         proj = vllm_internals.model.layers[kk].mlp.down_proj
         get_state_dict(f"model.layers.{kk}.mlp.down_proj", 0, state_dict, proj)
 
-        state_dict[f"model.layers.{kk}.input_layernorm.weight"] = \
-            vllm_internals.model.layers[kk].input_layernorm.state_dict()["weight"]
-        quant_state_dict[f"model.layers.{kk}.input_layernorm.weight"] = \
-            state_dict[f"model.layers.{kk}.input_layernorm.weight"]
-
-        state_dict[f"model.layers.{kk}.post_attention_layernorm.weight"] = \
-            vllm_internals.model.layers[kk].post_attention_layernorm.state_dict()["weight"]
-        quant_state_dict[f"model.layers.{kk}.post_attention_layernorm.weight"] = \
-            state_dict[f"model.layers.{kk}.post_attention_layernorm.weight"]
+        for layernorm_name in [
+            f"model.layers.{kk}.input_layernorm",
+            f"model.layers.{kk}.post_attention_layernorm",
+            f"model.layers.{kk}.pre_feedforward_layernorm", # Gemma3
+            f"model.layers.{kk}.post_feedforward_layernorm", # Gemma3
+            f"model.layers.{kk}.self_attn.q_norm", # Qwen3, Gemma3
+            f"model.layers.{kk}.self_attn.k_norm", # Qwen3, Gemma3
+        ]:
+            vllm_name = layernorm_name.replace(f".{kk}.", f"[{kk}].")
+            vllm_name = f"vllm_internals.{vllm_name}"
+            try:
+                layernorm = eval(vllm_name).state_dict()["weight"]
+                state_dict[layernorm_name + ".weight"] = layernorm
+            except:
+                print(f"vllm_internals.{layernorm_name}")
+        pass
     pass
 
     # Norm
@@ -1064,6 +1090,8 @@ def load_vllm(
         enforce_eager          = enforce_eager,
         swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
         device                 = device,
+        # New vLLM versions need to pass this in!
+        # worker_extension_cls   = "unsloth_zoo.vllm_rlhf_utils.ColocateWorkerExtension",
     )
     good_keys = inspect.signature(AsyncEngineArgs if use_async else EngineArgs).parameters.keys()
     old_keys = engine_args.keys()
