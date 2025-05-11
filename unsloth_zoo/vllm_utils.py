@@ -520,6 +520,7 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
     quant_state_dict["model.embed_tokens.weight"] = state_dict["model.embed_tokens.weight"]
 
     # All layers
+    skipped_layernorms = []
     for kk in range(len(vllm_internals.model.layers)):
         proj = vllm_internals.model.layers[kk].self_attn.qkv_proj
         get_state_dict(f"model.layers.{kk}.self_attn.q_proj", 0, state_dict, proj)
@@ -552,7 +553,7 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
                 state_dict[layernorm_name] = layernorm
                 quant_state_dict[layernorm_name] = state_dict[layernorm_name]
             except Exception as e:
-                print(layernorm_name, str(e))
+                skipped_layernorms.append(layernorm_name.split(".")[-1])
         pass
     pass
 
@@ -571,6 +572,9 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
         state_dict["lm_head.weight"] = lm_head
         quant_state_dict["lm_head.weight"] = state_dict["lm_head.weight"]
     pass
+
+    if len(skipped_layernorms) != 0:
+        print(f"Unsloth: Just some info: will skip parsing {list(set(skipped_layernorms))}")
 
     if not return_state_dict: state_dict = None
     return state_dict, quant_state_dict
@@ -686,11 +690,12 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
         except: return self
     pass
 
+    skipped_layernorms = []
     for kk in range(config.num_hidden_layers):
         for layer_name in layer_names:
             layer_name = layer_name.format(kk = kk)
             if f"{layer_name}.weight" not in quant_state_dict:
-                print(f"{layer_name}.weight")
+                skipped_layernorms.append(layer_name.split(".")[-1])
                 continue
             pass
             weight = quant_state_dict[f"{layer_name}.weight"]
@@ -799,6 +804,9 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
     for _ in range(3):
         gc.collect()
         torch.cuda.empty_cache()
+
+    if len(skipped_layernorms) != 0:
+        print(f"Unsloth: Just some info: will skip parsing {list(set(skipped_layernorms))}")
     return new_model
 pass
 
