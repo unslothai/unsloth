@@ -79,12 +79,13 @@ except Exception as exception:
 pass
 
 def get_device_type():
-    if torch.cuda.is_available():
+    if hasattr(torch, "cuda") and torch.cuda.is_available():
         return "cuda"
-    elif torch.xpu.is_available():
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-
-DEVICE_TYPE = get_device_type()
+    raise NotImplementedError("Unsloth currently only works on NVIDIA GPUs and Intel GPUs.")
+pass
+DEVICE_TYPE : str = get_device_type()
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
@@ -95,7 +96,7 @@ if DEVICE_TYPE == "cuda":
 
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
-torch_version = torch.__version__.split(".")
+torch_version = str(torch.__version__).split(".")
 major_torch, minor_torch = torch_version[0], torch_version[1]
 major_torch, minor_torch = int(major_torch), int(minor_torch)
 if (major_torch < 2):
@@ -105,10 +106,6 @@ elif (major_torch == 2) and (minor_torch < 2):
     # Disable expandable_segments
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
-
-# First check if NVIDIA GPU or INTEL GPU is available
-if not torch.cuda.is_available() and not torch.xpu.is_available():
-    raise NotImplementedError("Unsloth: No NVIDIA GPU or Intel XPU found? Unsloth currently only supports NVIDIA GPU or Intel XPU!")
 
 # Fix Xformers performance issues since 0.0.25
 import importlib.util
@@ -155,16 +152,15 @@ if DEVICE_TYPE == "cuda":
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
 elif DEVICE_TYPE == "xpu":
-    # torch.xpu.is_bf16_supported() didn't have including_emulation
+    # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
-
+pass
 
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
-# here we did not change cuda specific code, only add a if check and tab for python grammar
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
