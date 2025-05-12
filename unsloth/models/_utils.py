@@ -17,6 +17,7 @@ __version__ = "2025.5.1"
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
+    "is_vLLM_available",
 
     "prepare_model_for_kbit_training",
     "xformers",
@@ -800,6 +801,9 @@ def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
 pass
 
+def is_vLLM_available():
+    return _is_package_available("vllm")
+pass
 
 # Patches models to add RoPE Scaling
 def patch_linear_scaling(
