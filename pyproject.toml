@@ -27,7 +27,7 @@ dependencies = [
     "triton_windows ; platform_system == 'Windows'",
     "packaging>=24.1",
     "tyro",
-    "transformers>=4.51.3,!=4.47.0",
+    "transformers==4.51.3,!=4.47.0",
     "datasets>=2.16.0",
     "sentencepiece>=0.2.0",
     "tqdm",
