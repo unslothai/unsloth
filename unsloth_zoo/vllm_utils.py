@@ -397,12 +397,13 @@ def patch_vllm():
     # Temporary patch to disable multiprocessing for vLLM
     # Allows accessing model_executor
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+    os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
     patch_vllm_lora_tokenizer()
     patch_vllm_lora_load_tensors()
     global LORA_REQUEST_ID
-    LORA_REQUEST_ID = 0
+    LORA_REQUEST_ID = 1
 pass
 
 
@@ -519,6 +520,7 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
     quant_state_dict["model.embed_tokens.weight"] = state_dict["model.embed_tokens.weight"]
 
     # All layers
+    skipped_layernorms = []
     for kk in range(len(vllm_internals.model.layers)):
         proj = vllm_internals.model.layers[kk].self_attn.qkv_proj
         get_state_dict(f"model.layers.{kk}.self_attn.q_proj", 0, state_dict, proj)
@@ -547,9 +549,11 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
             vllm_name = f"vllm_internals.{vllm_name}"
             try:
                 layernorm = eval(vllm_name).state_dict()["weight"]
-                state_dict[layernorm_name + ".weight"] = layernorm
-            except:
-                print(f"vllm_internals.{layernorm_name}")
+                layernorm_name = layernorm_name + ".weight"
+                state_dict[layernorm_name] = layernorm
+                quant_state_dict[layernorm_name] = state_dict[layernorm_name]
+            except Exception as e:
+                skipped_layernorms.append(layernorm_name.split(".")[-1])
         pass
     pass
 
@@ -568,6 +572,9 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
         state_dict["lm_head.weight"] = lm_head
         quant_state_dict["lm_head.weight"] = state_dict["lm_head.weight"]
     pass
+
+    if len(skipped_layernorms) != 0:
+        print(f"Unsloth: Just some info: will skip parsing {list(set(skipped_layernorms))}")
 
     if not return_state_dict: state_dict = None
     return state_dict, quant_state_dict
@@ -683,9 +690,14 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
         except: return self
     pass
 
+    skipped_layernorms = []
     for kk in range(config.num_hidden_layers):
         for layer_name in layer_names:
             layer_name = layer_name.format(kk = kk)
+            if f"{layer_name}.weight" not in quant_state_dict:
+                skipped_layernorms.append(layer_name.split(".")[-1])
+                continue
+            pass
             weight = quant_state_dict[f"{layer_name}.weight"]
 
             if f"{layer_name}.bias" in quant_state_dict:
@@ -723,15 +735,8 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
                 # Layernorms
                 weight = torch.nn.Parameter(weight, requires_grad = False)
                 layer_name = re.sub(r"\.([\d]{1,})\.", r"[\1].", layer_name)
-                try:
-                    # We first must access if the layernorm / item exists
-                    exec(f"new_model.{layer_name}")
-
-                    # If it succeeds, then try will enter the below:
-                    exec(f"new_model.{layer_name}.weight = None")
-                    exec(f"new_model.{layer_name}.weight = weight")
-                except:
-                    pass
+                exec(f"new_model.{layer_name}.weight = None")
+                exec(f"new_model.{layer_name}.weight = weight")
                 continue
             pass
             
@@ -799,6 +804,9 @@ def convert_vllm_to_huggingface(quant_state_dict, config, dtype = torch.float16,
     for _ in range(3):
         gc.collect()
         torch.cuda.empty_cache()
+
+    if len(skipped_layernorms) != 0:
+        print(f"Unsloth: Just some info: will skip parsing {list(set(skipped_layernorms))}")
     return new_model
 pass
 
@@ -1100,7 +1108,8 @@ def load_vllm(
         disable_log_stats      = disable_log_stats,
         enable_prefix_caching  = enable_prefix_caching,
         # enable_chunked_prefill = True, # LoRA fails with chunked prefill as at Feb 2025
-        max_seq_len_to_capture = min(8192, max_seq_length + 256), # Default is 8192 for CUDAGraphs
+        # max_seq_len_to_capture fails for V1
+        # max_seq_len_to_capture = min(8192, max_seq_length + 256), # Default is 8192 for CUDAGraphs
         compilation_config     = compilation_config, # 0, 1, 2, 3
         enforce_eager          = enforce_eager,
         swap_space             = swap_space, # Low memory devices like Colab (13GB) default 4GB
@@ -1381,10 +1390,10 @@ def load_lora(model, save_directory, load_tensors = False):
 
     # All Unsloth Zoo code licensed under LGPLv3
     global LORA_REQUEST_ID
-    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 0
+    if LORA_REQUEST_ID is None: LORA_REQUEST_ID = 1
 
     # Check if path exists
-    if not os.path.exists(save_directory) or LORA_REQUEST_ID == 0:
+    if not os.path.exists(save_directory) or LORA_REQUEST_ID == 1:
         if load_tensors:
             # We need to save and load the config file once!
             model.peft_config["default"].save_pretrained(save_directory)
