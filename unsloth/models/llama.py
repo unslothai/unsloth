@@ -1076,7 +1076,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if labels is not None: labels = labels.to(lm_head_device)
 
         # Output last hidden states without logits if asked
-        if self.training and os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(
