@@ -13,21 +13,31 @@
 # limitations under the License.
 
 import triton
+import ctypes
 MAX_FUSED_SIZE : int = 65536
 next_power_of_2 = triton.next_power_of_2
 import functools
+from unsloth import DEVICE_TYPE
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
 torch_Tensor = torch.Tensor
 from packaging.version import Version
-if Version(torch.__version__) < Version("2.4.0"):
-    torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
-    torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
-else:
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
-pass
+if DEVICE_TYPE == "cuda":
+    if Version(torch.__version__) < Version("2.4.0"):
+        torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
+        torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
+    pass
+elif DEVICE_TYPE == "xpu":
+    if Version(torch.__version__) < Version("2.4.0"):
+        torch_amp_custom_fwd = torch.xpu.amp.custom_fwd
+        torch_amp_custom_bwd = torch.xpu.amp.custom_bwd
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 
 
 # tl.math.tanh now is libdevice.tanh
@@ -35,8 +45,11 @@ from packaging.version import Version
 import triton
 import triton.language as tl
 if Version(triton.__version__) >= Version("3.0.0"):
-    from triton.language.extra import libdevice
-    triton_tanh = libdevice.tanh
+    if DEVICE_TYPE == "xpu":
+        triton_tanh = tl.extra.intel.libdevice.tanh
+    else:
+        from triton.language.extra import libdevice
+        triton_tanh = libdevice.tanh
     triton_cast = tl.cast
 else:
     triton_tanh = tl.math.tanh
@@ -60,50 +73,78 @@ def calculate_settings(n : int) -> (int, int,):
     return BLOCK_SIZE, num_warps
 pass
 
+if DEVICE_TYPE == "cuda":
+    import bitsandbytes as bnb
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    get_ptr = bnb.functional.get_ptr
 
-import bitsandbytes as bnb
-import ctypes
 
-# https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-get_ptr = bnb.functional.get_ptr
+if DEVICE_TYPE == "cuda":
+    if torch.cuda.device_count() > 1:
+        torch_gpu_device = torch.cuda.device
+    else:
+        from contextlib import nullcontext
+        def torch_gpu_device(device): return nullcontext()
+    pass
+    _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
+    c_void_p = ctypes.c_void_p
+    def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+        return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
+    pass
+elif DEVICE_TYPE == "xpu":
+    if torch.xpu.device_count() > 1:
+        torch_gpu_device = torch.xpu.device
+    else:
+        from contextlib import nullcontext
+        def torch_gpu_device(device): return nullcontext()
+    pass
+    _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
+    c_void_p = ctypes.c_void_p
+    def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+        return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
 
-if torch.cuda.device_count() > 1:
-    torch_cuda_device = torch.cuda.device
-else:
-    from contextlib import nullcontext
-    def torch_cuda_device(device): return nullcontext()
-pass
-_cuda_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
-c_void_p = ctypes.c_void_p
-def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
-    return c_void_p(_cuda_getCurrentRawStream(tensor.device.index))
-pass
 
 # Get array of CUDA streams and other buffers
-global CUDA_STREAMS
+global GPU_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
-_CUDA_STREAMS = {
-    (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
-    for i in range(torch.cuda.device_count())
-}
-CUDA_STREAMS   = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-for k, v in _CUDA_STREAMS.items(): CUDA_STREAMS[k] = v
-CUDA_STREAMS = tuple(CUDA_STREAMS)
-del _CUDA_STREAMS
+if DEVICE_TYPE == "cuda":
+    _CUDA_STREAMS = {
+        (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
+        for i in range(torch.cuda.device_count())
+    }
+    GPU_STREAMS   = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    for k, v in _CUDA_STREAMS.items(): GPU_STREAMS[k] = v
+    GPU_STREAMS = tuple(CUDA_STREAMS)
+    del _CUDA_STREAMS
+elif DEVICE_TYPE == "xpu":
+    _XPU_STREAMS = {
+        (index := torch.xpu.device(i).idx) : ctypes.c_void_p(torch._C._xpu_getCurrentRawStream(index))
+        for i in range(torch.xpu.device_count())
+    }
+    GPU_STREAMS   = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    ABSMAX_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    for k, v in _XPU_STREAMS.items(): 
+        GPU_STREAMS[k] = v
+    GPU_STREAMS = tuple(GPU_STREAMS)
+    del _XPU_STREAMS
+
 
 # Bitsandbytes operations
 ctypes_c_int   = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
-cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
-cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+if DEVICE_TYPE == "cuda":
+    cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
+    cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
+    cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+
 torch_mm = torch.mm
 torch_mv = torch.mv
 torch_matmul = torch.matmul
@@ -160,7 +201,7 @@ def get_lora_parameters_bias(proj):
     )
 pass
 
-if HAS_CUDA_STREAM:
+if DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
@@ -218,7 +259,7 @@ if HAS_CUDA_STREAM:
 
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
-        with torch_cuda_device(device):
+        with torch_gpu_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
                 ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), CUDA_STREAM
@@ -289,7 +330,7 @@ else:
 pass
 
 
-if HAS_CUDA_STREAM:
+if  DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
     def fast_gemv(X, W, quant_state, out = None):
         if quant_state is None: return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
@@ -342,7 +383,7 @@ if HAS_CUDA_STREAM:
         ldc = ctypes_c_int32(ldc)
 
         df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
-        with torch_cuda_device(device):
+        with torch_gpu_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
                 ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), CUDA_STREAM,
