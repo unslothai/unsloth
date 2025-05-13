@@ -27,11 +27,25 @@ from typing import Union, Callable, Optional, List, Dict
 RL_REPLACEMENTS = dict()
 
 torch_compile_options = {
-    "epilogue_fusion"   : True,
-    "max_autotune"      : False, # Disable Triton mm kernels
-    "shape_padding"     : True,
-    "trace.enabled"     : False,
-    "triton.cudagraphs" : False,
+    "epilogue_fusion"           : True,
+    "max_autotune"              : False, # Disable Triton mm kernels
+    "shape_padding"             : True,
+    "trace.enabled"             : False,
+    "triton.cudagraphs"         : False,
+    "debug"                     : False,
+    "dce"                       : True,
+    "memory_planning"           : True,
+    "coordinate_descent_tuning" : True,
+    "trace.graph_diagram"       : False,
+    "compile_threads"           : 48,
+    "combo_kernels"             : True,
+    "group_fusion"              : True,
+    "disable_progress"          : False,
+    "verbose_progress"          : True,
+    "triton.multi_kernel"       : True,
+    "triton.use_block_ptr"      : True,
+    "triton.enable_persistent_tma_matmul" : True,
+    "triton.autotune_at_compile_time"     : True,
 }
 
 # https://github.com/huggingface/trl/blob/main/trl/trainer/utils.py#L1674
