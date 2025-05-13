@@ -1100,7 +1100,8 @@ def load_vllm(
         use_cudagraph = True,
         use_inductor = True,
         custom_ops = ["none"],
-        splitting_ops = ["vllm.unified_attention", "vllm.unified_attention_with_output"],
+        splitting_ops = [],
+        # splitting_ops = ["vllm.unified_attention", "vllm.unified_attention_with_output"],
         inductor_compile_config = {
             "debug" : False,
             "dce" : True,
