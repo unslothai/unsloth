@@ -263,6 +263,23 @@ if importlib.util.find_spec("vllm") is not None:
         vllm.lora.worker_manager.WorkerLoRAManager = PatchedWorkerLoRAManager
         vllm.lora.worker_manager.LRUCacheWorkerLoRAManager = PatchedLRUCacheWorkerLoRAManager
     pass
+
+    def set_inductor_config(config, runtime_shape):
+        if isinstance(runtime_shape, int):
+            # for a specific batchsize, tuning triton kernel parameters
+            # can be beneficial
+            config["max_autotune"] = False # Very slow so disable
+            config["coordinate_descent_tuning"] = True
+    pass
+
+    def patch_vllm_set_inductor_config():
+        try:
+            import vllm.compilation.compiler_interface
+            vllm.compilation.compiler_interface.set_inductor_config = set_inductor_config
+        except:
+            pass
+        return
+    pass
 else:
     def patch_vllm_bitsandbytes():
         return
@@ -281,6 +298,10 @@ else:
     pass
 
     def patch_vllm_lora_load_tensors():
+        return
+    pass
+
+    def patch_vllm_set_inductor_config():
         return
     pass
 pass
@@ -398,6 +419,8 @@ def patch_vllm():
     # Allows accessing model_executor
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
+    # os.environ["VLLM_TRACE_FUNCTION"] = "1"
+    patch_vllm_set_inductor_config()
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
     patch_vllm_lora_tokenizer()
@@ -1070,10 +1093,10 @@ def load_vllm(
     swap_space = 4
     if   RAM_GB <= 4:  swap_space = 0
     elif RAM_GB <= 8:  swap_space = 1
-    elif RAM_GB <= 12: swap_space = 2
-    elif RAM_GB <= 16: swap_space = 3
-    elif RAM_GB <= 24: swap_space = 4
-    elif RAM_GB <= 48: swap_space = 5
+    elif RAM_GB <= 12: swap_space = 1
+    elif RAM_GB <= 16: swap_space = 2
+    elif RAM_GB <= 24: swap_space = 3
+    elif RAM_GB <= 48: swap_space = 4
     else: swap_space = 6
 
     print(
@@ -1085,6 +1108,37 @@ def load_vllm(
 
     # Get device as well
     device = "cuda:0"
+
+    if compilation_config == 3:
+        try:
+            from vllm.config import CompilationConfig, CompilationLevel
+            compilation_config = CompilationConfig(
+                level = 3,
+                backend = "inductor",
+                # cache_dir = "unsloth_compiled_vllm_cache", # Pytorch fails to load from cache
+                # compile_sizes = [1, 2, 4, 8, 16],
+                # cudagraph_capture_sizes = [1, 2, 4, 8, 16],
+                # max_capture_size = 16,
+                cudagraph_num_of_warmups = 1,
+                full_cuda_graph = False,
+                use_cudagraph = True,
+                use_inductor = True,
+                inductor_compile_config = {
+                    "debug" : False,
+                    "dce" : True,
+                    "coordinate_descent_tuning" : True,
+                    "trace.enabled" : False,
+                    "trace.graph_diagram" : False,
+                    "triton.cudagraphs" : True,
+                    "compile_threads" : 48,
+                    "max_autotune" : False, # Way too slow
+                    "disable_progress" : False,
+                    "verbose_progress" : True,
+                }
+            )
+        except:
+            pass
+    pass
 
     engine_args = dict(
         model                  = model_name,
