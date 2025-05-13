@@ -71,14 +71,6 @@ def patch_layernorm(fast_layernorm):
     return
 pass
 
-def patch_layernorm_inputs(module):
-    orig_forward = module.forward
-    def wrapped_forward(x, *args, _orig_forward=orig_forward, **kwargs):
-        orig_dtype = x.dtype
-        return _orig_forward(x.to(torch.float32), *args, **kwargs).to(orig_dtype)
-    module.forward = wrapped_forward
-
-
 
 def patch_torch_compile(debug = False, O3 = False, ignore_errors = True):
     # All Unsloth Zoo code licensed under LGPLv3
@@ -198,8 +190,6 @@ def patch_model_and_tokenizer(
     fix_embeddings = True,
     do_forced_float32 = False,
 ):
-    import transformers
-
     # All Unsloth Zoo code licensed under LGPLv3
     assert(type(downcast_rope) is bool)
     import gc
@@ -275,7 +265,6 @@ def patch_model_and_tokenizer(
             try: setattr(m, "dtype", torch.float16)
             except: pass
     pass
-    
     # Check all params and patch!
     for name, module in model.named_modules():
         if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
@@ -309,7 +298,6 @@ def patch_model_and_tokenizer(
                 module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
             pass
         pass
-
     pass
 
     if not fix_embeddings: return model, tokenizer
