@@ -1142,6 +1142,7 @@ def load_vllm(
                 "triton.autotune_at_compile_time" : True,
             }
         )
+        compilation_config = 3
     except:
         pass
 
