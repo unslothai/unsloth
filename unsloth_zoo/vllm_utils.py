@@ -1116,9 +1116,9 @@ def load_vllm(
                 level = 3,
                 backend = "inductor",
                 # cache_dir = "unsloth_compiled_vllm_cache", # Pytorch fails to load from cache
-                compile_sizes = [1, 2, 4, 8, 16],
-                cudagraph_capture_sizes = [1, 2, 4, 8, 16],
-                max_capture_size = 16,
+                # compile_sizes = [1, 2, 4, 8, 16],
+                # cudagraph_capture_sizes = [1, 2, 4, 8, 16],
+                # max_capture_size = 16,
                 cudagraph_num_of_warmups = 1,
                 full_cuda_graph = False, # True makes it 2x slower!!
                 use_cudagraph = True,
@@ -1126,7 +1126,7 @@ def load_vllm(
                 inductor_compile_config = {
                     "debug" : False,
                     "dce" : True,
-                    "memory_planning" : True,
+                    # "memory_planning" : True,
                     "coordinate_descent_tuning" : True,
                     "trace.enabled" : False,
                     "trace.graph_diagram" : False,
