@@ -151,11 +151,11 @@ class UnslothEfficientGRPO(torch.autograd.Function):
             return chunk_grad_input
         pass
 
-        # accumulate_chunk = torch.compile(
-        #     accumulate_chunk,
-        #     fullgraph = True,
-        #     options = torch_compile_options,
-        # )
+        accumulate_chunk = torch.compile(
+            accumulate_chunk,
+            fullgraph = True,
+            options = torch_compile_options,
+        )
 
         grad_inputs_chunks = torch.chunk(grad_inputs,        chunks = n_chunks, dim = 0)
         new_hidden_states  = torch.chunk(_new_hidden_states, chunks = n_chunks, dim = 0)
