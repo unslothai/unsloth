@@ -1096,7 +1096,7 @@ def load_vllm(
             cudagraph_capture_sizes = [1, 2, 4, 8],
             max_capture_size = 8,
             cudagraph_num_of_warmups = 1,
-            full_cuda_graph = True,
+            full_cuda_graph = False,
             use_cudagraph = True,
             use_inductor = True,
             custom_ops = ["none"],
