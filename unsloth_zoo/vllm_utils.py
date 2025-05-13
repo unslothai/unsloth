@@ -1115,6 +1115,9 @@ def load_vllm(
             level = 3,
             backend = "inductor",
             cache_dir = "unsloth_compiled_vllm_cache",
+            compile_sizes = [1, 2, 4],
+            cudagraph_capture_sizes = [1, 2, 4],
+            max_capture_size = 4,
             cudagraph_num_of_warmups = 1,
             full_cuda_graph = True, # True causes gibberish
             use_cudagraph = True,
@@ -1139,7 +1142,6 @@ def load_vllm(
                 "triton.autotune_at_compile_time" : True,
             }
         )
-        compilation_config = 3
     except:
         pass
 
