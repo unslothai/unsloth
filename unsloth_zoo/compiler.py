@@ -592,6 +592,8 @@ for __kwargs in all_locals.values():
         n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
         break
 requires_grad_ = self.lm_head.weight.requires_grad
+requires_grad_ = requires_grad_ or self.lm_head.weight.dtype == torch.float32
+
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
 elif (UNSLOTH_STUDIO_ENABLED and NOT_RETURN_LOGITS and labels is not None and not requires_grad_):
@@ -710,6 +712,7 @@ cross_entropy_replacement_2 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
 n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
 requires_grad_ = self.lm_head.weight.requires_grad
+requires_grad_ = requires_grad_ or self.lm_head.weight.dtype == torch.float32
 
 if labels is None:
     logits = self.lm_head(hidden_states\\1)
@@ -793,7 +796,7 @@ elif self.loss_function.__name__.endswith("ForCausalLMLoss") and labels is not N
         output_labels        = labels,
         logit_scale_multiply = (\\2) if (\\2) != () else 0,
         logit_scale_divide   = (\\3) if (\\3) != () else 0,
-        logit_softcapping    = (\\4) if (\\4) is not None or (\\4) != () else 0,
+        logit_softcapping    = (\\4) if (\\4) not in (None, (),) else 0,
         vocab_size           = (\\8),
         n_items              = n_items if n_items is not None else 0,
     )
@@ -904,7 +907,7 @@ if labels is not None:
         mask                 = \\5,
         logit_scale_multiply = (\\1) if (\\1) != () else 0,
         logit_scale_divide   = (\\2) if (\\2) != () else 0,
-        logit_softcapping    = (\\3) if (\\3) is not None or (\\3) != () else 0,
+        logit_softcapping    = (\\3) if (\\3) not in (None, (),) else 0,
         vocab_size           = (\\6),
         n_items              = n_items if n_items is not None else 0,
     )
