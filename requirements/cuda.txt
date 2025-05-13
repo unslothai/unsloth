@@ -1,17 +1,4 @@
-unsloth_zoo>=2025.3.17
-packaging
-tyro
-transformers>=4.46.1,!=4.47.0
-datasets>=2.16.0
-sentencepiece>=0.2.0
-tqdm
-psutil
-wheel>=0.42.0
-numpy
-accelerate>=0.34.1
-trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,!=0.15.0,<=0.15.2
-peft>=0.7.1,!=0.11.0
-protobuf<4.0.0
-huggingface_hub
-hf_transfer
-unsloth[triton]
+# Common dependencies
+-r common.txt
+
+xformers==0.0.30; platform_system == 'Linux' and platform_machine == 'x86_64'  # Requires PyTorch >= 2.7
