@@ -398,7 +398,7 @@ def patch_vllm():
     # Allows accessing model_executor
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
-    os.environ["VLLM_TRACE_FUNCTION"] = "1"
+    # os.environ["VLLM_TRACE_FUNCTION"] = "1"
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
     patch_vllm_lora_tokenizer()
