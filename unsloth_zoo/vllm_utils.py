@@ -1113,7 +1113,7 @@ def load_vllm(
                 "compile_threads" : 48,
                 "combo_kernels" : True,
                 "group_fusion" : True,
-                "max_autotune" : True,
+                "max_autotune" : False, # Way too slow
                 "disable_progress" : False,
                 "verbose_progress" : True,
                 # "triton.multi_kernel": True,
