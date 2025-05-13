@@ -1103,25 +1103,25 @@ def load_vllm(
             custom_ops = ["none"],
             # splitting_ops = [],
             splitting_ops = ["vllm.unified_attention", "vllm.unified_attention_with_output"],
-            inductor_compile_config = {
-                "debug" : False,
-                "dce" : True,
-                "memory_planning" : True,
-                "coordinate_descent_tuning" : True,
-                "trace.enabled" : False,
-                "trace.graph_diagram" : False,
-                "triton.cudagraphs" : False,
-                "compile_threads" : 48,
-                "combo_kernels" : True,
-                "group_fusion" : True,
-                "max_autotune" : False, # Way too slow
-                "disable_progress" : False,
-                "verbose_progress" : True,
-                # "triton.multi_kernel": True,
-                "triton.use_block_ptr" : True,
-                "triton.enable_persistent_tma_matmul" : True,
-                "triton.autotune_at_compile_time" : True,
-            }
+            # inductor_compile_config = {
+            #     "debug" : False,
+            #     "dce" : True,
+            #     "memory_planning" : True,
+            #     "coordinate_descent_tuning" : True,
+            #     "trace.enabled" : False,
+            #     "trace.graph_diagram" : False,
+            #     "triton.cudagraphs" : False,
+            #     "compile_threads" : 48,
+            #     "combo_kernels" : True,
+            #     "group_fusion" : True,
+            #     "max_autotune" : False, # Way too slow
+            #     "disable_progress" : False,
+            #     "verbose_progress" : True,
+            #     # "triton.multi_kernel": True,
+            #     "triton.use_block_ptr" : True,
+            #     "triton.enable_persistent_tma_matmul" : True,
+            #     "triton.autotune_at_compile_time" : True,
+            # }
         )
     except:
         pass
