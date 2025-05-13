@@ -153,7 +153,7 @@ class UnslothEfficientGRPO(torch.autograd.Function):
 
         accumulate_chunk = torch.compile(
             accumulate_chunk,
-            fullgraph = True,
+            fullgraph = False,
             options = torch_compile_options,
         )
 
