@@ -1116,9 +1116,9 @@ def load_vllm(
             "max_autotune" : True,
             "disable_progress" : False,
             "verbose_progress" : True,
-            "triton.multi_kernel": True,
+            # "triton.multi_kernel": True,
             "triton.use_block_ptr" : True,
-            "triton.enable_persistent_tma_matmul" : True,
+            # "triton.enable_persistent_tma_matmul" : True,
             "triton.autotune_at_compile_time" : True,
         }
     )
