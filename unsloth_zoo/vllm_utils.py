@@ -1098,7 +1098,7 @@ def load_vllm(
             # max_capture_size = 8,
             cudagraph_num_of_warmups = 0,
             full_cuda_graph = False, # True causes gibberish
-            use_cudagraph = True,
+            use_cudagraph = False,
             use_inductor = True,
             custom_ops = ["none"],
             # splitting_ops = [],
@@ -1110,7 +1110,7 @@ def load_vllm(
                 "coordinate_descent_tuning" : True,
                 "trace.enabled" : False,
                 "trace.graph_diagram" : False,
-                "triton.cudagraphs" : True,
+                "triton.cudagraphs" : False,
                 "compile_threads" : 48,
                 "combo_kernels" : True,
                 "group_fusion" : True,
