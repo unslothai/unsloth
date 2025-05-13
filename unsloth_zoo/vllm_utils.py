@@ -1086,6 +1086,42 @@ def load_vllm(
     # Get device as well
     device = "cuda:0"
 
+    from vllm.config import CompilationConfig, CompilationLevel
+
+    compilation_config = CompilationConfig(
+        level = CompilationLevel.PIECEWISE,
+        backend = "inductor",
+        cache_dir = "unsloth_compiled_vllm_cache",
+        compile_sizes = [1, 2, 4, 8],
+        cudagraph_capture_sizes = [1, 2, 4, 8],
+        max_capture_size = 8,
+        cudagraph_num_of_warmups = 1,
+        full_cuda_graph = True,
+        use_cudagraph = True,
+        use_inductor = True,
+        custom_ops = ["none"],
+        splitting_ops = ["vllm.unified_attention", "vllm.unified_attention_with_output"],
+        inductor_compile_config = {
+            "debug" : False,
+            "dce" : True,
+            "memory_planning" : True,
+            "coordinate_descent_tuning" : True,
+            "trace.enabled" : True,
+            "trace.graph_diagram" : True,
+            "triton.cudagraphs" : True,
+            "compile_threads" : 24,
+            "combo_kernels" : True,
+            "group_fusion" : True,
+            "max_autotune" : True,
+            "disable_progress" : False,
+            "verbose_progress" : True,
+            "triton.multi_kernel": True,
+            "triton.use_block_ptr" : True,
+            "triton.enable_persistent_tma_matmul" : True,
+            "triton.autotune_at_compile_time" : True,
+        }
+    )
+
     engine_args = dict(
         model                  = model_name,
         gpu_memory_utilization = actual_gpu_memory_utilization,
