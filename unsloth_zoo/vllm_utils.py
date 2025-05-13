@@ -1090,15 +1090,15 @@ def load_vllm(
     try:
         from vllm.config import CompilationConfig, CompilationLevel
         compilation_config = CompilationConfig(
-            level = 2,
+            level = 3,
             backend = "inductor",
-            # cache_dir = "unsloth_compiled_vllm_cache",
-            # compile_sizes = [1, 2, 4, 8],
-            # cudagraph_capture_sizes = [1, 2, 4, 8],
-            # max_capture_size = 8,
+            cache_dir = "unsloth_compiled_vllm_cache",
+            compile_sizes = [1, 2, 4, 8],
+            cudagraph_capture_sizes = [1, 2, 4, 8],
+            max_capture_size = 8,
             cudagraph_num_of_warmups = 1,
             full_cuda_graph = False, # True causes gibberish
-            use_cudagraph = False,
+            use_cudagraph = True,
             use_inductor = True,
             custom_ops = ["none"],
             # splitting_ops = [],
@@ -1106,8 +1106,8 @@ def load_vllm(
             inductor_compile_config = {
                 "debug" : False,
                 "dce" : True,
-                "memory_planning" : False,
-                "coordinate_descent_tuning" : False,
+                "memory_planning" : True,
+                "coordinate_descent_tuning" : True,
                 "trace.enabled" : False,
                 "trace.graph_diagram" : False,
                 "triton.cudagraphs" : False,
@@ -1119,7 +1119,7 @@ def load_vllm(
                 "verbose_progress" : True,
                 # "triton.multi_kernel": True,
                 "triton.use_block_ptr" : True,
-                "triton.enable_persistent_tma_matmul" : True,
+                "triton.enable_persistent_tma_matmul" : False,
                 "triton.autotune_at_compile_time" : True,
             }
         )
