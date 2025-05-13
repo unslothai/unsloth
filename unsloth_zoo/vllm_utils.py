@@ -1114,7 +1114,7 @@ def load_vllm(
         compilation_config = CompilationConfig(
             level = 3,
             backend = "inductor",
-            cache_dir = "unsloth_compiled_vllm_cache",
+            # cache_dir = "unsloth_compiled_vllm_cache", # Pytorch fails to load from cache
             compile_sizes = [1, 2, 4, 8, 16],
             cudagraph_capture_sizes = [1, 2, 4, 8, 16],
             max_capture_size = 16,
