@@ -103,8 +103,8 @@ def get_unsloth_version() -> str:
         rocm_version = get_rocm_version() or torch.version.hip
         if rocm_version and rocm_version != MAIN_CUDA_VERSION:
             version += f"{sep}rocm{rocm_version.replace('.', '')[:3]}"
-    else:
-        raise RuntimeError("Unknown runtime environment")
+    # else:
+    #     raise RuntimeError("Unknown runtime environment")
 
     return version
 
@@ -138,12 +138,16 @@ def get_requirements() -> list[str]:
     elif _is_hip():
         requirements = _read_requirements("rocm.txt")
     else:
-        raise ValueError(
-            "Unsupported platform, please use CUDA, ROCm, "
-            "or CPU.")
+        requirements = _read_requirements("common.txt")
+        # raise ValueError(
+        #     "Unsupported platform, please use CUDA, ROCm, "
+        #     "or CPU.")
 
-    print(f"bill-dbg: requirements: {requirements}")
     return requirements
+
+
+INSTINCT_ARCH=("gfx942", "gfx90a")
+RADEON_ARCH=("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201")
 
 
 class RocmExtraInstallCommand(install):
@@ -155,11 +159,20 @@ class RocmExtraInstallCommand(install):
         os.mkdir('thirdparties')
         os.chdir('thirdparties')
 
+        # flash-attention
+        if (rocm_arch := os.environ['ROCM_ARCH']) in INSTINCT_ARCH:
+            subprocess.check_call(['git', 'clone', '--recursive', 'https://github.com/ROCm/flash-attention.git'])
+            os.chdir('flash-attention')
+            num_jobs = os.cpu_count() - 1
+            subprocess.check_call(['pip', 'install', '-v', '.', f'MAX_JOBS={num_jobs}'], shell=True)
+            os.chdir('..')
+
         # # xformers
+        rocm_arch = os.environ['ROCM_ARCH']
         subprocess.check_call(['git', 'clone', 'https://github.com/ROCm/xformers.git'])
         os.chdir('xformers')
         subprocess.check_call(['git', 'submodule', 'update', '--init', '--recursive'])
-        os.environ['PYTORCH_ROCM_ARCH'] = 'gfx942'
+        os.environ['PYTORCH_ROCM_ARCH'] = rocm_arch
         subprocess.check_call(['python', 'setup.py', 'install'])
         os.chdir('..')
 
@@ -171,13 +184,6 @@ class RocmExtraInstallCommand(install):
         subprocess.check_call(['cmake', '-DCOMPUTE_BACKEND=hip', '-S', '.'])  # Add -DBNB_ROCM_ARCH if needed
         subprocess.check_call(['make'])
         subprocess.check_call(['pip', 'install', '.'])
-        os.chdir('..')
-
-        # flash-attention
-        subprocess.check_call(['git', 'clone', '--recursive', 'https://github.com/ROCm/flash-attention.git'])
-        os.chdir('flash-attention')
-        num_jobs = os.cpu_count() - 1
-        subprocess.check_call(['pip', 'install', '-v', '.', f'MAX_JOBS={num_jobs}'], shell=True)
         os.chdir('../..')
 
         # Continue with regular install
@@ -724,7 +730,7 @@ extras_require = {
         "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp311-cp311-linux_x86_64.whl#sha256=12005f66b810ddd3ab93f86c4522bcfdd412cbd27fc9d189b661ff7509bc5e8a ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
         "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp312-cp312-linux_x86_64.whl#sha256=c4c5c67625cdacf35765c2b94e61fe166e3c3f4a14521b1212a59ad1b3eb0f2e ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
         "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp313-cp313-linux_x86_64.whl#sha256=e6864f7a60a5ecc43d5d38f59a16e5dd132384f73dfd3a697f74944026038f7b ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
-    ],
+    ]
 }
 
 setup(
