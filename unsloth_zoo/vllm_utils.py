@@ -263,6 +263,23 @@ if importlib.util.find_spec("vllm") is not None:
         vllm.lora.worker_manager.WorkerLoRAManager = PatchedWorkerLoRAManager
         vllm.lora.worker_manager.LRUCacheWorkerLoRAManager = PatchedLRUCacheWorkerLoRAManager
     pass
+
+    def set_inductor_config(config, runtime_shape):
+        if isinstance(runtime_shape, int):
+            # for a specific batchsize, tuning triton kernel parameters
+            # can be beneficial
+            config["max_autotune"] = False # Very slow so disable
+            config["coordinate_descent_tuning"] = True
+    pass
+
+    def patch_vllm_set_inductor_config():
+        try:
+            import vllm.compilation.compiler_interface
+            vllm.compilation.compiler_interface.set_inductor_config = set_inductor_config
+        except:
+            pass
+        return
+    pass
 else:
     def patch_vllm_bitsandbytes():
         return
@@ -281,6 +298,10 @@ else:
     pass
 
     def patch_vllm_lora_load_tensors():
+        return
+    pass
+
+    def patch_vllm_set_inductor_config():
         return
     pass
 pass
@@ -399,6 +420,7 @@ def patch_vllm():
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
     # os.environ["VLLM_TRACE_FUNCTION"] = "1"
+    patch_vllm_set_inductor_config()
     patch_bitsandbytes_quant_state()
     patch_vllm_bitsandbytes()
     patch_vllm_lora_tokenizer()
@@ -1093,16 +1115,13 @@ def load_vllm(
             level = 3,
             backend = "inductor",
             cache_dir = "unsloth_compiled_vllm_cache",
-            compile_sizes = [1, 2, 4, 8],
-            cudagraph_capture_sizes = [1, 2, 4, 8],
-            max_capture_size = 8,
+            compile_sizes = [1, 2, 4],
+            cudagraph_capture_sizes = [1, 2, 4],
+            max_capture_size = 4,
             cudagraph_num_of_warmups = 1,
             full_cuda_graph = False, # True causes gibberish
             use_cudagraph = True,
             use_inductor = True,
-            custom_ops = ["none"],
-            # splitting_ops = [],
-            splitting_ops = ["vllm.unified_attention", "vllm.unified_attention_with_output"],
             inductor_compile_config = {
                 "debug" : False,
                 "dce" : True,
@@ -1110,7 +1129,7 @@ def load_vllm(
                 "coordinate_descent_tuning" : True,
                 "trace.enabled" : False,
                 "trace.graph_diagram" : False,
-                "triton.cudagraphs" : False,
+                "triton.cudagraphs" : True,
                 "compile_threads" : 48,
                 "combo_kernels" : True,
                 "group_fusion" : True,
@@ -1123,7 +1142,6 @@ def load_vllm(
                 "triton.autotune_at_compile_time" : True,
             }
         )
-        compilation_config = 3
     except:
         pass
 
