@@ -1119,7 +1119,7 @@ def load_vllm(
             cudagraph_capture_sizes = [1, 2, 4, 8, 16],
             max_capture_size = 16,
             cudagraph_num_of_warmups = 1,
-            full_cuda_graph = True, # True causes gibberish
+            full_cuda_graph = False, # True causes gibberish
             use_cudagraph = True,
             use_inductor = True,
             inductor_compile_config = {
@@ -1142,6 +1142,7 @@ def load_vllm(
                 "triton.autotune_at_compile_time" : True,
             }
         )
+        compilation_config = 3
     except:
         pass
 
