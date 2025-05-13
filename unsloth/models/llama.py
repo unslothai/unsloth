@@ -23,6 +23,7 @@ from ._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
 IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
@@ -1075,7 +1076,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if labels is not None: labels = labels.to(lm_head_device)
 
         # Output last hidden states without logits if asked
-        if self.training and os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(
@@ -1660,9 +1661,8 @@ class FastLlamaModel:
             )
         pass
         if fast_inference:
-            import platform
-            if platform.system().lower() == 'windows':
-                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+            if not is_vLLM_available():
+                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             major_version, minor_version = torch.cuda.get_device_capability()
             if major_version < 7:
@@ -1771,6 +1771,7 @@ class FastLlamaModel:
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
+                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
         pass
 
