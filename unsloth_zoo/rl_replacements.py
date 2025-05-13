@@ -37,7 +37,7 @@ torch_compile_options = {
     "memory_planning"           : True,
     "coordinate_descent_tuning" : True,
     "trace.graph_diagram"       : False,
-    "compile_threads"           : 48,
+    "compile_threads"           : 12,
     "combo_kernels"             : True,
     "group_fusion"              : True,
     "disable_progress"          : False,
@@ -153,7 +153,7 @@ class UnslothEfficientGRPO(torch.autograd.Function):
 
         accumulate_chunk = torch.compile(
             accumulate_chunk,
-            fullgraph = False,
+            fullgraph = True,
             options = torch_compile_options,
         )
 

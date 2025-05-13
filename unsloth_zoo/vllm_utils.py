@@ -1093,8 +1093,8 @@ def load_vllm(
     swap_space = 4
     if   RAM_GB <= 4:  swap_space = 0
     elif RAM_GB <= 8:  swap_space = 1
-    elif RAM_GB <= 12: swap_space = 2
-    elif RAM_GB <= 16: swap_space = 3
+    elif RAM_GB <= 12: swap_space = 1
+    elif RAM_GB <= 16: swap_space = 2
     elif RAM_GB <= 24: swap_space = 4
     elif RAM_GB <= 48: swap_space = 5
     else: swap_space = 6
@@ -1126,21 +1126,14 @@ def load_vllm(
                 inductor_compile_config = {
                     "debug" : False,
                     "dce" : True,
-                    # "memory_planning" : True,
                     "coordinate_descent_tuning" : True,
                     "trace.enabled" : False,
                     "trace.graph_diagram" : False,
                     "triton.cudagraphs" : True,
                     "compile_threads" : 48,
-                    # "combo_kernels" : True,
-                    # "group_fusion" : True,
                     "max_autotune" : False, # Way too slow
                     "disable_progress" : False,
                     "verbose_progress" : True,
-                    # "triton.multi_kernel": True,
-                    # "triton.use_block_ptr" : True,
-                    # "triton.enable_persistent_tma_matmul" : True,
-                    # "triton.autotune_at_compile_time" : True,
                 }
             )
         except:
