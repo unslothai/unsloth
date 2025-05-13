@@ -276,11 +276,6 @@ def patch_model_and_tokenizer(
             except: pass
     pass
     
-    upcast_norm = False
-    if isinstance(model, transformers.models.csm.modeling_csm.CsmForConditionalGeneration):
-        # only force upcast for CSM
-        upcast_norm = True
-
     # Check all params and patch!
     for name, module in model.named_modules():
         if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
@@ -314,11 +309,6 @@ def patch_model_and_tokenizer(
                 module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
             pass
         pass
-
-        # check if upcast_norm is True
-        if 'norm' in name and upcast_norm:
-            module.to(dtype=torch.float32)
-            patch_layernorm_inputs(module)
 
     pass
 
