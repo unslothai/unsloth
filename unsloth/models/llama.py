@@ -1661,9 +1661,8 @@ class FastLlamaModel:
             )
         pass
         if fast_inference:
-            import platform
-            if platform.system().lower() == 'windows':
-                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+            if not is_vLLM_available():
+                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             major_version, minor_version = torch.cuda.get_device_capability()
             if major_version < 7:
