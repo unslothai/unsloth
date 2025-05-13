@@ -1115,9 +1115,9 @@ def load_vllm(
             level = 3,
             backend = "inductor",
             cache_dir = "unsloth_compiled_vllm_cache",
-            compile_sizes = [1, 2, 4],
-            cudagraph_capture_sizes = [1, 2, 4],
-            max_capture_size = 4,
+            compile_sizes = [1, 2, 4, 8, 16],
+            cudagraph_capture_sizes = [1, 2, 4, 8, 16],
+            max_capture_size = 16,
             cudagraph_num_of_warmups = 1,
             full_cuda_graph = True, # True causes gibberish
             use_cudagraph = True,
@@ -1138,7 +1138,7 @@ def load_vllm(
                 "verbose_progress" : True,
                 # "triton.multi_kernel": True,
                 "triton.use_block_ptr" : True,
-                "triton.enable_persistent_tma_matmul" : False,
+                "triton.enable_persistent_tma_matmul" : True,
                 "triton.autotune_at_compile_time" : True,
             }
         )
