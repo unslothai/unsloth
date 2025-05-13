@@ -1092,10 +1092,10 @@ def load_vllm(
     RAM_GB = memory.available / 1024 / 1024 / 1024
     swap_space = 4
     if   RAM_GB <= 4:  swap_space = 0
-    elif RAM_GB <= 8:  swap_space = 1
-    elif RAM_GB <= 12: swap_space = 1
-    elif RAM_GB <= 16: swap_space = 1
-    elif RAM_GB <= 24: swap_space = 3
+    elif RAM_GB <= 8:  swap_space = 0
+    elif RAM_GB <= 12: swap_space = 0
+    elif RAM_GB <= 16: swap_space = 0
+    elif RAM_GB <= 24: swap_space = 2
     elif RAM_GB <= 48: swap_space = 4
     else: swap_space = 6
 
