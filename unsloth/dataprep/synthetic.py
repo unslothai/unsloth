@@ -64,7 +64,7 @@ class SyntheticDataKit:
             model_name,
             token = token,
         )
-        patch_vllm()
+        patch_vllm(debug = False)
         engine_args = load_vllm(
             model_name             = model_name,
             config                 = self.config,
