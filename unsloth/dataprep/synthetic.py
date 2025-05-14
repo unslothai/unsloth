@@ -200,8 +200,7 @@ class SyntheticDataKit:
         class Dummy0: model_executor = 1
         class Dummy1: llm_engine = Dummy0()
         class Dummy2: llm = Dummy1()
-        llm = Dummy2()
-        delete_vllm(llm)
+        delete_vllm(Dummy2().llm)
     pass
 
     def __enter__(self): return self
