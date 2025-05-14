@@ -414,11 +414,12 @@ else:
 pass
 
 
-def patch_vllm():
+def patch_vllm(debug = True):
     # Temporary patch to disable multiprocessing for vLLM
     # Allows accessing model_executor
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
-    os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
+    if debug:
+        os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"
     # os.environ["VLLM_TRACE_FUNCTION"] = "1"
     patch_vllm_set_inductor_config()
     patch_bitsandbytes_quant_state()
