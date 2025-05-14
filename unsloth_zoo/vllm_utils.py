@@ -1136,6 +1136,7 @@ def load_vllm(
                     "verbose_progress" : True,
                 }
             )
+            compilation_config = 3
         except:
             pass
     pass
