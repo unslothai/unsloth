@@ -196,11 +196,7 @@ class SyntheticDataKit:
             gc.collect()
 
         # Delete vLLM module as well
-        # We delete llm.llm_engine.model_executor, so first make it accessible
-        class Dummy0: model_executor = 1
-        class Dummy1: llm_engine = Dummy0()
-        class Dummy2: llm = Dummy1()
-        delete_vllm(Dummy2().llm)
+        delete_vllm(llm = None)
     pass
 
     def __enter__(self): return self
