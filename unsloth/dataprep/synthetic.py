@@ -81,6 +81,9 @@ class SyntheticDataKit:
 
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
+        if "compilation_config" in engine_args:
+            # Cannot parse in vllm serve
+            engine_args["compilation_config"] = 3
 
         subprocess_commands = [
             "vllm", "serve", str(model_name),
@@ -113,7 +116,8 @@ class SyntheticDataKit:
                 print("Stdout stream ended before readiness message detected.")
                 break
             output_str = output.decode('utf-8', errors='ignore').strip()
-            print(f"vLLM STDOUT: {output_str}")
+            if "platform is" not in output_str:
+                print(f"vLLM STDOUT: {output_str}")
             if ready_message_part in output:
                 print(f"\n--- vLLM Server Ready (Detected: '{ready_message_part.decode()}') ---")
                 ready = True
