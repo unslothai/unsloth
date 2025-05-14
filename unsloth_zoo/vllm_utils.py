@@ -1524,7 +1524,6 @@ pass
 
 def delete_vllm(llm = None):
     # From https://github.com/vllm-project/vllm/issues/1908
-    import ray
     from vllm.distributed.parallel_state import (
         destroy_model_parallel,
         destroy_distributed_environment,
@@ -1540,7 +1539,11 @@ def delete_vllm(llm = None):
         torch.distributed.destroy_process_group()
     gc.collect()
     torch.cuda.empty_cache()
-    ray.shutdown()
+    try:
+        import ray
+        ray.shutdown()
+    except:
+        pass
     return llm
 pass
 
