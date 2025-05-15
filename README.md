@@ -82,6 +82,7 @@ For Windows install instructions, see [here](https://docs.unsloth.ai/get-started
 | 🔮 **Our Models**            | [Unsloth Releases](https://docs.unsloth.ai/get-started/all-our-models)|
 | ✍️ **Blog**                    | [Read our Blogs](https://unsloth.ai/blog)|
 | <img height="14" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />&nbsp; **Reddit**                    | [Join our Reddit page](https://reddit.com/r/unsloth)|
+|  **Discord**                 | [Join our Discord](https://discord.com/invite/unsloth) |
 
 ## ⭐ Key Features
 - Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **8-bit** training
