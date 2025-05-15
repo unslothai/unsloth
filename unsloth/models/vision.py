@@ -188,7 +188,10 @@ def unsloth_base_fast_generate(
     # Use hybrid if sliding window seen, otherwise try static
     cache_implementation = getattr(self.config, "cache_implementation", None)
     if getattr(self, "_supports_static_cache", True):
-        cache_implementation = "static"
+        if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
+            cache_implementation = "static"
+        else:
+            cache_implementation = None
     else:
         cache_implementation = None
     if cache_implementation is not None:
@@ -199,10 +202,10 @@ def unsloth_base_fast_generate(
             cache_implementation = "hybrid"
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
-        kwargs["generation_config"].compile_config = _compile_config
+        kwargs["generation_config"].compile_config = _compile_config if cache_implementation is not None else None
     else:
         kwargs["cache_implementation"] = cache_implementation
-        kwargs["compile_config"] = _compile_config
+        kwargs["compile_config"] = _compile_config if cache_implementation is not None else None
     pass
 
     try:
@@ -310,6 +313,19 @@ class FastBaseModel:
             bnb_compute_dtype = torch.float16
             do_forced_float32 = True
         pass
+
+        # Check for custom data-types
+        custom_datatype = None
+        correct_dtype = None
+        if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
+            custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
+            assert custom_datatype.count(";") == 1
+            bnb_compute_dtype, custom_datatype = custom_datatype.split(";", 1)
+            dtype = torch.float32
+            bnb_compute_dtype = eval(bnb_compute_dtype)
+            correct_dtype = bnb_compute_dtype
+        pass
+
         # Stop SDPA for some archs like Pixtral / Mistral3
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = "sdpa"
@@ -374,12 +390,18 @@ class FastBaseModel:
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
+        # Edit data-types
+        if custom_datatype is not None:
+            for name, module in model.named_modules():
+                exec(custom_datatype)
+        pass
+
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         is_vlm = (auto_model is AutoModelForVision2Seq)
         is_whisper = (whisper_language is not None and whisper_task is not None)
         auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
-        if whisper_language and whisper_task:
+        if (whisper_language and whisper_task) or auto_model.__name__.endswith("ForConditionalGeneration"):
            tokenizer = auto_processor.from_pretrained(
                 tokenizer_name,
                 padding_side = "right",
@@ -415,6 +437,7 @@ class FastBaseModel:
             downcast_rope = False,
             fix_embeddings = False,
             do_forced_float32 = do_forced_float32,
+            correct_dtype = correct_dtype,
         )
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
@@ -538,6 +561,7 @@ class FastBaseModel:
             lora_dropout    = lora_dropout,
             bias            = bias,
             task_type       = task_type,
+            use_rslora      = use_rslora,
         )
         model = prepare_model_for_kbit_training(
             model,
