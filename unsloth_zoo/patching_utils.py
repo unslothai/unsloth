@@ -189,6 +189,7 @@ def patch_model_and_tokenizer(
     downcast_rope = True,
     fix_embeddings = True,
     do_forced_float32 = False,
+    correct_dtype = None,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     assert(type(downcast_rope) is bool)
@@ -223,10 +224,12 @@ def patch_model_and_tokenizer(
     pass
 
     # Get most likely the correct data-type of the model
-    try:
-        correct_dtype = _get_dtype(model.config.torch_dtype)
-    except:
-        correct_dtype = model.get_input_embeddings().weight.dtype
+    if correct_dtype is None:
+        try:
+            correct_dtype = _get_dtype(model.config.torch_dtype)
+        except:
+            correct_dtype = model.get_input_embeddings().weight.dtype
+    pass
     # If we force float32, we first use bfloat16, then downcast to float16
     if do_forced_float32:
         correct_dtype = torch.float16
@@ -242,29 +245,31 @@ def patch_model_and_tokenizer(
                 assert(module.weight.dtype == torch.float32)
             torch.cuda.empty_cache()
         pass
-
-        # Correct torch_dtype
-        def __fix_dtype(config):
-            if not hasattr(config, "to_dict"): return
-            dicts = config.to_dict()
-            for key, value in dicts.items():
-                if key == "torch_dtype":
-                    setattr(config, "torch_dtype", torch.float16)
-                else:
-                    __fix_dtype(getattr(config, key))
-        m = model
-        while hasattr(m, "model"):
-            if hasattr(m, "dtype"):
-                try: setattr(m, "dtype", torch.float16)
-                except: pass
-            if hasattr(m, "config"): __fix_dtype(m.config)
-            m = m.model
-        pass
-        if hasattr(m, "config"): __fix_dtype(m.config)
-        if hasattr(m, "dtype"):
-            try: setattr(m, "dtype", torch.float16)
-            except: pass
     pass
+
+    # Correct torch_dtype
+    def __fix_dtype(config):
+        if not hasattr(config, "to_dict"): return
+        dicts = config.to_dict()
+        for key, value in dicts.items():
+            if key == "torch_dtype":
+                setattr(config, "torch_dtype", correct_dtype)
+            else:
+                __fix_dtype(getattr(config, key))
+    m = model
+    while hasattr(m, "model"):
+        if hasattr(m, "dtype"):
+            try: setattr(m, "dtype", correct_dtype)
+            except: pass
+        if hasattr(m, "config"): __fix_dtype(m.config)
+        m = m.model
+    pass
+    if hasattr(m, "config"): __fix_dtype(m.config)
+    if hasattr(m, "dtype"):
+        try: setattr(m, "dtype", correct_dtype)
+        except: pass
+    pass
+    
     # Check all params and patch!
     for name, module in model.named_modules():
         if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):

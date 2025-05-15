@@ -493,7 +493,7 @@ def create_standalone_class(
 
     source = f"{compile}\n{source}\n"
 
-    left = re.match("[\s\n]{4,}", leftover).span()[1]
+    left = re.match(r"[\s\n]{4,}", leftover).span()[1]
     new_forward = definition + leftover[:left] + \
         f"return {module}_forward({parameters})\n"
     full_class = full_class.replace(old_source, new_forward)
@@ -504,6 +504,9 @@ def create_standalone_class(
 
     # Combine all into file
     source = source + full_class
+
+    # Remove @auto_docstring
+    source = source.replace("@auto_docstring", "")
 
     # Fix Gemma 3 ignore_index being not set!
     source = source.replace("self.config.ignore_index", "-100")
@@ -1470,18 +1473,45 @@ def unsloth_compile_transformers(
     if hasattr(modeling_file, "__UNSLOTH_PATCHED__"): return
 
     # Use transformers model_type logger to supress message: Remove `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`
-    exec("model_logger.addFilter(HideLoggingMessage('Setting `use_cache=False`'))", globals(), locals())
+    exec("model_logger.addFilter(HideLoggingMessage('`use_cache=True`'))", globals(), locals())
+
+    # Instead of Inductor Compilation:
+    try:
+        import torch._inductor.async_compile
+        from torch.hub import tqdm
+        def replaced_tqdm(*args, **kwargs):
+            kwargs["desc"] = "Unsloth: Compiling kernels"
+            return tqdm(*args, **kwargs)
+        torch._inductor.async_compile.tqdm = replaced_tqdm
+    except:
+        print("Unsloth: Failed editing tqdm to replace Inductor Compilation:")
+    pass
 
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
     UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
     UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
+    UNSLOTH_ENABLE_LOGGING        = os.environ.get("UNSLOTH_ENABLE_LOGGING",        "0") == "1"
     torch_compile_options = {
-        "epilogue_fusion"   : epilogue_fusion,
-        "max_autotune"      : max_autotune,
-        "shape_padding"     : shape_padding,
-        "trace.enabled"     : UNSLOTH_COMPILE_DEBUG or debug,
-        "triton.cudagraphs" : cudagraphs,
+        "epilogue_fusion"           : epilogue_fusion,
+        "max_autotune"              : max_autotune,
+        "shape_padding"             : shape_padding,
+        "trace.enabled"             : UNSLOTH_COMPILE_DEBUG or debug,
+        "triton.cudagraphs"         : cudagraphs,
+        "debug"                     : UNSLOTH_COMPILE_DEBUG or debug,
+        "dce"                       : True,
+        "memory_planning"           : True,
+        "coordinate_descent_tuning" : UNSLOTH_COMPILE_MAXIMUM,
+        "trace.graph_diagram"       : UNSLOTH_COMPILE_DEBUG or debug,
+        "compile_threads"           : 24,
+        "combo_kernels"             : False, # Causes incompatible gradient sizes on 2.6
+        "group_fusion"              : True,
+        "disable_progress"          : not UNSLOTH_ENABLE_LOGGING,
+        "verbose_progress"          : UNSLOTH_ENABLE_LOGGING,
+        "triton.multi_kernel"       : False, # Sometimes fails
+        "triton.use_block_ptr"      : True,
+        "triton.enable_persistent_tma_matmul" : True,
+        "triton.autotune_at_compile_time"     : True,
     }
 
     # Return logits
@@ -1705,6 +1735,18 @@ def unsloth_compile_transformers(
             bad_torch_modules.add(module)
         pass
 
+        # Remove decoder layers
+        if "for layer in self." in source:
+            print(f"Unsloth: Failed compiling function {module} since it looks like a decoder!")
+            bad_torch_modules.add(module)
+        pass
+
+        # Remove padding
+        if "nn.functional.pad" in source or "padding" in source:
+            print(f"Unsloth: Failed compiling function {module} since there is padding done.")
+            bad_torch_modules.add(module)
+        pass
+
         # Check for residual streams optimizations
         if fast_residual_stream and "residual" in source:
             new_source = patch_residual_stream(source)
@@ -1790,7 +1832,7 @@ def unsloth_compile_transformers(
     # Remove causal masks
     do_not_remove = False
     for module in remove_causal_masks:
-        if module.endswith(("ForConditionalGeneration")):
+        if module.endswith(("ForConditionalGeneration", "Gemma3Model")):
             do_not_remove = True
             print(f"Unsloth: Will not remove causal mask for {model_location} since it's a VLM!")
             break
