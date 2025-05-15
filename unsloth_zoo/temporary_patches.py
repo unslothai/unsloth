@@ -309,7 +309,15 @@ def patch_Gemma3ForConditionalGeneration():
         )
     pass
 
-    def forward2(
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
+    new_keys = inspect.signature(forward).parameters
+    if old_keys != new_keys:
+        pass
+    else:
+        transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
+        return
+
+    def forward(
         self,
         input_ids: torch.LongTensor = None,
         pixel_values: torch.FloatTensor = None,
@@ -394,16 +402,13 @@ def patch_Gemma3ForConditionalGeneration():
             image_hidden_states=outputs.image_hidden_states,
         )
     pass
-    # for forward in [forward, forward2]:
+
     old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
     new_keys = inspect.signature(forward).parameters
     if old_keys != new_keys:
-        pass
+        print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     else:
         transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
-        return
-    print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
-    return
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3ForConditionalGeneration)
 
@@ -497,7 +502,7 @@ def patch_Gemma3ForConditionalGeneration_causal_mask():
         old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask).parameters
         new_keys = inspect.signature(_update_causal_mask).parameters
         if old_keys != new_keys:
-            print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
+            print("Unsloth: Failed to patch Gemma3ForConditionalGeneration._update_causal_mask.")
         else:
             transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
     return
