@@ -1543,8 +1543,6 @@ def unsloth_compile_transformers(
         except: continue
         if "_gradient_checkpointing_func" in source:
             gradient_checkpointed_modules.append(module)
-        elif "for layer in self." in source:
-            gradient_checkpointed_modules.append(module)
         elif "scaled_dot_product_attention" in source:
             scaled_dot_product_attention_modules.append(module)
         elif "nn.functional.softmax" in source or "flash_attn_varlen_func" in source or "_flash_attention_forward" in source:
@@ -1704,6 +1702,12 @@ def unsloth_compile_transformers(
         # Error: DataDependentOutputException: aten._local_scalar_dense.default
         if "torch.arange(" in source or "torch.zeros(" in source or "torch.ones(" in source:
             print(f"Unsloth: Failed compiling function {module} since array creations are done.")
+            bad_torch_modules.add(module)
+        pass
+
+        # Remove decoder layers
+        if "for layer in self." in source:
+            print(f"Unsloth: Failed compiling function {module} since it looks like a decoder!")
             bad_torch_modules.add(module)
         pass
 
