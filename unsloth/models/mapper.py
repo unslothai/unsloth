@@ -817,6 +817,10 @@ __INT_TO_FLOAT_MAPPER = \
         "microsoft/Phi-4-mini-reasoning",
         "unsloth/phi-4-mini-reasoning-bnb-4bit",
     ),
+    "unsloth/csm-1b" : (
+        "unsloth/csm-1b",
+        "sesame/csm-1b",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
