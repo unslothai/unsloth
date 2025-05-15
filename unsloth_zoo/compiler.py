@@ -1711,6 +1711,12 @@ def unsloth_compile_transformers(
             bad_torch_modules.add(module)
         pass
 
+        # Remove padding
+        if "nn.functional.pad" in source:
+            print(f"Unsloth: Failed compiling function {module} since there is padding done.")
+            bad_torch_modules.add(module)
+        pass
+
         # Check for residual streams optimizations
         if fast_residual_stream and "residual" in source:
             new_source = patch_residual_stream(source)
