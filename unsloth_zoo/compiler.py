@@ -1501,8 +1501,8 @@ def unsloth_compile_transformers(
         "coordinate_descent_tuning" : UNSLOTH_COMPILE_MAXIMUM,
         "trace.graph_diagram"       : UNSLOTH_COMPILE_DEBUG or debug,
         "compile_threads"           : 24,
-        "combo_kernels"             : True,
-        "group_fusion"              : False,
+        "combo_kernels"             : False,
+        "group_fusion"              : True,
         "disable_progress"          : not UNSLOTH_ENABLE_LOGGING,
         "verbose_progress"          : UNSLOTH_ENABLE_LOGGING,
         "triton.multi_kernel"       : False, # Sometimes fails
