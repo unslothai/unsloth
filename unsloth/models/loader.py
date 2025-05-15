@@ -543,7 +543,7 @@ class FastModel(FastBaseModel):
                 raise RuntimeError("Unsloth: Granite Vision only works on transformers >= 4.50.0." + NIGHTLY)
         elif "csm-1b" in model_name.lower():
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "0"
-            os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
+            os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "0"
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "torch.float16;if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"
         elif "olmo-2" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
