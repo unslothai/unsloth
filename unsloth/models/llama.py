@@ -1076,7 +1076,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if labels is not None: labels = labels.to(lm_head_device)
 
         # Output last hidden states without logits if asked
-        if self.training and os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
+        if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
             return CausalLMOutputWithPast(
@@ -1661,9 +1661,8 @@ class FastLlamaModel:
             )
         pass
         if fast_inference:
-            import platform
-            if platform.system().lower() == 'windows':
-                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+            if not is_vLLM_available():
+                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             major_version, minor_version = torch.cuda.get_device_capability()
             if major_version < 7:

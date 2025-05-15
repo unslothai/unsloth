@@ -64,7 +64,7 @@ class SyntheticDataKit:
             model_name,
             token = token,
         )
-        patch_vllm()
+        patch_vllm(debug = False)
         engine_args = load_vllm(
             model_name             = model_name,
             config                 = self.config,
@@ -81,6 +81,9 @@ class SyntheticDataKit:
 
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
+        if "compilation_config" in engine_args:
+            # Cannot parse in vllm serve
+            engine_args["compilation_config"] = 3
 
         subprocess_commands = [
             "vllm", "serve", str(model_name),
@@ -113,7 +116,8 @@ class SyntheticDataKit:
                 print("Stdout stream ended before readiness message detected.")
                 break
             output_str = output.decode('utf-8', errors='ignore').strip()
-            print(f"vLLM STDOUT: {output_str}")
+            if "platform is" not in output_str:
+                print(f"vLLM STDOUT: {output_str}")
             if ready_message_part in output:
                 print(f"\n--- vLLM Server Ready (Detected: '{ready_message_part.decode()}') ---")
                 ready = True
@@ -192,12 +196,7 @@ class SyntheticDataKit:
             gc.collect()
 
         # Delete vLLM module as well
-        # We delete llm.llm_engine.model_executor, so first make it accessible
-        class Dummy0: model_executor = 1
-        class Dummy1: llm_engine = Dummy0()
-        class Dummy2: llm = Dummy1()
-        llm = Dummy2().llm.llm_engine.model_executor
-        delete_vllm(llm)
+        delete_vllm(llm = None)
     pass
 
     def __enter__(self): return self
