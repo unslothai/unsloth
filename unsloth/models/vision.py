@@ -212,6 +212,7 @@ def unsloth_base_fast_generate(
         PROMPT_LOOPKUP[arch] = False
         kwargs.pop("prompt_lookup_num_tokens", None)
         with torch.inference_mode(), autocaster:
+            print(args, kwargs)
             output = self._old_generate(*args, **kwargs)
     finally:
         pass
