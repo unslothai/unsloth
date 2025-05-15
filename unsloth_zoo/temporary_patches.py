@@ -273,6 +273,7 @@ def patch_Gemma3ForConditionalGeneration():
             **lm_kwargs,
         )
         labels = None
+        # We NEVER ENTER if labels is not None: since we already accounted for it
 
 
         logits = outputs.logits
@@ -360,6 +361,8 @@ def patch_Gemma3ForConditionalGeneration():
             cache_position=cache_position,
             **lm_kwargs,
         )
+        labels = None
+        # We NEVER ENTER if labels is not None: since we already accounted for it
 
         hidden_states = outputs[0]
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
@@ -387,7 +390,7 @@ def patch_Gemma3ForConditionalGeneration():
             flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
-        pass
+        loss = outputs.loss
 
         if not return_dict:
             output = (logits,) + outputs[1:]
