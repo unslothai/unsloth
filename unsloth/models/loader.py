@@ -547,7 +547,7 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
         elif "whisper" in model_name.lower():
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "1" # Whisper fails
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Whisper fails
+            os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1" # Whisper fails
         pass
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
