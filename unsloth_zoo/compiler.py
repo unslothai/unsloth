@@ -1473,12 +1473,16 @@ def unsloth_compile_transformers(
     exec("model_logger.addFilter(HideLoggingMessage('`use_cache=True`'))", globals(), locals())
 
     # Instead of Inductor Compilation:
-    import torch._inductor.async_compile
-    from torch.hub import tqdm
-    def replaced_tqdm(*args, **kwargs):
-        kwargs["desc"] = "Unsloth: Compiling kernels"
-        return tqdm(*args, **kwargs)
-    torch._inductor.async_compile.tqdm = replaced_tqdm
+    try:
+        import torch._inductor.async_compile
+        from torch.hub import tqdm
+        def replaced_tqdm(*args, **kwargs):
+            kwargs["desc"] = "Unsloth: Compiling kernels"
+            return tqdm(*args, **kwargs)
+        torch._inductor.async_compile.tqdm = replaced_tqdm
+    except:
+        print("Unsloth: Failed editing tqdm to replace Inductor Compilation:")
+    pass
 
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
