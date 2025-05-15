@@ -821,6 +821,22 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/csm-1b",
         "sesame/csm-1b",
     ),
+    "unsloth/whisper-large-v3" : (
+        "unsloth/whisper-large-v3",
+        "openai/whisper-large-v3",
+    ),
+    "unsloth/whisper-large-v3-turbo" : (
+        "unsloth/whisper-large-v3-turbo",
+        "openai/whisper-large-v3-turbo",
+    ),
+    "unsloth/whisper-small" : (
+        "unsloth/whisper-small",
+        "openai/whisper-small",
+    ),
+    "unsloth/CrisperWhisper" : (
+        "unsloth/CrisperWhisper",
+        "nyrahealth/CrisperWhisper",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
