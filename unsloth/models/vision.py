@@ -207,6 +207,7 @@ def unsloth_base_fast_generate(
 
     try:
         with torch.inference_mode(), autocaster:
+            print(args, kwargs)
             output = self._old_generate(*args, **kwargs)
     except:
         PROMPT_LOOPKUP[arch] = False
