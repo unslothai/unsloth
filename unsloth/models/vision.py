@@ -313,12 +313,14 @@ class FastBaseModel:
 
         # Check for custom data-types
         custom_datatype = None
+        correct_dtype = None
         if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
             custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
             assert custom_datatype.count(";") == 1
             bnb_compute_dtype, custom_datatype = custom_datatype.split(";", 1)
             dtype = torch.float32
             bnb_compute_dtype = eval(bnb_compute_dtype)
+            correct_dtype = bnb_compute_dtype
         pass
 
         # Stop SDPA for some archs like Pixtral / Mistral3
@@ -432,6 +434,7 @@ class FastBaseModel:
             downcast_rope = False,
             fix_embeddings = False,
             do_forced_float32 = do_forced_float32,
+            correct_dtype = correct_dtype,
         )
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
