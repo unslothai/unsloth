@@ -1543,6 +1543,8 @@ def unsloth_compile_transformers(
         except: continue
         if "_gradient_checkpointing_func" in source:
             gradient_checkpointed_modules.append(module)
+        elif "for layer in self." in source:
+            gradient_checkpointed_modules.append(module)
         elif "scaled_dot_product_attention" in source:
             scaled_dot_product_attention_modules.append(module)
         elif "nn.functional.softmax" in source or "flash_attn_varlen_func" in source or "_flash_attention_forward" in source:
