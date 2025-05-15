@@ -394,14 +394,14 @@ def patch_Gemma3ForConditionalGeneration():
             image_hidden_states=outputs.image_hidden_states,
         )
     pass
-    for forward in [forward1, forward2]:
-        old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
-        new_keys = inspect.signature(forward).parameters
-        if old_keys != new_keys:
-            continue
-        else:
-            transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
-            return
+    # for forward in [forward, forward2]:
+    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward).parameters
+    new_keys = inspect.signature(forward).parameters
+    if old_keys != new_keys:
+        pass
+    else:
+        transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration.forward = forward
+        return
     print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
     return
 pass
