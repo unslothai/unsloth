@@ -2155,3 +2155,48 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
         pass
     return True
 pass
+
+# =========================================== Qwen-3
+# Official Qwen-3 chat template (see https://huggingface.co/blog/qwen-3-chat-template-deep-dive)
+qwen3_template = """
+{%- if enable_thinking is defined and enable_thinking is false %}
+    {{ '<think>\n\n</think>\n\n' }}
+{%- endif %}
+{%- for message in messages %}
+    {%- if message['role'] == 'user' %}
+        {{ '<|im_start|>user\n' + message['content'] + '<|im_end|>\n' }}
+    {%- elif message['role'] == 'assistant' %}
+        {{ '<|im_start|>assistant\n' + message['content'] + '<|im_end|>\n' }}
+    {%- elif message['role'] == 'system' %}
+        {{ '<|im_start|>system\n' + message['content'] + '<|im_end|>\n' }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{ '<|im_start|>assistant\n' }}
+{%- endif %}
+"""
+
+# Ollama template for Qwen-3 (see https://github.com/QwenLM/Qwen3 and HuggingFace)
+qwen3_ollama = '''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ range $i, $_ := .Messages }}{{ if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ .Content }}<|im_end|>
+{{ end }}{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
+PARAMETER stop "<|im_end|>"
+PARAMETER temperature 1.5
+PARAMETER min_p 0.1
+'''
+
+qwen3_template_eos_token = "<|im_end|>"
+CHAT_TEMPLATES["qwen-3"] = (qwen3_template, qwen3_template_eos_token, False, qwen3_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-3"] = None # No default system message for Qwen-3
+
+CHAT_TEMPLATES["qwen3"] = (qwen3_template, qwen3_template_eos_token, False, qwen3_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen3"] = None # No default system message for Qwen-3
