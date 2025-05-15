@@ -188,7 +188,10 @@ def unsloth_base_fast_generate(
     # Use hybrid if sliding window seen, otherwise try static
     cache_implementation = getattr(self.config, "cache_implementation", None)
     if getattr(self, "_supports_static_cache", True):
-        cache_implementation = "static"
+        if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
+            cache_implementation = "static"
+        else:
+            cache_implementation = None
     else:
         cache_implementation = None
     if cache_implementation is not None:
@@ -204,7 +207,6 @@ def unsloth_base_fast_generate(
         kwargs["cache_implementation"] = cache_implementation
         kwargs["compile_config"] = _compile_config
     pass
-    del kwargs["cache_implementation"]
 
     try:
         with torch.inference_mode(), autocaster:
