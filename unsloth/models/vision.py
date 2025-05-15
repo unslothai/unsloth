@@ -303,13 +303,6 @@ class FastBaseModel:
         pass
         assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
-        # Check for custom data-types
-        custom_datatype = None
-        if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
-            custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
-            dtype = torch.float32
-        pass
-
         bnb_compute_dtype = dtype
         do_forced_float32 = False
         if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -317,6 +310,17 @@ class FastBaseModel:
             bnb_compute_dtype = torch.float16
             do_forced_float32 = True
         pass
+
+        # Check for custom data-types
+        custom_datatype = None
+        if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
+            custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
+            assert custom_datatype.count(";") == 1
+            bnb_compute_dtype, custom_datatype = custom_datatype.split(";", 1)
+            dtype = torch.float32
+            bnb_compute_dtype = eval(bnb_compute_dtype)
+        pass
+
         # Stop SDPA for some archs like Pixtral / Mistral3
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = "sdpa"
