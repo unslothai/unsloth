@@ -1832,7 +1832,7 @@ def unsloth_compile_transformers(
     # Remove causal masks
     do_not_remove = False
     for module in remove_causal_masks:
-        if module.endswith(("ForConditionalGeneration")):
+        if module.endswith(("ForConditionalGeneration", "Gemma3Model")):
             do_not_remove = True
             print(f"Unsloth: Will not remove causal mask for {model_location} since it's a VLM!")
             break
