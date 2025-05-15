@@ -817,6 +817,26 @@ __INT_TO_FLOAT_MAPPER = \
         "microsoft/Phi-4-mini-reasoning",
         "unsloth/phi-4-mini-reasoning-bnb-4bit",
     ),
+    "unsloth/csm-1b" : (
+        "unsloth/csm-1b",
+        "sesame/csm-1b",
+    ),
+    "unsloth/whisper-large-v3" : (
+        "unsloth/whisper-large-v3",
+        "openai/whisper-large-v3",
+    ),
+    "unsloth/whisper-large-v3-turbo" : (
+        "unsloth/whisper-large-v3-turbo",
+        "openai/whisper-large-v3-turbo",
+    ),
+    "unsloth/whisper-small" : (
+        "unsloth/whisper-small",
+        "openai/whisper-small",
+    ),
+    "unsloth/CrisperWhisper" : (
+        "unsloth/CrisperWhisper",
+        "nyrahealth/CrisperWhisper",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
