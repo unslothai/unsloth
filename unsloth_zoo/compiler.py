@@ -484,8 +484,6 @@ def create_standalone_class(
     definition = re.findall(r"[\s\n]{1,}def[^\(]{1,}\([^\)]{1,}\)[^\:]{0,}\:", old_source, flags = re.MULTILINE)[0]
     leftover = full_class[full_class.find(definition) + len(definition):]
 
-    print("++++++++++", full_class, "++++++++++++++++", leftover)
-
     # Add **loss_kwargs
     if add_loss_kwargs and "**" not in parameters:
         parameters += ", **loss_kwargs"

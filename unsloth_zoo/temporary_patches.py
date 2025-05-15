@@ -297,7 +297,7 @@ def patch_Gemma3ForConditionalGeneration():
             flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
-        pass
+        loss = outputs.loss
 
         return Gemma3CausalLMOutputWithPast(
             loss=loss,
