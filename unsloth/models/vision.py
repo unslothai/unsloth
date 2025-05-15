@@ -303,6 +303,13 @@ class FastBaseModel:
         pass
         assert(dtype in (torch.float16, torch.bfloat16, torch.float32))
 
+        # Check for custom data-types
+        custom_datatype = None
+        if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
+            custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
+            dtype = torch.float32
+        pass
+
         bnb_compute_dtype = dtype
         do_forced_float32 = False
         if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -373,6 +380,13 @@ class FastBaseModel:
         )
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+
+        # Edit data-types
+        if custom_datatype is not None:
+            with torch.inference_mode():
+                for name, module in model.named_modules():
+                    exec(custom_datatype)
+        pass
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
