@@ -112,6 +112,11 @@ def unsloth_base_fast_generate(
     arch = self.config.architectures[0]
 
     # Remove token_type_ids - WRONG for Gemma 3 since bidirectional attention
+    if hasattr(self, "generate") and hasattr(self, "forward"):
+        # did not combine with below since self might not have model
+        keys = inspect.signature(self.forward).parameters.keys()
+        if "token_type_ids" not in keys:
+            kwargs.pop("token_type_ids", None)
     # kwargs.pop("token_type_ids", None)
 
     # VLMs do not allow logits_to_keep

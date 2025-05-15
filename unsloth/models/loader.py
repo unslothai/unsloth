@@ -14,6 +14,7 @@
 
 from ._utils import (
     is_bfloat16_supported,
+    is_vLLM_available,
     HAS_FLASH_ATTENTION,
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
@@ -23,6 +24,8 @@ from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
+from .qwen3   import FastQwen3Model
+from .qwen3_moe import FastQwen3MoeModel
 from .cohere  import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
@@ -51,6 +54,8 @@ SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
 SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
 SUPPORTS_LLAMA32 = transformers_version  > Version("4.45.0")
 SUPPORTS_GRANITE = transformers_version >= Version("4.46.0")
+SUPPORTS_QWEN3   = transformers_version >= Version("4.50.3")
+SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -298,6 +303,15 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
+        elif model_type == "qwen3":# or model_type == "qwen3_moe":
+            if not SUPPORTS_QWEN3 or not SUPPORTS_QWEN3_MOE:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3.\n"\
+                    f"The minimum required version is 4.50.3.\n"\
+                    f'Try `pip install --upgrade "transformers>=4.50.3"`\n'\
+                    f"to obtain the latest transformers build, then restart this session."\
+                )
+            dispatch_model = FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
         # Temporary disable optimized Cohere until errors match
         # elif model_type == "cohere":
         #     dispatch_model = FastCohereModel
@@ -338,9 +352,8 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
-            import platform
-            if platform.system().lower() == 'windows':
-                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+            if not is_vLLM_available():
+                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             pass
             from unsloth_zoo.vllm_utils import (
@@ -528,6 +541,9 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
             if transformers_version < Version("4.50.0.dev0"):
                 raise RuntimeError("Unsloth: Granite Vision only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "csm-1b" in model_name.lower():
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+            os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
         elif "olmo-2" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
         pass
