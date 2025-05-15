@@ -202,10 +202,10 @@ def unsloth_base_fast_generate(
             cache_implementation = "hybrid"
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
-        kwargs["generation_config"].compile_config = _compile_config
+        kwargs["generation_config"].compile_config = _compile_config if cache_implementation is not None else None
     else:
         kwargs["cache_implementation"] = cache_implementation
-        kwargs["compile_config"] = _compile_config
+        kwargs["compile_config"] = _compile_config if cache_implementation is not None else None
     pass
 
     try:
@@ -215,7 +215,6 @@ def unsloth_base_fast_generate(
         PROMPT_LOOPKUP[arch] = False
         kwargs.pop("prompt_lookup_num_tokens", None)
         with torch.inference_mode(), autocaster:
-            print(args, kwargs)
             output = self._old_generate(*args, **kwargs)
     finally:
         pass
