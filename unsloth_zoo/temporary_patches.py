@@ -498,8 +498,6 @@ def patch_Gemma3ForConditionalGeneration_causal_mask():
         old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3Model._update_causal_mask).parameters
         new_keys = inspect.signature(_update_causal_mask).parameters
         if old_keys != new_keys:
-            print(old_keys)
-            print(new_keys)
             print("Unsloth: Failed to patch Gemma3Model.")
         else:
             transformers.models.gemma3.modeling_gemma3.Gemma3Model._update_causal_mask = _update_causal_mask
