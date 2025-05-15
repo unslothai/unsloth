@@ -484,6 +484,8 @@ def create_standalone_class(
     definition = re.findall(r"[\s\n]{1,}def[^\(]{1,}\([^\)]{1,}\)[^\:]{0,}\:", old_source, flags = re.MULTILINE)[0]
     leftover = full_class[full_class.find(definition) + len(definition):]
 
+    print("++++++++++", full_class, "++++++++++++++++", leftover)
+
     # Add **loss_kwargs
     if add_loss_kwargs and "**" not in parameters:
         parameters += ", **loss_kwargs"
@@ -493,7 +495,7 @@ def create_standalone_class(
 
     source = f"{compile}\n{source}\n"
 
-    left = re.match("[\s\n]{4,}", leftover).span()[1]
+    left = re.match(r"[\s\n]{4,}", leftover).span()[1]
     new_forward = definition + leftover[:left] + \
         f"return {module}_forward({parameters})\n"
     full_class = full_class.replace(old_source, new_forward)
