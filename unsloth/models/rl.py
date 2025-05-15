@@ -594,9 +594,15 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         if len(replacer) != 0:
             replacer = replacer[0]
             vllm_setter = "\n" + " "*8 + \
-            "if hasattr(model, 'vllm_engine') and "\
-            "hasattr(args, 'use_vllm') and (getattr(args, 'use_vllm', False) == False): "\
-            "args.use_vllm = True\n"
+            "if hasattr(model, 'vllm_engine') and hasattr(args, 'use_vllm'):\n" + \
+            " " * 12 + "if (getattr(args, 'use_vllm', False) == False):\n" + \
+            " " * 16 + "args.use_vllm = True\n"
+
+            if "grpo" in trainer_file:
+                # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
+                vllm_setter += \
+                " " * 12 + "args.vllm_mode='colocate'\n"
+
             init = init.replace(replacer, replacer + vllm_setter)
         pass
     pass
@@ -612,7 +618,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     if len(vllm_part) == 1:
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
         # Strip all comments
-        new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
+        new_vllm_part = re.sub(r"^\s*\#[^\n]*\n?", "", vllm_part, flags=re.MULTILINE) # to also remove whole comment line instead of just starting at #
 
         # Get SamplingParams
         sampling_params = re.findall(
@@ -621,6 +627,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             new_vllm_part,
             flags = re.MULTILINE | re.DOTALL,
         )
+        # Sampling params is not a class attribute anymore. so we don't need this.
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
 
@@ -648,8 +655,21 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
                 f"\n{' '*8}else:\n"
 
-            init = init.replace(vllm_part, new_vllm_part)
         pass
+
+
+        # Replace LLM init with already existing vLLM engine
+        vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)"
+        vllm_llm_repalcement = "self.llm = model.vllm_engine\n"
+        new_vllm_part = re.sub(
+            vllm_llm_init_pattern,
+            vllm_llm_repalcement,
+            new_vllm_part,
+            flags=re.DOTALL  # Ensure . matches newlines [[5]]
+        )
+
+        init = init.replace(vllm_part, new_vllm_part)
+
     pass
 
     # Search for vLLM calling in all child functions
@@ -732,7 +752,9 @@ def patch_trl_rl_trainers():
     all_trainers = dir(trl.trainer)
     all_trainers = [x for x in all_trainers if x.islower() and x.endswith("_trainer")]
     for trainer in all_trainers:
-        _patch_trl_rl_trainers(trainer)
+        if "grpo" in trainer:
+            _patch_trl_rl_trainers(trainer)
+    #    _patch_trl_rl_trainers(trainer) 
     return
 pass
 

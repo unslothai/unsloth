@@ -264,7 +264,13 @@ def grpo_trainer_compute_loss(function_name, function):
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
 
         # Compute the KL divergence between the model and the reference model
-        ref_per_token_logps = inputs["ref_per_token_logps"]
+        # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
+        # https://github.com/huggingface/trl/blob/05bc43e960396581e458195b8388efe6b82cae1f/trl/trainer/grpo_trainer.py#L1328
+        if self.beta != 0.0:
+            with torch.inference_mode(), model.disable_adapter():
+                ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+        else:
+            ref_per_token_logps = None
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
 
         # x - x.detach() allows for preserving gradients from x
