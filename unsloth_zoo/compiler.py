@@ -1712,7 +1712,7 @@ def unsloth_compile_transformers(
         pass
 
         # Remove padding
-        if "nn.functional.pad" in source:
+        if "nn.functional.pad" in source or "padding" in source:
             print(f"Unsloth: Failed compiling function {module} since there is padding done.")
             bad_torch_modules.add(module)
         pass
