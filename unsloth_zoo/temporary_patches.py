@@ -18,6 +18,7 @@ import re
 from typing import Union, List, Any, Tuple, Dict, Callable, Optional
 import inspect
 import torch
+import torch.nn
 import os
 import logging
 
@@ -583,7 +584,6 @@ def patch_SmolVLMForConditionalGeneration_forward():
     from typing import List, Optional, Tuple, Union
 
     from transformers.models.smolvlm.modeling_smolvlm import (
-        CrossEntropyLoss,
         SmolVLMCausalLMOutputWithPast,
         SmolVLMForConditionalGeneration,
     )
@@ -675,7 +675,7 @@ def patch_SmolVLMForConditionalGeneration_forward():
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = CrossEntropyLoss()
+            loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1).to(
