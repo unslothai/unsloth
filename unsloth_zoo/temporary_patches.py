@@ -177,7 +177,7 @@ def patch_Gemma3ForConditionalGeneration():
         is_torchdynamo_compiling,
         Cache,
     )
-    def forward1(
+    def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         pixel_values: Optional[torch.FloatTensor] = None,
