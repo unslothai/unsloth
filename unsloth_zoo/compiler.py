@@ -1472,6 +1472,14 @@ def unsloth_compile_transformers(
     # Use transformers model_type logger to supress message: Remove `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`
     exec("model_logger.addFilter(HideLoggingMessage('`use_cache=True`'))", globals(), locals())
 
+    # Instead of Inductor Compilation:
+    import torch._inductor.async_compile
+    from torch.hub import tqdm
+    def replaced_tqdm(*args, **kwargs):
+        kwargs["desc"] = "Unsloth: Compiling kernels"
+        return tqdm(*args, **kwargs)
+    torch._inductor.async_compile.tqdm = replaced_tqdm
+
     # torch_compile_options
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
     UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
@@ -1484,14 +1492,14 @@ def unsloth_compile_transformers(
         "triton.cudagraphs"         : cudagraphs,
         "debug"                     : UNSLOTH_COMPILE_DEBUG or debug,
         "dce"                       : True,
-        "memory_planning"           : True,
+        "memory_planning"           : False,
         "coordinate_descent_tuning" : UNSLOTH_COMPILE_MAXIMUM,
         "trace.graph_diagram"       : UNSLOTH_COMPILE_DEBUG or debug,
         "compile_threads"           : 24,
-        "combo_kernels"             : True,
+        "combo_kernels"             : False,
         "group_fusion"              : True,
         "disable_progress"          : False,
-        "verbose_progress"          : True,
+        "verbose_progress"          : UNSLOTH_COMPILE_DEBUG or debug,
         "triton.multi_kernel"       : False, # Sometimes fails
         "triton.use_block_ptr"      : True,
         "triton.enable_persistent_tma_matmul" : True,
