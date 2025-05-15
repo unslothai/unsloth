@@ -505,6 +505,9 @@ def create_standalone_class(
     # Combine all into file
     source = source + full_class
 
+    # Remove @auto_docstring
+    source = source.replace("@auto_docstring", "")
+
     # Fix Gemma 3 ignore_index being not set!
     source = source.replace("self.config.ignore_index", "-100")
     return source
