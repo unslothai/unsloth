@@ -396,12 +396,21 @@ def patch_Gemma3ForConditionalGeneration_causal_mask():
 
         return causal_mask
     pass
-    old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask).parameters
-    new_keys = inspect.signature(_update_causal_mask).parameters
-    if old_keys != new_keys:
-        print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
-    else:
-        transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
+
+    if hasattr(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration, "_update_causal_mask"):
+        old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask).parameters
+        new_keys = inspect.signature(_update_causal_mask).parameters
+        if old_keys != new_keys:
+            print("Unsloth: Failed to patch Gemma3ForConditionalGeneration.")
+        else:
+            transformers.models.gemma3.modeling_gemma3.Gemma3ForConditionalGeneration._update_causal_mask = _update_causal_mask
+    elif hasattr(transformers.models.gemma3.modeling_gemma3.Gemma3Model, "_update_causal_mask"):
+        old_keys = inspect.signature(transformers.models.gemma3.modeling_gemma3.Gemma3Model._update_causal_mask).parameters
+        new_keys = inspect.signature(_update_causal_mask).parameters
+        if old_keys != new_keys:
+            print("Unsloth: Failed to patch Gemma3Model.")
+        else:
+            transformers.models.gemma3.modeling_gemma3.Gemma3Model._update_causal_mask = _update_causal_mask
     return
 pass
 TEMPORARY_PATCHES.append(patch_Gemma3ForConditionalGeneration_causal_mask)
