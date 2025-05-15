@@ -1504,7 +1504,7 @@ def unsloth_compile_transformers(
         "combo_kernels"             : True,
         "group_fusion"              : True,
         "disable_progress"          : not UNSLOTH_ENABLE_LOGGING,
-        "verbose_progress"          : UNSLOTH_COMPILE_DEBUG or debug,
+        "verbose_progress"          : UNSLOTH_ENABLE_LOGGING,
         "triton.multi_kernel"       : False, # Sometimes fails
         "triton.use_block_ptr"      : True,
         "triton.enable_persistent_tma_matmul" : True,
