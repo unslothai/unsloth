@@ -1036,9 +1036,21 @@ qwen3_template = \
     {%- endif %}
 {%- endif %}
 {%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}
-{%- for message in messages[::-1] %}
+{%- for forward_message in messages %}
     {%- set index = (messages|length - 1) - loop.index0 %}
-    {%- if ns.multi_step_tool and message.role == "user" and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}
+    {%- set message = messages[index] %}
+    {%- set current_content = message.content if message.content is not none else '' %}
+    {%- set tool_start = '<tool_response>' %}
+    {%- set tool_start_length = tool_start|length %}
+    {%- set start_of_message = current_content[:tool_start_length] %}
+    {%- set tool_end = '</tool_response>' %}
+    {%- set tool_end_length = tool_end|length %}
+    {%- set start_pos = (current_content|length) - tool_end_length %}
+    {%- if start_pos < 0 %}
+        {%- set start_pos = 0 %}
+    {%- endif %}
+    {%- set end_of_message = current_content[start_pos:] %}
+    {%- if ns.multi_step_tool and message.role == "user" and not(start_of_message == tool_start and end_of_message == tool_end) %}
         {%- set ns.multi_step_tool = false %}
         {%- set ns.last_query_index = index %}
     {%- endif %}
@@ -1053,8 +1065,9 @@ qwen3_template = \
             {%- set reasoning_content = message.reasoning_content %}
         {%- else %}
             {%- if '</think>' in message.content %}
-                {%- set content = message.content.split('</think>')[-1].lstrip('\n') %}
-                {%- set reasoning_content = message.content.split('</think>')[0].rstrip('\n').split('<think>')[-1].lstrip('\n') %}
+                {%- set content = (message.content.split('</think>')|last).lstrip('\n') %}
+                {%- set reasoning_content = (message.content.split('</think>')|first).rstrip('\n') %}
+                {%- set reasoning_content = (reasoning_content.split('<think>')|last).lstrip('\n') %}
             {%- endif %}
         {%- endif %}
         {%- if loop.index0 > ns.last_query_index %}
@@ -1110,7 +1123,7 @@ qwen3_template = \
 qwen3_ollama = \
 '''
 FROM {__FILE_LOCATION__}
-TEMPLATE """{{ if .Messages }}
+TEMPLATE """{{- if .Messages }}
 {{- if or .System .Tools }}<|im_start|>system
 {{- if .System }}
 {{ .System }}
@@ -1161,8 +1174,12 @@ For each function call, return a json object with function name and arguments wi
 {{ end }}<|im_start|>assistant
 {{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
 PARAMETER stop "<|im_end|>"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
+PARAMETER stop "<|im_start|>"
+PARAMETER temperature 0.6
+PARAMETER min_p 0.0
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+PARAMETER repeat_penalty 1
 '''
 
 qwen3_template_eos_token = "<|im_end|>"
