@@ -1488,6 +1488,7 @@ def unsloth_compile_transformers(
     UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
     UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
     UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
+    UNSLOTH_ENABLE_LOGGING        = os.environ.get("UNSLOTH_ENABLE_LOGGING",        "0") == "1"
     torch_compile_options = {
         "epilogue_fusion"           : epilogue_fusion,
         "max_autotune"              : max_autotune,
@@ -1496,13 +1497,13 @@ def unsloth_compile_transformers(
         "triton.cudagraphs"         : cudagraphs,
         "debug"                     : UNSLOTH_COMPILE_DEBUG or debug,
         "dce"                       : True,
-        "memory_planning"           : False,
+        "memory_planning"           : True,
         "coordinate_descent_tuning" : UNSLOTH_COMPILE_MAXIMUM,
         "trace.graph_diagram"       : UNSLOTH_COMPILE_DEBUG or debug,
         "compile_threads"           : 24,
-        "combo_kernels"             : False,
-        "group_fusion"              : False,
-        "disable_progress"          : False,
+        "combo_kernels"             : True,
+        "group_fusion"              : True,
+        "disable_progress"          : not UNSLOTH_ENABLE_LOGGING,
         "verbose_progress"          : UNSLOTH_COMPILE_DEBUG or debug,
         "triton.multi_kernel"       : False, # Sometimes fails
         "triton.use_block_ptr"      : True,
