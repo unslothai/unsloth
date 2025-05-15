@@ -1501,7 +1501,7 @@ def unsloth_compile_transformers(
         "coordinate_descent_tuning" : UNSLOTH_COMPILE_MAXIMUM,
         "trace.graph_diagram"       : UNSLOTH_COMPILE_DEBUG or debug,
         "compile_threads"           : 24,
-        "combo_kernels"             : False,
+        "combo_kernels"             : False, # Causes incompatible gradient sizes on 2.6
         "group_fusion"              : True,
         "disable_progress"          : not UNSLOTH_ENABLE_LOGGING,
         "verbose_progress"          : UNSLOTH_ENABLE_LOGGING,
