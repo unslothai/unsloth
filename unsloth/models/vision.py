@@ -320,7 +320,6 @@ class FastBaseModel:
             dtype = torch.float32
             bnb_compute_dtype = eval(bnb_compute_dtype)
         pass
-        print("bnb_compute_dtype", bnb_compute_dtype)
 
         # Stop SDPA for some archs like Pixtral / Mistral3
         if not ("attn_implementation" in kwargs):
@@ -388,9 +387,8 @@ class FastBaseModel:
 
         # Edit data-types
         if custom_datatype is not None:
-            with torch.inference_mode():
-                for name, module in model.named_modules():
-                    exec(custom_datatype)
+            for name, module in model.named_modules():
+                exec(custom_datatype)
         pass
 
         # Counteract saved tokenizers
