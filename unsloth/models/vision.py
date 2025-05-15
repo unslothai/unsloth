@@ -204,10 +204,10 @@ def unsloth_base_fast_generate(
         kwargs["cache_implementation"] = cache_implementation
         kwargs["compile_config"] = _compile_config
     pass
+    del kwargs["cache_implementation"]
 
     try:
         with torch.inference_mode(), autocaster:
-            print(args, kwargs)
             output = self._old_generate(*args, **kwargs)
     except:
         PROMPT_LOOPKUP[arch] = False
