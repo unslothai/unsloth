@@ -800,7 +800,7 @@ qwen25_template = \
             {%- if tool_call.function is defined %}
                 {%- set tool_call = tool_call.function %}
             {%- endif %}
-            {{- \'\\n<tool_call>\\n{"name": "' }}
+            {{- \'\\n<tool_call>\\n{"name": "\' }}
             {{- tool_call.name }}
             {{- \'", "arguments": \' }}
             {{- tool_call.arguments | tojson }}
@@ -2313,4 +2313,3 @@ def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf")
         pass
     return True
 pass
-
