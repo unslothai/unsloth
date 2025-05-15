@@ -320,6 +320,7 @@ class FastBaseModel:
             dtype = torch.float32
             bnb_compute_dtype = eval(bnb_compute_dtype)
         pass
+        print("bnb_compute_dtype", bnb_compute_dtype)
 
         # Stop SDPA for some archs like Pixtral / Mistral3
         if not ("attn_implementation" in kwargs):
