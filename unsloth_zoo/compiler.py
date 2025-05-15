@@ -1496,7 +1496,7 @@ def unsloth_compile_transformers(
         "triton.cudagraphs"         : cudagraphs,
         "debug"                     : UNSLOTH_COMPILE_DEBUG or debug,
         "dce"                       : True,
-        "memory_planning"           : True,
+        "memory_planning"           : False,
         "coordinate_descent_tuning" : UNSLOTH_COMPILE_MAXIMUM,
         "trace.graph_diagram"       : UNSLOTH_COMPILE_DEBUG or debug,
         "compile_threads"           : 24,
