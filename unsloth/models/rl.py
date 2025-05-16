@@ -127,9 +127,7 @@ def PatchRL(FastLanguageModel):
     else:
         IS_SAGEMAKER_MP_POST_1_10 = False
     from transformers.trainer_pt_utils import nested_detach
-    
-    #breakpoint()
-    
+    @torch.no_grad()    
     def unsloth_prediction_step(self, model, inputs, prediction_loss_only,ignore_keys,):
         """
         Perform an evaluation step on `model` using `inputs`.
@@ -288,9 +286,6 @@ def PatchRL(FastLanguageModel):
         
         sampling_params.min_tokens = 0 
 
-        eos_token_id = eos_token_id
-        pad_token_id = pad_token_id
-
         # Load the latest weights
         tokenized_query = queries
         queries = [processing_class.decode(query) for query in queries]
@@ -316,10 +311,8 @@ def PatchRL(FastLanguageModel):
         ]
         completion_ids = [ids + [pad_token_id] * (max_tokens - len(ids)) for ids in completion_ids]
 
-        cuda_id = os.environ.get("CUDA_VISIBLE_DEVICES", "0")  
-        device = torch.device(f"cuda:{cuda_id}")
 
-        completion_ids = torch.tensor(completion_ids, device="cuda:0")
+        completion_ids = torch.tensor(completion_ids, device=model.device)
 
         padded_query_responses = torch.cat((tokenized_query, completion_ids), dim=1)
 
