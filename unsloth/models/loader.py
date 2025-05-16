@@ -485,6 +485,7 @@ class FastModel(FastBaseModel):
         auto_model                 = None,
         whisper_language           = None,
         whisper_task               = None,
+        unsloth_force_compile      = False,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -715,6 +716,7 @@ class FastModel(FastBaseModel):
                 disable                 = False,
                 return_logits           = return_logits,
                 trust_remote_code       = trust_remote_code,
+                unsloth_force_compile   = unsloth_force_compile,
             )
         pass
 
