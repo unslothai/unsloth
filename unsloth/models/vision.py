@@ -569,7 +569,7 @@ class FastBaseModel:
     def post_patch_model(
         model,
         use_gradient_checkpointing = True,
-        trust_remote_code=False
+        trust_remote_code = False,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
