@@ -590,7 +590,7 @@ class FastBaseModel:
         )
 
         from transformers.trainer import Trainer 
-        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop" and trust_remote_code==False:
+        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop" and trust_remote_code == False:
             raise RuntimeError('Unsloth: Unsuccessfully patched inner_training_loop')
         pass
         patch_saving_functions(model, vision = True)
