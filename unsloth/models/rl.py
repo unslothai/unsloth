@@ -44,6 +44,7 @@ torch_compile_options = {
 }
 
 
+
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
     sampling_params = SamplingParams(**kwargs)
@@ -619,6 +620,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
         # Strip all comments
         new_vllm_part = re.sub(r"^\s*\#[^\n]*\n?", "", vllm_part, flags=re.MULTILINE) # to also remove whole comment line instead of just starting at #
+        new_vllm_part = re.sub(r"\s*\#.*$", "", new_vllm_part, flags=re.MULTILINE) # remove comments that occur after code
 
         # Get SamplingParams
         sampling_params = re.findall(
@@ -627,14 +629,10 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             new_vllm_part,
             flags = re.MULTILINE | re.DOTALL,
         )
-        # Sampling params is not a class attribute anymore. so we don't need this.
+        
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
             # Fix guided_decoding
-            ## Find the position of "detokenize=False," in the string
-            position = sampling_params.find("detokenize=False,")
-            insert_position = position + len("detokenize=False")
-            sampling_params = sampling_params[:insert_position] + ")" + sampling_params[insert_position:]
             sampling_params = sampling_params.replace(
                 "guided_decoding=guided_decoding,",
                 'guided_decoding='\
@@ -645,11 +643,18 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             sampling_params = \
                 " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
                 sampling_params # Add spaces
+            
+            # count the indentation of last line of sampling_params.
+            last_line = sampling_params.split("\n")[-1]
+            last_prev_line = sampling_params.split("\n")[-2]
+            last_prev_indentation = len(last_prev_line) - len(last_prev_line.lstrip())
+            last_indentation = len(last_line) - len(last_line.lstrip())
+
 
             # Add extra arguments to SamplingParams
             extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
             # Backwards replace
-            to_replace = "," + extra + "," + ")"
+            to_replace = ",\n" + " "*last_prev_indentation + extra + ",\n" + " "*last_indentation + ")"
             sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
             # Strip multiple commas
             sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
@@ -658,6 +663,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
                 f"\n{' '*8}else:\n"
         pass
+
         # Replace LLM init with already existing vLLM engine
         vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)*\)"
         vllm_llm_repalcement = "self.llm = model.vllm_engine\n"
