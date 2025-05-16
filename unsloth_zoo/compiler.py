@@ -1509,7 +1509,7 @@ def unsloth_compile_transformers(
         "disable_progress"          : not UNSLOTH_ENABLE_LOGGING,
         "verbose_progress"          : UNSLOTH_ENABLE_LOGGING,
         "triton.multi_kernel"       : False, # Sometimes fails
-        "triton.use_block_ptr"      : True,
+        "triton.use_block_ptr"      : False,
         "triton.enable_persistent_tma_matmul" : True,
         "triton.autotune_at_compile_time"     : True,
     }
