@@ -752,9 +752,7 @@ def patch_trl_rl_trainers():
     all_trainers = dir(trl.trainer)
     all_trainers = [x for x in all_trainers if x.islower() and x.endswith("_trainer")]
     for trainer in all_trainers:
-        if "grpo" in trainer:
-            _patch_trl_rl_trainers(trainer)
-    #    _patch_trl_rl_trainers(trainer) 
+        _patch_trl_rl_trainers(trainer)
     return
 pass
 
