@@ -630,8 +630,11 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         # Sampling params is not a class attribute anymore. so we don't need this.
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
-
             # Fix guided_decoding
+            ## Find the position of "detokenize=False," in the string
+            position = sampling_params.find("detokenize=False,")
+            insert_position = position + len("detokenize=False")
+            sampling_params = sampling_params[:insert_position] + ")" + sampling_params[insert_position:]
             sampling_params = sampling_params.replace(
                 "guided_decoding=guided_decoding,",
                 'guided_decoding='\
@@ -654,12 +657,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             new_vllm_part = \
                 f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
                 f"\n{' '*8}else:\n"
-
         pass
-
-
         # Replace LLM init with already existing vLLM engine
-        vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)"
+        vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)*\)"
         vllm_llm_repalcement = "self.llm = model.vllm_engine\n"
         new_vllm_part = re.sub(
             vllm_llm_init_pattern,
