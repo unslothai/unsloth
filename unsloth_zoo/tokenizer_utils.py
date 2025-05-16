@@ -68,7 +68,6 @@ def mean_of_trained_tokens(model, eps = 1e-16):
 pass
 
 
-@torch.inference_mode
 def add_new_tokens(
     model,
     tokenizer,
@@ -157,13 +156,15 @@ def add_new_tokens(
             mean_lm_head_token   = mean_lm_head  *(1-interpolation) + mean_lm_head_token  *interpolation
 
             # Set the new vector
-            embedding_matrix[old_length+j] = mean_embedding_token
-            lm_head_matrix  [old_length+j] = mean_lm_head_token
+            with torch.no_grad():
+                embedding_matrix[old_length+j] = mean_embedding_token
+                lm_head_matrix  [old_length+j] = mean_lm_head_token
         pass
     else:
         # Now set the new tokens to the mean!
-        embedding_matrix[old_length:] = mean_embedding
-        lm_head_matrix  [old_length:] = mean_lm_head
+        with torch.no_grad():
+            embedding_matrix[old_length:] = mean_embedding
+            lm_head_matrix  [old_length:] = mean_lm_head
     pass
 
     # We set a flag to say we need to train embeddings
