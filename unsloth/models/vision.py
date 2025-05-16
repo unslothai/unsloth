@@ -459,7 +459,7 @@ class FastBaseModel:
         model = FastBaseModel.post_patch_model(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
-            trust_remote_code  = trust_remote_code
+            trust_remote_code  = trust_remote_code,
         )
         # Clear deleted GPU items
         for _ in range(3):
