@@ -1731,7 +1731,7 @@ class FastLlamaModel:
         except: pass
         has_rope_scaling = True
 
-        # If max_seq_length is not specified, use maximum fron config
+        # If max_seq_length is not specified, use maximum from config
         if max_seq_length is None:
             max_seq_length = model_max_seq_length
         pass
@@ -1753,7 +1753,7 @@ class FastLlamaModel:
             # Warn RoPE scaling isn't allowed
             if not has_rope_scaling:
                 raise RuntimeError(
-                    "However, {model_name} doesn't support RoPE Scaling!\n"\
+                    f"However, {model_name} doesn't support RoPE Scaling!\n"\
                     "Please file a feature request at https://github.com/unslothai/unsloth."
                 )
             pass
