@@ -89,15 +89,20 @@ def unsloth_base_fast_generate(
     *args,
     **kwargs,
 ):
-    print(args, kwargs)
     if len(args) != 0:
         input_ids = args[0]
     elif "input_ids" in kwargs:
         input_ids = kwargs["input_ids"]
     elif "input" in kwargs:
         input_ids = kwargs["input_ids"]
+    elif "inputs" in kwargs:
+        input_ids = kwargs["inputs"]
     else:
-        raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
+        key = next(iter(kwargs.keys()))
+        if type(kwargs["key"]) is not torch.Tensor:
+            raise TypeError("Unsloth: You need to pass in input_ids to .generate!")
+        input_ids = kwargs[key]
+    pass
     assert(type(input_ids) is torch.Tensor)
     bsz = input_ids.shape[0]
 
