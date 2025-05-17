@@ -212,8 +212,11 @@ def unsloth_base_fast_generate(
         kwargs["generation_config"].compile_config = _compile_config if cache_implementation is not None else None
     else:
         kwargs["cache_implementation"] = cache_implementation
-        kwargs["compile_config"] = _compile_config
+        if cache_implementation is not None: kwargs["compile_config"] = _compile_config
     pass
+    print(kwargs)
+    print(kwargs["generation_config"])
+    print(kwargs["generation_config"].compile_config)
 
     try:
         with torch.inference_mode(), autocaster:
