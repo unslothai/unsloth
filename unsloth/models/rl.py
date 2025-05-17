@@ -43,7 +43,7 @@ torch_compile_options = {
     "triton.cudagraphs" : False,
 }
 
-
+from trl import __version__ as trl_version
 
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
@@ -599,7 +599,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             " " * 12 + "if (getattr(args, 'use_vllm', False) == False):\n" + \
             " " * 16 + "args.use_vllm = True\n"
 
-            if "grpo" in trainer_file:
+            if "grpo" in trainer_file and trl_version >= "0.18":
                 # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
                 vllm_setter += \
                 " " * 12 + "args.vllm_mode='colocate'\n"
@@ -664,15 +664,16 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 f"\n{' '*8}else:\n"
         pass
 
-        # Replace LLM init with already existing vLLM engine
-        vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)*\)"
-        vllm_llm_repalcement = "self.llm = model.vllm_engine\n"
-        new_vllm_part = re.sub(
-            vllm_llm_init_pattern,
-            vllm_llm_repalcement,
-            new_vllm_part,
-            flags=re.DOTALL  # Ensure . matches newlines [[5]]
-        )
+        if trl_version >= "0.18":
+            # Replace LLM init with already existing vLLM engine for colocate mode
+            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)*\)"
+            vllm_llm_repalcement = "self.llm = model.vllm_engine\n"
+            new_vllm_part = re.sub(
+                vllm_llm_init_pattern,
+                vllm_llm_repalcement,
+                new_vllm_part,
+                flags=re.DOTALL  # Ensure . matches newlines [[5]]
+            )
 
         init = init.replace(vllm_part, new_vllm_part)
 
