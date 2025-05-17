@@ -39,7 +39,7 @@ For the unsloth test, the model's behavior is as expected:
 - after merging, the model's response contains the answer
 
 For the huggingface test, the model's behavior is as expected:
-- before training, the model's response does not contains the answer
+- before training, the model's response does not contain the answer
 - after training, the model's response contains the answer
 - after using peft's `merge_and_unload`, the model's response does not contain the answer
 - after using my custom merge function, the model's response contains the answer

@@ -200,12 +200,14 @@ def unsloth_base_fast_generate(
             cache_implementation = "static"
         else:
             cache_implementation = "hybrid"
+
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
         kwargs["generation_config"].compile_config = _compile_config if cache_implementation is not None else None
     else:
         kwargs["cache_implementation"] = cache_implementation
-        kwargs["compile_config"] = _compile_config if cache_implementation is not None else None
+        if cache_implementation:
+            kwargs["compile_config"] = _compile_config
     pass
 
     try:
@@ -477,10 +479,12 @@ class FastBaseModel:
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
         pass
+        model._unsloth_trust_remote_code = trust_remote_code
         # Post patches
         model = FastBaseModel.post_patch_model(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
+            trust_remote_code  = trust_remote_code,
         )
         # Clear deleted GPU items
         for _ in range(3):
@@ -514,7 +518,7 @@ class FastBaseModel:
         loftq_config               = {},
         task_type                  = TaskType.CAUSAL_LM,
         temporary_location         = "_unsloth_temporary_saved_buffers",
-        **kwargs,
+        **kwargs
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
@@ -561,6 +565,7 @@ class FastBaseModel:
             lora_dropout    = lora_dropout,
             bias            = bias,
             task_type       = task_type,
+            use_rslora      = use_rslora,
         )
         model = prepare_model_for_kbit_training(
             model,
@@ -569,10 +574,9 @@ class FastBaseModel:
         model = _get_peft_model(model, lora_config)
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
-
-        model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing)
+        trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
+        model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing, trust_remote_code = trust_remote_code)
         model.max_seq_length = max_seq_length
-
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
@@ -591,6 +595,7 @@ class FastBaseModel:
     def post_patch_model(
         model,
         use_gradient_checkpointing = True,
+        trust_remote_code = False,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
@@ -611,7 +616,7 @@ class FastBaseModel:
         )
 
         from transformers.trainer import Trainer 
-        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
+        if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop" and trust_remote_code == False:
             raise RuntimeError('Unsloth: Unsuccessfully patched inner_training_loop')
         pass
         patch_saving_functions(model, vision = True)
