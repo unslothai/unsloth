@@ -547,6 +547,7 @@ class FastModel(FastBaseModel):
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
                     os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+                    os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
                     if transformers_version < Version("4.50.0.dev0"):
                         raise RuntimeError(f"Unsloth: {check_model_name} only works on transformers >= 4.50.0." + NIGHTLY)
                     break
