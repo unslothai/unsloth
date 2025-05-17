@@ -461,6 +461,12 @@ except:
     from transformers import AutoModelForVision2Seq
 pass
 
+DISABLE_COMPILE_MODEL_NAMES = [
+    "aya-vision",
+    "modernbert",
+    "granite-vision",
+]
+
 
 class FastModel(FastBaseModel):
     @staticmethod
@@ -521,33 +527,35 @@ class FastModel(FastBaseModel):
             model_name = get_model_name(model_name, load_in_4bit)
 
         # Check versions
+        lowered_model_name = model_name.lower()
         LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
         NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
-        if "pixtral" in model_name.lower() and transformers_version < Version("4.49.0"):
+        if "pixtral" in lowered_model_name and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
-        elif "qwen2.5" in model_name.lower() and transformers_version < Version("4.49.0"):
+        elif "qwen2.5" in lowered_model_name and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
-        elif "aya-vision" in model_name.lower():
-            # Disable compiling for now - errors out!
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
-            if transformers_version < Version("4.50.0.dev0"):
-                raise RuntimeError("Unsloth: Aya Vision only works on transformers >= 4.50.0." + NIGHTLY)
-        elif "gemma-3" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
+        elif "gemma-3" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
-        elif "c4ai-command-a-03-2025" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
+        elif "c4ai-command-a-03-2025" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
-        elif "granite-vision" in model_name.lower():
-            # Disable compiling for now - errors out!
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
-            if transformers_version < Version("4.50.0.dev0"):
-                raise RuntimeError("Unsloth: Granite Vision only works on transformers >= 4.50.0." + NIGHTLY)
-        elif "csm-1b" in model_name.lower():
+        elif "csm-1b" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "torch.float16;if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"
-        elif "olmo-2" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
+        elif "olmo-2" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
-        elif "whisper" in model_name.lower():
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Whisper fails
+        else:
+            for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
+                if check_model_name in lowered_model_name:
+                    os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+                    os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+                    if transformers_version < Version("4.50.0.dev0"):
+                        raise RuntimeError(f"Unsloth: {check_model_name} only works on transformers >= 4.50.0." + NIGHTLY)
+                    break
+        pass
+
+        if auto_model is not None:
+            # All other models need to disable static cache
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
         pass
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
