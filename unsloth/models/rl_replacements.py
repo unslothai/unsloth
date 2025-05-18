@@ -55,7 +55,7 @@ pass
 RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
 
 
-# Remove DPO columns which might randomnly be tokenized
+# Remove DPO columns which might randomly be tokenized
 def dpo_trainer_fix_columns(call_args, extra_args):
     if "model" in call_args and "train_dataset" in call_args:
         fix_dpo = \
