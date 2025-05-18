@@ -22,5 +22,5 @@ if not devices.has_mps:
     from .qwen3_moe import FastQwen3MoeModel
     from .granite import FastGraniteModel
     from .dpo     import PatchDPOTrainer, PatchKTOTrainer
-    from ._utils  import is_bfloat16_supported, __version__
+    from ._utils  import is_bfloat16_supported, is_vLLM_available, __version__
     from .rl      import PatchFastRL, vLLMSamplingParams

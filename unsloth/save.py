@@ -1720,7 +1720,7 @@ def push_to_ollama(
         tag=tag
     )
 
-    print("Succesfully pushed to ollama")
+    print("Successfully pushed to ollama")
 
 
 
