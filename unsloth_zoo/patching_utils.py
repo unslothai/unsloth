@@ -392,7 +392,8 @@ def patch_compiled_autograd():
     source = source.split("\n")
     source = "\n".join(x[spaces:] for x in source)
     old = "return compiled_fn(inputs, sizes, scalars, hooks)"
-    n = len(re.search(r"\n([ ]{1,})return compiled_fn", source).group(1))
+    match = re.search(r"\n([ ]{1,})return compiled_fn", source)
+    n = len(match.group(1)) if match else 0
     source = source.replace(old, f"with disable():\n{' '*(n + 4)}{old}")
     source = source.replace("def end_capture", "def unsloth_end_capture", 1)
 
