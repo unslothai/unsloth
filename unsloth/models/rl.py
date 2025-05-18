@@ -1074,6 +1074,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             selective_log_softmax_code = selective_log_softmax_code,
         )
 
+    if RLTrainer_name == "SFTTrainer":
+        original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
+        new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
+        RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
 
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
