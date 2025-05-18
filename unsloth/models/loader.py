@@ -14,6 +14,7 @@
 
 from ._utils import (
     is_bfloat16_supported,
+    is_vLLM_available,
     HAS_FLASH_ATTENTION,
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
@@ -351,9 +352,8 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
-            import platform
-            if platform.system().lower() == 'windows':
-                print("Unsloth: vLLM does not work in Windows! Will use Unsloth inference!")
+            if not is_vLLM_available():
+                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
             pass
             from unsloth_zoo.vllm_utils import (
@@ -540,6 +540,9 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
             if transformers_version < Version("4.50.0.dev0"):
                 raise RuntimeError("Unsloth: Granite Vision only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "csm-1b" in model_name.lower():
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
+            os.environ["UNSLOTH_DISABLE_FAST_GENERATION"] = "1"
         elif "olmo-2" in model_name.lower() and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
         pass

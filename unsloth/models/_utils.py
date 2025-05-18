@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.4.8"
+__version__ = "2025.5.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
+    "is_vLLM_available",
 
     "prepare_model_for_kbit_training",
     "xformers",
@@ -146,7 +147,7 @@ class HideLoggingMessage(logging.Filter):
     def filter(self, x): return not (self.text in x.getMessage())
 pass
 
-# The speedups for torchdynamo mostly come wih GPU Ampere or higher and which is not detected here.
+# The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
 from transformers.training_args import logger as transformers_training_args_logger
 transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 # torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
@@ -800,6 +801,9 @@ def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
 pass
 
+def is_vLLM_available():
+    return _is_package_available("vllm")
+pass
 
 # Patches models to add RoPE Scaling
 def patch_linear_scaling(
