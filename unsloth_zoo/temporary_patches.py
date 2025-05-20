@@ -111,9 +111,9 @@ def patch_Gemma3Processor():
                     raise ValueError(
                         f"Prompt contained {len(image_indexes)} image tokens but received {len(images_for_item)} images."
                     )
-                
+
                 iterable_num_crops = num_crops_for_item
-                
+
                 if isinstance(num_crops_for_item, int):
                         if len(image_indexes) > 0:
                             iterable_num_crops = [num_crops_for_item] + [0] * (len(image_indexes) - 1)
@@ -691,21 +691,25 @@ def patch_SmolVLMForConditionalGeneration_forward():
 
     from transformers.models.smolvlm.modeling_smolvlm import (
         SmolVLMCausalLMOutputWithPast,
-        SmolVLMForConditionalGeneration,
     )
 
-    # Check if the fix is already present (either from Transformers library or previous Unsloth patch)
-    # We look for the specific device handling code that fixes torch.compile indentation errors,
-    # rather than an Unsloth marker, to handle cases where the fix comes from upstream
+    # helps normalize text sensitive to spaces, tabs and newlines to allow proper comparison
+    def normalize_text(text: str) -> str:
+        """Ultra-compact code text normalizer."""
+        import re
+        return re.sub(r'\s*([=+\-*/%&|^<>!(),{}\[\]:])\s*', r'\1', re.sub(r'\s+', ' ', re.sub(r'#.*?$|/\*.*?\*/', '', re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL), flags=re.MULTILINE)).strip())
+
+    # Newest transformers update now fixes this issue by assigning loss to self.loss_function, which defaults to a LossForCausalLM that implements a fixed
+    # CrossEntropyLoss in transformers.loss.loss_utils.py. Once transformers pypi releases the main repo, we can completely remove this patch.
     current_forward_source = inspect.getsource(
         transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward
     )
-    if "shift_labels.view(-1).to(shift_logits.device)" in current_forward_source:
+    if normalize_text("loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size, **kwargs)") in normalize_text(current_forward_source):
         return  # Already patched
 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -781,7 +785,7 @@ def patch_SmolVLMForConditionalGeneration_forward():
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss()
+            loss_fct = transformers.models.smolvlm.modeling_smolvlm.CrossEntropyLoss()
             loss = loss_fct(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1).to(
@@ -809,10 +813,10 @@ def patch_SmolVLMForConditionalGeneration_forward():
     new_keys = inspect.signature(forward).parameters
 
     if old_keys != new_keys:
+        print(
+            "Unsloth: Failed to patch SmolVLMForConditionalGeneration forward function."
+        )
         pass
-        # print(
-        #     "Unsloth: Failed to patch SmolVLMForConditionalGeneration forward function."
-        # )
     else:
         transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward = (
             forward
@@ -853,7 +857,7 @@ def patch_CsmBackboneModelEmbeddings_forward():
     else:
         transformers.models.csm.modeling_csm.CsmBackboneModelEmbeddings.forward = forward
 
-    
+
 TEMPORARY_PATCHES.append(patch_CsmBackboneModelEmbeddings_forward)
 
 def patch_CsmDepthDecoderForCausalLM_forward():
@@ -862,7 +866,7 @@ def patch_CsmDepthDecoderForCausalLM_forward():
     except:
         return
 
-    from transformers.modeling_outputs import CausalLMOutputWithPast 
+    from transformers.modeling_outputs import CausalLMOutputWithPast
     from transformers.models.csm.modeling_csm import Cache, Unpack, KwargsForCausalLM
     from transformers.loss.loss_utils import ForCausalLMLoss
 
