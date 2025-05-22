@@ -294,7 +294,6 @@ trainer = SFTTrainer(
     train_dataset = dataset,
     tokenizer = tokenizer,
     args = SFTConfig(
-        dataset_text_field = "text",
         max_seq_length = max_seq_length,
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
