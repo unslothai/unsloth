@@ -341,15 +341,22 @@ class FastLanguageModel(FastLlamaModel):
             )
         pass
 
-        # Check if this is local model since the tokenizer gets overwritten
-        if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
-            os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
-            os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
-
-            tokenizer_name = old_model_name
+        # Check if this is a local model or on Hugging Face
+        if os.path.isdir(old_model_name):  # Check if old_model_name is a local directory
+            # Check for tokenizer files locally
+            tokenizer_files_exist = all(
+                os.path.exists(os.path.join(old_model_name, file))
+                for file in ["tokenizer_config.json", "tokenizer.json", "special_tokens_map.json"]
+            )
+            tokenizer_name = old_model_name if tokenizer_files_exist else None
         else:
-            tokenizer_name = None
-        pass
+            # Check for tokenizer files on Hugging Face
+            fs = HfFileSystem(token=token)
+            tokenizer_files_exist = all(
+                fs.exists(f"{old_model_name}/{file}")
+                for file in ["tokenizer_config.json", "tokenizer.json", "special_tokens_map.json"]
+            )
+            tokenizer_name = old_model_name if tokenizer_files_exist else None
 
         if fast_inference:
             if not is_vLLM_available():
@@ -728,15 +735,22 @@ class FastModel(FastBaseModel):
             )
         pass
 
-        # Check if this is local model since the tokenizer gets overwritten
-        if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
-            os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
-            os.path.exists(os.path.join(old_model_name, "special_tokens_map.json")):
-
-            tokenizer_name = old_model_name
+        # Check if this is a local model or on Hugging Face
+        if os.path.isdir(old_model_name):  # Check if old_model_name is a local directory
+            # Check for tokenizer files locally
+            tokenizer_files_exist = all(
+                os.path.exists(os.path.join(old_model_name, file))
+                for file in ["tokenizer_config.json", "tokenizer.json", "special_tokens_map.json"]
+            )
+            tokenizer_name = old_model_name if tokenizer_files_exist else None
         else:
-            tokenizer_name = None
-        pass
+            # Check for tokenizer files on Hugging Face
+            fs = HfFileSystem(token=token)
+            tokenizer_files_exist = all(
+                fs.exists(f"{old_model_name}/{file}")
+                for file in ["tokenizer_config.json", "tokenizer.json", "special_tokens_map.json"]
+            )
+            tokenizer_name = old_model_name if tokenizer_files_exist else None
 
         # Check if VLM
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
