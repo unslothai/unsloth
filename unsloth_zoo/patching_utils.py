@@ -16,6 +16,8 @@
 
 import torch
 import os
+import re
+import ast
 
 __all__ = [
     "patch_compiling_bitsandbytes",
@@ -433,6 +435,97 @@ def patch_compiled_autograd():
 pass
 
 
+# utility function to help BC with old module hierarchy for transformers >=4.52.0
+def check_conversion_mappings(model, current_key_name_str, skip_modules):
+    try:
+        from transformers.modeling_utils import VLMS
+    except:
+        VLMS = []
+
+    if any(allowed_name in model.__class__.__name__.lower() for allowed_name in VLMS):
+        if hasattr(model._root_cls, "_checkpoint_conversion_mapping") and len(model._root_cls._checkpoint_conversion_mapping) > 0:
+            # if this is true, then it means that we must be on transformers >=4.52.0 because conversion_mappings was added in 4.52.0
+            # we cant know if the skip module naming convention is new or old
+            # but if we are supposed to skip this current_key_name_str, and it didn't pass 
+            # (current_key_name_str in quantization_config.llm_int8_skip_modules)
+            # then new transformers + new module hierarchy means it should not be skipped, ie no BC check needed
+            # and new transformers + old module hierarchy means we still need to check to skip
+            # old transformers + old module hierarchy means no BC needed
+            # old transformers + new module hierarchy is problematic since we don't have the conversion_mappings to reverse
+            # follow the logic from save_pretrained in transformers.modeling_utils
+            reverse_conversion_mappings = {v: k for k, v in model._root_cls._checkpoint_conversion_mapping.items()}
+            new_current_key_names_str = current_key_name_str
+            for pattern, replacement in reverse_conversion_mappings.items():
+                try:
+                    replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
+                    replacement = re.sub(r"\(.*?\)", "", replacement)
+                    key, n_replace = re.subn(pattern, replacement, current_key_name_str)
+                    # Early exit of the loop
+                    if n_replace > 0:
+                        new_current_key_names_str = key
+                        break
+                except Exception as e:
+                    # skip this pattern but log
+                    do_logging = os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') == '1'
+                    if do_logging:
+                        print(f"Unsloth: Replace bnb issue: {str(e)}")
+                    break
+            return any([(skip_key + "." in new_current_key_names_str) or (skip_key == new_current_key_names_str) for skip_key in skip_modules])
+    return False
+
+
+def _mark_parent(child, parent_type):
+    """Attach the parent’s class so the child can inspect it later."""
+    child._root_cls = parent_type
+
+
+def _unmark_parent(child):
+    """Remove the temporary attribute if it is present."""
+    if hasattr(child, "_root_cls"):
+        delattr(child, "_root_cls")
+
+
+def parsed_statement(code: str) -> ast.stmt:
+    """Return the statement parsed from a one-liner."""
+    return ast.parse(code).body[0]
+
+
+class WrapRecursiveCall(ast.NodeTransformer):
+    function_name = "_replace_with_bnb_linear"
+    mark_statement = parsed_statement(
+        '_mark_parent(module, model._root_cls '
+        'if hasattr(model, "_root_cls") else type(model))'
+    )
+    unmark_statement = parsed_statement('_unmark_parent(module)')
+
+    def visit_Assign(self, node: ast.Assign):
+        """
+        Replace
+            _, has_been_replaced = _replace_with_bnb_linear(...)
+        with
+            try:
+                _mark_parent(module,
+                             model._root_cls
+                             if hasattr(model, "_root_cls")
+                             else type(model))
+                _, has_been_replaced = _replace_with_bnb_linear(...)
+            finally:
+                _unmark_parent(module)
+        """
+        if (
+            isinstance(node.value, ast.Call)
+            and getattr(node.value.func, "id", None) == self.function_name
+        ):
+            wrapped = ast.Try(
+                body      =[self.mark_statement, node],
+                handlers  =[],
+                orelse    =[],
+                finalbody =[self.unmark_statement],
+            )
+            return ast.copy_location(wrapped, node)
+        return node
+
+
 # Patch for dynamic 4bit quantization
 import inspect
 import transformers.integrations.bitsandbytes
@@ -448,12 +541,45 @@ if hasattr(transformers.integrations.bitsandbytes, "_replace_with_bnb_linear") a
     exec(f"from transformers.integrations.bitsandbytes import ({x})", globals())
     if "current_key_name_str" not in source:
         raise RuntimeError("Unsloth: Patch for dynamic quantization failed since current_key_name_str does not exist.")
-    
-    source = source.replace(
-        "name in quantization_config.llm_int8_skip_modules\n",
-        "((name in quantization_config.llm_int8_skip_modules) or (current_key_name_str in quantization_config.llm_int8_skip_modules))\n",
-        1,
-    )
+
+    # First patch recursive calls to mark the parent class
+    # we need it to access the parent class to check for conversion_mappings
+    try:
+        mark_parent_error = False
+        new_source = source.replace(
+            "name in quantization_config.llm_int8_skip_modules\n",
+            "((name in quantization_config.llm_int8_skip_modules) or (current_key_name_str in quantization_config.llm_int8_skip_modules) or (check_conversion_mappings(model, current_key_name_str, quantization_config.llm_int8_skip_modules)))\n",
+            1,
+        )
+
+        source_tree = ast.parse(new_source)
+        source_tree = WrapRecursiveCall().visit(source_tree)
+        ast.fix_missing_locations(source_tree)
+        new_source = ast.unparse(source_tree)
+
+        # will raise error if patch fails
+        compile(new_source, '<temp_patched>', 'exec')
+        if '_mark_parent' not in new_source and '_unmark_parent' not in new_source:
+            do_logging = os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') == '1'
+            if do_logging:
+                print(f"Unsloth: Could not wrap replace_with_bnb_linear but may not be an issue")
+            mark_parent_error = True
+        else:
+            source = new_source
+
+    except Exception as e:
+        do_logging = os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') == '1'
+        if do_logging:
+            print(f"Unsloth: Could not wrap replace_with_bnb_linear but may not be an issue. {str(e)}")
+        mark_parent_error = True
+
+    if mark_parent_error:
+        # we sitll have the original source without the mark_parent and unmark_parent patches
+        source = source.replace(
+            "name in quantization_config.llm_int8_skip_modules\n",
+            "((name in quantization_config.llm_int8_skip_modules) or (current_key_name_str in quantization_config.llm_int8_skip_modules))\n",
+            1,
+        )
 
     # Need more than 1 replacement since recursion is done
     source = source.replace(
