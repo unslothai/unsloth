@@ -723,7 +723,8 @@ def merge_and_overwrite_lora(
     # Default handle 16 bit merge and save/push
     # Step 1: Save base model config/architecture (no weights needed here)
 
-    inner_model.save_pretrained(
+    config_model = base_model if isinstance(model, PeftModelForCausalLM) else model
+    config_model.save_pretrained(
         save_directory = save_directory,
         state_dict = {},
     )
