@@ -207,8 +207,9 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, calc_logprob_flag = None):
+        # breakpoint()
+        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0' and  not calc_logprob_flag:
             return None # Unsloth efficient GRPO
         # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
@@ -217,6 +218,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
+            breakpoint()
             logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
 
             input_ids = input_ids[:, -logits_to_keep:]
@@ -261,10 +263,16 @@ def grpo_trainer_compute_loss(function_name, function):
         _input_ids = input_ids
         _logits_to_keep = logits_to_keep
         
-        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep, calc_logprob_flag = True)
 
         # Compute the KL divergence between the model and the reference model
-        ref_per_token_logps = inputs["ref_per_token_logps"]
+        # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
+        # https://github.com/huggingface/trl/blob/05bc43e960396581e458195b8388efe6b82cae1f/trl/trainer/grpo_trainer.py#L1328
+        if self.beta != 0.0:
+            with torch.inference_mode(), model.disable_adapter():
+                ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep, calc_logprob_flag = True)
+        else:
+            ref_per_token_logps = None
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
 
         # x - x.detach() allows for preserving gradients from x
@@ -273,15 +281,21 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         input_ids = input_ids[:, -logits_to_keep:]
+        old_per_token_logps = inputs["old_per_token_logps"]
         if per_token_logps is not None:
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
-                ref_per_token_logps, per_token_logps, input_ids, completion_mask, self.beta, advantages,
+                ref_per_token_logps, per_token_logps, old_per_token_logps, input_ids, completion_mask, self.beta, advantages,
             )
         else:
             loss, completion_length, mean_kl = grpo_accumulated_loss(
                 self, _input_ids, logits_to_keep, completion_mask, advantages,
-                n_chunks = self.args.unsloth_num_chunks,
+                n_chunks = self.args.unsloth_num_chunks, loss_type = self.args.loss_type,
+                epsilon_low = self.epsilon_low, epsilon_high = self.epsilon_high,
+                max_completion_length = self.args.max_completion_length,
+                delta = self.args.delta,
             )
+
+        
 
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
