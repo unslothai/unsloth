@@ -289,10 +289,7 @@ def grpo_trainer_compute_loss(function_name, function):
         else:
             loss, completion_length, mean_kl = grpo_accumulated_loss(
                 self, _input_ids, logits_to_keep, completion_mask, advantages, old_per_token_logps,
-                n_chunks = self.args.unsloth_num_chunks, loss_type = self.args.loss_type,
-                epsilon_low = self.epsilon_low, epsilon_high = self.epsilon_high,
-                max_completion_length = self.args.max_completion_length,
-                delta = self.args.delta,
+                n_chunks = self.args.unsloth_num_chunks
             )
 
         # Log the metrics
