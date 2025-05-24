@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .llama import *
+from unsloth.models.llama import *
 import os
-from ._utils import __version__
+from unsloth.models._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
-from .llama import (
+from unsloth.models.llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
     _LlamaModel_fast_forward_inference,

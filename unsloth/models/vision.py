@@ -25,12 +25,12 @@ try:
 except:
     from transformers import AutoModelForVision2Seq
 pass
-from ..kernels import (
+from unsloth.kernels import (
     post_patch_loss_function,
 )
-from ._utils import __version__
-from ._utils import *
-from ..save import patch_saving_functions
+from unsloth.models._utils import __version__
+from unsloth.models._utils import *
+from unsloth.save import patch_saving_functions
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
 from transformers import set_seed as transformers_set_seed

@@ -17,9 +17,9 @@ import gc
 import math
 import functools
 from typing import Optional, Tuple, List, Union
-from ._utils import *
-from ._utils import patch_unsloth_smart_gradient_checkpointing
-from ._utils import __version__
+from unsloth.models._utils import *
+from unsloth.models._utils import patch_unsloth_smart_gradient_checkpointing
+from unsloth.models._utils import __version__
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
@@ -35,11 +35,11 @@ from transformers.models.llama.modeling_llama import (
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
-from ..kernels import *
-from ..tokenizer_utils import *
+from unsloth.kernels import *
+from unsloth.tokenizer_utils import *
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func
-from .vision import FastBaseModel
+from unsloth.models.vision import FastBaseModel
 
 # Final patching code
 from transformers.models.llama.modeling_llama import (
@@ -65,7 +65,7 @@ from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
-from ..save import patch_saving_functions
+from unsloth.save import patch_saving_functions
 import re, os, inspect, math, sys
 import types
 try:
@@ -2753,5 +2753,5 @@ class FastLlamaModel:
     pass
 pass
 
-from .rl import PatchFastRL
+from unsloth.models.rl import PatchFastRL
 PatchFastRL(FastLanguageModel = FastLlamaModel)

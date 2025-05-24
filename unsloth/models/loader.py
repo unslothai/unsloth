@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._utils import (
+from unsloth.models._utils import (
     is_bfloat16_supported,
     is_vLLM_available,
     HAS_FLASH_ATTENTION,
@@ -20,17 +20,17 @@ from ._utils import (
     USE_MODELSCOPE,
     get_transformers_model_type,
 )
-from .granite import FastGraniteModel
-from .llama   import FastLlamaModel, logger
-from .mistral import FastMistralModel
-from .qwen2   import FastQwen2Model
-from .qwen3   import FastQwen3Model
-from .qwen3_moe import FastQwen3MoeModel
-from .cohere  import FastCohereModel
+from unsloth.models.granite import FastGraniteModel
+from unsloth.models.llama   import FastLlamaModel, logger
+from unsloth.models.mistral import FastMistralModel
+from unsloth.models.qwen2   import FastQwen2Model
+from unsloth.models.qwen3   import FastQwen3Model
+from unsloth.models.qwen3_moe import FastQwen3MoeModel
+from unsloth.models.cohere  import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
-from .loader_utils import get_model_name
+from unsloth.models.loader_utils import get_model_name
 import os, contextlib, sys
 try:
     from huggingface_hub import get_token
@@ -57,12 +57,12 @@ SUPPORTS_GRANITE = transformers_version >= Version("4.46.0")
 SUPPORTS_QWEN3   = transformers_version >= Version("4.50.3")
 SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
 if SUPPORTS_GEMMA:
-    from .gemma  import FastGemmaModel
+    from unsloth.models.gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
-    from .gemma2 import FastGemma2Model
+    from unsloth.models.gemma2 import FastGemma2Model
 pass
 import torch
-from ._utils import (
+from unsloth.models._utils import (
     patch_compiling_bitsandbytes,
     patch_model_and_tokenizer,
     prepare_model_for_kbit_training,
@@ -446,11 +446,11 @@ class FastLanguageModel(FastLlamaModel):
 pass
 
 
-from ..kernels import (
+from unsloth.kernels import (
     patch_loss_functions,
     post_patch_loss_function,
 )
-from .vision import FastBaseModel
+from unsloth.models.vision import FastBaseModel
 from transformers import (
     AutoModelForCausalLM,
 )

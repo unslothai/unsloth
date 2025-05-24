@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import (
+from unsloth.kernels.utils import (
     calculate_settings,
     triton_tanh,
     torch_cuda_device,
