@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-from .utils import (
+from unsloth.kernels.utils import (
     fast_dequantize,
     QUANT_STATE,
     get_lora_parameters,
@@ -173,7 +173,7 @@ class LoRA_MLP(torch.autograd.Function):
 pass
 
 
-from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
+from unsloth.kernels.swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
 def apply_lora_mlp_swiglu(self, X, inplace = True):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
@@ -188,7 +188,7 @@ def apply_lora_mlp_swiglu(self, X, inplace = True):
 pass
 
 
-from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
+from unsloth.kernels.geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
 def apply_lora_mlp_geglu_exact(self, X, inplace = True):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
@@ -203,7 +203,7 @@ def apply_lora_mlp_geglu_exact(self, X, inplace = True):
 pass
 
 
-from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
+from unsloth.kernels.geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 def apply_lora_mlp_geglu_approx(self, X):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)

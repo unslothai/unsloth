@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_cuda_device
+from unsloth.kernels.utils import calculate_settings, torch_cuda_device
 
 @triton.jit
 def _rms_layernorm_forward(

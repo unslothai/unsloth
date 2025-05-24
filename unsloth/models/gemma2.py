@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .llama import *
-from ._utils import __version__
-from .gemma import (
+from unsloth.models.llama import *
+from unsloth.models._utils import __version__
+from unsloth.models.gemma import (
     GemmaFixedRotaryEmbedding,
     GemmaFixedLinearScalingRotaryEmbedding,
     fast_geglu_inference,
