@@ -215,18 +215,17 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
             if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float16
-        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        # os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
             logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            logits = logits.to(torch.float32)
+            # logits = logits.to(torch.float32)
             input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
             logits = logits[:, -logits_to_keep:]
-            #return logits
-            return selective_log_softmax(logits, input_ids)  #  compute logprobs for the input tokens
+            return logits
         pass
     pass
 
