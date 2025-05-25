@@ -225,7 +225,6 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
             logits = logits[:, -logits_to_keep:]
-            logits = logits.to(torch.float32)
             #return logits
             logps = selective_log_softmax(logits, input_ids)
 
