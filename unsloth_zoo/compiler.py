@@ -47,6 +47,7 @@ from importlib.metadata import version as importlib_version
 from packaging.version import Version
 import functools
 from .compiler_replacements import compiler_replacements
+from . import DEVICE_TYPE
 
 # Compiled cache location
 global COMBINED_UNSLOTH_NAME
@@ -60,8 +61,17 @@ UNSLOTH_COMPILE_USE_TEMP = False
 
 # Disable some compilations if old versions are seen
 OLD_TORCH_VERSION = Version(torch.__version__) < Version("2.5.0")
-major, minor = torch.cuda.get_device_capability()
-OLD_CUDA_ARCH_VERSION = (major <= 7) and (minor < 5)
+
+# device capability
+major = None
+minor = None
+if DEVICE_TYPE == "cuda":
+    major, minor = torch.cuda.get_device_capability()
+    OLD_CUDA_ARCH_VERSION = (major <= 7) and (minor < 5)
+elif DEVICE_TYPE == "xpu":
+    OLD_CUDA_ARCH_VERSION = False
+pass
+
 OLD_TRITON_VERSION = Version(triton.__version__) < Version("3.0.0")
 
 # Check if Unsloth Studio is allowed
