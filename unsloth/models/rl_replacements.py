@@ -229,12 +229,6 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             #return logits
             logps = selective_log_softmax(logits, input_ids)
 
-            row_indices, col_indices = torch.where(input_ids == 492)
-
-            if len(row_indices) > 0:
-                pdb.set_trace()  # Break here when token 492 is found
-                print(f"Token 492 found at {len(row_indices)} positions")
-
             # row_indices, col_indices = torch.where(logps < -20)
 
             # # Method 1: Check if tensors have elements
@@ -298,7 +292,6 @@ def grpo_trainer_compute_loss(function_name, function):
 
         old_hidden_states = inputs["old_per_token_logps"]
         input_ids = input_ids[:, -logits_to_keep:]
-        #breakpoint()
         if per_token_logps is not None:
             #
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
@@ -315,8 +308,7 @@ def grpo_trainer_compute_loss(function_name, function):
 
         # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
-        if mean_kl.item() > 10 or loss.item() > 10:
-            breakpoint()
+
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
             self._metrics[mode]["completion_length"].append(completion_length.item())
