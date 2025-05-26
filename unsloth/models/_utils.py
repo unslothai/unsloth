@@ -300,7 +300,7 @@ if DEVICE_TYPE == "cuda":
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
     pass
 elif DEVICE_TYPE == "xpu":
-    if Version(torch_version) < Version("2.4.0"):
+    if Version(torch_version) < Version("2.6.0"):
         raise RuntimeError("torch.xpu currently only supports torch.version >= 2.6.0")
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
