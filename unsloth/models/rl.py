@@ -440,6 +440,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "torch_empty_cache_steps"     : 250,
         "logging_steps"               : 1,
         "max_seq_length"              : None,
+        "num_generations"             : 8,
+        "top_k"                       : None,
+        "vllm_mode"                   : "colocate",
     }
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
