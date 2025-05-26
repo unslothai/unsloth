@@ -225,8 +225,15 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
             logits = logits[:, -logits_to_keep:]
+            logits = logits.to(torch.float32)
             #return logits
             logps = selective_log_softmax(logits, input_ids)
+
+            row_indices, col_indices = torch.where(input_ids == 492)
+
+            if len(row_indices) > 0:
+                pdb.set_trace()  # Break here when token 492 is found
+                print(f"Token 492 found at {len(row_indices)} positions")
 
             # row_indices, col_indices = torch.where(logps < -20)
 
@@ -288,26 +295,38 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-
-        old_hidden_states = inputs["old_per_token_logps"]
+        if "old_per_token_logps" in inputs.keys():
+            old_hidden_states = inputs["old_per_token_logps"]
+        else: 
+            old_hidden_states  = None
         input_ids = input_ids[:, -logits_to_keep:]
+        #breakpoint()
         if per_token_logps is not None:
             #
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 old_hidden_states, per_token_logps, ref_per_token_logps, input_ids, completion_mask, self.beta, advantages,
             )
         else:
-            loss, completion_length, mean_kl = grpo_accumulated_loss(
-                self, _input_ids, logits_to_keep, completion_mask, advantages, old_hidden_states,
-                n_chunks = self.args.unsloth_num_chunks
-            )
+            breakpoint()
+            if hasattr(self.args, "loss_type"):
+                loss, completion_length, mean_kl = grpo_accumulated_loss(
+                    self, _input_ids, logits_to_keep, completion_mask, advantages, old_hidden_states,
+                    n_chunks = self.args.unsloth_num_chunks, loss_type = self.args.loss_type,
+                    epsilon_low = self.epsilon_low, epsilon_high = self.epsilon_high,
+                    max_completion_length = self.args.max_completion_length,
+                    delta = self.args.delta,
+                )
+            else:
+                loss, completion_length, mean_kl = grpo_accumulated_loss( self, _input_ids, logits_to_keep, completion_mask, advantages, old_hidden_states,n_chunks = self.args.unsloth_num_chunks,)
+                
 
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
 
         # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
-
+        if mean_kl.item() > 10 or loss.item() > 10:
+            breakpoint()
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
             self._metrics[mode]["completion_length"].append(completion_length.item())
