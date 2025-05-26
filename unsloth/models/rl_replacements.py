@@ -289,8 +289,10 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-
-        old_hidden_states = inputs["old_per_token_logps"]
+        if "old_per_token_logps" in inputs.keys():
+            old_hidden_states = inputs["old_per_token_logps"]
+        else: 
+            old_hidden_states = None
         input_ids = input_ids[:, -logits_to_keep:]
         if per_token_logps is not None:
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
@@ -301,14 +303,21 @@ def grpo_trainer_compute_loss(function_name, function):
                 delta = self.args.delta,
             )
         else:
-            loss, completion_length, mean_kl = grpo_accumulated_loss(
-                self, _input_ids, logits_to_keep, completion_mask, advantages, old_hidden_states,
-                n_chunks = self.args.unsloth_num_chunks,
-                loss_type = self.args.loss_type,
-                epsilon_low = self.epsilon_low, epsilon_high = self.epsilon_high,
-                max_completion_length = self.args.max_completion_length,
-                delta = self.args.delta,
-            )
+            if hasattr(self.args, "loss_type"):
+                loss, completion_length, mean_kl = grpo_accumulated_loss(
+                    self, _input_ids, logits_to_keep, completion_mask, advantages, old_hidden_states,
+                    n_chunks = self.args.unsloth_num_chunks,
+                    loss_type = self.args.loss_type,
+                    epsilon_low = self.epsilon_low, epsilon_high = self.epsilon_high,
+                    max_completion_length = self.args.max_completion_length,
+                    delta = self.args.delta,
+                )
+            else:
+                # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
+                loss, completion_length, mean_kl = grpo_accumulated_loss(
+                    self, _input_ids, logits_to_keep, completion_mask, advantages, old_hidden_states,
+                    n_chunks = self.args.unsloth_num_chunks,
+                )    
 
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
