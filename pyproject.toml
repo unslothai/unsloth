@@ -50,7 +50,7 @@ huggingface = [
     "accelerate>=0.34.1",
     "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,!=0.15.0,<=0.15.2",
     "peft>=0.7.1,!=0.11.0",
-    "protobuf<4.0.0",
+    "protobuf",
     "huggingface_hub",
     "hf_transfer",
     "unsloth[triton]",
@@ -391,7 +391,7 @@ colab-new = [
     "psutil",
     "wheel>=0.42.0",
     "numpy",
-    "protobuf<4.0.0",
+    "protobuf",
     "huggingface_hub",
     "hf_transfer",
     "bitsandbytes>=0.45.5",
@@ -403,7 +403,7 @@ colab-no-deps = [
     "peft>=0.7.1",
     "xformers",
     "bitsandbytes>=0.45.5",
-    "protobuf<4.0.0",
+    "protobuf",
 ]
 colab = [
     "unsloth[cu121]",
@@ -606,6 +606,10 @@ intel-gpu-torch260 = [
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp311-cp311-linux_x86_64.whl#sha256=12005f66b810ddd3ab93f86c4522bcfdd412cbd27fc9d189b661ff7509bc5e8a ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp312-cp312-linux_x86_64.whl#sha256=c4c5c67625cdacf35765c2b94e61fe166e3c3f4a14521b1212a59ad1b3eb0f2e ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.6.0%2Bxpu-cp313-cp313-linux_x86_64.whl#sha256=e6864f7a60a5ecc43d5d38f59a16e5dd132384f73dfd3a697f74944026038f7b ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
+]
+
+sentencepiece = [
+    "protobuf<4.0.0",
 ]
 
 [project.urls]
