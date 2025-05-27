@@ -22,9 +22,10 @@ from grouped_gemm.reference.moe_ops import (
 """
 Reference implementation of Llama4 MoE block using triton grouped gemm.
 
-This is the same as the Llama4GroupedGemmTextMoe but with triton grouped gemm in place of torch-native grouped gemm implementation.
-
+`Llama4GroupedGemmTextMoe` is the HF `Llama4TextMoe` block implemented with a torch-native grouped gemm.
+`Llama4TritonTextMoe` is the HF `Llama4TextMoe` implemented with triton grouped gemm.
 """
+
 
 @dataclass
 class Llama4MoeResult:
@@ -44,7 +45,13 @@ class Llama4MoeResult:
 class Llama4GroupedGemmTextMoe(Llama4TextMoe):
     EXPERT_WEIGHT_NAMES = ["experts.gate_up_proj", "experts.down_proj"]
 
-    def __init__(self, config: Llama4TextConfig, overlap_router_shared=False, verbose=False, debug=False):
+    def __init__(
+        self,
+        config: Llama4TextConfig,
+        overlap_router_shared=False,
+        verbose=False,
+        debug=False,
+    ):
         super().__init__(config)
         self.overlap_router_shared = overlap_router_shared
         self.verbose = verbose
@@ -65,9 +72,13 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             self.experts.gate_up_proj.as_strided_(permuted_shape, permuted_stride)
 
         if verbose:
-            print(f"{self.experts.gate_up_proj.shape}:{self.experts.gate_up_proj.stride()}")
+            print(
+                f"{self.experts.gate_up_proj.shape}:{self.experts.gate_up_proj.stride()}"
+            )
 
-        assert self.experts.down_proj.shape == torch.Size([E, N, K]), f"{self.experts.down_proj.shape} != {[E, N, K]}"
+        assert self.experts.down_proj.shape == torch.Size([E, N, K]), (
+            f"{self.experts.down_proj.shape} != {[E, N, K]}"
+        )
         permuted_shape = [E, K, N]
         permuted_stride = [K * N, N, 1]
         if verbose:
@@ -96,7 +107,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             if any(n in name for n in self.EXPERT_WEIGHT_NAMES):
                 param_to_copy = param_to_copy.permute(0, 2, 1)
 
-            assert param.shape == param_to_copy.shape, f"{param.shape} != {param_to_copy.shape}"
+            assert param.shape == param_to_copy.shape, (
+                f"{param.shape} != {param_to_copy.shape}"
+            )
             param.copy_(param_to_copy)
 
         return self
@@ -119,14 +132,20 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         # router_logits: (batch * sequence_length, n_experts)
         hidden_states = hidden_states.view(-1, self.hidden_dim)
         router_logits = self.router(hidden_states)
-        routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim=-1)
+        routing_weights, selected_experts = torch.topk(
+            router_logits, self.top_k, dim=-1
+        )
 
         routing_weights = F.sigmoid(routing_weights.float()).to(hidden_states.dtype)
 
         return router_logits, routing_weights, selected_experts
 
-    def get_token_counts_and_gather_indices(self, selected_experts: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        token_counts_by_expert, gather_indices = get_routing_indices(selected_experts, self.num_experts)
+    def get_token_counts_and_gather_indices(
+        self, selected_experts: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        token_counts_by_expert, gather_indices = get_routing_indices(
+            selected_experts, self.num_experts
+        )
         assert not token_counts_by_expert.requires_grad
         assert not gather_indices.requires_grad
         return token_counts_by_expert, gather_indices
@@ -142,7 +161,9 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             # Marker for all prior ops on default stream
             self.default_event.record()
 
-        router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
+        router_logits, routing_weights, selected_experts = self.run_router(
+            hidden_states
+        )
         assert routing_weights.shape == (num_tokens, self.top_k), (
             f"{routing_weights.shape} != {(num_tokens, self.top_k)}"
         )
@@ -164,7 +185,10 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         else:
             shared_expert_out = self.shared_expert(hidden_states)
 
-        hidden_states = hidden_states.view(num_tokens, self.top_k, hidden_dim) * routing_weights[..., None]
+        hidden_states = (
+            hidden_states.view(num_tokens, self.top_k, hidden_dim)
+            * routing_weights[..., None]
+        )
 
         if self.top_k > 1:
             hidden_states = hidden_states.sum(dim=1)
@@ -172,21 +196,29 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
 
         # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
         # NOTE: these are auxiliary data structs which don't need to be recorded in autograd graph
-        token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(selected_experts)
+        token_counts_by_expert, gather_indices = (
+            self.get_token_counts_and_gather_indices(selected_experts)
+        )
 
         # 2. Permute tokens from token order to expert order
-        hidden_states = permute(hidden_states_after_weight_merge, gather_indices, self.top_k)
+        hidden_states = permute(
+            hidden_states_after_weight_merge, gather_indices, self.top_k
+        )
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
         # Start expert computation
-        first_gemm = torch_grouped_gemm(X=hidden_states, W=self.experts.gate_up_proj, m_sizes=token_counts_by_expert)
+        first_gemm = torch_grouped_gemm(
+            X=hidden_states, W=self.experts.gate_up_proj, m_sizes=token_counts_by_expert
+        )
         assert first_gemm.shape == (total_tokens, 2 * self.experts.expert_dim)
 
         intermediate = self.act_and_mul(first_gemm)
         assert intermediate.shape == (total_tokens, self.experts.expert_dim)
 
         # See comment above
-        second_gemm = torch_grouped_gemm(X=intermediate, W=self.experts.down_proj, m_sizes=token_counts_by_expert)
+        second_gemm = torch_grouped_gemm(
+            X=intermediate, W=self.experts.down_proj, m_sizes=token_counts_by_expert
+        )
         assert second_gemm.shape == (total_tokens, hidden_dim)
 
         # Post-processing
@@ -218,7 +250,6 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
 
 
 class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
-
     def __init__(
         self,
         config: Llama4TextConfig,
@@ -234,13 +265,17 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         verbose=False,
     ):
         super().__init__(config, overlap_router_shared=overlap_router_shared)
-        assert not permute_x, "Llama4 triton grouped gemm does not support permute x due to pre-multiplication of router weights"
+        assert not permute_x, (
+            "Llama4 triton grouped gemm does not support permute x due to pre-multiplication of router weights"
+        )
         self.permute_x = permute_x
         self.permute_y = permute_y
         self.autotune = autotune
         if not autotune:
             assert (
-                kernel_config_fwd is not None and kernel_config_bwd_dW is not None and kernel_config_bwd_dX is not None
+                kernel_config_fwd is not None
+                and kernel_config_bwd_dW is not None
+                and kernel_config_bwd_dX is not None
             ), "Kernel configs must be provided if autotune is False"
         self.kernel_config_fwd = kernel_config_fwd
         self.kernel_config_bwd_dW = kernel_config_bwd_dW
@@ -258,7 +293,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             if any(n in name for n in self.EXPERT_WEIGHT_NAMES):
                 param_to_copy = param_to_copy.permute(0, 2, 1)
 
-            assert param.shape == param_to_copy.shape, f"{param.shape} != {param_to_copy.shape}"
+            assert param.shape == param_to_copy.shape, (
+                f"{param.shape} != {param_to_copy.shape}"
+            )
             param.copy_(param_to_copy)
 
         return self
@@ -281,14 +318,20 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         # router_logits: (batch * sequence_length, n_experts)
         hidden_states = hidden_states.view(-1, self.hidden_dim)
         router_logits = self.router(hidden_states)
-        routing_weights, selected_experts = torch.topk(router_logits, self.top_k, dim=-1)
+        routing_weights, selected_experts = torch.topk(
+            router_logits, self.top_k, dim=-1
+        )
 
         routing_weights = F.sigmoid(routing_weights.float()).to(hidden_states.dtype)
 
         return router_logits, routing_weights, selected_experts
 
-    def get_token_counts_and_gather_indices(self, selected_experts: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        token_counts_by_expert, gather_indices = get_routing_indices(selected_experts, self.num_experts)
+    def get_token_counts_and_gather_indices(
+        self, selected_experts: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        token_counts_by_expert, gather_indices = get_routing_indices(
+            selected_experts, self.num_experts
+        )
         assert not token_counts_by_expert.requires_grad
         assert not gather_indices.requires_grad
         return token_counts_by_expert, gather_indices
@@ -304,7 +347,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             # Marker for all prior ops on default stream
             self.default_event.record()
 
-        router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
+        router_logits, routing_weights, selected_experts = self.run_router(
+            hidden_states
+        )
         assert routing_weights.shape == (num_tokens, self.top_k), (
             f"{routing_weights.shape} != {(num_tokens, self.top_k)}"
         )
@@ -326,7 +371,10 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
         else:
             shared_expert_out = self.shared_expert(hidden_states)
 
-        hidden_states = hidden_states.view(num_tokens, self.top_k, hidden_dim) * routing_weights[..., None]
+        hidden_states = (
+            hidden_states.view(num_tokens, self.top_k, hidden_dim)
+            * routing_weights[..., None]
+        )
 
         if self.top_k > 1:
             hidden_states = hidden_states.sum(dim=1)
@@ -334,7 +382,9 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
 
         # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
         # NOTE: these are auxiliary data structs which don't need to be recorded in autograd graph
-        token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(selected_experts)
+        token_counts_by_expert, gather_indices = (
+            self.get_token_counts_and_gather_indices(selected_experts)
+        )
 
         # 2. Permute tokens from token order to expert order
         hidden_states = permute(hidden_states, gather_indices, self.top_k)

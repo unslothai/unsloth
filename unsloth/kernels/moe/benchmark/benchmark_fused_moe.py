@@ -49,24 +49,28 @@ def run_benchmark_forward(
     kernel_config_fwd: KernelConfigForward = None,
     bs: int = 1,
 ):
-    torch.manual_seed(SEED)  # Should not be needed when running using pytest -- autouse fixture in conftest.py
+    torch.manual_seed(
+        SEED
+    )  # Should not be needed when running using pytest -- autouse fixture in conftest.py
     device = "cuda"
     hidden_size = config.hidden_size
 
-    X = torch.randn(bs, seqlen, hidden_size, dtype=dtype, device=device, requires_grad=True)
+    X = torch.randn(
+        bs, seqlen, hidden_size, dtype=dtype, device=device, requires_grad=True
+    )
 
     # Forward
-    bench_forward_ref = lambda: ref_model(X) # noqa: E731
-    bench_forward_fused = lambda: tt_model(X) # noqa: E731
+    bench_forward_ref = lambda: ref_model(X)  # noqa: E731
+    bench_forward_fused = lambda: tt_model(X)  # noqa: E731
 
     ref_forward_time = do_bench(bench_forward_ref)
 
     if not autotune:
         assert kernel_config_fwd is not None
-        tuning_context = TritonTuningContext(kernel_config_fwd) 
+        tuning_context = TritonTuningContext(kernel_config_fwd)
     else:
         tuning_context = nullcontext()
-    
+
     with tuning_context:
         fused_forward_time = do_bench(bench_forward_fused)
 
@@ -85,13 +89,17 @@ def run_benchmark_backward(
     config: AutoConfig,
     seqlen: int,
     dtype: torch.dtype,
-    bs=1
+    bs=1,
 ):
-    torch.manual_seed(SEED)  # Should not be needed when running using pytest -- autouse fixture in conftest.py
+    torch.manual_seed(
+        SEED
+    )  # Should not be needed when running using pytest -- autouse fixture in conftest.py
     device = "cuda"
     hidden_size = config.hidden_size
 
-    X = torch.randn(bs, seqlen, hidden_size, dtype=dtype, device=device, requires_grad=True)
+    X = torch.randn(
+        bs, seqlen, hidden_size, dtype=dtype, device=device, requires_grad=True
+    )
     X_test = X.detach().clone().requires_grad_(True)
 
     output, _ = ref_model(X)
@@ -99,7 +107,9 @@ def run_benchmark_backward(
     # Prevent autotuning forward pass
     from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
 
-    _autotuned_grouped_gemm_forward_kernel.configs = _autotuned_grouped_gemm_forward_kernel.configs[:20]
+    _autotuned_grouped_gemm_forward_kernel.configs = (
+        _autotuned_grouped_gemm_forward_kernel.configs[:20]
+    )
     test_output, _ = tt_model(X_test)
 
     # Bench
@@ -107,8 +117,12 @@ def run_benchmark_backward(
     bench_backward_ref = lambda: output.backward(grad_output, retain_graph=True)  # noqa: E731
     bench_backward_fused = lambda: test_output.backward(grad_output, retain_graph=True)  # noqa: E731
 
-    ref_backward_time = do_bench(bench_backward_ref, grad_to_none=[X, *ref_model.parameters()])
-    fused_backward_time = do_bench(bench_backward_fused, grad_to_none=[X_test, *tt_model.parameters()])
+    ref_backward_time = do_bench(
+        bench_backward_ref, grad_to_none=[X, *ref_model.parameters()]
+    )
+    fused_backward_time = do_bench(
+        bench_backward_fused, grad_to_none=[X_test, *tt_model.parameters()]
+    )
     print(
         f"Backward: ref {ref_backward_time:.4f}, fused {fused_backward_time:.4f}, speedup {ref_backward_time / fused_backward_time:.1f}x"
     )
@@ -215,20 +229,22 @@ def run_benchmark(
         )
     else:
         ref_time, fused_time = run_benchmark_backward(
-            ref_model,
-            tt_model,
-            config=model_config,
-            seqlen=seqlen,
-            dtype=dtype
+            ref_model, tt_model, config=model_config, seqlen=seqlen, dtype=dtype
         )
 
     if autotune:
         if mode == "backward":
             autotuner_dW, autotuner_dX = autotuner
-            postprocess_autotune_results(autotuner_dW, "dW", ref_time, fused_time, results_dir)
-            postprocess_autotune_results(autotuner_dX, "dX", ref_time, fused_time, results_dir)
+            postprocess_autotune_results(
+                autotuner_dW, "dW", ref_time, fused_time, results_dir
+            )
+            postprocess_autotune_results(
+                autotuner_dX, "dX", ref_time, fused_time, results_dir
+            )
         else:
-            postprocess_autotune_results(autotuner, mode, ref_time, fused_time, results_dir)
+            postprocess_autotune_results(
+                autotuner, mode, ref_time, fused_time, results_dir
+            )
 
     return ref_time, fused_time
 
@@ -238,22 +254,43 @@ if __name__ == "__main__":
     parser.add_argument("--results_dir", type=str, default="benchmark_results")
     parser.add_argument("--model", type=str, choices=["llama4", "qwen3"], required=True)
     parser.add_argument("--seqlen", type=int, default=1024)
-    parser.add_argument("--dtype", type=str, choices=["bfloat16", "float16"], default="bfloat16")
+    parser.add_argument(
+        "--dtype", type=str, choices=["bfloat16", "float16"], default="bfloat16"
+    )
     parser.add_argument("--permute_x", action="store_true")
     parser.add_argument("--permute_y", action="store_true")
     parser.add_argument("--autotune", action="store_true")
     parser.add_argument("--overlap_router_shared", action="store_true")
     parser.add_argument(
-        "--BLOCK_SIZE_M", nargs=2, type=int, default=[DEFAULT_M_BLOCK_SIZES[0], DEFAULT_M_BLOCK_SIZES[-1]]
+        "--BLOCK_SIZE_M",
+        nargs=2,
+        type=int,
+        default=[DEFAULT_M_BLOCK_SIZES[0], DEFAULT_M_BLOCK_SIZES[-1]],
     )
     parser.add_argument(
-        "--BLOCK_SIZE_N", nargs=2, type=int, default=[DEFAULT_N_BLOCK_SIZES[0], DEFAULT_N_BLOCK_SIZES[-1]]
+        "--BLOCK_SIZE_N",
+        nargs=2,
+        type=int,
+        default=[DEFAULT_N_BLOCK_SIZES[0], DEFAULT_N_BLOCK_SIZES[-1]],
     )
     parser.add_argument(
-        "--BLOCK_SIZE_K", nargs=2, type=int, default=[DEFAULT_K_BLOCK_SIZES[0], DEFAULT_K_BLOCK_SIZES[-1]]
+        "--BLOCK_SIZE_K",
+        nargs=2,
+        type=int,
+        default=[DEFAULT_K_BLOCK_SIZES[0], DEFAULT_K_BLOCK_SIZES[-1]],
     )
-    parser.add_argument("--num_warps", nargs=2, type=int, default=[DEFAULT_NUM_WARPS[0], DEFAULT_NUM_WARPS[-1]])
-    parser.add_argument("--num_stages", nargs=2, type=int, default=[DEFAULT_NUM_STAGES[0], DEFAULT_NUM_STAGES[-1]])
+    parser.add_argument(
+        "--num_warps",
+        nargs=2,
+        type=int,
+        default=[DEFAULT_NUM_WARPS[0], DEFAULT_NUM_WARPS[-1]],
+    )
+    parser.add_argument(
+        "--num_stages",
+        nargs=2,
+        type=int,
+        default=[DEFAULT_NUM_STAGES[0], DEFAULT_NUM_STAGES[-1]],
+    )
     parser.add_argument(
         "--use_tma_load_w", action="store_true"
     )  # No need to specify, will automatically parametrize these for each kernel config
@@ -263,7 +300,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_tma_load_dy", action="store_true"
     )  # No need to specify, will automatically parametrize these for each kernel config
-    parser.add_argument("--mode", type=str, choices=["forward", "backward", "dW", "dX"], default="forward")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["forward", "backward", "dW", "dX"],
+        default="forward",
+    )
     args = parser.parse_args()
     args.dtype = getattr(torch, args.dtype)
 
@@ -300,9 +342,15 @@ if __name__ == "__main__":
         assert False, "Use autotune for now"
         kernel_configs = create_kernel_configs(args, args.permute_x, args.permute_y)
         print(f"Running {len(kernel_configs)} kernel configs")
-        default_kernel_config_fwd = KernelConfigForward(permute_x=args.permute_x, permute_y=args.permute_y)
-        default_kernel_config_bwd_dW = KernelConfigBackward_dW(permute_x=args.permute_x, permute_y=args.permute_y)
-        default_kernel_config_bwd_dX = KernelConfigBackward_dX(permute_x=args.permute_x, permute_y=args.permute_y)
+        default_kernel_config_fwd = KernelConfigForward(
+            permute_x=args.permute_x, permute_y=args.permute_y
+        )
+        default_kernel_config_bwd_dW = KernelConfigBackward_dW(
+            permute_x=args.permute_x, permute_y=args.permute_y
+        )
+        default_kernel_config_bwd_dX = KernelConfigBackward_dX(
+            permute_x=args.permute_x, permute_y=args.permute_y
+        )
         results = []
         for kernel_config in kernel_configs:
             if args.mode == "forward":
@@ -343,5 +391,9 @@ if __name__ == "__main__":
                     kernel_config=kernel_config,
                 )
             )
-        df = post_process_results(results, args.mode, args.seqlen, args.dtype, args.autotune)
-        save_results(df, args.results_dir, args.mode, args.seqlen, args.dtype, args.autotune)
+        df = post_process_results(
+            results, args.mode, args.seqlen, args.dtype, args.autotune
+        )
+        save_results(
+            df, args.results_dir, args.mode, args.seqlen, args.dtype, args.autotune
+        )
