@@ -8,6 +8,7 @@ from itertools import product
 
 import pandas as pd
 import torch
+
 from grouped_gemm.kernels.tuning import (
     KernelConfigBackward_dW,
     KernelConfigBackward_dX,
@@ -141,3 +142,46 @@ def power_of_two_range(start, end):
 
 def multiples_of_range(start, end, step=1):
     return list(range(start, end + step, step))
+
+def map_key_to_args(key, mode):
+    pass
+
+def save_autotune_results(autotune_cache, mode, ref_time, fused_time, results_dir):
+    device_name = torch.cuda.get_device_name().replace(" ", "_")
+    dt = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    save_dir = f"{results_dir}/{mode}/autotune/{dt}/{device_name}"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    for key, config in autotune_cache.items():
+        key = [str(k) if not "torch" in str(k) else str(k.split("torch.")[-1]) for k in key]
+        filename = "_".join(key)
+        save_path = f"{save_dir}/{filename}.json"
+        print(f"Saving autotune results to {save_path}")
+        with open(save_path, "w") as f:
+            result = { **config.all_kwargs(), "ref_time": ref_time, "fused_time": fused_time }
+            json.dump(result, f)
+
+def get_autotuner(mode):
+    if mode == "forward":
+        from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
+        return _autotuned_grouped_gemm_forward_kernel
+    elif mode == "dW":
+        from grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dW_kernel
+        return _autotuned_grouped_gemm_dW_kernel
+    elif mode == "dX":
+        from grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dX_kernel
+        return _autotuned_grouped_gemm_dX_kernel
+    elif mode == "backward":
+        from grouped_gemm.kernels.backward import (
+            _autotuned_grouped_gemm_dW_kernel,
+            _autotuned_grouped_gemm_dX_kernel,
+        )
+        return _autotuned_grouped_gemm_dW_kernel, _autotuned_grouped_gemm_dX_kernel
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+
+def postprocess_autotune_results(autotuner, mode, ref_time, fused_time, results_dir):
+    for key, value in autotuner.cache.items():
+        print(f"{mode} {key}: {value.all_kwargs()}")
+    save_autotune_results(autotuner.cache, mode=mode, ref_time=ref_time, fused_time=fused_time, results_dir=results_dir)
