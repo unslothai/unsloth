@@ -43,6 +43,7 @@ torch_compile_options = {
     "triton.cudagraphs" : False,
 }
 
+from trl import __version__ as trl_version
 
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
@@ -545,7 +546,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
         selective_log_softmax_code = selective_log_softmax_code,
     )
-
+    
+    if RLTrainer_name == "SFTTrainer":
+        original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
+        new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
+        RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
+        
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:
         RLTrainer_source = RLTrainer_source.replace(__RLTrainer_doc__, "", 1)
@@ -597,9 +603,15 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         if len(replacer) != 0:
             replacer = replacer[0]
             vllm_setter = "\n" + " "*8 + \
-            "if hasattr(model, 'vllm_engine') and "\
-            "hasattr(args, 'use_vllm') and (getattr(args, 'use_vllm', False) == False): "\
-            "args.use_vllm = True\n"
+            "if hasattr(model, 'vllm_engine') and hasattr(args, 'use_vllm'):\n" + \
+            " " * 12 + "if (getattr(args, 'use_vllm', False) == False):\n" + \
+            " " * 16 + "args.use_vllm = True\n"
+
+            if "grpo" in trainer_file and trl_version >= "0.18":
+                # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
+                vllm_setter += \
+                " " * 12 + "args.vllm_mode='colocate'\n"
+
             init = init.replace(replacer, replacer + vllm_setter)
         pass
     pass
@@ -615,7 +627,8 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     if len(vllm_part) == 1:
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
         # Strip all comments
-        new_vllm_part = re.sub(r"\#[^\n]{1,}\n", "", vllm_part)
+        new_vllm_part = re.sub(r"^\s*\#[^\n]*\n?", "", vllm_part, flags=re.MULTILINE) # to also remove whole comment line instead of just starting at #
+        new_vllm_part = re.sub(r"\s*\#.*$", "", new_vllm_part, flags=re.MULTILINE) # remove comments that occur after code
 
         # Get SamplingParams
         sampling_params = re.findall(
@@ -624,9 +637,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             new_vllm_part,
             flags = re.MULTILINE | re.DOTALL,
         )
+        
         if len(sampling_params) == 1:
             sampling_params = sampling_params[0]
-
             # Fix guided_decoding
             sampling_params = sampling_params.replace(
                 "guided_decoding=guided_decoding,",
@@ -638,11 +651,18 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             sampling_params = \
                 " "*12 + "self.llm = model.vllm_engine; self._last_loaded_step = 0; " + \
                 sampling_params # Add spaces
+            
+            # count the indentation of last line of sampling_params.
+            last_line = sampling_params.split("\n")[-1]
+            last_prev_line = sampling_params.split("\n")[-2]
+            last_prev_indentation = len(last_prev_line) - len(last_prev_line.lstrip())
+            last_indentation = len(last_line) - len(last_line.lstrip())
+
 
             # Add extra arguments to SamplingParams
             extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
             # Backwards replace
-            to_replace = "," + extra + "," + ")"
+            to_replace = ",\n" + " "*last_prev_indentation + extra + ",\n" + " "*last_indentation + ")"
             sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
             # Strip multiple commas
             sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
@@ -650,9 +670,21 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             new_vllm_part = \
                 f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
                 f"\n{' '*8}else:\n"
-
-            init = init.replace(vllm_part, new_vllm_part)
         pass
+
+        if trl_version >= "0.18":
+            # Replace LLM init with already existing vLLM engine for colocate mode
+            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)*\)"
+            vllm_llm_replacement = "self.llm = model.vllm_engine\n"
+            new_vllm_part = re.sub(
+                vllm_llm_init_pattern,
+                vllm_llm_replacement,
+                new_vllm_part,
+                flags=re.DOTALL  # Ensure . matches newlines [[5]]
+            )
+
+        init = init.replace(vllm_part, new_vllm_part)
+
     pass
 
     # Search for vLLM calling in all child functions
