@@ -43,18 +43,26 @@ sets of tests.  E.g., to run forward tests with autotune turned on: `pytest -sv 
 - `grouped_gemm/tests/test_qwen3_moe.py`: end to end test for Qwen3 MoE block.  IMPORTANT: read `tests/run_qwen3_moe_tests.sh` as well as notes in the test itself for complications when running parametrized pytest test suites and triton / autotune.  TLDR: use the test script and NOT pytest to run the tests.
 
 ### Benchmarks
-- `grouped_gemm/benchmark/benchmark_fused_moe.py`: benchmarks HF `Qwen3SpareMOEBlock` against the fused implementation
+- `grouped_gemm/benchmark/benchmark_fused_moe.py`: benchmarks HF `Qwen3SpareMOEBlock` or `Llama4TextMoe` against the fused implementation
+
+
 Running with these flags on an `H100` to bench forward pass (run with `--help` to see all available flags):
+
+For `Qwen3-30B-A3B`:
 ```
-python benchmark/benchmark_fused_moe.py --mode forward --seqlen 1024 --permute_x --permute_y --autotune
+python benchmark/benchmark_fused_moe.py --model qwen3 --mode forward --seqlen 1024 --permute_x --permute_y --autotune
 ```
 
 For the backward bench:
 ```
-python benchmark/benchmark_fused_moe.py --mode backward --seqlen 1024 --permute_x --permute_y --autotune
+python benchmark/benchmark_fused_moe.py --model qwen3 --mode backward --seqlen 1024 --permute_x --permute_y --autotune
 ```
 
-On my machine and env, I get speedups > 25x and 14x respectively.
+For `Llama-4-Scout-17B-16E`:
+```
+python benchmark/benchmark_fused_moe.py --model llama4 --autotune --mode=forward --permute_y
+```
+Ditto for backwards.
 
 ### Notes
 - Tested and benched on `H100`, though should run on Ampere and possibly even earlier gpu generations though the autotuning configs will need to be adjusted.
@@ -62,6 +70,7 @@ On my machine and env, I get speedups > 25x and 14x respectively.
 - The kernels can be run either as autotuned (see `autotuning.py`) or with manually specified config (see `tuning.py`).  Recommended to run using autotuner since the MoE block requires 2 configs for the forward (2 grouped gemms) and 4 for the backwards (dX and dW per grouped gemm, 2 grouped gemms).
 - Running with autotuning turned off with the default manual kernel config will result is **highly** sub-optimal performance as it is only meant for testing / debugging purposes.
 - I've tried to strike a balance between compilation time and autotuning search space -- can probably squeeze even more performance for specific workloads.
+- The Llama4 reference layer is still highly under-optimized as there are many low-hanging opportunities for further speedups around routing and shared expert calculation.
 
 TODO:
 - TMA store: implemented but not enabled currently due to non-determinism arising from triton pipelining bug.
@@ -70,3 +79,7 @@ TODO:
     - Fused / optimized implementations of routing, token sorting, etc.
     - Better software pipelining within grouped gemm
     - Threadblock swizzling for better L2 caching
+    - Llama4
+        - Fused gather / topk weight merging 
+        - Custom topk, gather indices kernel
+        - Shared expert fusion with experts calculation
