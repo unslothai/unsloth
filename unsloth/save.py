@@ -888,11 +888,14 @@ def install_llama_cpp_old(version = -10):
         os.path.exists("llama.cpp/llama-quantize.exe") or
         os.path.exists("llama.cpp/llama-quantize") or
         os.path.exists("llama.cpp/quantize.exe") or
-        os.path.exists("llama.cpp/quantize")
+        os.path.exists("llama.cpp/quantize") or
+        os.path.exists("llama.cpp/build/bin/llama-quantize") or
+        os.path.exists("llama.cpp/build/bin/quantize")
     ):
         raise RuntimeError(
             "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
-            "But we expect this file to exist! Maybe the llama.cpp developers changed the name or check extension of the llama-quantize file."
+            "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
+            "But we expect this file to exist! Check if the file exists under llama.cpp and investigate the building process of llama.cpp (make/cmake)!"
         )
     pass
 pass
@@ -1082,10 +1085,15 @@ def save_to_gguf(
             quantize_location = "llama.cpp/llama-quantize.exe"
         elif os.path.exists("llama.cpp/llama-quantize"):
             quantize_location = "llama.cpp/llama-quantize"
+        elif os.path.exists("llama.cpp/build/bin/llama-quantize"):
+            quantize_location = "llama.cpp/build/bin/llama-quantize"
+        elif os.path.exists("llama.cpp/build/bin/quantize"):
+            quantize_location = "llama.cpp/build/bin/quantize"
         else:
             raise RuntimeError(
-                "Unsloth: The file ('llama.cpp/llama-quantize' or 'llama.cpp/llama-quantize.exe' if you are on Windows WSL) or 'llama.cpp/quantize' does not exist.\n"\
-                "But we expect this file to exist! Maybe the llama.cpp developers changed the name or check extension of the llama-quantize file."
+                "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
+                "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
+                "But we expect this file to exist! Check if the file exists under llama.cpp and investigate the building process of llama.cpp (make/cmake)!"
             )
         pass
 
