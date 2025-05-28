@@ -511,7 +511,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
                    "We will change the batch size of ' + str(per_device_train_batch_size) + ' to the `num_generations` of ' + str(num_generations))\n"\
         "    per_device_train_batch_size = num_generations\n"\
         "\n"
-        extra_args += check_dr_grpo
+        extra_args += check_num_generations
     pass
 
     # Edit config with anything extra
