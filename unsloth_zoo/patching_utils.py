@@ -445,40 +445,34 @@ pass
 
 # utility function to help BC with old module hierarchy for transformers >=4.52.0
 def check_conversion_mappings(model, current_key_name_str, skip_modules):
-    try:
-        from transformers.modeling_utils import VLMS
-    except:
-        VLMS = []
-
-    if any(allowed_name in model.__class__.__name__.lower() for allowed_name in VLMS):
-        if hasattr(model._root_cls, "_checkpoint_conversion_mapping") and len(model._root_cls._checkpoint_conversion_mapping) > 0:
-            # if this is true, then it means that we must be on transformers >=4.52.0 because conversion_mappings was added in 4.52.0
-            # we cant know if the skip module naming convention is new or old
-            # but if we are supposed to skip this current_key_name_str, and it didn't pass 
-            # (current_key_name_str in quantization_config.llm_int8_skip_modules)
-            # then new transformers + new module hierarchy means it should not be skipped, ie no BC check needed
-            # and new transformers + old module hierarchy means we still need to check to skip
-            # old transformers + old module hierarchy means no BC needed
-            # old transformers + new module hierarchy is problematic since we don't have the conversion_mappings to reverse
-            # follow the logic from save_pretrained in transformers.modeling_utils
-            reverse_conversion_mappings = {v: k for k, v in model._root_cls._checkpoint_conversion_mapping.items()}
-            new_current_key_names_str = current_key_name_str
-            for pattern, replacement in reverse_conversion_mappings.items():
-                try:
-                    replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
-                    replacement = re.sub(r"\(.*?\)", "", replacement)
-                    key, n_replace = re.subn(pattern, replacement, current_key_name_str)
-                    # Early exit of the loop
-                    if n_replace > 0:
-                        new_current_key_names_str = key
-                        break
-                except Exception as e:
-                    # skip this pattern but log
-                    do_logging = os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') == '1'
-                    if do_logging:
-                        print(f"Unsloth: Replace bnb issue: {str(e)}")
+    if hasattr(model._root_cls, "_checkpoint_conversion_mapping") and len(model._root_cls._checkpoint_conversion_mapping) > 0:
+        # if this is true, then it means that we must be on transformers >=4.52.0 because conversion_mappings was added in 4.52.0
+        # we cant know if the skip module naming convention is new or old
+        # but if we are supposed to skip this current_key_name_str, and it didn't pass 
+        # (current_key_name_str in quantization_config.llm_int8_skip_modules)
+        # then new transformers + new module hierarchy means it should not be skipped, ie no BC check needed
+        # and new transformers + old module hierarchy means we still need to check to skip
+        # old transformers + old module hierarchy means no BC needed
+        # old transformers + new module hierarchy is problematic since we don't have the conversion_mappings to reverse
+        # follow the logic from save_pretrained in transformers.modeling_utils
+        reverse_conversion_mappings = {v: k for k, v in model._root_cls._checkpoint_conversion_mapping.items()}
+        new_current_key_names_str = current_key_name_str
+        for pattern, replacement in reverse_conversion_mappings.items():
+            try:
+                replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
+                replacement = re.sub(r"\(.*?\)", "", replacement)
+                key, n_replace = re.subn(pattern, replacement, current_key_name_str)
+                # Early exit of the loop
+                if n_replace > 0:
+                    new_current_key_names_str = key
                     break
-            return any([(skip_key + "." in new_current_key_names_str) or (skip_key == new_current_key_names_str) for skip_key in skip_modules])
+            except Exception as e:
+                # skip this pattern but log
+                do_logging = os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') == '1'
+                if do_logging:
+                    print(f"Unsloth: Replace bnb issue: {str(e)}")
+                break
+        return any([(skip_key + "." in new_current_key_names_str) or (skip_key == new_current_key_names_str) for skip_key in skip_modules])
     return False
 
 
