@@ -395,7 +395,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if trainer_file in RL_METRICS_CHANGES:
         process_extra_args = RL_METRICS_CHANGES[trainer_file]
         for process_extra_arg in process_extra_args:
-            other_metrics_processor += process_extra_arg(call_args, extra_args)
+            other_metrics_processor += process_extra_arg(old_RLTrainer_source, old_RLConfig_source)
     pass
 
     # Add statistics as well!
