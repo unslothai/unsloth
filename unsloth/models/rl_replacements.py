@@ -99,6 +99,8 @@ def sft_trainer_prepare_dataset(function_name, function):
     pass
 
     check_text = \
+    "if 'skip_prepare_dataset' in locals() and skip_prepare_dataset:\n"\
+    "    return dataset\n"\
     "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
     "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
     "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"\
