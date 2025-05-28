@@ -194,8 +194,15 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             config_dict.update(additional_config_kwargs)
 
             # Create Config with all the collected parameters
-            config = config_class(**config_dict)
-            
+            # Reinitialising config class with parameters (that were none initially but populated on first init)
+            # causes the 2nd init to fail as there are mutual exclusive checks on pairs of parameters.
+            # Refer: https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py#L499-L502 for example
+            # So we only create config class if the previous init was not TrainingArguments
+            if not isinstance(training_args, TrainingArguments):
+                config = config_class(**config_dict)
+            else:
+                config = training_args
+
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config

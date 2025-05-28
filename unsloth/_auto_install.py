@@ -18,7 +18,9 @@ from packaging.version import Version as V
 v = V(torch.__version__)
 cuda = str(torch.version.cuda)
 is_ampere = torch.cuda.get_device_capability()[0] >= 8
-if cuda != "12.1" and cuda != "11.8" and cuda != "12.4" and cuda != "12.6" and cuda != "12.8": raise RuntimeError(f"CUDA = {cuda} not supported!")
+USE_ABI = torch._C._GLIBCXX_USE_CXX11_ABI
+if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8"):
+	raise RuntimeError(f"CUDA = {cuda} not supported!")
 if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
 elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
 elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
