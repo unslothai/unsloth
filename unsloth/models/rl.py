@@ -494,7 +494,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    elif scale_rewards == True:\n"\
         "        print('The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to force False.')\n"\
         "        scale_rewards = False\n"\
-        "elif loss_type.lower() == 'dapo'\n"\
+        "elif loss_type.lower() == 'dapo':\n"\
         "    print('The DAPO paper recommends `mask_truncated_completions = True`')\n"\
         "    print('The DAPO paper recommends `epsilon_high = 0.28`')\n"\
         "    mask_truncated_completions = True\n"\
