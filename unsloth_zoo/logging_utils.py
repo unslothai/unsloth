@@ -26,7 +26,17 @@ METRICS_MOVE_TO_END = [
 ]
 
 REMOVED_METRICS = [
+    "num_tokens", # All extras - not necessary
     "mean_token_accuracy", # SFT extras
+
+    # GRPO extras
+    "clip_ratio",
+    'clip_ratio/low_mean',
+    'clip_ratio/low_min',
+    'clip_ratio/high_mean',
+    'clip_ratio/high_max',
+    'clip_ratio/region_mean',
+    'frac_reward_zero_std',
 ]
 REMOVED_METRICS = frozenset(REMOVED_METRICS)
 
@@ -161,14 +171,25 @@ def get_trl_metrics():
         with open(filename, "r") as file: file = file.read()
 
         # Get metrics['kl'] or stats['kl']
-        metrics = re.findall(r"metrics\[[\"\']([^\"\']{1,})[\"\']\]", file)
+        metrics = re.findall(r"_?metrics\[[\"\']([^\"\']{1,})[\"\']\]", file)
         stats = re.findall(r"stats\[[\"\']([^\"\']{1,})[\"\']\]", file)
         metrics = metrics + stats
 
+        # Get metrics[mode]['kl'] or stats[mode]['kl'] for new TRL
+        metrics2 = re.findall(r"_?metrics\[mode\]\[[\"\']([^\"\']{1,})[\"\']\]", file)
+        stats2 = re.findall(r"stats\[mode\]\[[\"\']([^\"\']{1,})[\"\']\]", file)
+        metrics = metrics + metrics2 + stats2
+
         # Get optional f-strings
-        metrics_f = re.findall(r"metrics\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
+        metrics_f = re.findall(r"_?metrics\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
         stats_f = re.findall(r"stats\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
         metrics_f = metrics_f + stats_f
+
+        # Get optional f-strings for new TRL [mode]
+        metrics_f2 = re.findall(r"_?metrics\[mode\]\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
+        stats_f2 = re.findall(r"stats\[mode\]\[f[\"\']\{[^\}]{1,}\}([^\"\']{1,})[\"\']\]", file)
+        metrics_f = metrics_f + metrics_f2 + stats_f2
+
         # Filter out prefixes if seen
         # metrics[f"{prefix}rewards/chosen"]
         left_prefix = 'prefix = "eval_" if train_eval == "eval" else ""' in file
@@ -199,6 +220,7 @@ def get_trl_metrics():
         metrics = beginning + middle + end
 
         metrics = [x for x in metrics if x not in REMOVED_METRICS]
+        metrics = list(dict().fromkeys(metrics).keys())
 
         all_metrics[trainer] = metrics
     pass
