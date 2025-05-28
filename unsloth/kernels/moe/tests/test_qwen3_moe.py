@@ -12,7 +12,7 @@ from grouped_gemm.kernels.tuning import (
     KernelConfigBackward_dX,
     KernelConfigForward,
 )
-from grouped_gemm.reference.moe_ops import Qwen3MoeGroupedGEMMBlock
+from grouped_gemm.reference.layers.qwen3_moe import Qwen3MoeGroupedGEMMBlock
 
 from .moe_utils import (
     Qwen3MoeFusedGroupedGEMMBlock,
@@ -76,7 +76,7 @@ def config(model_id: str):
 
 
 @contextmanager
-def test_context(prelude, epilogue="Passed!", char="-", num_chars=80):
+def annotated_context(prelude, epilogue="Passed!", char="-", num_chars=80):
     print(char * num_chars)
     print(prelude)
     yield
@@ -110,8 +110,6 @@ def test_qwen3_moe(
     permute_x: bool,
     permute_y: bool,
     autotune: bool,
-    atol: float,
-    rtol: float,
 ):
     torch.manual_seed(
         SEED
@@ -119,6 +117,7 @@ def test_qwen3_moe(
     device = "cuda"
     hidden_size = config.hidden_size
     bs = 1
+    atol, rtol = TOLERANCES[dtype]
     # Reference op -- HF
     moe_block = Qwen3MoeSparseMoeBlock(config).to(device, dtype)
 
@@ -173,7 +172,7 @@ def test_qwen3_moe(
     grouped_result = run_forward(grouped_gemm_block, X, is_grouped_gemm=True)
     fused_result = run_forward(fused_gemm_block, X, is_grouped_gemm=True)
 
-    with test_context(
+    with annotated_context(
         "Testing forward pass",
         epilogue="Passed forward tests!",
         char="=",
@@ -181,10 +180,12 @@ def test_qwen3_moe(
     ):
         # Sanity checks
 
-        with test_context("Checking HF vs torch grouped gemm MoE forward outputs..."):
+        with annotated_context(
+            "Checking HF vs torch grouped gemm MoE forward outputs..."
+        ):
             check_fwd(ref_result, grouped_result, atol, rtol, verbose=False)
 
-        with test_context(
+        with annotated_context(
             "Checking torch grouped gemm MoE vs fused grouped gemm MoE forward outputs..."
         ):
             # We implement a custom check for grouped gemm results to test each of the intermediate results for easier debugging
@@ -197,7 +198,9 @@ def test_qwen3_moe(
                 verbose=False,
             )
         # Actual test
-        with test_context("Checking HF vs fused grouped gemm MoE forward outputs..."):
+        with annotated_context(
+            "Checking HF vs fused grouped gemm MoE forward outputs..."
+        ):
             check_fwd(ref_result, fused_result, atol, rtol, verbose=True)
 
     # Backward
@@ -215,18 +218,18 @@ def test_qwen3_moe(
         fused_gemm_block, grad_output, output=fused_result.output, X=fused_result.X
     )
 
-    with test_context(
+    with annotated_context(
         "Testing backward pass",
         epilogue="Passed backward tests!",
         char="=",
         num_chars=100,
     ):
         # Sanity checks
-        with test_context("Checking HF vs torch grouped gemm MoE grads..."):
+        with annotated_context("Checking HF vs torch grouped gemm MoE grads..."):
             check_grads(
                 ref_backward_result, grouped_backward_result, atol, rtol, verbose=False
             )
-        with test_context(
+        with annotated_context(
             "Checking torch grouped gemm MoE vs fused grouped gemm MoE grads..."
         ):
             check_grads(
@@ -238,7 +241,7 @@ def test_qwen3_moe(
             )
 
         # Actual test
-        with test_context("Checking HF vs fused grouped gemm MoE grads..."):
+        with annotated_context("Checking HF vs fused grouped gemm MoE grads..."):
             check_grads(
                 ref_backward_result, fused_backward_result, atol, rtol, verbose=True
             )
@@ -264,4 +267,4 @@ if __name__ == "__main__":
     print(
         f"Testing {model_id} with seqlen={args.seqlen}, dtype={args.dtype}, permute_x={args.permute_x}, permute_y={args.permute_y}, autotune={args.autotune}, atol={atol}, rtol={rtol}"
     )
-    test_qwen3_moe(config, atol=atol, rtol=rtol, **args_dict)
+    test_qwen3_moe(config, **args_dict)
