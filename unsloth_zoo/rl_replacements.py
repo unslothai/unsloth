@@ -60,7 +60,7 @@ def grpo_compute_loss(
     **kwargs
 ):
     # Set defaults for optional arguments
-    loss_type = kwargs.get("loss_type", "grpo")
+    loss_type = kwargs.get("loss_type", "bnpo")
     epsilon_low = kwargs.get("epsilon_low", 0.2)
     epsilon_high = kwargs.get("epsilon_high", 0.2)
     max_completion_length = kwargs.get("max_completion_length", 8192)

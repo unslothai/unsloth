@@ -28,23 +28,31 @@ __all__ = [
 ]
 
 from .compiler import UNSLOTH_COMPILE_LOCATION
-from .utils import _get_dtype
+from .utils import _get_dtype, Version
 
 # Also disable compiling on bitsandbytes
 def patch_compiling_bitsandbytes():
     # All Unsloth Zoo code licensed under LGPLv3
     os.environ["UNSLOTH_PATCHED"] = "1"
 
-    # Disable dynamo on Linear4bit, Linear8bit and other future modules
-    for x in ["bitsandbytes.nn.modules", "peft.tuners.lora.bnb",]:
-        exec(f"import {x}", globals(), locals())
-        layers = dir(eval(x))
-        for fx in layers:
-            try: layer = eval(f"{x}.{fx}")
-            except: continue
-            if not hasattr(layer, "forward"): continue
-            if hasattr(eval(f"{x}.{fx}.forward"), "__wrapped__"): continue
-            exec(f"{x}.{fx}.forward = torch._disable_dynamo({x}.{fx}.forward)", globals(), locals())
+    import bitsandbytes
+    if Version(bitsandbytes.__version__) >= Version("0.46.0"):
+        if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
+            print("Unsloth: Bitsandbytes >= 0.46.0 supports torch.compile - enabling.")
+    else:
+        # Disable dynamo on Linear4bit, Linear8bit and other future modules
+        if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
+            print("Unsloth: Bitsandbytes < 0.46.0 does not support torch.compile - disabling.")
+        for x in ["bitsandbytes.nn.modules", "peft.tuners.lora.bnb",]:
+            exec(f"import {x}", globals(), locals())
+            layers = dir(eval(x))
+            for fx in layers:
+                try: layer = eval(f"{x}.{fx}")
+                except: continue
+                if not hasattr(layer, "forward"): continue
+                if hasattr(eval(f"{x}.{fx}.forward"), "__wrapped__"): continue
+                exec(f"{x}.{fx}.forward = torch._disable_dynamo({x}.{fx}.forward)", globals(), locals())
+            pass
         pass
     pass
 
@@ -92,9 +100,9 @@ def patch_torch_compile(debug = False, O3 = False, ignore_errors = True):
             graph_breaks = True,
             recompiles = True,
             recompiles_verbose = True,
-            compiled_autograd_verbose = True,
-            aot_joint_graph = True,
-            aot_graphs = True,
+            compiled_autograd_verbose = False, # Produces too much code
+            aot_joint_graph = False, # Produces too much code
+            aot_graphs = False,  # Produces too much code
         )
         torch._dynamo.config.verbose = True
     else:
