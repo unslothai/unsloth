@@ -107,7 +107,8 @@ import torch
 import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
-from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
+from transformers import DataCollatorForSeq2Seq
+from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
 
 torch_compile_options = {{
     "epilogue_fusion"   : True,
