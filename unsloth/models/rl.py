@@ -503,6 +503,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += check_dr_grpo
     pass
 
+    # Check GRPO num_generations mismatch
+    if "per_device_train_batch_size" in call_args and "num_generations" in call_args: 
+        check_num_generations = \
+        "if (per_device_train_batch_size // num_generations) * num_generations != per_device_train_batch_size:\n"\
+        "    print('Unsloth: We now expect `per_device_train_batch_size` to be a multiple of `num_generations`.\\n"\
+                   "We will change the batch size of ' + str(per_device_train_batch_size) + ' to the `num_generations` of ' + str(num_generations))\n"\
+        "    per_device_train_batch_size = num_generations\n"\
+        "\n"
+        extra_args += check_dr_grpo
+    pass
+
     # Edit config with anything extra
     if trainer_file in RL_CONFIG_CHANGES:
         process_extra_args = RL_CONFIG_CHANGES[trainer_file]
