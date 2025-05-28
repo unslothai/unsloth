@@ -374,7 +374,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
         "            data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
         "        else:\n"\
-        "            data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False)\n"
+        "            data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False, mlm_probability = 0.0)\n"
         extra_args += pad_check
     pass
 
