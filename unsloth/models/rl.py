@@ -358,7 +358,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"\
         "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
         "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
-        "        data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer, mlm = False)\n"\
+        "        data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer, mlm = False, mlm_probability = 0.0)\n"\
         "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
         "        data_collator = DataCollatorForSeq2Seq(__tokenizer)\n"\
         "else:\n"\
@@ -374,7 +374,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
         "            data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
         "        else:\n"\
-        "            data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False)\n"
+        "            data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False, mlm_probability = 0.0)\n"
         extra_args += pad_check
     pass
 
