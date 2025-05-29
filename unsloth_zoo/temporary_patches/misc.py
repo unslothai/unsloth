@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import inspect
 from typing import List, Optional, Tuple, Union
-from .common import TEMPORARY_PATCHES
+from .common import TEMPORARY_PATCHES, UNSLOTH_ENABLE_LOGGING
 
 
 def patch_SmolVLMForConditionalGeneration_forward():
@@ -153,23 +153,18 @@ def patch_SmolVLMForConditionalGeneration_forward():
     new_keys = inspect.signature(forward).parameters
 
     if old_keys != new_keys:
-        print(
-            "Unsloth: Failed to patch SmolVLMForConditionalGeneration forward function."
-        )
+        if UNSLOTH_ENABLE_LOGGING:
+            print(
+                "Unsloth: Failed to patch SmolVLMForConditionalGeneration forward function."
+            )
         pass
     else:
         transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward = (
             forward
         )
         pass
-        # print(
-        #     "Unsloth: Successfully patched SmolVLMForConditionalGeneration for better torch.compile compatibility."
-        # )
-
     return
-
-
-# Add the patch to the TEMPORARY_PATCHES list
+pass
 TEMPORARY_PATCHES.append(patch_SmolVLMForConditionalGeneration_forward)
 
 
@@ -193,11 +188,11 @@ def patch_CsmBackboneModelEmbeddings_forward():
     new_keys = inspect.signature(forward).parameters
 
     if old_keys != new_keys:
-        print("Unsloth: Failed to patch CsmBackboneModelEmbeddings forward.")
+        if UNSLOTH_ENABLE_LOGGING:
+            print("Unsloth: Failed to patch CsmBackboneModelEmbeddings forward.")
     else:
         transformers.models.csm.modeling_csm.CsmBackboneModelEmbeddings.forward = forward
-
-
+pass
 TEMPORARY_PATCHES.append(patch_CsmBackboneModelEmbeddings_forward)
 
 
@@ -279,6 +274,7 @@ def patch_CsmDepthDecoderForCausalLM_forward():
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+    pass
 
     old_keys = inspect.signature(
         transformers.models.csm.modeling_csm.CsmDepthDecoderForCausalLM.forward
@@ -286,11 +282,11 @@ def patch_CsmDepthDecoderForCausalLM_forward():
     new_keys = inspect.signature(forward).parameters
 
     if old_keys != new_keys:
-        print("Unsloth: Failed to patch CsmDepthDecoderForCausalLM forward.")
+        if UNSLOTH_ENABLE_LOGGING:
+            print("Unsloth: Failed to patch CsmDepthDecoderForCausalLM forward.")
     else:
         transformers.models.csm.modeling_csm.CsmDepthDecoderForCausalLM.forward = forward
-
-
+pass
 TEMPORARY_PATCHES.append(patch_CsmDepthDecoderForCausalLM_forward)
 
 
@@ -416,6 +412,7 @@ def patch_CsmForConditionalGeneration_forward():
             else None,
             depth_decoder_attentions=depth_decoder_outputs.attentions if depth_decoder_outputs is not None else None,
         )
+    pass
 
     old_keys = inspect.signature(
         transformers.models.csm.modeling_csm.CsmForConditionalGeneration.forward
@@ -423,11 +420,11 @@ def patch_CsmForConditionalGeneration_forward():
     new_keys = inspect.signature(forward).parameters
 
     if old_keys != new_keys:
-        print("Unsloth: Failed to patch CsmForConditionalGeneration forward.")
+        if UNSLOTH_ENABLE_LOGGING:
+            print("Unsloth: Failed to patch CsmForConditionalGeneration forward.")
     else:
         transformers.models.csm.modeling_csm.CsmForConditionalGeneration.forward = forward
-
-
+pass
 TEMPORARY_PATCHES.append(patch_CsmForConditionalGeneration_forward)
 
 
@@ -520,16 +517,16 @@ def patch_CsmForConditionalGeneration_merge():
                 labels = labels_expanded
 
         return {"inputs_embeds": inputs_embeds, "labels": labels}
-
+    pass
     old_keys = inspect.signature(
         transformers.models.csm.modeling_csm.CsmForConditionalGeneration._merge_input_ids_with_input_values
     ).parameters
     new_keys = inspect.signature(_merge_input_ids_with_input_values).parameters
 
     if old_keys != new_keys:
-        print("Unsloth: Failed to patch CsmForConditionalGeneration _merge_input_ids_with_input_values.")
+        if UNSLOTH_ENABLE_LOGGING:
+            print("Unsloth: Failed to patch CsmForConditionalGeneration _merge_input_ids_with_input_values.")
     else:
         transformers.models.csm.modeling_csm.CsmForConditionalGeneration._merge_input_ids_with_input_values = _merge_input_ids_with_input_values
-
-
+pass
 TEMPORARY_PATCHES.append(patch_CsmForConditionalGeneration_merge)

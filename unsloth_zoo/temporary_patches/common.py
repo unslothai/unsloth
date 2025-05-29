@@ -14,11 +14,17 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import os
+__all__ = [
+    "TEMPORARY_PATCHES", 
+    "torch_compile_options",
+    "UNSLOTH_ENABLE_LOGGING",
+]
 
+import os
 UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         "0") == "1"
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "0") == "1"
+UNSLOTH_ENABLE_LOGGING        = os.environ.get("UNSLOTH_ENABLE_LOGGING",        "0") == "1"
 torch_compile_options = {
     "epilogue_fusion"   : True,
     "max_autotune"      : UNSLOTH_COMPILE_MAXIMUM,
@@ -29,5 +35,3 @@ torch_compile_options = {
 
 global TEMPORARY_PATCHES
 TEMPORARY_PATCHES = []
-
-__all__ = ["TEMPORARY_PATCHES", "torch_compile_options"]
