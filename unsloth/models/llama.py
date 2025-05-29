@@ -290,7 +290,7 @@ pass
 
 
 torch_nn_functional_silu = torch.nn.functional.silu
-def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None):
+def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None, gate_multiplier = None, down_multiplier = None):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
@@ -298,12 +298,21 @@ def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None):
     # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
 
     gate = fast_linear_forward(self.gate_proj, X, out = temp_gate)
+    
+    if gate_multiplier is not None:
+        gate = gate * gate_multiplier
+    
     up   = fast_linear_forward(self.  up_proj, X, out = temp_up)
+
     gate = torch_nn_functional_silu(gate, inplace = True)
     gate *= up
 
     # X = self.down_proj(gate)
     down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
+
+    if down_multiplier is not None:
+        down = down * down_multiplier
+
     return down
 pass
 
@@ -666,6 +675,10 @@ def LlamaModel_fast_forward(
     IS_GEMMA2  = self.config.model_type.startswith("gemma2")
     IS_COHERE  = self.config.model_type.startswith("cohere")
     IS_GRANITE = self.config.model_type.startswith("granite")
+    IS_FALCON_H1 = self.config.model_type.startswith("falcon_h1")
+
+    if IS_FALCON_H1:
+        inputs_embeds = inputs_embeds * self.config.embedding_multiplier
 
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
@@ -888,11 +901,17 @@ def LlamaModel_fast_forward(
 
     # Final layernorm
     if use_cache:
-        hidden_states = \
-            (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
-            (self.norm, hidden_states)
+        if IS_FALCON_H1:
+                    hidden_states = fast_rms_layernorm_inference(self.final_layernorm, hidden_states)
+        else:
+            hidden_states = \
+                (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
+                (self.norm, hidden_states)
     elif IS_COHERE:
         hidden_states = self.norm(hidden_states)
+    elif IS_FALCON_H1:
+        hidden_states = fast_rms_layernorm(self.final_layernorm, hidden_states, gemma = IS_GEMMA)
+        hidden_states = hidden_states * self.lm_head_multiplier
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
     pass
@@ -1673,6 +1692,7 @@ class FastLlamaModel:
         if token is None: token = get_token()
         if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
+        
         gpu_stats = torch.cuda.get_device_properties(0)
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
@@ -1724,6 +1744,8 @@ class FastLlamaModel:
 
         # Check if RoPE Scaling is even allowed
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
+        IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
+
         has_rope_scaling = False
         try:
             with open(inspect.getfile(model_function), "r") as file:
@@ -1766,12 +1788,16 @@ class FastLlamaModel:
 
         bnb_config = None
         if load_in_4bit:
+            llm_int8_skip_modules =  SKIP_QUANTIZATION_MODULES.copy()
+            if IS_FALCON_H1:
+                # we cannot quantize out_proj layer due to mamba kernels: https://github.com/tiiuae/Falcon-H1/issues/13#issuecomment-2918671274
+                llm_int8_skip_modules.append("out_proj")
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit              = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
-                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
+                llm_int8_skip_modules     = llm_int8_skip_modules,
             )
         pass
 
@@ -2495,6 +2521,7 @@ class FastLlamaModel:
         elif model_type == "cohere":  apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "granite": apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "falcon_h1":   apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3moe":   apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
