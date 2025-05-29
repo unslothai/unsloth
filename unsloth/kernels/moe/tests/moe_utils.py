@@ -13,12 +13,11 @@ from grouped_gemm.kernels.tuning import (
     KernelConfigBackward_dX,
     KernelConfigForward,
 )
-from grouped_gemm.reference.moe_ops import (
+from grouped_gemm.reference.layers.qwen3_moe import (
     GroupedGEMMResult,
     Qwen3MoeGroupedGEMMBlock,
-    permute,
-    unpermute,
 )
+from grouped_gemm.reference.moe_ops import permute, unpermute
 
 
 def rebind_experts_to_shared_buffer(

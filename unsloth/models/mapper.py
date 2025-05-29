@@ -948,6 +948,21 @@ else:
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ),
+    "unsloth/medgemma-4b-it-unsloth-bnb-4bit" : (
+        "unsloth/medgemma-4b-it",
+        "google/medgemma-4b-it",
+        "unsloth/medgemma-4b-it-bnb-4bit",
+    ),
+    "unsloth/medgemma-27b-text-it-unsloth-bnb-4bit" : (
+        "unsloth/medgemma-27b-text-it",
+        "google/medgemma-27b-text-it",
+        "unsloth/medgemma-27b-text-it-bnb-4bit",
+    ),
+    "unsloth/Devstral-Small-2505-unsloth-bnb-4bit" : (
+        "unsloth/Devstral-Small-2505",
+        "mistralai/Devstral-Small-2505",
+        "unsloth/Devstral-Small-2505-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}

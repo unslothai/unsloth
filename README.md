@@ -30,7 +30,7 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 | **Llama 3.2 Vision (11B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.2_(11B)-Vision.ipynb)               | 2x faster | 50% less |
 | **Llama 3.1 (8B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Llama3.1_(8B)-Alpaca.ipynb)               | 2x faster | 70% less |
 | **Mistral v0.3 (7B)**    | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Mistral_v0.3_(7B)-Conversational.ipynb)               | 2.2x faster | 75% less |
-| **Sesame-CSM (1B)**     | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Orpheus_(3B)-TTS.ipynb)               | 1.5x faster | 50% less |
+| **Sesame-CSM (1B)**     | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Sesame_CSM_(1B)-TTS.ipynb)               | 1.5x faster | 50% less |
 
 - See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://docs.unsloth.ai/get-started/unsloth-notebooks#grpo-reasoning-notebooks), **[TTS](https://docs.unsloth.ai/get-started/unsloth-notebooks#text-to-speech-tts-notebooks)** & [Vision](https://docs.unsloth.ai/get-started/unsloth-notebooks#vision-multimodal-notebooks)
 - See [all our models](https://docs.unsloth.ai/get-started/all-our-models) and our [Synthetic Dataset notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Meta_Synthetic_Data_Llama3_2_%283B%29.ipynb) in collaboration with Meta
@@ -77,6 +77,7 @@ For Windows install instructions, see [here](https://docs.unsloth.ai/get-started
 
 ## ⭐ Key Features
 - Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **8-bit** training
+- Supports **all transformer-style models** including [TTS, STT](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, diffusion, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more!
 - All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. **Manual backprop engine**.
 - **0% loss in accuracy** - no approximation methods - all exact.
 - No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
@@ -293,7 +294,6 @@ trainer = SFTTrainer(
     train_dataset = dataset,
     tokenizer = tokenizer,
     args = SFTConfig(
-        dataset_text_field = "text",
         max_seq_length = max_seq_length,
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
