@@ -719,7 +719,7 @@ $LOGITSCALINGMULTIPLY$
 $LOGITSCALINGDIVISION$
 $LOGITSOFTCAPPING$
 loss = None
-if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOCABSIZE$, $KWARGS$)
+if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOCABSIZE$$KWARGS$)
 """
 
 cross_entropy_replacement_2 = """
@@ -936,14 +936,15 @@ ce_finders = [
 
 def apply_fused_lm_head(forward):
     # All Unsloth Zoo code licensed under LGPLv3
+    import regex
     for cross_entropy_find, cross_entropy_replacement in ce_finders:
         cross_entropy_find = cross_entropy_find.strip()\
-            .replace("*", "\*").replace("^", "\^")\
-            .replace("-", "\-").replace("_", "\_")\
-            .replace(":", "\:").replace("+", "\+")\
-            .replace(".", "\.").replace(",", "\,")\
-            .replace("(", "\(").replace(")", "\)")\
-            .replace("[", "\[").replace("]", "\]")\
+            .replace("*", r"\*").replace("^", r"\^")\
+            .replace("-", r"\-").replace("_", r"\_")\
+            .replace(":", r"\:").replace("+", r"\+")\
+            .replace(".", r"\.").replace(",", r"\,")\
+            .replace("(", r"\(").replace(")", r"\)")\
+            .replace("[", r"\[").replace("]", r"\]")\
             .replace(
                 "\n",
                 r"(?:[\s\n]{0,}(?:\#[^\n]{1,}[\n][\s\n]{1,})?){0,}"
@@ -963,7 +964,7 @@ def apply_fused_lm_head(forward):
                      r"self\.config\.vocab_size|"\
                      r"self\.config\.text_config\.vocab_size"\
                      ")")\
-            .replace("$KWARGS$",       r"\*\*(loss_kwargs|kwargs)")\
+            .replace("$KWARGS$",       r"(?:, \*\*(loss_kwargs|kwargs))?")\
             .replace("$LOGITSUPCAST$", r"(?:logits = logits\.float\(\))?")\
             .replace("$LABELSDEVICE$", r"(?:labels = labels\.to\([^\)]{1,}\))?")\
             .replace("$LOGITSCALINGMULTIPLY$",
@@ -1032,9 +1033,9 @@ def apply_fused_lm_head(forward):
         )
 
         # Find matches
-        if "loss\_function" in cross_entropy_find and "loss_function" not in forward:
+        if r"loss\_function" in cross_entropy_find and "loss_function" not in forward:
             continue
-        elif "loss\_function" not in cross_entropy_find and "loss_function" in forward:
+        elif r"loss\_function" not in cross_entropy_find and "loss_function" in forward:
             continue
         elif "CrossEntropyLoss" not in cross_entropy_find and "CrossEntropyLoss" in forward:
             continue
@@ -1081,6 +1082,11 @@ def apply_fused_lm_head(forward):
             "vocab_size = (",
             forward,
         )
+        # Fix , **
+        forward = forward.replace(", **)", ")")
+        forward = forward.replace(",**)", ")")
+        forward = forward.replace(",** )", ")")
+
         return forward
     pass
     return forward
@@ -1088,6 +1094,7 @@ pass
 
 
 def test_apply_fused_lm_head():
+    import inspect
     forwards = []
     from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLForConditionalGeneration
     forwards.append(Qwen2VLForConditionalGeneration)
