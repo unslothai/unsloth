@@ -802,7 +802,19 @@ def is_bfloat16_supported():
 pass
 
 def is_vLLM_available():
-    return _is_package_available("vllm")
+    """Check if vLLM is available and compatible with the current CUDA setup."""
+    try:
+        import vllm
+        # Check CUDA compatibility
+        major_version, minor_version = torch.cuda.get_device_capability()
+        if major_version < 7:
+            return False
+        return True
+    except ImportError:
+        return False
+    except Exception:
+        # Handle any other errors (e.g. CUDA not available)
+        return False
 pass
 
 # Patches models to add RoPE Scaling
