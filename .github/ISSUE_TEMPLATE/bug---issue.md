@@ -15,5 +15,5 @@ assignees: ''
 6. Which trainer? `SFTTrainer`, `GRPOTrainer` etc
 7. **Minimal code to reproduce error Remove Hugging Face token!**
 
-For quick replies, got to https://discord.com/invite/unsloth.
-Have you tried https://docs.unsloth.ai/basics/errors-troubleshooting
+You can also join our Discord: https://discord.com/invite/unsloth
+Have you tried visiting our Docs? https://docs.unsloth.ai/basics/errors-troubleshooting
