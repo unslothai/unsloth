@@ -129,8 +129,6 @@ def FalconH1Attention_fast_forward(
         K_M = V_M = bsz * kv_seq_len
         Q_M = bsz * q_len
 
-        has_swa = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
-
         # Group query attention
         K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
         V = V  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
@@ -139,21 +137,9 @@ def FalconH1Attention_fast_forward(
         if hidden_states.requires_grad:
             K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
             V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
-
-            if has_swa:
-                Q = Q.view(1, Q_M, n_heads, head_dim)
-                K = K.view(1, K_M, n_heads, head_dim)
-                V = V.view(1, V_M, n_heads, head_dim)
-            pass
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-
-            if has_swa:
-                Q = Q.view(1, Q_M, n_kv_heads, n_groups, head_dim)
-                K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
-                V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
-            pass
         pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
@@ -425,6 +411,15 @@ def FalconH1DecoderLayer_fast_forward(
     else:
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+
+        mamba_hidden_states = self.mamba(
+            hidden_states=hidden_states,
+            cache_params=past_key_value,
+            cache_position=cache_position,
+            attention_mask=mamba_attention_mask,
+        )
+        mamba_hidden_states = mamba_hidden_states * self.ssm_out_multiplier
+
         attention_hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states       = hidden_states,
             causal_mask         = causal_mask,
@@ -438,17 +433,9 @@ def FalconH1DecoderLayer_fast_forward(
         )
         attention_hidden_states = attention_hidden_states * self.attn_out_multiplier
 
-        mamba_hidden_states = self.mamba(
-            hidden_states=hidden_states,
-            cache_params=past_key_value,
-            cache_position=cache_position,
-            attention_mask=mamba_attention_mask,
-        )
-        mamba_hidden_states = mamba_hidden_states * self.ssm_out_multiplier
-
         hidden_states = mamba_hidden_states + attention_hidden_states
 
-
+        # residual connection after attention + Mamba
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -464,7 +451,7 @@ def FalconH1DecoderLayer_fast_forward(
     return outputs
 pass
 
-def _FalconH1_fast_forward_inference(attention_fast_forward_inference=LlamaAttention_fast_forward_inference, mlp_fast_forward_inference=fast_swiglu_inference):
+def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconAttention_fast_forward_inference, mlp_fast_forward_inference=fast_swiglu_inference):
     # This makes the attention and MLP customisable.
     # Now for models like qwen3 or cohere which use custom attention operations, we can use this function
     def FalconH1Model_fast_forward_inference_custom(
@@ -577,6 +564,76 @@ def _FalconH1_fast_forward_inference(attention_fast_forward_inference=LlamaAtten
     pass
     return FalconH1Model_fast_forward_inference_custom
 
+#Separate prepare_inputs_for_generation for Hybrid FalconH1
+def _fast_prepare_inputs_for_generation(
+    self,
+    input_ids,
+    past_key_values=None,
+    attention_mask=None,
+    inputs_embeds=None,
+    cache_position=None,
+    position_ids=None,
+    use_cache=True,
+    **kwargs,):
+    # Overwitten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
+    empty_past_kv = past_key_values is None
+    
+    # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
+    # Exception 1: when passing input_embeds, input_ids may be missing entries
+    # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
+    # Exception 3: with synced GPUs cache_position may go out of bounds, but we only want dummy token in that case.
+    #              (we can't check exception 3 while compiling)
+    if not empty_past_kv:
+        if (
+            inputs_embeds is not None  # Exception 1
+            or (is_torchdynamo_compiling() or cache_position[-1] >= input_ids.shape[1])  # Exception 3
+        ):
+            input_ids = input_ids[:, -cache_position.shape[0] :]
+        elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
+            input_ids = input_ids[:, cache_position]
+    else:
+        past_key_values = FalconHybridMambaAttentionDynamicCache(
+            self.config,
+            input_ids.shape[0],
+            self.dtype,
+            devices=[
+                self.model.layers[i].mamba.conv1d.weight.device for i in range(self.config.num_hidden_layers)
+            ],
+        )
+
+    if attention_mask is not None and position_ids is None:
+        # create position_ids on the fly for batch generation
+        position_ids = attention_mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(attention_mask == 0, 1)
+        if not empty_past_kv:
+            position_ids = position_ids[:, -input_ids.shape[1] :]
+
+    # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+    if inputs_embeds is not None and empty_past_kv:
+        model_inputs = {"inputs_embeds": inputs_embeds}
+    else:
+        model_inputs = {"input_ids": input_ids.contiguous()}  # `contiguous()` needed for compilation use cases
+
+    model_inputs.update(
+        {
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+            "attention_mask": attention_mask,
+            "logits_to_keep": self.config.num_logits_to_keep,
+            "cache_position": cache_position,
+        }
+    )
+    return model_inputs
+pass
+
+
+def fix_prepare_inputs_for_generation(module):
+    # Fix prepare_inputs_for_generation
+    if hasattr(module, "prepare_inputs_for_generation"):
+            module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
+    pass
+pass
 
 class FastFalconH1Model(FastLlamaModel):
 
