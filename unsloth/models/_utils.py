@@ -217,12 +217,11 @@ def extract_approx_params_from_config(config):
         billions = float(match_B.group(1))
         return int(1_000_000_000 * billions)
     else:
-        for fam in lowercase_b_families:
-            if fam in cleaned.lower():
-                match_b = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*b", cleaned)
-                if match_b:
-                    billions = float(match_b.group(1))
-                    return int(1_000_000_000 * billions)
+        if any(fam in cleaned.lower() for fam in lowercase_b_families):
+            match_b = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*b", cleaned)
+            if match_b:
+                billions = float(match_b.group(1))
+                return int(1_000_000_000 * billions)
         else:
             match_any = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*[bB]", cleaned)
             if match_any:
