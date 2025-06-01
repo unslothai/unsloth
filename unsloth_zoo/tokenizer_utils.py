@@ -20,6 +20,7 @@ import numpy as np
 import itertools
 import datasets
 import re
+from .dataset_utils import _get_vocab_size
 
 __all__ = [
     "mean_of_trained_tokens",
@@ -109,7 +110,7 @@ def add_new_tokens(
     old_output_embedding = model.get_output_embeddings().weight
     old_input_length  = old_input_embedding .shape[0]
     old_output_length = old_output_embedding.shape[0]
-    old_config_size   = model.config.vocab_size
+    old_config_size   = _get_vocab_size(model.config)
 
     # Check for tied weights as well
     is_tied = (old_input_embedding.data_ptr() == old_output_embedding.data_ptr()) \
@@ -135,7 +136,7 @@ def add_new_tokens(
         raise RuntimeError(
             "Unsloth: LM Head matrix size did not get resized properly. Please file a bug report!"
         )
-    if model.config.vocab_size   != (old_config_size   + len(new_tokens)):
+    if _get_vocab_size(model.config) != (old_config_size + len(new_tokens)):
         raise RuntimeError(
             "Unsloth: Model's config vocab_size did not get resized properly. Please file a bug report!"
         )

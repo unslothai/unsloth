@@ -611,6 +611,18 @@ def sft_prepare_dataset(
     return dataset
 pass
 
+def _get_vocab_size(config):
+    """
+    Safely get vocab_size from config, handling both old and new config structures.
+    New configs may have vocab_size in text_config.
+    """
+    if hasattr(config, 'vocab_size'):
+        return config.vocab_size
+    elif hasattr(config, 'text_config') and hasattr(config.text_config, 'vocab_size'):
+        return config.text_config.vocab_size
+    else:
+        raise AttributeError("Could not find vocab_size in config or text_config")
+
 # Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #

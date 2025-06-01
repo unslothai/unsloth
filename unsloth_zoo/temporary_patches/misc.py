@@ -18,7 +18,9 @@ import torch
 import torch.nn as nn
 import inspect
 from typing import List, Optional, Tuple, Union
+
 from .common import TEMPORARY_PATCHES, UNSLOTH_ENABLE_LOGGING
+from ..dataset_utils import _get_vocab_size
 
 
 def patch_SmolVLMForConditionalGeneration_forward():
@@ -44,7 +46,7 @@ def patch_SmolVLMForConditionalGeneration_forward():
     current_forward_source = inspect.getsource(
         transformers.models.smolvlm.modeling_smolvlm.SmolVLMForConditionalGeneration.forward
     )
-    if normalize_text("loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.text_config.vocab_size, **kwargs)") in normalize_text(current_forward_source):
+    if normalize_text("loss = self.loss_function(logits=logits, labels=labels, vocab_size=_get_vocab_size(self.config), **kwargs)") in normalize_text(current_forward_source):
         return  # Already patched
 
     def forward(
@@ -264,7 +266,7 @@ def patch_CsmDepthDecoderForCausalLM_forward():
             shift_labels = labels[..., 1:].contiguous()
             loss_fct = ForCausalLMLoss
             loss = loss_fct(
-                logits=logits, labels=None, vocab_size=self.config.vocab_size, shift_labels=shift_labels, **kwargs
+                logits=logits, labels=None, vocab_size=_get_vocab_size(self.config), shift_labels=shift_labels, **kwargs
             )
 
         return CausalLMOutputWithPast(
@@ -355,7 +357,7 @@ def patch_CsmForConditionalGeneration_forward():
             # select first codebook as labels for the backbone model
             backbone_labels = labels[:, :, 0]
             backbone_loss = self.loss_function(
-                logits=backbone_logits, labels=backbone_labels, vocab_size=self.config.vocab_size, **kwargs
+                logits=backbone_logits, labels=backbone_labels, vocab_size=_get_vocab_size(self.config), **kwargs
             )
 
             # for the depth decoder, we need to select the frames to train on
