@@ -76,11 +76,16 @@ import contextlib
 import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth import devices
-from unsloth_zoo.utils import Version
 
-from unsloth_zoo.tokenizer_utils import (
-    patch_tokenizer as _patch_tokenizer,
-)
+if not devices.has_mps:
+    from unsloth_zoo.utils import Version
+
+    from unsloth_zoo.tokenizer_utils import (
+        patch_tokenizer as _patch_tokenizer,
+    )
+else:
+    from packaging.version import Version
+
 if not devices.has_mps:
     from unsloth_zoo.patching_utils import (
         patch_compiling_bitsandbytes,
@@ -89,20 +94,21 @@ if not devices.has_mps:
         patch_model_and_tokenizer,
         patch_compiled_autograd,
     )
-from unsloth_zoo.gradient_checkpointing import (
-    Unsloth_Offloaded_Gradient_Checkpointer,
-    unsloth_offloaded_gradient_checkpoint,
-    patch_unsloth_gradient_checkpointing,
-    unpatch_unsloth_gradient_checkpointing,
+    from unsloth_zoo.gradient_checkpointing import (
+        Unsloth_Offloaded_Gradient_Checkpointer,
+        unsloth_offloaded_gradient_checkpoint,
+        patch_unsloth_gradient_checkpointing,
+        unpatch_unsloth_gradient_checkpointing,
 
-    Unsloth_Gradient_Checkpointer,
-    unsloth_gradient_checkpoint,
-    patch_gradient_checkpointing,
-    unpatch_gradient_checkpointing,
+        Unsloth_Gradient_Checkpointer,
+        unsloth_gradient_checkpoint,
+        patch_gradient_checkpointing,
+        unpatch_gradient_checkpointing,
 
-    patch_unsloth_smart_gradient_checkpointing,
-    unpatch_unsloth_smart_gradient_checkpointing,
-)
+        patch_unsloth_smart_gradient_checkpointing,
+        unpatch_unsloth_smart_gradient_checkpointing,
+    )
+
 if not devices.has_mps:
     from unsloth_zoo.loss_utils import (
         HAS_CUT_CROSS_ENTROPY,

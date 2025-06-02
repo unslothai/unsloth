@@ -868,6 +868,11 @@ if not has_mps:
             "mistralai/Devstral-Small-2505",
             "unsloth/Devstral-Small-2505-bnb-4bit",
         ),
+        "unsloth/DeepSeek-R1-0528-Qwen3-8B-unsloth-bnb-4bit" : (
+            "unsloth/DeepSeek-R1-0528-Qwen3-8B",
+            "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+            "unsloth/DeepSeek-R1-0528-Qwen3-8B-bnb-4bit",
+        ),
     }
 else:
     __INT_TO_FLOAT_MAPPER = \
@@ -962,11 +967,6 @@ else:
     "shashikanth-a/Llama-3.2-3B-Instruct-4bit" : (
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
-    ),
-    "unsloth/DeepSeek-R1-0528-Qwen3-8B-unsloth-bnb-4bit" : (
-        "unsloth/DeepSeek-R1-0528-Qwen3-8B",
-        "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
-        "unsloth/DeepSeek-R1-0528-Qwen3-8B-bnb-4bit",
     ),
 }
 

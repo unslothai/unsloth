@@ -19,7 +19,9 @@ if not has_mps():
     from peft.tuners.lora import Linear4bit as Peft_Linear4bit
     from peft.tuners.lora import Linear as Peft_Linear
     from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
-from unsloth_zoo.utils import Version
+    from unsloth_zoo.utils import Version
+else:
+    from packaging.version import Version
 from typing import Optional, Callable, Union, List
 import sys
 import requests
@@ -33,7 +35,8 @@ import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
-from .tokenizer_utils import fix_sentencepiece_gguf
+if not has_mps():
+    from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
 try:
     from huggingface_hub import get_token
