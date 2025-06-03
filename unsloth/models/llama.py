@@ -27,6 +27,11 @@ from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
 IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
+try:
+    from transformers.modeling_layers import GradientCheckpointingLayer
+except:
+    GradientCheckpointingLayer = type(None)
+
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
@@ -877,7 +882,12 @@ def LlamaModel_fast_forward(
                 mask = self. GA_mask if use_static_mask else dynamic_GA_mask
         pass
 
-        if gradient_checkpointing:
+        try:
+            is_gradient_checkpointing_layer = isinstance(decoder_layer, GradientCheckpointingLayer)
+        except:
+            is_gradient_checkpointing_layer = False
+
+        if gradient_checkpointing and not is_gradient_checkpointing_layer:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
