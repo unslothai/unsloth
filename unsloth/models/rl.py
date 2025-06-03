@@ -349,9 +349,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "            max_length = args.max_length\n"\
             "    else:\n"\
             "        model_max_length = getattr(model, 'max_seq_length', None)\n"\
-            "        print(model_max_length, 'mml1')\n"\
+            "        # print(model_max_length, 'mml1')\n"\
             "        if model_max_length is None: model_max_length = getattr(model, 'max_length', None)\n"\
-            "        print(model_max_length, 'mml2')\n"\
+            "        # print(model_max_length, 'mml2')\n"\
             "        if model_max_length is not None:\n"\
             "            args.max_length = model_max_length\n"\
             "            max_length = args.max_length\n"\
