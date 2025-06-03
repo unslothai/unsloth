@@ -741,8 +741,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
-    # elif attention_mask is None:
+    elif self.training and os.environ.get("UNSLOTH_KEEP_PADDING", "0") != '1':    
         attention_mask = None
         padding_mask = None
     else:
@@ -1619,8 +1618,37 @@ def unsloth_fast_generate(
 pass
 
 
-class FastLlamaModel:
+original_attention_forward      = LlamaAttention.forward
+original_sdpa_attention_forward = LlamaSdpaAttention.forward
+original_flash_attention2_forward = LlamaFlashAttention2.forward
+original_decoder_layer_forward  = LlamaDecoderLayer.forward
+original_model_forward          = LlamaModel.forward
+original_for_causal_lm_forward  = LlamaForCausalLM.forward
+original_peft_model_for_causal_lm_forward = PeftModelForCausalLM.forward
+import transformers.models.llama.modeling_llama
+original_LLamaRotaryEmbedding =  transformers.models.llama.modeling_llama.LlamaRotaryEmbedding 
 
+class FastLlamaModel:
+    def set_functions():
+        LlamaAttention      .forward = LlamaAttention_fast_forward
+        LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
+        LlamaFlashAttention2.forward = LlamaAttention_fast_forward
+        LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
+        LlamaModel          .forward = LlamaModel_fast_forward
+        LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
+        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
+
+    def reset_functions():
+        LlamaAttention      .forward = original_attention_forward
+        LlamaSdpaAttention  .forward = original_sdpa_attention_forward
+        LlamaFlashAttention2.forward = original_flash_attention2_forward
+        LlamaDecoderLayer   .forward = original_decoder_layer_forward
+        LlamaModel          .forward = original_model_forward
+        LlamaForCausalLM    .forward = original_for_causal_lm_forward
+        PeftModelForCausalLM.forward = original_peft_model_for_causal_lm_forward
+        transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = original_LLamaRotaryEmbedding 
+    
     @staticmethod
     def pre_patch():
         init_name, function = patch_llama_rope_scaling(
@@ -1948,6 +1976,11 @@ class FastLlamaModel:
         inner_training_loop = inner_training_loop.replace(
             "is_torch_tpu_available()",
             "False",
+        )
+        # This has to do with the transformers update, its a monkey patch.
+        inner_training_loop = inner_training_loop.replace(
+            ", learning_rate=learning_rate", 
+            ""
         )
         exec(inner_training_loop, globals())
         Trainer._inner_training_loop = _fast_inner_training_loop

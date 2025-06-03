@@ -222,6 +222,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
+
             #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             return hidden_states
             # input_ids = input_ids[:, -logits_to_keep:]
@@ -237,6 +238,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             # if len(row_indices) > 0 and len(col_indices) > 0:
             #     breakpoint()  # Breakpoint triggered here
             #     print("Found high values!")
+
             # return  logps #  compute logprobs for the input tokens
         pass
     pass
@@ -320,13 +322,13 @@ def grpo_trainer_compute_loss(function_name, function):
                     self, _input_ids, logits_to_keep, completion_mask, advantages, old_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                 )    
-
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
 
         # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
-
+        if mean_kl.item() > 10 or loss.item() > 10:
+            breakpoint()
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
             self._metrics[mode]["completion_length"].append(completion_length.item())
