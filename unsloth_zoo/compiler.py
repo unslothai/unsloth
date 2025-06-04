@@ -1065,21 +1065,25 @@ def apply_fused_lm_head(forward):
             DEFAULT_KWARGS = "locals().get('loss_kwargs', {}) or locals().get('kwargs', {})"
 
             compiled_cross_entropy_find = regex.compile(cross_entropy_find, flags=regex.DOTALL | regex.MULTILINE)
-            kwarg_num = compiled_cross_entropy_find.groupindex["KWARGS"]
-            safe_replacement = regex.sub(
-                rf"\\{kwarg_num}(?!\d)",
-                "$KWARGS$",
-                replacement,
-            )
+            if "KWARGS" in compiled_cross_entropy_find.groupindex:
+                kwarg_num = compiled_cross_entropy_find.groupindex["KWARGS"]
+                safe_replacement = regex.sub(
+                    rf"\\{kwarg_num}(?!\d)",
+                    "$KWARGS$",
+                    replacement,
+                )
 
-            def _kw_safe_sub(match: regex.Match) -> str:
-                out = match.expand(safe_replacement)
-                kwarg_text = match.group("KWARGS")
-                if kwarg_text:
-                    out = out.replace("$KWARGS$", kwarg_text)
-                else:
-                    out = out.replace("$KWARGS$", DEFAULT_KWARGS)
-                return out
+                def _kw_safe_sub(match: regex.Match) -> str:
+                    out = match.expand(safe_replacement)
+                    kwarg_text = match.group("KWARGS")
+                    out = out.replace("$KWARGS$", kwarg_text or DEFAULT_KWARGS)
+                    return out
+            else:
+                # Handle case where KWARGS is not in the regex
+                safe_replacement = replacement.replace("$KWARGS$", DEFAULT_KWARGS)
+
+                def _kw_safe_sub(match):
+                    return match.expand(safe_replacement)
 
             forward = regex.sub(
                 compiled_cross_entropy_find,
