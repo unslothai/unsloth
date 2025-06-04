@@ -964,7 +964,7 @@ def apply_fused_lm_head(forward):
                      r"self\.config\.vocab_size|"\
                      r"self\.config\.text_config\.vocab_size"\
                      ")")\
-            .replace("$KWARGS$",       r"(?:, \*\*(loss_kwargs|kwargs))?")\
+            .replace("$KWARGS$",       r"(?:,\s*\*\*(?P<KWARGS>(?:loss_kwargs|kwargs)))?")\
             .replace("$LOGITSUPCAST$", r"(?:logits = logits\.float\(\))?")\
             .replace("$LABELSDEVICE$", r"(?:labels = labels\.to\([^\)]{1,}\))?")\
             .replace("$LOGITSCALINGMULTIPLY$",
@@ -1031,7 +1031,6 @@ def apply_fused_lm_head(forward):
             "shift_labels = shift_labels.to(shift_logits.device)\n"\
             "loss = loss_fct(shift_logits, shift_labels)"
         )
-
         # Find matches
         if r"loss\_function" in cross_entropy_find and "loss_function" not in forward:
             continue
@@ -1061,12 +1060,31 @@ def apply_fused_lm_head(forward):
             "logits = EMPTY_LOGITS\n" + \
             (len(spaces)-4)*" " + "loss = None\n" + \
             replacement + "\n"
+
         try:
-            forward = regex.sub(
-                cross_entropy_find,
+            DEFAULT_KWARGS = "locals().get('loss_kwargs', {}) or locals().get('kwargs', {})"
+
+            compiled_cross_entropy_find = regex.compile(cross_entropy_find, flags=regex.DOTALL | regex.MULTILINE)
+            kwarg_num = compiled_cross_entropy_find.groupindex["KWARGS"]
+            safe_replacement = regex.sub(
+                rf"\\{kwarg_num}(?!\d)",
+                "$KWARGS$",
                 replacement,
+            )
+
+            def _kw_safe_sub(match: regex.Match) -> str:
+                out = match.expand(safe_replacement)
+                kwarg_text = match.group("KWARGS")
+                if kwarg_text:
+                    out = out.replace("$KWARGS$", kwarg_text)
+                else:
+                    out = out.replace("$KWARGS$", DEFAULT_KWARGS)
+                return out
+
+            forward = regex.sub(
+                compiled_cross_entropy_find,
+                _kw_safe_sub,
                 forward,
-                flags = regex.DOTALL | regex.MULTILINE,
             )
         except:
             continue
