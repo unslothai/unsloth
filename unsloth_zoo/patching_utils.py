@@ -445,7 +445,11 @@ pass
 
 # utility function to help BC with old module hierarchy for transformers >=4.52.0
 def check_conversion_mappings(model, current_key_name_str, skip_modules):
-    if hasattr(model._root_cls, "_checkpoint_conversion_mapping") and len(model._root_cls._checkpoint_conversion_mapping) > 0:
+    # model_root_cls is None if there are no conversion_mappings or no _root_cls
+    model_root_cls = getattr(model, "_root_cls", model if hasattr(model, "_checkpoint_conversion_mapping") else None)
+    if model_root_cls is None:
+        return False
+    if hasattr(model_root_cls, "_checkpoint_conversion_mapping") and len(model_root_cls._checkpoint_conversion_mapping) > 0:
         # if this is true, then it means that we must be on transformers >=4.52.0 because conversion_mappings was added in 4.52.0
         # we cant know if the skip module naming convention is new or old
         # but if we are supposed to skip this current_key_name_str, and it didn't pass 
@@ -455,7 +459,7 @@ def check_conversion_mappings(model, current_key_name_str, skip_modules):
         # old transformers + old module hierarchy means no BC needed
         # old transformers + new module hierarchy is problematic since we don't have the conversion_mappings to reverse
         # follow the logic from save_pretrained in transformers.modeling_utils
-        reverse_conversion_mappings = {v: k for k, v in model._root_cls._checkpoint_conversion_mapping.items()}
+        reverse_conversion_mappings = {v: k for k, v in model_root_cls._checkpoint_conversion_mapping.items()}
         new_current_key_names_str = current_key_name_str
         for pattern, replacement in reverse_conversion_mappings.items():
             try:
@@ -561,7 +565,7 @@ if hasattr(transformers.integrations.bitsandbytes, "_replace_with_bnb_linear") a
 
         # will raise error if patch fails
         compile(new_source, '<temp_patched>', 'exec')
-        if '_mark_parent' not in new_source and '_unmark_parent' not in new_source:
+        if '_mark_parent' not in new_source or '_unmark_parent' not in new_source:
             do_logging = os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') == '1'
             if do_logging:
                 print(f"Unsloth: Could not wrap replace_with_bnb_linear but may not be an issue")
