@@ -969,7 +969,7 @@ def apply_fused_lm_head(forward):
                      r"self\.config\.vocab_size|"\
                      r"self\.config\.text_config\.vocab_size"\
                      ")")\
-            .replace("$KWARGS$", r"(?:, \*\*(loss_kwargs|kwargs))?")\
+            .replace("$KWARGS$",       r"(?:, \*\*(loss_kwargs|kwargs))?")\
             .replace("$LOGITSUPCAST$", r"(?:logits = logits\.float\(\))?")\
             .replace("$LABELSDEVICE$", r"(?:labels = labels\.to\([^\)]{1,}\))?")\
             .replace("$LOGITSCALINGMULTIPLY$",
