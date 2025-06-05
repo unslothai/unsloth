@@ -724,7 +724,12 @@ if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOC
 
 cross_entropy_replacement_2 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
-n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
+all_locals = locals()
+n_items = None
+for __kwargs in all_locals.values():
+    if type(__kwargs) is dict:
+        n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
+        break
 requires_grad_ = self.lm_head.weight.requires_grad
 requires_grad_ = requires_grad_ or self.lm_head.weight.dtype == torch.float32
 
@@ -964,7 +969,7 @@ def apply_fused_lm_head(forward):
                      r"self\.config\.vocab_size|"\
                      r"self\.config\.text_config\.vocab_size"\
                      ")")\
-            .replace("$KWARGS$",       r"(?:,\s*\*\*(?P<KWARGS>(?:loss_kwargs|kwargs)))?")\
+            .replace("$KWARGS$", r"(?:, \*\*(loss_kwargs|kwargs))?")\
             .replace("$LOGITSUPCAST$", r"(?:logits = logits\.float\(\))?")\
             .replace("$LABELSDEVICE$", r"(?:labels = labels\.to\([^\)]{1,}\))?")\
             .replace("$LOGITSCALINGMULTIPLY$",
@@ -1062,32 +1067,9 @@ def apply_fused_lm_head(forward):
             replacement + "\n"
 
         try:
-            DEFAULT_KWARGS = "locals().get('loss_kwargs', {}) or locals().get('kwargs', {})"
-
-            compiled_cross_entropy_find = regex.compile(cross_entropy_find, flags=regex.DOTALL | regex.MULTILINE)
-            if "KWARGS" in compiled_cross_entropy_find.groupindex:
-                kwarg_num = compiled_cross_entropy_find.groupindex["KWARGS"]
-                safe_replacement = regex.sub(
-                    rf"\\{kwarg_num}(?!\d)",
-                    "$KWARGS$",
-                    replacement,
-                )
-
-                def _kw_safe_sub(match: regex.Match) -> str:
-                    out = match.expand(safe_replacement)
-                    kwarg_text = match.group("KWARGS")
-                    out = out.replace("$KWARGS$", kwarg_text or DEFAULT_KWARGS)
-                    return out
-            else:
-                # Handle case where KWARGS is not in the regex
-                safe_replacement = replacement.replace("$KWARGS$", DEFAULT_KWARGS)
-
-                def _kw_safe_sub(match):
-                    return match.expand(safe_replacement)
-
             forward = regex.sub(
-                compiled_cross_entropy_find,
-                _kw_safe_sub,
+                cross_entropy_find,
+                replacement,
                 forward,
             )
         except:
