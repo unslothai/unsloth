@@ -66,17 +66,17 @@ TOLERANCES = {
 
 
 @pytest.fixture(scope="module")
-def model_id():
+def model_id() -> str:
     return "Qwen/Qwen3-30B-A3B"
 
 
 @pytest.fixture(scope="module")
-def config(model_id: str):
+def config(model_id: str) -> Qwen3MoeConfig:
     return AutoConfig.from_pretrained(model_id)
 
 
 @contextmanager
-def annotated_context(prelude, epilogue="Passed!", char="-", num_chars=80):
+def annotated_context(prelude: str, epilogue: str="Passed!", char: str="-", num_chars: int=80) -> None:
     print(char * num_chars)
     print(prelude)
     yield
@@ -110,7 +110,7 @@ def test_qwen3_moe(
     permute_x: bool,
     permute_y: bool,
     autotune: bool,
-):
+) -> None:
     torch.manual_seed(
         SEED
     )  # Should not be needed when running using pytest -- autouse fixture in conftest.py

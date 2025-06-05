@@ -24,16 +24,16 @@ from unsloth_zoo.patching_utils import (
 
 @triton.jit
 def layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W,
-    b,
-    r,
-    mu,
+    Y: torch.Tensor, Y_row_stride: int,
+    X: torch.Tensor, X_row_stride: int,
+    W: torch.Tensor,
+    b: torch.Tensor,
+    r: torch.Tensor,
+    mu: torch.Tensor,
     n_cols : tl.constexpr,
     eps : tl.constexpr,
     BLOCK_SIZE : tl.constexpr
-):
+) -> None:
     row_idx = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
@@ -63,16 +63,16 @@ pass
 
 @triton.jit
 def layernorm_backward(
-    dY, dY_row_stride,
-    X,   X_row_stride,
-    W,
-    b,
-    r,
-    mu,
+    dY: torch.Tensor, dY_row_stride: int,
+    X: torch.Tensor,   X_row_stride: int,
+    W: torch.Tensor,
+    b: torch.Tensor,
+    r: torch.Tensor,
+    mu: torch.Tensor,
     n_cols : tl.constexpr,
     eps : tl.constexpr,
     BLOCK_SIZE : tl.constexpr
-):
+) -> None:
     # Approximately follows https://github.com/karpathy/llm.c/blob/master/doc/layernorm/layernorm.md
     row_idx = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
@@ -102,7 +102,7 @@ pass
 
 class Fast_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, b, eps):
+    def forward(ctx: torch.autograd.function._ContextMethodMixin, X: torch.Tensor, W: torch.Tensor, b: torch.Tensor, eps: float) -> torch.Tensor:
         shape = X.shape
         dim = shape[-1]
         X = X.view(-1, dim)
@@ -133,7 +133,7 @@ class Fast_Layernorm(torch.autograd.Function):
     pass
 
     @staticmethod
-    def backward(ctx, dY):
+    def backward(ctx: torch.autograd.function._ContextMethodMixin, dY: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         shape = dY.shape
         dim = shape[-1]
         dY = dY.view(-1, dim)
@@ -158,7 +158,7 @@ class Fast_Layernorm(torch.autograd.Function):
 pass
 
 
-def fast_layernorm(layernorm, X):
+def fast_layernorm(layernorm: torch.nn.LayerNorm, X: torch.Tensor) -> torch.Tensor:
     assert(layernorm.elementwise_affine is True)
     W    = layernorm.weight
     bias = layernorm.bias
@@ -172,9 +172,9 @@ pass
 
 
 def test_layernorm(
-    dim = 1024, eps = 1e-5, dtype = torch.float16,
-    bsz = 21, random_state = 3407, seqlen = 3341,
-):
+    dim: int = 1024, eps: float = 1e-5, dtype: torch.dtype = torch.float16,
+    bsz: int = 21, random_state: int = 3407, seqlen: int = 3341,
+) -> None:
     from torch.nn import LayerNorm
     layernorm = LayerNorm((dim,), eps = eps, device = "cuda", dtype = dtype)
     torch.cuda.manual_seed(random_state)
@@ -196,7 +196,7 @@ def test_layernorm(
 pass
 
 
-def testing_suite_layernorm():
+def testing_suite_layernorm() -> None:
     for dim in [512, 1024, 2048]:
         for dtype in [torch.float16, torch.bfloat16]:
             with torch.autocast(device_type = "cuda", dtype = dtype):

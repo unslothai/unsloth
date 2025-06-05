@@ -1,3 +1,4 @@
+from typing import Optional
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -69,7 +70,17 @@ KAGGLE_TMP = "/tmp"
 del keynames
 
 
-def try_fix_tokenizer(tokenizer, prepend = True):
+def try_fix_tokenizer(tokenizer: PreTrainedTokenizerFast, prepend: bool = True) -> PreTrainedTokenizerFast:
+    """
+    Attempts to fix inconsistencies in a given tokenizer by aligning its token mappings and special tokens with expected values. This function is particularly useful when there are discrepancies between token IDs and their corresponding string representations in the tokenizer.
+    
+    Args:
+        tokenizer (PreTrainedTokenizerFast): The tokenizer to be fixed.
+        prepend (bool, optional): Whether to prepend a special token (like '▁') to the tokenizer's string representation. Defaults to True.
+    
+    Returns:
+        PreTrainedTokenizerFast: A potentially fixed version of the input tokenizer.
+    """
 
     if hasattr(tokenizer, "_tokenizer"):
         converted_tokenizer = tokenizer._tokenizer
@@ -119,7 +130,16 @@ def try_fix_tokenizer(tokenizer, prepend = True):
 pass
 
 
-def get_sorted_dict(dictionary):
+def get_sorted_dict(dictionary: dict[str, int]) -> dict[str, int]:
+    """
+    Sorts a dictionary by its values and returns a new dictionary with the same key-value pairs in sorted order.
+    
+    Args:
+        dictionary (dict[str, int]): The dictionary to be sorted, where keys are strings and values are integers.
+    
+    Returns:
+        dict[str, int]: A new dictionary with the same key-value pairs as the input, but sorted by value.
+    """
     sorted_keys = sorted(dictionary.values())
     inverted_dictionary = { value : key for key, value in dictionary.items() }
 
@@ -132,9 +152,19 @@ pass
 
 
 def convert_to_fast_tokenizer(
-    slow_tokenizer,
-    temporary_location = "_unsloth_sentencepiece_temp",
-):
+    slow_tokenizer: PreTrainedTokenizer,
+    temporary_location: str = "_unsloth_sentencepiece_temp",
+) -> PreTrainedTokenizerFast:
+    """
+    Converts a slow tokenizer into a fast tokenizer, ensuring that the resulting fast tokenizer behaves similarly to the original slow tokenizer. This function is useful when working with models that require fast tokenization for efficiency.
+    
+    Args:
+        slow_tokenizer (PreTrainedTokenizer): The slow tokenizer to be converted.
+        temporary_location (str, optional): A directory path where temporary files can be stored during the conversion process. Defaults to "_unsloth_sentencepiece_temp".
+    
+    Returns:
+        PreTrainedTokenizerFast: A fast tokenizer that closely matches the behavior of the input slow tokenizer.
+    """
     is_fast = getattr(slow_tokenizer, "is_fast", False)
     if is_fast: return slow_tokenizer
     
@@ -257,7 +287,17 @@ llama_template = \
 pass
 
 
-def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
+def assert_same_tokenization(slow_tokenizer: PreTrainedTokenizer, fast_tokenizer: PreTrainedTokenizerFast) -> bool:
+    """
+    Verifies that two tokenizers produce the same tokenization results for a set of test cases. This function is used to ensure that changes made to a tokenizer (e.g., during conversion or fixing) do not alter its tokenization behavior.
+    
+    Args:
+        slow_tokenizer (PreTrainedTokenizer): The original slow tokenizer.
+        fast_tokenizer (PreTrainedTokenizerFast): The fast tokenizer to be compared against the slow tokenizer.
+    
+    Returns:
+        bool: True if both tokenizers produce the same tokenization results; False otherwise.
+    """
     # Get eos_token, bos_token etc
     if not hasattr(slow_tokenizer, "all_special_tokens"): return True
     dir_names = dir(slow_tokenizer)
@@ -338,11 +378,23 @@ pass
 
 
 def fix_sentencepiece_tokenizer(
-    old_tokenizer,
-    new_tokenizer,
-    token_mapping,
-    temporary_location = "_unsloth_sentencepiece_temp",
-):
+    old_tokenizer: PreTrainedTokenizerFast,
+    new_tokenizer: PreTrainedTokenizerFast,
+    token_mapping: dict[str, str],
+    temporary_location: str = "_unsloth_sentencepiece_temp",
+) -> PreTrainedTokenizerFast:
+    """
+    Fixes a SentencePiece-based tokenizer by updating its internal token mappings based on a provided mapping of old to new tokens. This function is particularly useful when extending or modifying the vocabulary of a tokenizer that uses the SentencePiece library.
+    
+    Args:
+        old_tokenizer (PreTrainedTokenizerFast): The original tokenizer with potentially outdated token mappings.
+        new_tokenizer (PreTrainedTokenizerFast): The new tokenizer with updated token mappings.
+        token_mapping (dict[str, str]): A dictionary mapping old token strings to new token strings.
+        temporary_location (str, optional): A directory path where temporary files can be stored during the fixing process. Defaults to "_unsloth_sentencepiece_temp".
+    
+    Returns:
+        PreTrainedTokenizerFast: A fixed version of the new tokenizer with updated token mappings.
+    """
     # From https://github.com/google/sentencepiece/issues/121
     # We need to manually edit the sentencepiece tokenizer!
     from transformers.utils import sentencepiece_model_pb2
@@ -400,7 +452,7 @@ def fix_sentencepiece_tokenizer(
 pass
 
 
-def fix_sentencepiece_gguf(saved_location):
+def fix_sentencepiece_gguf(saved_location: str) -> None:
     """
         Fixes sentencepiece tokenizers which did not extend the vocabulary with
         user defined tokens.
@@ -469,14 +521,29 @@ pass
 
 
 def _load_correct_tokenizer(
-    tokenizer_name,
-    model_max_length = None,
-    padding_side = "right",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = "huggingface_tokenizers_cache",
-    fix_tokenizer = True,
-):
+    tokenizer_name: str,
+    model_max_length: Optional[int] = None,
+    padding_side: str               = "right",
+    token: Optional[str]            = None,
+    trust_remote_code: bool         = False,
+    cache_dir: Optional[str]        = "huggingface_tokenizers_cache",
+    fix_tokenizer: bool             = True,
+) -> PreTrainedTokenizerFast:
+    """
+    Loads a tokenizer from a specified location, applying fixes and conversions as necessary to ensure compatibility and correctness. This function attempts to handle various issues that may arise when loading tokenizers, such as mismatches between slow and fast tokenizers or incorrect token mappings.
+    
+    Args:
+        tokenizer_name (str): The name or path of the tokenizer to be loaded.
+        model_max_length (Optional[int], optional): The maximum length of the tokenized output. Defaults to None.
+        padding_side (str, optional): The side on which to pad the tokenized output ('left' or 'right'). Defaults to "right".
+        token (Optional[str], optional): A token to be used for authentication if the tokenizer is hosted on a private repository. Defaults to None.
+        trust_remote_code (bool, optional): Whether to trust and execute remote code when loading the tokenizer. Defaults to False.
+        cache_dir (Optional[str], optional): A directory to cache the loaded tokenizer. Defaults to "huggingface_tokenizers_cache".
+        fix_tokenizer (bool, optional): Whether to apply fixes to the tokenizer after loading. Defaults to True.
+    
+    Returns:
+        PreTrainedTokenizerFast: The loaded and potentially fixed tokenizer.
+    """
     if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
     elif IS_KAGGLE_ENVIRONMENT:
@@ -550,14 +617,29 @@ pass
 
 
 def load_correct_tokenizer(
-    tokenizer_name,
-    model_max_length = None,
-    padding_side = "right",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = "huggingface_tokenizers_cache",
-    fix_tokenizer = True,
-):
+    tokenizer_name: str,
+    model_max_length: Optional[int] = None,
+    padding_side: str               = "right",
+    token: Optional[str]            = None,
+    trust_remote_code: bool         = False,
+    cache_dir: Optional[str]        = "huggingface_tokenizers_cache",
+    fix_tokenizer: bool             = True,
+) -> PreTrainedTokenizerFast:
+    """
+    Loads a tokenizer from a specified location, applying fixes and conversions as necessary to ensure compatibility and correctness, and also ensures that the chat template is correctly set up for models that require it.
+    
+    Args:
+        tokenizer_name (str): The name or path of the tokenizer to be loaded.
+        model_max_length (Optional[int], optional): The maximum length of the tokenized output. Defaults to None.
+        padding_side (str, optional): The side on which to pad the tokenized output ('left' or 'right'). Defaults to "right".
+        token (Optional[str], optional): A token to be used for authentication if the tokenizer is hosted on a private repository. Defaults to None.
+        trust_remote_code (bool, optional): Whether to trust and execute remote code when loading the tokenizer. Defaults to False.
+        cache_dir (Optional[str], optional): A directory to cache the loaded tokenizer. Defaults to "huggingface_tokenizers_cache".
+        fix_tokenizer (bool, optional): Whether to apply fixes to the tokenizer after loading. Defaults to True.
+    
+    Returns:
+        PreTrainedTokenizerFast: The loaded and potentially fixed tokenizer with a properly configured chat template.
+    """
     tokenizer = _load_correct_tokenizer(
         tokenizer_name = tokenizer_name,
         model_max_length = model_max_length,
@@ -596,7 +678,18 @@ def load_correct_tokenizer(
 pass
 
 
-def _find_end_position(template, endfor, endif):
+def _find_end_position(template: str, endfor: str, endif: str) -> Optional[str]:
+    """
+    Determines the position of the end of a loop or conditional block in a chat template string. This function is used to locate the appropriate place to insert additional template logic, such as handling generation prompts.
+    
+    Args:
+        template (str): The chat template string to be analyzed.
+        endfor (str): The string representing the end of a loop block.
+        endif (str): The string representing the end of a conditional block.
+    
+    Returns:
+        Optional[str]: The string indicating the end of the block ('endfor' or 'endif'), or None if neither is found.
+    """
     where_endfor = template.find(endfor)
     where_endif = template.find(endif)
     if where_endfor == where_endif == -1:
@@ -609,7 +702,16 @@ def _find_end_position(template, endfor, endif):
 pass
 
 
-def _fix_chat_template(chat_template):
+def _fix_chat_template(chat_template: str) -> str:
+    """
+    Modifies a chat template string to include logic for handling generation prompts, ensuring that the template correctly supports features like adding special tokens during text generation.
+    
+    Args:
+        chat_template (str): The original chat template string.
+    
+    Returns:
+        str: The modified chat template string with added logic for handling generation prompts.
+    """
     endfor = "{% endfor %}"
     endif = "{% endif %}"
     chosen_end = _find_end_position(chat_template, endfor, endif)
@@ -638,7 +740,16 @@ def _fix_chat_template(chat_template):
 pass
 
 
-def fix_chat_template(tokenizer):
+def fix_chat_template(tokenizer: PreTrainedTokenizerFast) -> Optional[str]:
+    """
+    Adjusts the chat template of a tokenizer to ensure it correctly handles generation prompts and special tokens. This function is used to fix chat templates that may be missing necessary logic for proper text generation.
+    
+    Args:
+        tokenizer (PreTrainedTokenizerFast): The tokenizer whose chat template needs to be fixed.
+    
+    Returns:
+        Optional[str]: The fixed chat template string, or None if the original template could not be fixed.
+    """
     chat_template = getattr(tokenizer, "chat_template", None)
     if chat_template is None: return None
 
@@ -708,14 +819,29 @@ pass
 
 
 def check_tokenizer(
-    model,
-    tokenizer,
-    model_name = "unsloth/llama-2-7b-bnb-4bit",
-    model_max_length = 4096,
-    padding_side = "right",
-    token = None,
-    _reload = True,
-):
+    model: PeftModelForCausalLM,
+    tokenizer: PreTrainedTokenizerFast,
+    model_name: str       = "unsloth/llama-2-7b-bnb-4bit",
+    model_max_length: int = 4096,
+    padding_side: str     = "right",
+    token: Optional[str]  = None,
+    _reload: bool         = True,
+) -> PreTrainedTokenizerFast:
+    """
+    Verifies and fixes issues with a tokenizer, such as out-of-bounds token IDs or incorrect special token mappings. This function is used to ensure that a tokenizer is compatible with a given model and does not contain errors that could lead to runtime issues.
+    
+    Args:
+        model (PeftModelForCausalLM): The model associated with the tokenizer.
+        tokenizer (PreTrainedTokenizerFast): The tokenizer to be checked and potentially fixed.
+        model_name (str, optional): The name of the model, used for logging purposes. Defaults to "unsloth/llama-2-7b-bnb-4bit".
+        model_max_length (int, optional): The maximum length of the tokenized output. Defaults to 4096.
+        padding_side (str, optional): The side on which to pad the tokenized output ('left' or 'right'). Defaults to "right".
+        token (Optional[str], optional): A token to be used for authentication if the tokenizer is hosted on a private repository. Defaults to None.
+        _reload (bool, optional): Whether to reload the tokenizer if issues are detected. Defaults to True.
+    
+    Returns:
+        PreTrainedTokenizerFast: The checked and potentially fixed tokenizer.
+    """
     # Checks tokenizer for out of bounds ids.
     # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
     # where <sep> had token id=32002.
@@ -897,7 +1023,7 @@ except:
 pass
 
 
-def patch_sft_trainer_tokenizer():
+def patch_sft_trainer_tokenizer() -> None:
     """
         Patches the trainer with changes
     """

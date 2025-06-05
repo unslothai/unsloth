@@ -19,13 +19,13 @@ from grouped_gemm.kernels.autotuning import (
 # Only account for the case when X is in expert order and we are permuting Y when fusing mul -- this precondition is checked in the interface
 @triton.jit
 def _grouped_gemm_forward_kernel(
-    x_ptr,
-    w_ptr,
-    y_ptr,
+    x_ptr: tl.tensor,
+    w_ptr: tl.tensor,
+    y_ptr: tl.tensor,
     # Variable depending on routed probs
-    m_sizes_ptr,
-    gather_indices_ptr,
-    topk_weights_ptr,
+    m_sizes_ptr: tl.tensor,
+    gather_indices_ptr: tl.tensor,
+    topk_weights_ptr: tl.tensor,
     # Constant problem shapes
     NUM_EXPERTS: tl.constexpr,
     NUM_TOKENS: tl.constexpr,
@@ -37,17 +37,53 @@ def _grouped_gemm_forward_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
-    PERMUTE_X: tl.constexpr = False,
-    PERMUTE_Y: tl.constexpr = False,
-    FUSE_MUL_PRE: tl.constexpr = False,
-    FUSE_MUL_POST: tl.constexpr = False,
+    PERMUTE_X: tl.constexpr      = False,
+    PERMUTE_Y: tl.constexpr      = False,
+    FUSE_MUL_PRE: tl.constexpr   = False,
+    FUSE_MUL_POST: tl.constexpr  = False,
     USE_FAST_ACCUM: tl.constexpr = False,
     USE_TMA_LOAD_W: tl.constexpr = False,
     USE_TMA_LOAD_X: tl.constexpr = False,
-    USE_TMA_STORE: tl.constexpr = False,
-    acc_dtype: tl.constexpr = tl.float32,
-    FLATTEN: tl.constexpr = True,
+    USE_TMA_STORE: tl.constexpr  = False,
+    acc_dtype: tl.constexpr      = tl.float32,
+    FLATTEN: tl.constexpr        = True,
 ) -> None:
+    """
+    Triton kernel for grouped GEMM (General Matrix Multiply) forward pass with multiple optimization options.
+    
+    This kernel implements a fused grouped GEMM operation with support for permutation, multiplication fusion, and various memory access optimizations.
+    
+    Args:
+        x_ptr: Pointer to input tensor X (shape: [NUM_TOKENS * TOPK, K])
+        w_ptr: Pointer to weight tensor W (shape: [NUM_EXPERTS, N, K])
+        y_ptr: Pointer to output tensor Y (shape: [NUM_TOKENS * TOPK, N])
+    
+    m_sizes_ptr: Pointer to tensor containing sizes for each expert
+        gather_indices_ptr: Pointer to tensor containing indices for permutation
+        topk_weights_ptr: Pointer to tensor containing top-k weights
+        NUM_EXPERTS: Total number of experts
+        NUM_TOKENS: Number of tokens
+        TOPK: Top-k value
+        N: Output dimension
+        K: Input dimension
+        NUM_SMS: Number of streaming multiprocessors
+        BLOCK_SIZE_M: Block size for M dimension
+        BLOCK_SIZE_N: Block size for N dimension
+        BLOCK_SIZE_K: Block size for K dimension
+        PERMUTE_X: Whether to permute input X
+        PERMUTE_Y: Whether to permute output Y
+        FUSE_MUL_PRE: Whether to fuse multiplication before GEMM
+        FUSE_MUL_POST: Whether to fuse multiplication after GEMM
+        USE_FAST_ACCUM: Whether to use fast accumulation
+        USE_TMA_LOAD_W: Whether to use TMA for loading weights
+        USE_TMA_LOAD_X: Whether to use TMA for loading input
+        USE_TMA_STORE: Whether to use TMA for storing output
+        acc_dtype: Accumulator data type
+        FLATTEN: Whether to flatten the computation
+    
+    Returns:
+        None: The result is written to y_ptr
+    """
     tl.static_assert(K % BLOCK_SIZE_K == 0)
 
     TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK

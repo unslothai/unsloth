@@ -1,3 +1,4 @@
+from typing import Any
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -146,7 +147,29 @@ pass
 torch_matmul = torch.matmul
 torch_tanh   = torch.tanh
 torch_nn_functional_softmax = torch.nn.functional.softmax
-def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+def slow_inference_attention_softcapping(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal_mask: torch.Tensor, self, bsz: int, q_len: int) -> torch.Tensor:
+    """
+    Performs attention computation with logit softcapping for inference.
+    
+    Args:
+        Q (`torch.Tensor`): Query tensor of shape (batch_size, num_heads, seq_len, head_dim)
+        K (`torch.Tensor`): Key tensor of shape (batch_size, num_kv_heads, seq_len, head_dim)
+        V (`torch.Tensor`): Value tensor of shape (batch_size, num_kv_heads, seq_len, head_dim)
+        causal_mask (`torch.Tensor`): Causal mask tensor to prevent attention to future tokens
+        self: Context object containing model configuration parameters
+        bsz (`int`): Batch size
+        q_len (`int`): Query sequence length
+    
+    Returns:
+        `torch.Tensor`: Output tensor of shape (batch_size, seq_len, hidden_size) after attention computation
+    
+    The function implements grouped query attention and applies:
+    1. Query scaling by 1/sqrt(s) where s is query_pre_attn_scalar
+    2. Attention computation with logit softcapping using tanh activation
+    3. Causal masking to prevent information leakage
+    4. Softmax normalization
+    5. Final value projection
+    """
     n_heads    = self.config.num_attention_heads
     head_dim   = self.head_dim
     n_kv_heads = self.config.num_key_value_heads

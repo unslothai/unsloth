@@ -1,3 +1,4 @@
+from typing import List, Optional, Tuple, Any, T
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -62,7 +63,7 @@ if HAS_FLASH_ATTENTION_SOFTCAPPING:
 # [TODO] We must randomnly use torch.compile?
 # Gemma 2 uses double RMS Layernorms, so the backward passes should not overwrite the gradients!
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
-def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
+def fast_rms_layernorm_gemma2_compiled(layernorm: torch.nn.Module, X: torch.Tensor, gemma: bool = True) -> torch.Tensor:
     old_dtype = X.dtype
     X = X.float()
     X = X * torch.rsqrt(X.square().mean(-1, keepdim = True) + layernorm.eps) * \
@@ -76,12 +77,12 @@ def Gemma2Attention_fast_forward(
     self,
     hidden_states:        torch.Tensor,
     causal_mask:          Optional[BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    bool = False,
-    use_cache:            bool = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    attention_mask:       Optional[torch.Tensor]            = None,
+    position_ids:         Optional[torch.LongTensor]        = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]]     = None,
+    output_attentions:    bool                              = False,
+    use_cache:            bool                              = False,
+    padding_mask:         Optional[torch.LongTensor]        = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     
@@ -170,14 +171,14 @@ def Gemma2DecoderLayer_fast_forward(
     self,
     hidden_states:        torch.Tensor,
     causal_mask:          Optional[BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    Optional[bool] = False,
-    use_cache:            Optional[bool] = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    attention_mask:       Optional[torch.Tensor]            = None,
+    position_ids:         Optional[torch.LongTensor]        = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]]     = None,
+    output_attentions:    Optional[bool]                    = False,
+    use_cache:            Optional[bool]                    = False,
+    padding_mask:         Optional[torch.LongTensor]        = None,
     *args, **kwargs,
-):
+) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
         out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda:0")
 
@@ -245,11 +246,11 @@ def Gemma2Attention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
-    position_ids,
-    do_prefill = False,
-    attention_mask = None,
-    use_sliding_window = False,
-):
+    position_ids: torch.LongTensor,
+    do_prefill: bool                       = False,
+    attention_mask: Optional[torch.Tensor] = None,
+    use_sliding_window: bool               = False,
+) -> tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -381,11 +382,11 @@ pass
 # @torch.inference_mode
 def Gemma2Model_fast_forward_inference(
     self,
-    input_ids,
-    past_key_values,
-    position_ids,
-    attention_mask = None,
-):
+    input_ids: torch.LongTensor,
+    past_key_values: List[Tuple[torch.Tensor, torch.Tensor]],
+    position_ids: torch.LongTensor,
+    attention_mask: Optional[torch.Tensor] = None,
+) -> BaseModelOutputWithPast:
     out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
@@ -460,7 +461,7 @@ pass
 class FastGemma2Model(FastLlamaModel):
 
     @staticmethod
-    def pre_patch():
+    def pre_patch() -> None:
         init_name, function = patch_linear_scaling(
             model_name         = "gemma2",
             rope_module        = GemmaFixedRotaryEmbedding,
@@ -492,7 +493,7 @@ class FastGemma2Model(FastLlamaModel):
 
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model: torch.nn.Module, tokenizer) -> Tuple[torch.nn.Module, Any]:
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(model, tokenizer, downcast_rope = False)
 

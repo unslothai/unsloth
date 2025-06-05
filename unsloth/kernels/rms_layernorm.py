@@ -1,3 +1,4 @@
+from typing import Any
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,14 +20,14 @@ from .utils import calculate_settings, torch_cuda_device
 
 @triton.jit
 def _rms_layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W, W_row_stride,
-    r, r_row_stride : tl.constexpr,
+    Y: torch.Tensor, Y_row_stride: int,
+    X: torch.Tensor, X_row_stride: int,
+    W: torch.Tensor, W_row_stride: int,
+    r: torch.Tensor, r_row_stride : tl.constexpr,
     n_cols     : tl.constexpr,
     eps        : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
-):
+) -> None:
     """
         Fast RMS Layernorm kernel
         Inspiration from a Triton tutorial:
@@ -54,17 +55,17 @@ pass
 
 
 def _rms_layernorm_backward(
-    dY, dY_row_stride,
-    dX, dX_row_stride,
-    X,   X_row_stride,
-    W,   W_row_stride,
-    r,   r_row_stride : tl.constexpr,
+    dY: torch.Tensor, dY_row_stride: int,
+    dX: torch.Tensor, dX_row_stride: int,
+    X: torch.Tensor,   X_row_stride: int,
+    W: torch.Tensor,   W_row_stride: int,
+    r: torch.Tensor,   r_row_stride : tl.constexpr,
     # dW, dW_row_stride,
     n_cols     : tl.constexpr,
     eps        : tl.constexpr,
     GEMMA      : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
-):
+) -> None:
     """
         Fast RMS Layernorm kernel for the backward pass
         Inspiration from a Triton tutorial:
@@ -106,14 +107,14 @@ _rms_layernorm_backward = triton.heuristics(
 
 @triton.jit
 def _gemma_rms_layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W, W_row_stride,
-    r, r_row_stride : tl.constexpr,
+    Y: torch.Tensor, Y_row_stride: int,
+    X: torch.Tensor, X_row_stride: int,
+    W: torch.Tensor, W_row_stride: int,
+    r: torch.Tensor, r_row_stride : tl.constexpr,
     n_cols     : tl.constexpr,
     eps        : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,
-):
+) -> None:
     # Copies https://github.com/google-deepmind/gemma/blob/main/gemma/layers.py#L31
     # and https://github.com/keras-team/keras-nlp/blob/v0.8.2/keras_nlp/models/gemma/rms_normalization.py#L33
     # exactly. Essentially all in float32!
@@ -140,7 +141,7 @@ pass
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X : torch.Tensor, W : torch.Tensor, eps : float, gemma : bool = False):
+    def forward(ctx, X : torch.Tensor, W : torch.Tensor, eps : float, gemma : bool = False) -> torch.Tensor:
         shape = X.shape
         dim : int = shape[-1]
         X = X.view(-1, dim)
@@ -175,7 +176,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
     pass
 
     @staticmethod
-    def backward(ctx, dY : torch.Tensor):
+    def backward(ctx, dY : torch.Tensor) -> tuple[torch.Tensor, ...]:
         shape = dY.shape
         dim : int = shape[-1]
         dY = dY.view(-1, dim)
@@ -207,7 +208,7 @@ pass
 
 # [TODO] Unsure why RMS Layernorm is not torch.compiling properly
 @torch.compiler.disable
-def fast_rms_layernorm(layernorm, X : torch.Tensor, gemma : bool = False):
+def fast_rms_layernorm(layernorm, X : torch.Tensor, gemma : bool = False) -> torch.Tensor:
     W : torch.Tensor = layernorm.weight
     eps : float = layernorm.variance_epsilon if \
         hasattr(layernorm, "variance_epsilon") \
@@ -219,7 +220,7 @@ pass
 
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
 class Unsloth_LlamaRMSNorm(LlamaRMSNorm):
-    def forward(self, X):
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
         return fast_rms_layernorm(self, X, gemma = False)
     pass
 pass
@@ -235,7 +236,7 @@ except:
     pass
 pass
 
-def patch_rms_layernorm():
+def patch_rms_layernorm() -> None:
     import transformers.models.llama.modeling_llama
     transformers.models.llama.modeling_llama.LlamaRMSNorm = Unsloth_LlamaRMSNorm
     try:
@@ -247,7 +248,7 @@ def patch_rms_layernorm():
 pass
 
 
-def unpatch_rms_layernorm():
+def unpatch_rms_layernorm() -> None:
     import transformers.models.llama.modeling_llama
     transformers.models.llama.modeling_llama.LlamaRMSNorm = LlamaRMSNorm
     try:
@@ -260,9 +261,9 @@ pass
 
 
 def test_rms_layernorm(
-    dim = 1024, eps = 1e-5, dtype = torch.float16,
-    bsz = 21, random_state = 3407, seqlen = 3341,
-):
+    dim: int = 1024, eps: float = 1e-5, dtype: torch.dtype = torch.float16,
+    bsz: int = 21, random_state: int = 3407, seqlen: int = 3341,
+) -> None:
     from transformers.models.llama.modeling_llama import LlamaRMSNorm
     layernorm = LlamaRMSNorm((dim,), eps = eps).to("cuda")
     torch.cuda.manual_seed(random_state)
@@ -283,7 +284,7 @@ def test_rms_layernorm(
 pass
 
 
-def testing_suite_layernorm():
+def testing_suite_layernorm() -> None:
     for dim in [512, 1024, 2048]:
         for dtype in [torch.float16, torch.bfloat16]:
             with torch.autocast(device_type = "cuda", dtype = dtype):

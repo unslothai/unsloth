@@ -1,3 +1,4 @@
+from typing import Optional
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -55,7 +56,17 @@ pass
 
 
 torch_nn_functional_gelu = torch.nn.functional.gelu
-def fast_geglu_inference(self, X):
+def fast_geglu_inference(self, X: torch.Tensor) -> torch.Tensor:
+    """
+    Performs a fast inference pass for the GEGLU activation function.
+    
+    Args:
+        self: The model layer containing the gate and up projection layers.
+        X (`torch.Tensor`): Input tensor to be processed.
+    
+    Returns:
+        `torch.Tensor`: The output tensor after applying the GEGLU activation.
+    """
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
@@ -78,14 +89,30 @@ def GemmaDecoderLayer_fast_forward(
     self,
     hidden_states:        torch.Tensor,
     causal_mask:          Optional[BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    Optional[bool] = False,
-    use_cache:            Optional[bool] = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    attention_mask:       Optional[torch.Tensor]            = None,
+    position_ids:         Optional[torch.LongTensor]        = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]]     = None,
+    output_attentions:    Optional[bool]                    = False,
+    use_cache:            Optional[bool]                    = False,
+    padding_mask:         Optional[torch.LongTensor]        = None,
     *args, **kwargs,
-):
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Fast forward pass for a Gemma decoder layer.
+    
+    Args:
+        hidden_states (`torch.Tensor`): Input tensor containing the hidden states.
+        causal_mask (`BlockDiagonalCausalMask`, optional): Mask to apply for causal attention.
+        attention_mask (`torch.Tensor`, optional): Mask to apply to the attention weights.
+        position_ids (`torch.LongTensor`, optional): Indices specifying the positions of the tokens.
+        past_key_value (`Tuple[torch.Tensor]`, optional): Cached key and value tensors for attention.
+        output_attentions (`bool`, optional): Whether to output attention weights.
+        use_cache (`bool`, optional): Whether to use the past key-value cache.
+        padding_mask (`torch.LongTensor`, optional): Mask indicating which tokens are padding tokens.
+    
+    Returns:
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing the output hidden states, attention weights, and the present key-value cache.
+    """
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
         out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda:0")
 
@@ -144,11 +171,23 @@ from math import sqrt as math_sqrt
 # @torch.inference_mode
 def GemmaModel_fast_forward_inference(
     self,
-    input_ids,
-    past_key_values,
-    position_ids,
-    attention_mask = None,
-):
+    input_ids: torch.Tensor,
+    past_key_values: tuple[torch.Tensor, torch.Tensor],
+    position_ids: torch.Tensor,
+    attention_mask: Optional[torch.Tensor] = None,
+) -> BaseModelOutputWithPast:
+    """
+    Fast forward inference pass for the Gemma model.
+    
+    Args:
+        input_ids (`torch.Tensor`): Tensor of input token indices.
+        past_key_values (`tuple[torch.Tensor, torch.Tensor]`): Cached key and value tensors for attention.
+        position_ids (`torch.Tensor`): Tensor of position indices.
+        attention_mask (`torch.Tensor`, optional): Mask to apply to the attention weights.
+    
+    Returns:
+        `BaseModelOutputWithPast`: Model output containing the last hidden state, past key values, hidden states, and attentions.
+    """
     out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
@@ -203,11 +242,21 @@ pass
 # Follows line by line https://github.com/google-deepmind/gemma/blob/main/gemma/positional_embeddings.py#L45
 # Formulates cos and sin differently from Llama!
 class GemmaFixedRotaryEmbedding(torch.nn.Module):
+    """
+    Fixed rotary positional embedding module for Gemma models.
+    
+    Args:
+        dim (`int`, optional): Dimension of the embedding.
+        max_position_embeddings (`int`, optional): Maximum number of position embeddings.
+        base (`float`, optional): Base value for frequency computation.
+        device (`str`, optional): Device to place the embeddings on.
+        config (`object`, optional): Configuration object containing model parameters.
+    """
     # Fixes https://github.com/huggingface/transformers/pull/28837
     # https://github.com/microsoft/DeepSpeed/issues/4932
     # The precision of RoPE buffers is not correct, so we cast to int64.
-    def __init__(self, dim = None, max_position_embeddings=2048, base=10000, device=None,
-        config = None, # [TODO] Hack to pass in config - need to remove later
+    def __init__(self, dim: int = None, max_position_embeddings: int=2048, base: float=10000, device: str=None,
+        config: Optional[object] = None, # [TODO] Hack to pass in config - need to remove later
     ):
         super().__init__()
         if config is not None:
@@ -229,7 +278,15 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
     pass
 
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
+    def _set_cos_sin_cache(self, seq_len: int, device: str, dtype: torch.dtype) -> None:
+        """
+        Sets the cosine and sine caches for positional embeddings.
+        
+        Args:
+            seq_len (`int`): Length of the sequence for which to generate embeddings.
+            device (`str`): Device to place the embeddings on.
+            dtype (`torch.dtype`): Data type for the embeddings.
+        """
         # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
@@ -251,7 +308,18 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.register_buffer("sin_cached", sin, persistent = False)
     pass
 
-    def forward(self, x, position_ids=None, seq_len=None):
+    def forward(self, x: torch.Tensor, position_ids: Optional[torch.Tensor]=None, seq_len: Optional[int]=None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass to generate cosine and sine positional embeddings.
+        
+        Args:
+            x (`torch.Tensor`): Input tensor for which to generate embeddings.
+            position_ids (`torch.Tensor`, optional): Indices specifying the positions of the tokens.
+            seq_len (`int`, optional): Length of the sequence for which to generate embeddings.
+        
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: A tuple containing the cosine and sine embeddings.
+        """
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
@@ -262,11 +330,27 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         )
     pass
 
-    def get_cached(self, seq_len = None):
+    def get_cached(self, seq_len: Optional[int] = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves the cached cosine and sine embeddings.
+        
+        Args:
+            seq_len (`int`, optional): Length of the sequence for which to retrieve embeddings.
+        
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: A tuple containing the cached cosine and sine embeddings.
+        """
         return self.cos_cached, self.sin_cached
     pass
 
-    def extend_rope_embedding(self, x, seq_len):
+    def extend_rope_embedding(self, x: torch.Tensor, seq_len: int) -> None:
+        """
+        Extends the RoPE (Rotary Positional Embedding) to a longer sequence length.
+        
+        Args:
+            x (`torch.Tensor`): Input tensor for which to extend the embeddings.
+            seq_len (`int`): New sequence length for the embeddings.
+        """
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = math.ceil(seq_len / 8192) * 8192
@@ -280,14 +364,22 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
     # Fixes https://github.com/huggingface/transformers/pull/28837
     # https://github.com/microsoft/DeepSpeed/issues/4932
     # The precision of RoPE buffers is not correct, so we cast to int64.
-    def __init__(self, dim = None, max_position_embeddings=2048, base=10000, device=None, scaling_factor=1.0,
-        config = None, # [TODO] Hack to pass in config - need to remove later
+    def __init__(self, dim: int = None, max_position_embeddings: int=2048, base: float=10000, device: str=None, scaling_factor: float=1.0,
+        config: Optional[object] = None, # [TODO] Hack to pass in config - need to remove later
     ):
         self.scaling_factor = scaling_factor
         super().__init__(dim = dim, max_position_embeddings = max_position_embeddings, base = base, device = device, config = config)
     pass
 
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
+    def _set_cos_sin_cache(self, seq_len: int, device: str, dtype: torch.dtype) -> None:
+        """
+        Sets the cosine and sine caches for linearly scaled positional embeddings.
+        
+        Args:
+            seq_len (`int`): Length of the sequence for which to generate embeddings.
+            device (`str`): Device to place the embeddings on.
+            dtype (`torch.dtype`): Data type for the embeddings.
+        """
 # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
@@ -313,9 +405,15 @@ pass
 
 
 class FastGemmaModel(FastLlamaModel):
+    """
+    Fast implementation of the Gemma model with optimized components.
+    """
 
     @staticmethod
-    def pre_patch():
+    def pre_patch() -> None:
+        """
+        Performs pre-patching operations for the FastGemma model, such as applying linear scaling to the RoPE and replacing attention modules.
+        """
         init_name, function = patch_linear_scaling(
             model_name         = "gemma",
             rope_module        = GemmaFixedRotaryEmbedding,
@@ -347,7 +445,17 @@ class FastGemmaModel(FastLlamaModel):
 
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model: object, tokenizer: object) -> tuple[object, object]:
+        """
+        Performs post-patching operations for the FastGemma model, such as adjusting layer normalization and freezing parameters.
+        
+        Args:
+            model (`object`): The model to be patched.
+            tokenizer (`object`): The tokenizer associated with the model.
+        
+        Returns:
+            tuple[object, object]: A tuple containing the patched model and tokenizer.
+        """
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(model, tokenizer, downcast_rope = False)
 
