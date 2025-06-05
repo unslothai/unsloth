@@ -1065,12 +1065,12 @@ def apply_fused_lm_head(forward):
             "logits = EMPTY_LOGITS\n" + \
             (len(spaces)-4)*" " + "loss = None\n" + \
             replacement + "\n"
-
         try:
             forward = regex.sub(
                 cross_entropy_find,
                 replacement,
                 forward,
+                flags = regex.DOTALL | regex.MULTILINE,
             )
         except:
             continue
