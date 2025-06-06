@@ -358,7 +358,6 @@ HAS_FLASH_ATTENTION_SOFTCAPPING = False
 if DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
 
-
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True
         if _is_package_available("flash_attn"):
