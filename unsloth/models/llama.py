@@ -27,6 +27,11 @@ from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
 IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
+try:
+    from transformers.modeling_layers import GradientCheckpointingLayer
+except:
+    GradientCheckpointingLayer = type(None)
+
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
@@ -99,7 +104,7 @@ torch_nn_functional_softmax = torch.nn.functional.softmax
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 # Fix new HF's inference code
-def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
+def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **kwargs,):
     past_key_values = kwargs.get("past_key_values", None)
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
@@ -107,11 +112,54 @@ def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
             past_key_values = None
             kwargs["past_key_values"] = None
         else:
+            bs, cache_length = input_ids.shape
             input_ids = input_ids[:,[-1]]
-            kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
+            
+            # Get to the base model
+            base_model = self
+            if hasattr(base_model, 'base_model_prefix'):
+                base_model = getattr(base_model, base_model.base_model_prefix)
+                
+            if hasattr(base_model, "_prepare_4d_causal_attention_mask_with_cache_position"):
+                def needs_device_kw(fn) -> bool:
+                    try:
+                        sig = inspect.signature(inspect.unwrap(fn))
+                        return "device" in sig.parameters
+                    except:
+                        # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
+                        return transformers_version < Version("4.52.0")
+
+                kwargs = {
+                    "sequence_length": 1,
+                    "target_length": cache_length,
+                    "dtype": self.dtype,
+                    "cache_position": torch.arange(cache_length, cache_length+1, device=input_ids.device),
+                    "batch_size": bs,
+                    "config": self.config,
+                    "past_key_values": past_key_values,
+                }
+                try:
+                    if needs_device_kw(base_model._prepare_4d_causal_attention_mask_with_cache_position):
+                        kwargs["device"] = input_ids.device
+                except:
+                    print(f"Unsloth: Could not inspect signature of {base_model._prepare_4d_causal_attention_mask_with_cache_position}")
+
+                attention_mask = base_model._prepare_4d_causal_attention_mask_with_cache_position(
+                    attention_mask,
+                    **kwargs,
+                )
+            else:
+                attention_mask = attention_mask[:,[-1]]
+                logger.warning_once(
+                    f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
+                    "defined in its base modeling class. Compiled forward passes will be sub-optimal. If you're "
+                    "writing code, see Llama for an example implementation. If you're a user, please report this "
+                    "issue on GitHub."
+                )
+
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
-    return { "input_ids" : input_ids, **kwargs, }
+    return { "input_ids" : input_ids, "attention_mask": attention_mask, **kwargs, }
 pass
 
 
@@ -850,7 +898,12 @@ def LlamaModel_fast_forward(
                 mask = self. GA_mask if use_static_mask else dynamic_GA_mask
         pass
 
-        if gradient_checkpointing:
+        try:
+            is_gradient_checkpointing_layer = isinstance(decoder_layer, GradientCheckpointingLayer)
+        except:
+            is_gradient_checkpointing_layer = False
+
+        if gradient_checkpointing and not is_gradient_checkpointing_layer:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
