@@ -48,7 +48,6 @@ import inspect
 from functools import partial
 from .utils import _get_dtype
 from .patching_utils import patch_model_and_tokenizer
-from .dataset_utils import _get_vocab_size
 global LORA_REQUEST_ID
 
 # Ignore logging messages
@@ -494,7 +493,7 @@ def get_vllm_state_dict(llm, return_state_dict = False, config = None):
     pass
 
     assert(config is not None)
-    vocab_size = _get_vocab_size(config)
+    vocab_size = config.vocab_size
 
     state_dict = OrderedDict()
     quant_state_dict = OrderedDict()

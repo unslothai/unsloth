@@ -23,7 +23,6 @@ import os
 import logging
 
 from .common import TEMPORARY_PATCHES, torch_compile_options, UNSLOTH_ENABLE_LOGGING
-from ..dataset_utils import _get_vocab_size
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +285,7 @@ def patch_Gemma3ForConditionalGeneration():
             # Flatten the tokens
             loss_fct = nn.CrossEntropyLoss()
 
-            flat_logits = shift_logits.view(-1, _get_vocab_size(self.config))
+            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
         loss = outputs.loss
@@ -379,7 +378,7 @@ def patch_Gemma3ForConditionalGeneration():
             # Flatten the tokens
             loss_fct = nn.CrossEntropyLoss()
 
-            flat_logits = shift_logits.view(-1, _get_vocab_size(self.config))
+            flat_logits = shift_logits.view(-1, self.config.text_config.vocab_size)
             flat_labels = shift_labels.view(-1).to(shift_logits.device)
             loss = loss_fct(flat_logits, flat_labels)
         loss = outputs.loss
