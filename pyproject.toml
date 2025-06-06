@@ -22,8 +22,8 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.5.11",
-    "torch>=2.4.0",
+    "unsloth_zoo>=2025.6.1",
+    "torch>=2.4.0,<=2.7.0",
     "xformers>=0.0.27.post2",
     "bitsandbytes",
     "triton>=3.0.0 ; platform_system == 'Linux'",
