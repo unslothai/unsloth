@@ -336,6 +336,33 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "                   the maximum the model supports is ' + str(model_max_seq_length) + '. We shall reduce it.')\n"\
         "            args.max_seq_length = model_max_seq_length\n"
         extra_args += length_check
+
+        # At this point max_seq_length might be set, but trl is moving to max_length
+        if trainer_file == "sft_trainer":
+            max_length_check = \
+            "if 'max_length' not in locals() and not hasattr(args, 'max_length'):\n"\
+            "    pass\n"\
+            "else:\n"\
+            "    if hasattr(args, 'max_seq_length') and args.max_seq_length is not None and args.max_seq_length > 0:\n"\
+            "        if hasattr(args, 'max_length'):\n"\
+            "            args.max_length = args.max_seq_length\n"\
+            "            max_length = args.max_length\n"\
+            "    else:\n"\
+            "        model_max_length = getattr(model, 'max_seq_length', None)\n"\
+            "        # print(model_max_length, 'mml1')\n"\
+            "        if model_max_length is None: model_max_length = getattr(model, 'max_length', None)\n"\
+            "        # print(model_max_length, 'mml2')\n"\
+            "        if model_max_length is not None:\n"\
+            "            args.max_length = model_max_length\n"\
+            "            max_length = args.max_length\n"\
+            "        elif hasattr(args, 'max_length') and args.max_length is not None:\n"\
+            "            max_length = args.max_length\n"\
+            "            # if we are here, then we are in a weird case where max_length is set but max_seq_length is not set\n"\
+            "            setattr(model, 'max_seq_length', max_length)\n"\
+            "        else:\n"\
+            "            print('Unsloth: We did not find `max_seq_length` or `max_length` in the model or args. We will set it to 1024.')\n"\
+            "            args.max_length = 1024\n"
+            extra_args += max_length_check
     pass
 
     # Enable for training and move padding side of tokenizer to right
