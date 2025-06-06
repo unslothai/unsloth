@@ -43,11 +43,11 @@ TODO:
 
 @triton.jit
 def _grouped_gemm_dX_kernel(
-    dY_ptr,  # [M_total, N]
-    w_ptr,  # [E, N, K]
-    dX_ptr,  # [M_total, K]
-    gather_indices_ptr,
-    m_sizes_ptr,
+    dY_ptr: torch.Tensor,  # [M_total, N]
+    w_ptr: torch.Tensor,  # [E, N, K]
+    dX_ptr: torch.Tensor,  # [M_total, K]
+    gather_indices_ptr: torch.Tensor,
+    m_sizes_ptr: torch.Tensor,
     # problem sizes
     NUM_EXPERTS: tl.constexpr,
     NUM_TOKENS: tl.constexpr,
@@ -59,12 +59,12 @@ def _grouped_gemm_dX_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
-    PERMUTE_X: tl.constexpr = False,
-    PERMUTE_Y: tl.constexpr = False,
-    USE_TMA_LOAD_W: tl.constexpr = False,
+    PERMUTE_X: tl.constexpr       = False,
+    PERMUTE_Y: tl.constexpr       = False,
+    USE_TMA_LOAD_W: tl.constexpr  = False,
     USE_TMA_LOAD_dY: tl.constexpr = False,
-    USE_TMA_STORE: tl.constexpr = False,
-    FLATTEN: tl.constexpr = True,
+    USE_TMA_STORE: tl.constexpr   = False,
+    FLATTEN: tl.constexpr         = True,
 ) -> None:
     TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK
     output_dtype = dX_ptr.dtype.element_ty
@@ -289,11 +289,11 @@ to account for expert boundaries
 
 @triton.jit
 def _grouped_gemm_dW_kernel(
-    x_ptr,
-    dY_ptr,
-    dW_ptr,
-    m_sizes_ptr,
-    gather_indices_ptr,
+    x_ptr: torch.Tensor,
+    dY_ptr: torch.Tensor,
+    dW_ptr: torch.Tensor,
+    m_sizes_ptr: torch.Tensor,
+    gather_indices_ptr: torch.Tensor,
     # problem sizes
     NUM_TOKENS: tl.constexpr,
     TOPK: tl.constexpr,
@@ -304,13 +304,13 @@ def _grouped_gemm_dW_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
-    PERMUTE_X: tl.constexpr = False,
-    PERMUTE_Y: tl.constexpr = False,
+    PERMUTE_X: tl.constexpr       = False,
+    PERMUTE_Y: tl.constexpr       = False,
     USE_TMA_LOAD_dY: tl.constexpr = False,
-    USE_TMA_LOAD_X: tl.constexpr = False,
-    USE_TMA_STORE: tl.constexpr = False,
-    FLATTEN: tl.constexpr = True,
-    acc_dtype: tl.constexpr = tl.float32,
+    USE_TMA_LOAD_X: tl.constexpr  = False,
+    USE_TMA_STORE: tl.constexpr   = False,
+    FLATTEN: tl.constexpr         = True,
+    acc_dtype: tl.constexpr       = tl.float32,
 ) -> None:
     TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK
     TMA_LOAD_BOTH: tl.constexpr = USE_TMA_LOAD_X and USE_TMA_LOAD_dY

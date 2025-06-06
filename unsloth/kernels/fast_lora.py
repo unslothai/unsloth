@@ -1,3 +1,4 @@
+from typing import Any
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -65,11 +66,11 @@ class LoRA_MLP(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
     def forward(ctx, X : torch.Tensor,
-                gateW, gateW_quant, gateA, gateB, gateS,
-                  upW,   upW_quant, upA,   upB,   upS,
-                downW, downW_quant, downA, downB, downS,
+                gateW: torch.Tensor, gateW_quant: torch.Tensor, gateA: torch.Tensor, gateB: torch.Tensor, gateS: float,
+                  upW: torch.Tensor,   upW_quant: torch.Tensor, upA: torch.Tensor,   upB: torch.Tensor,   upS: float,
+                downW: torch.Tensor, downW_quant: torch.Tensor, downA: torch.Tensor, downB: torch.Tensor, downS: float,
                 _forward_function, _backward_function,
-                inplace = True,):
+                inplace: bool = True,) -> torch.Tensor:
         dtype = X.dtype
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -92,7 +93,7 @@ class LoRA_MLP(torch.autograd.Function):
 
     @staticmethod
     @torch_amp_custom_bwd
-    def backward(ctx, dY : torch.Tensor):
+    def backward(ctx, dY : torch.Tensor) -> tuple[torch.Tensor, ...]:
         gateW, gateW_quant, gateS, upW, upW_quant, upS, downW, downW_quant, downS, \
             _backward_function = ctx.custom_saved_tensors
         gateA, gateB, upA, upB, downA, downB, \
@@ -174,7 +175,7 @@ pass
 
 
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
-def apply_lora_mlp_swiglu(self, X, inplace = True):
+def apply_lora_mlp_swiglu(self, X: torch.Tensor, inplace: bool = True) -> torch.Tensor:
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -189,7 +190,7 @@ pass
 
 
 from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
-def apply_lora_mlp_geglu_exact(self, X, inplace = True):
+def apply_lora_mlp_geglu_exact(self, X: torch.Tensor, inplace: bool = True) -> torch.Tensor:
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -204,7 +205,7 @@ pass
 
 
 from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
-def apply_lora_mlp_geglu_approx(self, X):
+def apply_lora_mlp_geglu_approx(self, X: torch.Tensor) -> torch.Tensor:
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -250,10 +251,10 @@ class LoRA_QKV(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
     def forward(ctx, X : torch.Tensor,
-                QW, QW_quant, QA, QB, QS,
-                KW, KW_quant, KA, KB, KS,
-                VW, VW_quant, VA, VB, VS,
-                inplace = True):
+                QW: torch.Tensor, QW_quant: torch.Tensor, QA: torch.Tensor, QB: torch.Tensor, QS: float,
+                KW: torch.Tensor, KW_quant: torch.Tensor, KA: torch.Tensor, KB: torch.Tensor, KS: float,
+                VW: torch.Tensor, VW_quant: torch.Tensor, VA: torch.Tensor, VB: torch.Tensor, VS: float,
+                inplace: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         dtype = X.dtype
 
         Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
@@ -272,7 +273,7 @@ class LoRA_QKV(torch.autograd.Function):
 
     @staticmethod
     @torch_amp_custom_bwd
-    def backward(ctx, dQ, dK, dV):
+    def backward(ctx, dQ: torch.Tensor, dK: torch.Tensor, dV: torch.Tensor) -> tuple[torch.Tensor, ...]:
         QW, QW_quant, QS, KW, KW_quant, KS, VW, VW_quant, VS = \
             ctx.custom_saved_tensors
         X, QA, QB, KA, KB, VA, VB, = ctx.saved_tensors
@@ -359,7 +360,7 @@ class LoRA_QKV(torch.autograd.Function):
 pass
 
 
-def apply_lora_qkv(self, X, inplace = True):
+def apply_lora_qkv(self, X: torch.Tensor, inplace: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
@@ -403,7 +404,7 @@ class LoRA_W(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
     def forward(ctx, X : torch.Tensor,
-                W, W_quant, A, B, S):
+                W: torch.Tensor, W_quant: torch.Tensor, A: torch.Tensor, B: torch.Tensor, S: float) -> torch.Tensor:
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
         ctx.custom_saved_tensors = (W, W_quant, S,)
@@ -413,7 +414,7 @@ class LoRA_W(torch.autograd.Function):
 
     @staticmethod
     @torch_amp_custom_bwd
-    def backward(ctx, dY : torch.Tensor):
+    def backward(ctx, dY : torch.Tensor) -> tuple[torch.Tensor, ...]:
         W, W_quant, S = ctx.custom_saved_tensors
         A, B, X = ctx.saved_tensors
 
@@ -452,7 +453,7 @@ class LoRA_W(torch.autograd.Function):
 pass
 
 
-def apply_lora_o(self, X):
+def apply_lora_o(self, X: torch.Tensor) -> torch.Tensor:
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
     O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
     return O

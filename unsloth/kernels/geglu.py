@@ -23,7 +23,7 @@ from .utils import (
 
 
 @triton.jit
-def _exact_forward_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
+def _exact_forward_kernel(e: torch.Tensor, g: torch.Tensor, h: torch.Tensor, n_elements: int, BLOCK_SIZE : tl.constexpr,) -> None:
     block_idx = tl.program_id(0)
     offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
@@ -42,7 +42,7 @@ def _exact_forward_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
 pass
 
 
-def geglu_exact_forward_kernel(gate, up):
+def geglu_exact_forward_kernel(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
     device = gate.device
@@ -55,7 +55,7 @@ pass
 
 
 @triton.jit
-def _exact_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
+def _exact_backward_kernel(DW: torch.Tensor, e: torch.Tensor, g: torch.Tensor, n_elements: int, BLOCK_SIZE : tl.constexpr,) -> None:
     """
     f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     h = f * up
@@ -101,7 +101,7 @@ def _exact_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
 pass
 
 
-def geglu_exact_backward_kernel(DW, e, g):
+def geglu_exact_backward_kernel(DW: torch.Tensor, e: torch.Tensor, g: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
@@ -112,7 +112,7 @@ pass
 
 
 @triton.jit
-def _approx_forward_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
+def _approx_forward_kernel(e: torch.Tensor, g: torch.Tensor, h: torch.Tensor, n_elements: int, BLOCK_SIZE : tl.constexpr,) -> None:
     block_idx = tl.program_id(0)
     offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
@@ -137,7 +137,7 @@ def _approx_forward_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
 pass
 
 
-def geglu_approx_forward_kernel(gate, up):
+def geglu_approx_forward_kernel(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     batch, seq_len, hd = gate.shape
     n_elements = gate.numel()
     device = gate.device
@@ -150,7 +150,7 @@ pass
 
 
 @triton.jit
-def _approx_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
+def _approx_backward_kernel(DW: torch.Tensor, e: torch.Tensor, g: torch.Tensor, n_elements: int, BLOCK_SIZE : tl.constexpr,) -> None:
     """
     f = 1/2 * e * (1 + tanh( sqrt(2/pi) * x * (1 + 0.044715 * x^2 ) ))
     h = f * up
@@ -203,7 +203,7 @@ def _approx_backward_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
 pass
 
 
-def geglu_approx_backward_kernel(DW, e, g):
+def geglu_approx_backward_kernel(DW: torch.Tensor, e: torch.Tensor, g: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)

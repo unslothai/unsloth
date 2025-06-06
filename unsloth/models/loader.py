@@ -1,3 +1,4 @@
+from typing import Optional
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -80,30 +81,30 @@ FORCE_FLOAT32 = [
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
     def from_pretrained(
-        model_name                 = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length             = 2048,
-        dtype                      = None,
-        load_in_4bit               = True,
-        load_in_8bit               = False,
-        full_finetuning            = False,
-        token                      = None,
-        device_map                 = "sequential",
-        rope_scaling               = None,
-        fix_tokenizer              = True,
-        trust_remote_code          = False,
-        use_gradient_checkpointing = "unsloth",
-        resize_model_vocab         = None,
-        revision                   = None,
-        use_exact_model_name       = False,
+        model_name: str                   = "unsloth/Llama-3.2-1B-Instruct",
+        max_seq_length: int               = 2048,
+        dtype: Optional[torch.dtype]      = None,
+        load_in_4bit: bool                = True,
+        load_in_8bit: bool                = False,
+        full_finetuning: bool             = False,
+        token: Optional[str]              = None,
+        device_map: str                   = "sequential",
+        rope_scaling: Optional[dict]      = None,
+        fix_tokenizer: bool               = True,
+        trust_remote_code: bool           = False,
+        use_gradient_checkpointing: str   = "unsloth",
+        resize_model_vocab: Optional[int] = None,
+        revision: Optional[str]           = None,
+        use_exact_model_name: bool        = False,
 
-        fast_inference             = False, # uses vLLM
-        gpu_memory_utilization     = 0.5,
-        float8_kv_cache            = False,
-        random_state               = 3407,
-        max_lora_rank              = 64,
-        disable_log_stats          = True,
+        fast_inference: bool              = False, # uses vLLM
+        gpu_memory_utilization: float     = 0.5,
+        float8_kv_cache: bool             = False,
+        random_state: int                 = 3407,
+        max_lora_rank: int                = 64,
+        disable_log_stats: bool           = True,
         *args, **kwargs,
-    ):
+    ) -> tuple[PeftModel, PreTrainedTokenizer]:
         if load_in_8bit or full_finetuning:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
@@ -471,29 +472,29 @@ DISABLE_COMPILE_MODEL_NAMES = [
 class FastModel(FastBaseModel):
     @staticmethod
     def from_pretrained(
-        model_name                 = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
-        max_seq_length             = 2048,
-        dtype                      = None,
-        load_in_4bit               = True,
-        load_in_8bit               = False,
-        full_finetuning            = False,
-        token                      = None,
-        device_map                 = "sequential",
-        rope_scaling               = None, # [TODO] No effect
-        fix_tokenizer              = True, # [TODO] No effect
-        trust_remote_code          = False,
-        use_gradient_checkpointing = "unsloth",
-        resize_model_vocab         = None, # [TODO] No effect
-        revision                   = None,
-        return_logits              = False, # Return logits
-        fullgraph                  = True, # No graph breaks
-        use_exact_model_name       = False,
-        auto_model                 = None,
-        whisper_language           = None,
-        whisper_task               = None,
-        unsloth_force_compile      = False,
+        model_name: str                   = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
+        max_seq_length: int               = 2048,
+        dtype: Optional[torch.dtype]      = None,
+        load_in_4bit: bool                = True,
+        load_in_8bit: bool                = False,
+        full_finetuning: bool             = False,
+        token: Optional[str]              = None,
+        device_map: str                   = "sequential",
+        rope_scaling: Optional[dict]      = None, # [TODO] No effect
+        fix_tokenizer: bool               = True, # [TODO] No effect
+        trust_remote_code: bool           = False,
+        use_gradient_checkpointing: str   = "unsloth",
+        resize_model_vocab: Optional[int] = None, # [TODO] No effect
+        revision: Optional[str]           = None,
+        return_logits: bool               = False, # Return logits
+        fullgraph: bool                   = True, # No graph breaks
+        use_exact_model_name: bool        = False,
+        auto_model: Optional[type]        = None,
+        whisper_language: Optional[str]   = None,
+        whisper_task: Optional[str]       = None,
+        unsloth_force_compile: bool       = False,
         *args, **kwargs,
-    ):
+    ) -> tuple[PeftModel, PreTrainedTokenizer]:
         if token is None: token = get_token()
         if whisper_language is not None: assert(type(whisper_language) is str)
         if whisper_task is not None: assert(type(whisper_task) is str)
