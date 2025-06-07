@@ -27,11 +27,6 @@ from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
 IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
-try:
-    from transformers.modeling_layers import GradientCheckpointingLayer
-except:
-    GradientCheckpointingLayer = type(None)
-
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
@@ -65,7 +60,7 @@ except:
     LlamaFlashAttention2 = LlamaAttention
 pass
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, BitsAndBytesConfig, AutoConfig
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -104,7 +99,7 @@ torch_nn_functional_softmax = torch.nn.functional.softmax
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 # Fix new HF's inference code
-def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **kwargs,):
+def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
     past_key_values = kwargs.get("past_key_values", None)
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
@@ -112,54 +107,11 @@ def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **
             past_key_values = None
             kwargs["past_key_values"] = None
         else:
-            bs, cache_length = input_ids.shape
             input_ids = input_ids[:,[-1]]
-            
-            # Get to the base model
-            base_model = self
-            if hasattr(base_model, 'base_model_prefix'):
-                base_model = getattr(base_model, base_model.base_model_prefix)
-                
-            if hasattr(base_model, "_prepare_4d_causal_attention_mask_with_cache_position"):
-                def needs_device_kw(fn) -> bool:
-                    try:
-                        sig = inspect.signature(inspect.unwrap(fn))
-                        return "device" in sig.parameters
-                    except:
-                        # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
-                        return transformers_version < Version("4.52.0")
-
-                kwargs = {
-                    "sequence_length": 1,
-                    "target_length": cache_length,
-                    "dtype": self.dtype,
-                    "cache_position": torch.arange(cache_length, cache_length+1, device=input_ids.device),
-                    "batch_size": bs,
-                    "config": self.config,
-                    "past_key_values": past_key_values,
-                }
-                try:
-                    if needs_device_kw(base_model._prepare_4d_causal_attention_mask_with_cache_position):
-                        kwargs["device"] = input_ids.device
-                except:
-                    print(f"Unsloth: Could not inspect signature of {base_model._prepare_4d_causal_attention_mask_with_cache_position}")
-
-                attention_mask = base_model._prepare_4d_causal_attention_mask_with_cache_position(
-                    attention_mask,
-                    **kwargs,
-                )
-            else:
-                attention_mask = attention_mask[:,[-1]]
-                logger.warning_once(
-                    f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
-                    "defined in its base modeling class. Compiled forward passes will be sub-optimal. If you're "
-                    "writing code, see Llama for an example implementation. If you're a user, please report this "
-                    "issue on GitHub."
-                )
-
+            kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
-    return { "input_ids" : input_ids, "attention_mask": attention_mask, **kwargs, }
+    return { "input_ids" : input_ids, **kwargs, }
 pass
 
 
@@ -762,8 +714,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
-    # elif attention_mask is None:
+    elif self.training and os.environ.get("UNSLOTH_KEEP_PADDING", "0") != '1':    
         attention_mask = None
         padding_mask = None
     else:
@@ -898,12 +849,7 @@ def LlamaModel_fast_forward(
                 mask = self. GA_mask if use_static_mask else dynamic_GA_mask
         pass
 
-        try:
-            is_gradient_checkpointing_layer = isinstance(decoder_layer, GradientCheckpointingLayer)
-        except:
-            is_gradient_checkpointing_layer = False
-
-        if gradient_checkpointing and not is_gradient_checkpointing_layer:
+        if gradient_checkpointing:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
@@ -1257,19 +1203,33 @@ def PeftModelForCausalLM_fast_forward(
     logits_to_keep = 0,
     **kwargs,
 ):
-    return self.base_model(
-        input_ids = input_ids,
-        causal_mask = causal_mask,
-        attention_mask = attention_mask,
-        inputs_embeds = inputs_embeds,
-        labels = labels,
-        output_attentions = output_attentions,
-        output_hidden_states = output_hidden_states,
-        return_dict = return_dict,
-        num_logits_to_keep = num_logits_to_keep,
-        logits_to_keep = logits_to_keep,
-        **kwargs,
-    )
+    if "Classification" in str(type( self.base_model.model)):
+        
+        #causal_mask = causal_mask,
+        return self.base_model(
+            input_ids = input_ids,
+            attention_mask = attention_mask, 
+            inputs_embeds = inputs_embeds, 
+            labels = labels, 
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states, 
+            return_dict = return_dict, 
+            **kwargs,
+            )
+    else:
+        return self.base_model(
+            input_ids = input_ids,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            inputs_embeds = inputs_embeds,
+            labels = labels,
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states,
+            return_dict = return_dict,
+            num_logits_to_keep = num_logits_to_keep,
+            logits_to_keep = logits_to_keep,
+            **kwargs,
+        )
 pass
 
 
@@ -1645,8 +1605,37 @@ def unsloth_fast_generate(
 pass
 
 
-class FastLlamaModel:
+original_attention_forward      = LlamaAttention.forward
+original_sdpa_attention_forward = LlamaSdpaAttention.forward
+original_flash_attention2_forward = LlamaFlashAttention2.forward
+original_decoder_layer_forward  = LlamaDecoderLayer.forward
+original_model_forward          = LlamaModel.forward
+original_for_causal_lm_forward  = LlamaForCausalLM.forward
+original_peft_model_for_causal_lm_forward = PeftModelForCausalLM.forward
+import transformers.models.llama.modeling_llama
+original_LLamaRotaryEmbedding =  transformers.models.llama.modeling_llama.LlamaRotaryEmbedding 
 
+class FastLlamaModel:
+    def set_functions():
+        LlamaAttention      .forward = LlamaAttention_fast_forward
+        LlamaSdpaAttention  .forward = LlamaAttention_fast_forward
+        LlamaFlashAttention2.forward = LlamaAttention_fast_forward
+        LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
+        LlamaModel          .forward = LlamaModel_fast_forward
+        LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
+        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
+
+    def reset_functions():
+        LlamaAttention      .forward = original_attention_forward
+        LlamaSdpaAttention  .forward = original_sdpa_attention_forward
+        LlamaFlashAttention2.forward = original_flash_attention2_forward
+        LlamaDecoderLayer   .forward = original_decoder_layer_forward
+        LlamaModel          .forward = original_model_forward
+        LlamaForCausalLM    .forward = original_for_causal_lm_forward
+        PeftModelForCausalLM.forward = original_peft_model_for_causal_lm_forward
+        transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = original_LLamaRotaryEmbedding 
+    
     @staticmethod
     def pre_patch():
         init_name, function = patch_llama_rope_scaling(
@@ -1695,6 +1684,7 @@ class FastLlamaModel:
         model_patcher     = None,
         tokenizer_name    = None,
         trust_remote_code = False,
+        revision = None,
 
         fast_inference    = False, # uses vLLM
         gpu_memory_utilization = 0.5,
@@ -1702,6 +1692,7 @@ class FastLlamaModel:
         random_state      = 3407,
         max_lora_rank     = 16,
         disable_log_stats = False,
+        num_labels =  None, 
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
@@ -1835,8 +1826,20 @@ class FastLlamaModel:
 
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
-        
-        if not fast_inference:
+        if num_labels is not None:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = dtype,
+                num_labels              = num_labels,
+                #quantization_config     = bnb_config,
+                token                   = token,
+                max_position_embeddings = max_position_embeddings,
+                trust_remote_code       = trust_remote_code,
+                attn_implementation     = "eager",
+                **kwargs,
+            )
+        elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map              = device_map,
@@ -1974,6 +1977,11 @@ class FastLlamaModel:
         inner_training_loop = inner_training_loop.replace(
             "is_torch_tpu_available()",
             "False",
+        )
+        # This has to do with the transformers update, its a monkey patch.
+        inner_training_loop = inner_training_loop.replace(
+            ", learning_rate=learning_rate", 
+            ""
         )
         exec(inner_training_loop, globals())
         Trainer._inner_training_loop = _fast_inner_training_loop
@@ -2414,8 +2422,11 @@ class FastLlamaModel:
         lora_config = LoraConfig(**arguments)
 
         # First offload lm_head and embed_tokens to disk
-        input_embeddings_device  = model. get_input_embeddings().weight.device
-        output_embeddings_device = model.get_output_embeddings().weight.device
+        input_embeddings_device  = model.get_input_embeddings().weight.device
+        if "Classification" in str(type(model)):
+             output_embeddings_device = model.score.weight.device
+        else: 
+            output_embeddings_device = model.get_output_embeddings().weight.device
 
         if use_gradient_checkpointing == "unsloth":
             if train_embed_tokens:
