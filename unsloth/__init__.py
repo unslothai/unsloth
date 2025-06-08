@@ -224,24 +224,35 @@ elif DEVICE_TYPE == "xpu":
 
 # Check for unsloth_zoo
 try:
-    unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.4.1"):
-        pass
-        # print(
-        #     "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
-        #     "To disable this, set `os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'`"
-        # )
-        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
-        #     try:
-        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        #     except:
-        #         try:
-        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
-        #         except:
-        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    import unsloth_zoo
+    _local_zoo_module_path = os.environ.get("UNSLOTH_ZOO_MODULE", "unsloth.unsloth_zoo")
+    try:
+        _local_zoo_folder = Path(importlib.util.find_spec(_local_zoo_module_path).origin).resolve()
+    except:
+        # specified UNSLOTH_ZOO_MODULE not found so fallback to default
+        _local_zoo_folder = Path(__file__).parent / "unsloth_zoo"
+        _local_zoo_module_path = "unsloth.unsloth_zoo"
+        print(f"Unsloth: specified UNSLOTH_ZOO_MODULE not found so fallback to default: {_local_zoo_module_path}")
+
+    already_imported_zoo = False
+    if "unsloth_zoo" in sys.modules:
+        other_zoo_module = sys.modules["unsloth_zoo"]
+        other_zoo_file = getattr(other_zoo_module, "__file__", None)
+        if other_zoo_file:
+            other_zoo_folder = Path(other_zoo_file).parent.resolve()
+            if other_zoo_folder != _local_zoo_folder:
+                warnings.warn(
+                    f"Unsloth: A different copy of 'unsloth_zoo' was imported and does not match the expected location {other_zoo_folder} != {_local_zoo_folder}. Overriding to use {_local_zoo_folder}."
+                )
+                del sys.modules["unsloth_zoo"]
+            else:
+                # zoo was imported before but it is the module specified by UNSLOTH_ZOO_MODULE
+                already_imported_zoo = True
+    if not already_imported_zoo:
+        _local_zoo = importlib.import_module(_local_zoo_module_path)
+        sys.modules["unsloth_zoo"] = _local_zoo
+
 except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
+    raise ImportError(f"Unsloth: There was an error importing unsloth_zoo. Please check the environment variable UNSLOTH_ZOO_MODULE and make sure it is set to the correct module path. {os.getenv('UNSLOTH_ZOO_MODULE')}")
 pass
 
 from .models import *
