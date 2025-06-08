@@ -743,14 +743,8 @@ class FastModel(FastBaseModel):
         # Check if VLM
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
-        is_seq_class = any(x.endswith("ForSequenceClassification") for x in model_config.architectures)
         if auto_model is None:
-            if is_vlm:
-                auto_model = AutoModelForVision2Seq
-            elif is_seq_class:
-                auto_model = AutoModelForSequenceClassification
-            else:
-                auto_model = AutoModelForCausalLM
+            auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
