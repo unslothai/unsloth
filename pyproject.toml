@@ -8,7 +8,11 @@ dynamic = ["version"]
 description = "2-5X faster LLM finetuning"
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
-license = "Apache-2.0"
+license = "Apache-2.0 AND LGPL-3.0-or-later"
+license-files = [
+  "LICENSE",
+  "unsloth/unsloth_zoo/LICENSE-LGPL-3.0",
+]
 keywords = ["ai", "llm",]
 authors = [
     {email = "info@unsloth.ai"},
@@ -20,8 +24,6 @@ maintainers = [
 ]
 classifiers = [
     "Programming Language :: Python",
-    "License :: OSI Approved :: Apache Software License",
-    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
 ]
 
 [tool.setuptools.dynamic]
