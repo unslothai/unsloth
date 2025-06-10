@@ -869,6 +869,11 @@ __INT_TO_FLOAT_MAPPER = \
         "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
         "unsloth/DeepSeek-R1-0528-Qwen3-8B-bnb-4bit",
     ),
+    "unsloth/Magistral-Small-2506-unsloth-bnb-4bit" : (
+        "unsloth/Magistral-Small-2506",
+        "mistralai/Magistral-Small-2506",
+        "unsloth/Magistral-Small-2506-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
