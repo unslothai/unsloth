@@ -1257,19 +1257,32 @@ def PeftModelForCausalLM_fast_forward(
     logits_to_keep = 0,
     **kwargs,
 ):
-    return self.base_model(
-        input_ids = input_ids,
-        causal_mask = causal_mask,
-        attention_mask = attention_mask,
-        inputs_embeds = inputs_embeds,
-        labels = labels,
-        output_attentions = output_attentions,
-        output_hidden_states = output_hidden_states,
-        return_dict = return_dict,
-        num_logits_to_keep = num_logits_to_keep,
-        logits_to_keep = logits_to_keep,
-        **kwargs,
-    )
+    if "Classification" in str(type( self.base_model.model)): 
+        #causal_mask = causal_mask,
+        return self.base_model(
+            input_ids = input_ids,
+            attention_mask = attention_mask, 
+            inputs_embeds = inputs_embeds, 
+            labels = labels, 
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states, 
+            return_dict = return_dict, 
+            **kwargs,
+            )
+    else:
+        return self.base_model(
+            input_ids = input_ids,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            inputs_embeds = inputs_embeds,
+            labels = labels,
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states,
+            return_dict = return_dict,
+            num_logits_to_keep = num_logits_to_keep,
+            logits_to_keep = logits_to_keep,
+            **kwargs,
+        )
 pass
 
 
@@ -1695,6 +1708,7 @@ class FastLlamaModel:
         model_patcher     = None,
         tokenizer_name    = None,
         trust_remote_code = False,
+        revision = None,
 
         fast_inference    = False, # uses vLLM
         gpu_memory_utilization = 0.5,
@@ -1702,6 +1716,7 @@ class FastLlamaModel:
         random_state      = 3407,
         max_lora_rank     = 16,
         disable_log_stats = False,
+        num_labels =  None, 
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
@@ -1836,7 +1851,20 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
         
-        if not fast_inference:
+        if num_labels is not None:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = dtype,
+                num_labels              = num_labels,
+                #quantization_config     = bnb_config,
+                token                   = token,
+                max_position_embeddings = max_position_embeddings,
+                trust_remote_code       = trust_remote_code,
+                attn_implementation     = "eager",
+                **kwargs,
+            )
+        elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map              = device_map,
@@ -2415,6 +2443,10 @@ class FastLlamaModel:
 
         # First offload lm_head and embed_tokens to disk
         input_embeddings_device  = model. get_input_embeddings().weight.device
+        if "Classification" in str(type(model)):
+             output_embeddings_device = model.score.weight.device
+        else: 
+            output_embeddings_device = model.get_output_embeddings().weight.device
         output_embeddings_device = model.get_output_embeddings().weight.device
 
         if use_gradient_checkpointing == "unsloth":
