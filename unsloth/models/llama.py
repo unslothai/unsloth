@@ -2447,7 +2447,6 @@ class FastLlamaModel:
              output_embeddings_device = model.score.weight.device
         else: 
             output_embeddings_device = model.get_output_embeddings().weight.device
-        output_embeddings_device = model.get_output_embeddings().weight.device
 
         if use_gradient_checkpointing == "unsloth":
             if train_embed_tokens:
