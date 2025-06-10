@@ -99,6 +99,8 @@ def sft_trainer_prepare_dataset(function_name, function):
     pass
 
     check_text = \
+    "if 'skip_prepare_dataset' in locals() and skip_prepare_dataset:\n"\
+    "    return dataset\n"\
     "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
     "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
     "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"\
@@ -361,13 +363,27 @@ RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_batch_size)
 def grpo_trainer_metrics(RLTrainer_source, RLConfig_source):
     if "reward_funcs" not in RLTrainer_source: return ""
 
+    # For new TRL we have /mean and /std
+    use_mean = "rewards/{reward_func_name}/mean" in RLTrainer_source
+    use_std  = "rewards/{reward_func_name}/std"  in RLTrainer_source
+    if not use_mean:
+        use_normal = "rewards/{reward_func_name}" in RLTrainer_source
+    else:
+        use_normal = False
+    pass
+
     log_metrics = \
     "if not isinstance(reward_funcs, list): _reward_funcs = [reward_funcs]\n"\
     "else: _reward_funcs = reward_funcs\n"\
     "for reward_func in _reward_funcs:\n"\
     "    try:\n"\
     "        reward_func_name = reward_func.__name__\n"\
-    "        other_metrics.append(f'rewards/{reward_func_name}')\n"\
+   f"        if {use_mean}:\n"\
+    "            other_metrics.append(f'rewards/{reward_func_name}/mean')\n"\
+   f"        if {use_std}:\n"\
+    "            other_metrics.append(f'rewards/{reward_func_name}/std')\n"\
+   f"        if {use_normal}:\n"\
+    "            other_metrics.append(f'rewards/{reward_func_name}')\n"\
     "    except: pass\n"
     return log_metrics
 pass
