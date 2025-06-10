@@ -184,11 +184,8 @@ def grpo_trainer__prepare_inputs(function_name, function):
         rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
         rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
         insert = (
-            "        self.llm.wake_up()\n"
-            "        torch.cuda.empty_cache()\n"
-            "        free, total = torch.cuda.mem_get_info()\n"
-            "        used = total - free\n"
-            "        print(f'CUDA mem (MB): free={free//1024//1024}, used={used//1024//1024}, total={total//1024//1024}')\n"
+            "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', True):\n"
+            "            self.llm.wake_up()\n"
         )
         function = function[:sig_end] + insert +  rest
     else:
@@ -202,11 +199,8 @@ def grpo_trainer__prepare_inputs(function_name, function):
             rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
             rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
             insert = (
-                "        self.llm.wake_up()\n"
-                "        torch.cuda.empty_cache()\n"
-                "        free, total = torch.cuda.mem_get_info()\n"
-                "        used = total - free\n"
-                "        print(f'CUDA mem (MB): free={free//1024//1024}, used={used//1024//1024}, total={total//1024//1024}')\n"
+                "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', True):\n"
+                "            self.llm.wake_up()\n"
             )
             function = header_and_comments + insert + rest
 
@@ -224,11 +218,8 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
     sleep_and_cache = (
-        "self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
-        "        torch.cuda.empty_cache()\n"
-        "        free, total = torch.cuda.mem_get_info()\n"
-        "        used = total - free\n"
-        "        print(f'CUDA mem (MB): free={free//1024//1024}, used={used//1024//1024}, total={total//1024//1024}')\n"
+        "if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', True):\n"
+        "            self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
         "        "
     )
     if re.search(r"\n\s*return ", function):
