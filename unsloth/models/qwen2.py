@@ -68,6 +68,31 @@ class FastQwen2Model(FastLlamaModel):
         return
     pass
 
+    # Special handling for Qwen2 models' generate function
+    @staticmethod
+    def patch_qwen2_model(model):
+        """Ensure Qwen2 models have proper generate method"""
+        if not hasattr(model, "_old_generate") and hasattr(model, "generate"):
+            # Save original generate method to restore if needed
+            model._old_generate = model.generate
+            
+            # Create a Qwen2-specific fixed generate function
+            def qwen2_fixed_generate(self, *args, **kwargs):
+                try:
+                    # First try the original generate method
+                    return self._old_generate(*args, **kwargs)
+                except TypeError as e:
+                    if "str" in str(e) and "not callable" in str(e):
+                        # Fallback to transformers standard generation
+                        print("Unsloth: Using fallback generation for Qwen2 model")
+                        from transformers.generation.utils import GenerationMixin
+                        return GenerationMixin.generate(self, *args, **kwargs)
+                    raise
+            
+            # Replace the generate method
+            import types
+            model.generate = types.MethodType(qwen2_fixed_generate, model)
+        return model
 
     @staticmethod
     def from_pretrained(
@@ -84,7 +109,7 @@ class FastQwen2Model(FastLlamaModel):
         trust_remote_code = False,
         **kwargs,
     ):
-        return FastLlamaModel.from_pretrained(
+        model, tokenizer = FastLlamaModel.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
             dtype             = dtype,
@@ -98,5 +123,10 @@ class FastQwen2Model(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             **kwargs,
         )
+        
+        # Apply Qwen2-specific fixes
+        model = FastQwen2Model.patch_qwen2_model(model)
+        
+        return model, tokenizer
     pass
 pass
