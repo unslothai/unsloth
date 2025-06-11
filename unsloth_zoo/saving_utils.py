@@ -19,7 +19,7 @@ __all__ = [
     "merge_and_dequantize_lora",
     "merge_and_overwrite_lora",
 ]
-
+import warnings
 from .peft_utils import get_lora_layer_modules
 from .utils import _get_dtype
 
@@ -65,7 +65,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from peft import PeftModelForCausalLM
+from peft import PeftModelForCausalLM, PeftModel
 
 def find_skipped_quantized_modules(model):
     skipped_modules = []
@@ -563,7 +563,7 @@ def merge_and_overwrite_lora(
     push_to_hub          = False,
     private              = False,
     token                = None,
-    save_method          = "lora",
+    save_method          = "merged_16bit",
     output_dtype         = None,
     low_disk_space_usage = False,
     use_temp_file        = False,
@@ -571,11 +571,11 @@ def merge_and_overwrite_lora(
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Directly downloads 16bit original weights and merges LoRA
-    inner_model = model.base_model.model if isinstance(model, PeftModelForCausalLM) else model
+    inner_model = model.base_model.model if isinstance(model, PeftModel) else model
     inner_model = inner_model.base_model if hasattr(model, "base_model") else inner_model
-
-    base_model = model.base_model if isinstance(model, PeftModelForCausalLM) else model
-
+    if not isinstance(model, PeftModel):
+        warnings.warn("Model is not a PeftModel (no Lora adapters detected). Skipping Merge. Please use save_pretrained() or push_to_hub() instead!")
+        return None
     try:
         model_name = get_model_name(model.config._name_or_path, load_in_4bit = False)
     except:
@@ -733,13 +733,13 @@ def merge_and_overwrite_lora(
 
     # Default handle 16 bit merge and save/push
     # Step 1: Save base model config/architecture (no weights needed here)
-
-    config_model = base_model if isinstance(model, PeftModelForCausalLM) else model
-    config_model.save_pretrained(
-        save_directory = save_directory,
-        state_dict = {},
-    )
-    _remove_quantization_config(config_path = Path(save_directory) / "config.json")
+    if save_method == "merged_16bit":
+        config_model = find_lora_base_model(model) if isinstance(model, PeftModel) else model
+        config_model.save_pretrained(
+            save_directory = save_directory,
+            state_dict = {},
+        )
+        _remove_quantization_config(config_path = Path(save_directory) / "config.json")
         # Remove the quantization_config in the config.json file if it exists,
     # as we are exporting the model in 16-bit format.
 
