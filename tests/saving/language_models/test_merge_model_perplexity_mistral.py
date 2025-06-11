@@ -45,7 +45,7 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit=False, load_in_8bit=Fal
     # )
 
     # Load dataset fresh in subprocess
-dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split="eval")
+    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split="eval")
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
