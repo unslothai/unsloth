@@ -14,8 +14,9 @@ import gc
 import sys
 from pathlib import Path
 
+
 REPO_ROOT = Path(__file__).parents[3]
-sys.path.append(str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 from tests.utils.cleanup_utils import safe_remove_directory
 from tests.utils.perplexity_eval import ppl_model, add_to_comparison, print_model_comparison
@@ -44,7 +45,7 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit=False, load_in_8bit=Fal
     # )
 
     # Load dataset fresh in subprocess
-    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split="eval")
+dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split="eval")
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
