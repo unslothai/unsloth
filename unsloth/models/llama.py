@@ -1242,7 +1242,7 @@ pass
 
 
 @torch._disable_dynamo
-def PeftModelForCausalLM_fast_forward(
+def PeftModel_fast_forward(
     self,
     input_ids = None,
     causal_mask = None,
@@ -1680,7 +1680,7 @@ class FastLlamaModel:
         LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         LlamaModel          .forward = LlamaModel_fast_forward
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168
