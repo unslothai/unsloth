@@ -12,8 +12,9 @@ from pathlib import Path
 import multiprocessing as mp
 import gc
 from multiprocessing import Queue
+
 REPO_ROOT = Path(__file__).parents[3]
-sys.path.append(str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 from tests.utils.cleanup_utils import safe_remove_directory
 from tests.utils.aime_eval import evaluate_model_aime, compare_aime_results
