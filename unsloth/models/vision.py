@@ -79,11 +79,6 @@ _compile_config = CompileConfig(
 )
 _compile_config.disable = True # Must set manually
 
-from unsloth_zoo.vllm_utils import (
-    convert_lora_modules,
-    return_lora_modules,
-)
-
 def unsloth_base_fast_generate(
     self,
     *args,
@@ -259,6 +254,7 @@ class FastBaseModel:
         supports_sdpa     = True,
         whisper_language  = None,
         whisper_task      = None,
+        fast_inference    = False,  # Add fast_inference parameter
         **kwargs,
     ):
         if model_types is None:
