@@ -14,6 +14,16 @@ BILLION = 1000000000
 
 
 def formatted_int(value: int) -> str:
+    """
+    Format an integer into a human-readable string with K, M, or B suffixes for thousands, millions, and billions respectively.
+    
+    Args:
+        value (`int`):
+            The integer value to format.
+    
+    Returns:
+        `str`: The formatted string representation of the integer.
+    """
     if value < THOUSAND:
         return str(value)
     elif value < MILLION:

@@ -1,3 +1,4 @@
+from typing import Optional
 from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register_models
 
 _IS_DEEPSEEK_V3_REGISTERED = False
@@ -9,13 +10,13 @@ _IS_DEEPSEEK_R1_DISTILL_QWEN_REGISTERED = False
 
 class DeepseekV3ModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(cls, base_name: str, version: str, size: str, quant_type: QuantType, instruct_tag: Optional[str]) -> str:
         key = f"{base_name}-V{version}"
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 class DeepseekR1ModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(cls, base_name: str, version: str, size: str, quant_type: QuantType, instruct_tag: Optional[str]) -> str:
         key = f"{base_name}-{version}" if version else base_name
         if size:
             key = f"{key}-{size}B"
@@ -94,49 +95,49 @@ DeepseekR1DistillQwenMeta = ModelMeta(
     },
 )
         
-def register_deepseek_v3_models(include_original_model: bool = False):
+def register_deepseek_v3_models(include_original_model: bool = False) -> None:
     global _IS_DEEPSEEK_V3_REGISTERED
     if _IS_DEEPSEEK_V3_REGISTERED:
         return
     _register_models(DeepseekV3Meta, include_original_model=include_original_model)
     _IS_DEEPSEEK_V3_REGISTERED = True
 
-def register_deepseek_v3_0324_models(include_original_model: bool = False):
+def register_deepseek_v3_0324_models(include_original_model: bool = False) -> None:
     global _IS_DEEPSEEK_V3_0324_REGISTERED
     if _IS_DEEPSEEK_V3_0324_REGISTERED:
         return
     _register_models(DeepseekV3_0324Meta, include_original_model=include_original_model)
     _IS_DEEPSEEK_V3_0324_REGISTERED = True
 
-def register_deepseek_r1_models(include_original_model: bool = False):
+def register_deepseek_r1_models(include_original_model: bool = False) -> None:
     global _IS_DEEPSEEK_R1_REGISTERED
     if _IS_DEEPSEEK_R1_REGISTERED:
         return
     _register_models(DeepseekR1Meta, include_original_model=include_original_model)
     _IS_DEEPSEEK_R1_REGISTERED = True
 
-def register_deepseek_r1_zero_models(include_original_model: bool = False):
+def register_deepseek_r1_zero_models(include_original_model: bool = False) -> None:
     global _IS_DEEPSEEK_R1_ZERO_REGISTERED
     if _IS_DEEPSEEK_R1_ZERO_REGISTERED:
         return
     _register_models(DeepseekR1ZeroMeta, include_original_model=include_original_model)
     _IS_DEEPSEEK_R1_ZERO_REGISTERED = True
 
-def register_deepseek_r1_distill_llama_models(include_original_model: bool = False):
+def register_deepseek_r1_distill_llama_models(include_original_model: bool = False) -> None:
     global _IS_DEEPSEEK_R1_DISTILL_LLAMA_REGISTERED
     if _IS_DEEPSEEK_R1_DISTILL_LLAMA_REGISTERED:
         return
     _register_models(DeepseekR1DistillLlamaMeta, include_original_model=include_original_model)
     _IS_DEEPSEEK_R1_DISTILL_LLAMA_REGISTERED = True
 
-def register_deepseek_r1_distill_qwen_models(include_original_model: bool = False):
+def register_deepseek_r1_distill_qwen_models(include_original_model: bool = False) -> None:
     global _IS_DEEPSEEK_R1_DISTILL_QWEN_REGISTERED
     if _IS_DEEPSEEK_R1_DISTILL_QWEN_REGISTERED:
         return
     _register_models(DeepseekR1DistillQwenMeta, include_original_model=include_original_model)
     _IS_DEEPSEEK_R1_DISTILL_QWEN_REGISTERED = True
 
-def register_deepseek_models(include_original_model: bool = False):
+def register_deepseek_models(include_original_model: bool = False) -> None:
     register_deepseek_v3_models(include_original_model=include_original_model)
     register_deepseek_v3_0324_models(include_original_model=include_original_model)
     register_deepseek_r1_models(include_original_model=include_original_model)
@@ -144,7 +145,7 @@ def register_deepseek_models(include_original_model: bool = False):
     register_deepseek_r1_distill_llama_models(include_original_model=include_original_model)
     register_deepseek_r1_distill_qwen_models(include_original_model=include_original_model)
 
-def _list_deepseek_r1_distill_models():
+def _list_deepseek_r1_distill_models() -> list[str]:
     from unsloth.utils.hf_hub import ModelInfo as HfModelInfo
     from unsloth.utils.hf_hub import list_models
     models: list[HfModelInfo] = list_models(author="unsloth", search="Distill", limit=1000)

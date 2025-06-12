@@ -10,7 +10,7 @@ _MISTRAL_SMALL_09_24_VERSION = "2409" # Not uploaded to unsloth
 
 class MistralSmallModelInfo(ModelInfo):
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(cls, base_name: str, version: str, size: str, quant_type: QuantType, instruct_tag: str) -> str:
         if version == _MISTRAL_SMALL_03_25_VERSION:
             key = f"{base_name}-3.1-{size}B-{instruct_tag}"
         else:
@@ -42,7 +42,7 @@ MistralSmall_2501_Base_Meta.model_version = _MISTRAL_SMALL_01_25_VERSION
 MistralSmall_2501_Instruct_Meta = copy.deepcopy(MistralSmall_2503_Instruct_Meta)
 MistralSmall_2501_Instruct_Meta.model_version = _MISTRAL_SMALL_01_25_VERSION
 
-def register_mistral_small_models(include_original_model: bool = False):
+def register_mistral_small_models(include_original_model: bool = False) -> None:
     global _IS_MISTRAL_SMALL_REGISTERED
     if _IS_MISTRAL_SMALL_REGISTERED:
         return
@@ -53,7 +53,7 @@ def register_mistral_small_models(include_original_model: bool = False):
 
     _IS_MISTRAL_SMALL_REGISTERED = True
 
-def register_mistral_models(include_original_model: bool = False):
+def register_mistral_models(include_original_model: bool = False) -> None:
     register_mistral_small_models(include_original_model=include_original_model)
 
 if __name__ == "__main__":

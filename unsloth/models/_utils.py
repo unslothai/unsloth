@@ -142,9 +142,24 @@ logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITI
 
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
+    """
+    A class to filter out specific logging messages based on a provided text string.
+    """
     __slots__ = "text",
-    def __init__(self, text): self.text = text
-    def filter(self, x): return not (self.text in x.getMessage())
+
+    def __init__(self, text: str): self.text = text
+    def filter(self, x: logging.LogRecord) -> bool:
+        """
+        Determines whether a log record should be filtered out.
+        
+        Args:
+            x (logging.LogRecord):
+                The log record to check.
+        
+        Returns:
+            `bool`: True if the log message should be filtered out, False otherwise.
+        """
+        return not (self.text in x.getMessage())
 pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
@@ -202,7 +217,7 @@ except:
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
 
-def extract_approx_params_from_config(config):
+def extract_approx_params_from_config(config: PretrainedConfig) -> Optional[int]:
     """
     Extract approximate parameter count from model config's name_or_path
     Returns int (param count) or None if not found.
@@ -230,7 +245,7 @@ def extract_approx_params_from_config(config):
     return None
 
 
-def get_model_param_count(model, trainable_only = False):
+def get_model_param_count(model: nn.Module, trainable_only: bool = False) -> int:
     """
     Calculate model's total param count. If trainable_only is True then count only those requiring grads
     """
@@ -259,7 +274,17 @@ transformers.trainer.get_model_param_count = get_model_param_count
 # Edits all Config files to enable RoPE Scaling for all models
 
 # Transformers had to update for Mistral Nemo 12b since Attention is (5120, 4096) now.
-def patch_mistral_nemo_config(config):
+def patch_mistral_nemo_config(config: str) -> str:
+    """
+    Patch the Mistral Nemo configuration to handle specific parameter setups.
+    
+    Args:
+        config (str):
+            The configuration string to be modified.
+    
+    Returns:
+        `str`: The modified configuration string with additional parameters added.
+    """
     if "head_dim (" not in config:
         add_head_dim = "If it is not specified, will default to `8`.\n"\
             "        head_dim (`int`, *optional*, defaults to `hidden_size // num_attention_heads`):\n"\
@@ -535,7 +560,17 @@ UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", 
 # Just remove max_autotune_gemm warning
 import functools
 @functools.lru_cache(None)
-def is_big_gpu(index):
+def is_big_gpu(index: int) -> bool:
+    """
+    Check if a GPU has sufficient compute capability to use certain optimizations.
+    
+    Args:
+        index (int):
+            The index of the GPU to check.
+    
+    Returns:
+        `bool`: True if the GPU has enough SMs (Streaming Multiprocessors) to use max_autotune_gemm mode, False otherwise.
+    """
     sms = torch.cuda.get_device_properties(index).multi_processor_count
     if sms < 80:  # V100
         # log.warning("not enough SMs to use max_autotune_gemm mode")
@@ -558,7 +593,13 @@ torch_compile_options = {
 }
 
 import accelerate
-def torch_compile_kwargs(*args, **kwargs):
+def torch_compile_kwargs(*args, **kwargs) -> dict:
+    """
+    Generates keyword arguments for torch.compile with specific optimization settings.
+    
+    Returns:
+        `dict`: A dictionary of keyword arguments for torch.compile including dynamic, fullgraph, and options.
+    """
     print("Unsloth: Enabled auto compiling")
     return {"dynamic" : True, "fullgraph" : False, "options" : torch_compile_options,}
 pass
@@ -568,7 +609,13 @@ accelerate.utils.TorchDynamoPlugin.to_kwargs             = torch_compile_kwargs
 accelerate.accelerator.TorchDynamoPlugin.to_kwargs       = torch_compile_kwargs
 del accelerate
 
-def patch_regional_compilation():
+def patch_regional_compilation() -> None:
+    """
+    Enable regional compilation for certain modules in torch.nn.ModuleList.
+    
+    Returns:
+        `None`
+    """
     # Regional torch 2.5 Recompilation - weirdly very slow??
     if torch.nn.ModuleList.__name__ == "UnslothModuleList": return
     # Only works for torch 2.5
@@ -592,9 +639,23 @@ pass
 
 def prepare_model_for_kbit_training(
     model                      : Any,
-    use_gradient_checkpointing : Optional = True,
+    use_gradient_checkpointing : Optional       = True,
     use_reentrant              : Optional[bool] = True,
 ) -> Any:
+    """
+    Prepare a model for k-bit training by setting up necessary configurations.
+    
+    Args:
+        model (Any):
+            The model to prepare for training.
+        use_gradient_checkpointing (Optional):
+            Whether to use gradient checkpointing.
+        use_reentrant (Optional[bool]):
+            Whether to use reentrant gradient checkpointing.
+    
+    Returns:
+        `Any`: The prepared model.
+    """
     return prepare_model_for_training(
         model                      = model,
         use_gradient_checkpointing = use_gradient_checkpointing,
@@ -643,7 +704,19 @@ pass
 # =============================================
 
 import psutil
-def _get_statistics(statistics = None, force_download = True):
+def _get_statistics(statistics: Optional[str] = None, force_download: bool = True) -> None:
+    """
+    Internal function to gather and log environment statistics.
+    
+    Args:
+        statistics (Optional[str]):
+            Optional specific statistic to log.
+        force_download (bool):
+            Whether to force download of statistics data.
+    
+    Returns:
+        `None`
+    """
     # We log some basic stats about which environment is being used.
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
@@ -696,7 +769,13 @@ def _get_statistics(statistics = None, force_download = True):
 pass
 
 
-def get_statistics():
+def get_statistics() -> None:
+    """
+    Public function to gather and log environment statistics.
+    
+    Returns:
+        `None`
+    """
     # We log some basic stats about which environment is being used.
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
@@ -782,7 +861,23 @@ transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndByt
 # Offloading to disk for modules (lm_head, embed_tokens)
 import pickle
 
-def offload_to_disk(W, model, name, temporary_location : str = "_unsloth_temporary_saved_buffers"):
+def offload_to_disk(W: nn.Module, model: nn.Module, name: str, temporary_location : str = "_unsloth_temporary_saved_buffers") -> torch.Tensor:
+    """
+    Offload a module's weights to disk to save memory.
+    
+    Args:
+        W (nn.Module):
+            The module to offload.
+        model (nn.Module):
+            The main model containing W.
+        name (str):
+            Name identifier for the module.
+        temporary_location (str):
+            Directory path to store the offloaded weights.
+    
+    Returns:
+        `torch.Tensor`: The offloaded weights loaded back from disk.
+    """
     file_location = os.path.join(temporary_location, model.config._name_or_path)
     if not os.path.exists(file_location):
         os.makedirs(file_location)
@@ -798,7 +893,19 @@ def offload_to_disk(W, model, name, temporary_location : str = "_unsloth_tempora
 pass
 
 
-def offload_input_embeddings(model, temporary_location : str = "_unsloth_temporary_saved_buffers"):
+def offload_input_embeddings(model: nn.Module, temporary_location : str = "_unsloth_temporary_saved_buffers") -> None:
+    """
+    Offload input embeddings to disk to save memory.
+    
+    Args:
+        model (nn.Module):
+            The model whose input embeddings need to be offloaded.
+        temporary_location (str):
+            Directory path to store the offloaded weights.
+    
+    Returns:
+        `None`
+    """
     offloaded_W = offload_to_disk(model.get_input_embeddings(), model, "input_embeddings", temporary_location)
     new_input_embeddings = torch.nn.Embedding.from_pretrained(offloaded_W)
     new_input_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
@@ -807,7 +914,19 @@ def offload_input_embeddings(model, temporary_location : str = "_unsloth_tempora
 pass
 
 
-def offload_output_embeddings(model, temporary_location : str = "_unsloth_temporary_saved_buffers"):
+def offload_output_embeddings(model: nn.Module, temporary_location : str = "_unsloth_temporary_saved_buffers") -> None:
+    """
+    Offload output embeddings to disk to save memory.
+    
+    Args:
+        model (nn.Module):
+            The model whose output embeddings need to be offloaded.
+        temporary_location (str):
+            Directory path to store the offloaded weights.
+    
+    Returns:
+        `None`
+    """
     offloaded_W = offload_to_disk(model.get_output_embeddings(), model, "output_embeddings", temporary_location)
 
     new_output_embeddings = torch.nn.Linear(1, 1, bias = None)
@@ -823,21 +942,49 @@ pass
 
 
 # Fixes a weird Torch 2.3 bug which says T4s have bfloat16
-def is_bfloat16_supported():
+def is_bfloat16_supported() -> bool:
+    """
+    Check if the current device supports bfloat16 precision.
+    
+    Returns:
+        `bool`: True if bfloat16 is supported, False otherwise.
+    """
     return SUPPORTS_BFLOAT16
 pass
 
-def is_vLLM_available():
+def is_vLLM_available() -> bool:
+    """
+    Check if vLLM is available for use.
+    
+    Returns:
+        `bool`: True if vLLM is available, False otherwise.
+    """
     return _is_package_available("vllm")
 pass
 
 # Patches models to add RoPE Scaling
 def patch_linear_scaling(
-    model_name = "gemma2",
-    rope_module = None,
+    model_name: str    = "gemma2",
+    rope_module        = None,
     scaled_rope_module = None,
-    attention_module = None,
-):
+    attention_module   = None,
+) -> tuple[str, str]:
+    """
+    Patch the attention module to support linear RoPE scaling.
+    
+    Args:
+        model_name (str):
+            Name of the model.
+        rope_module:
+            Module implementing standard RoPE.
+        scaled_rope_module:
+            Module implementing scaled RoPE.
+        attention_module:
+            Attention module to patch.
+    
+    Returns:
+        `tuple[str, str]`: A tuple containing the name of the patched function and the patched function code.
+    """
     assert(rope_module is not None and scaled_rope_module is not None)
     assert(attention_module is not None)
 
@@ -905,13 +1052,33 @@ pass
 
 # Patches for Llama-3 LlamaExtendedRotaryEmbedding
 def patch_llama_rope_scaling(
-    model_name = "llama",
-    rope_module = None,
-    scaled_rope_module = None,
+    model_name: str      = "llama",
+    rope_module          = None,
+    scaled_rope_module   = None,
     extended_rope_module = None,
-    attention_module = None,
-    longrope_module = None,
-):
+    attention_module     = None,
+    longrope_module      = None,
+) -> tuple[str, str]:
+    """
+    Patch the attention module to support extended RoPE scaling for Llama models.
+    
+    Args:
+        model_name (str):
+            Name of the model.
+        rope_module:
+            Module implementing standard RoPE.
+        scaled_rope_module:
+            Module implementing scaled RoPE.
+        extended_rope_module:
+            Module implementing extended RoPE.
+        attention_module:
+            Attention module to patch.
+        longrope_module:
+            Optional module for long context RoPE.
+    
+    Returns:
+        `tuple[str, str]`: A tuple containing the name of the patched function and the patched function code.
+    """
     assert(\
         rope_module is not None and \
         scaled_rope_module is not None and \
@@ -1001,7 +1168,19 @@ def patch_llama_rope_scaling(
 pass
 
 
-def create_boolean_mask(n = 4096, sliding_window = 2048):
+def create_boolean_mask(n: int = 4096, sliding_window: int = 2048) -> torch.Tensor:
+    """
+    Create a boolean mask for attention operations.
+    
+    Args:
+        n (int):
+            Size of the mask.
+        sliding_window (int):
+            Size of the sliding window for the mask.
+    
+    Returns:
+        `torch.Tensor`: Boolean mask tensor.
+    """
     # Creates a boolean mask for attention
     mask = torch.ones(n, n, dtype = torch.bool)
     if sliding_window == 0:
@@ -1015,7 +1194,13 @@ def create_boolean_mask(n = 4096, sliding_window = 2048):
 pass
 
 
-def test_mask_creation():
+def test_mask_creation() -> None:
+    """
+    Test the mask creation function against the reference implementation.
+    
+    Returns:
+        `None`
+    """
     from transformers.modeling_attn_mask_utils import AttentionMaskConverter
     for n in range(2, 23):
         for s in range(1, 23):
@@ -1038,7 +1223,19 @@ def test_mask_creation():
 pass
 
 
-def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
+def _unsloth_pre_compute_loss(self, model, inputs: dict[str, torch.Tensor], *args, **kwargs) -> torch.Tensor:
+    """
+    Precompute loss with additional handling for batch items.
+    
+    Args:
+        self: Trainer instance.
+        model: The model being trained.
+        inputs (dict[str, torch.Tensor]):
+            Input data for the model.
+    
+    Returns:
+        `torch.Tensor`: Computed loss.
+    """
     num_items_in_batch = None
 
     if "num_items_in_batch" in kwargs:
@@ -1071,7 +1268,16 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
 pass
 
 
-def patch_gradient_accumulation_fix(Trainer):
+def patch_gradient_accumulation_fix(Trainer) -> None:
+    """
+    Fix gradient accumulation in the Trainer class.
+    
+    Args:
+        Trainer: The Trainer class to patch.
+    
+    Returns:
+        `None`
+    """
     # Fixes gradient accumulation 
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
@@ -1155,7 +1361,17 @@ def patch_gradient_accumulation_fix(Trainer):
 pass
 
 
-def patch_tokenizer(model, tokenizer):
+def patch_tokenizer(model, tokenizer) -> tuple[Any, Any]:
+    """
+    Patch the tokenizer to handle specific model requirements.
+    
+    Args:
+        model: The model to patch.
+        tokenizer: The tokenizer to patch.
+    
+    Returns:
+        `tuple[Any, Any]`: Patched model and tokenizer.
+    """
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
         model.config.update({"unsloth_version" : __version__})
@@ -1163,45 +1379,121 @@ def patch_tokenizer(model, tokenizer):
 pass
 
 
-def patch_fast_lora():
+def patch_fast_lora() -> None:
+    """
+    Patch LoRA layers for faster forward passes.
+    
+    Returns:
+        `None`
+    """
     import peft.tuners.lora.bnb
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 pass
 
 
 def unsloth_compile_transformers(
-    dtype,
-    model_name,
-    model_types,
-    token                   = None,
-    revision                = None,
-    trust_remote_code       = False,
-    sdpa_dynamic_mask       = True,
-    sdpa_bool_masks         = True,
-    sdpa_gqa_replace        = True,
-    sdpa_dynamic_compile    = True,
-    compile_attention       = True,
-    disable_causal_masks    = True,
-    compile_torch_modules   = True,
-    compile_custom_modules  = True,
-    compile_function_calls  = True,
-    fuse_lm_head            = True,
-    gradient_checkpointing  = True,
-    manual_replacements     = True,
-    fast_lora_forwards      = True,
-    fast_residual_stream    = True,
-    accurate_accumulation   = True,
-    epilogue_fusion         = True,
-    max_autotune            = False,
-    shape_padding           = True,
-    cudagraphs              = False,
-    debug                   = False,
-    fullgraph               = True,
-    import_from_cache       = False,
-    disable                 = False,
-    return_logits           = False,
-    unsloth_force_compile   = False,
-):
+    dtype: torch.dtype,
+    model_name: str,
+    model_types: list[str],
+    token: Optional[str]         = None,
+    revision: Optional[str]      = None,
+    trust_remote_code: bool      = False,
+    sdpa_dynamic_mask: bool      = True,
+    sdpa_bool_masks: bool        = True,
+    sdpa_gqa_replace: bool       = True,
+    sdpa_dynamic_compile: bool   = True,
+    compile_attention: bool      = True,
+    disable_causal_masks: bool   = True,
+    compile_torch_modules: bool  = True,
+    compile_custom_modules: bool = True,
+    compile_function_calls: bool = True,
+    fuse_lm_head: bool           = True,
+    gradient_checkpointing: bool = True,
+    manual_replacements: bool    = True,
+    fast_lora_forwards: bool     = True,
+    fast_residual_stream: bool   = True,
+    accurate_accumulation: bool  = True,
+    epilogue_fusion: bool        = True,
+    max_autotune: bool           = False,
+    shape_padding: bool          = True,
+    cudagraphs: bool             = False,
+    debug: bool                  = False,
+    fullgraph: bool              = True,
+    import_from_cache: bool      = False,
+    disable: bool                = False,
+    return_logits: bool          = False,
+    unsloth_force_compile: bool  = False,
+) -> tuple[list[str], bool]:
+    """
+    Compile transformers model with specific optimizations.
+    
+    Args:
+        dtype (torch.dtype):
+            Data type for compilation.
+        model_name (str):
+            Name of the model.
+        model_types (list[str]):
+            List of model types to compile.
+        token (Optional[str]):
+            Authentication token.
+        revisions (Optional[str]):
+            Model revision.
+        trust_remote_code (bool):
+            Whether to trust remote code.
+        sdpa_dynamic_mask (bool):
+            Use dynamic SDPA masks.
+        sdpa_bool_masks (bool):
+            Use boolean SDPA masks.
+        sdpa_gqa_replace (bool):
+            Replace GQA with SDPA.
+        sdpa_dynamic_compile (bool):
+            Compile SDPA dynamically.
+        compile_attention (bool):
+            Compile attention layers.
+        disable_causal_masks (bool):
+            Disable causal masks.
+        compile_torch_modules (bool):
+            Compile standard torch modules.
+        compile_custom_modules (bool):
+            Compile custom modules.
+        compile_function_calls (bool):
+            Compile function calls.
+        fuse_lm_head (bool):
+            Fuse language model head.
+        gradient_checkpointing (bool):
+            Use gradient checkpointing.
+        manual_replacements (bool):
+            Use manual replacements.
+        fast_lora_forwards (bool):
+            Use fast LoRA forwards.
+        fast_residual_stream (bool):
+            Use fast residual streams.
+        accurate_accumulation (bool):
+            Use accurate accumulation.
+        epilogue_fusion (bool):
+            Use epilogue fusion.
+        max_autotune (bool):
+            Use max autotune.
+        shape_padding (bool):
+            Use shape padding.
+        cudagraphs (bool):
+            Use CUDA graphs.
+        debug (bool):
+            Debug mode.
+        fullgraph (bool):
+            Use full graph.
+        import_from_cache (bool):
+            Import from cache.
+        disable (bool):
+            Disable compilation.
+        return_logits (bool):
+            Return logits.
+        unsloth_force_compile (bool):
+            Force compilation.
+    
+    Returns:
+        `tuple[list[str], bool]`: List of model types and whether SDPA is supported.
+    """
     if Version(torch_version) < Version("2.4.0"):
         print(
             "="*30 + \
@@ -1267,15 +1559,59 @@ LOGITS_ERROR_STRING = \
     "trainer.train()\n```\n"\
     "No need to restart your console - just add `os.environ['UNSLOTH_RETURN_LOGITS'] = '1'` before trainer.train() and re-run the cell!"
 
-def raise_logits_error(*args, **kwargs): raise NotImplementedError(LOGITS_ERROR_STRING)
-def return_none(*args, **kwargs): return None
+def raise_logits_error(*args, **kwargs) -> None:
+    """
+    Raise an error about empty logits.
+    
+    Returns:
+        `None`
+    """
+    raise NotImplementedError(LOGITS_ERROR_STRING)
+def return_none(*args, **kwargs) -> None:
+    """
+    Return None.
+    
+    Returns:
+        `None`
+    """
+    return None
 class EmptyLogits:
+    """
+    Class to handle empty logits scenario with informative error messages.
+    """
     def __init__(self): return
-    def raise_getattr_error(self, attr): return return_none if attr == "to" else raise_logits_error
+    def raise_getattr_error(self, attr: str) -> Callable[..., None]:
+        """
+        Handle attribute access on empty logits with error messages.
+        
+        Args:
+            attr (str):
+                Attribute name being accessed.
+        
+        Returns:
+            `Callable`: Function that raises an error when called.
+        """
+        return return_none if attr == "to" else raise_logits_error
     __getitem__ = raise_logits_error
+
     __getattr__ = raise_getattr_error
-    def __repr__(self): return LOGITS_ERROR_STRING
-    def __str__ (self): return LOGITS_ERROR_STRING
+
+    def __repr__(self) -> str:
+        """
+        Return string representation of empty logits error.
+        
+        Returns:
+            `str`: Error message about empty logits.
+        """
+        return LOGITS_ERROR_STRING
+    def __str__ (self) -> str:
+        """
+        Return string representation of empty logits error.
+        
+        Returns:
+            `str`: Error message about empty logits.
+        """
+        return LOGITS_ERROR_STRING
 pass
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
