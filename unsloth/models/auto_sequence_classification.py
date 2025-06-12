@@ -14,7 +14,61 @@
 # from typing import Optional, Union, Tuple
 # import warnings
 
-# class MllamaForSequenceClassification(PreTrainedModel):
+
+# class SequenceClassificationMixin:
+#     """
+#     Mixin class containing common methods for sequence classification models.
+#     """
+    
+#     @staticmethod
+#     def compute_classification_loss(logits, labels, num_labels, config):
+#         """Compute loss based on problem type."""
+#         if labels is None:
+#             return None
+        
+#         # Determine problem type if not set
+#         if config.problem_type is None:
+#             if num_labels == 1:
+#                 config.problem_type = "regression"
+#             elif num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+#                 config.problem_type = "single_label_classification"
+#             else:
+#                 config.problem_type = "multi_label_classification"
+        
+#         # Compute loss based on problem type
+#         if config.problem_type == "regression":
+#             loss_fct = nn.MSELoss()
+#             if num_labels == 1:
+#                 loss = loss_fct(logits.squeeze(), labels.squeeze())
+#             else:
+#                 loss = loss_fct(logits, labels)
+#         elif config.problem_type == "single_label_classification":
+#             loss_fct = nn.CrossEntropyLoss()
+#             loss = loss_fct(logits.view(-1, num_labels), labels.view(-1))
+#         elif config.problem_type == "multi_label_classification":
+#             loss_fct = nn.BCEWithLogitsLoss()
+#             loss = loss_fct(logits, labels)
+#         else:
+#             raise ValueError(f"Unknown problem type: {config.problem_type}")
+        
+#         return loss
+    
+#     @staticmethod
+#     def pool_sequence(last_hidden_state, attention_mask=None):
+#         """Pool the sequence representation using the last non-padded token."""
+#         if attention_mask is not None:
+#             # Find the last non-padded token for each sequence
+#             batch_size = last_hidden_state.shape[0]
+#             sequence_lengths = attention_mask.sum(dim=1) - 1
+#             pooled_output = last_hidden_state[torch.arange(batch_size), sequence_lengths]
+#         else:
+#             # Use the last token
+#             pooled_output = last_hidden_state[:, -1, :]
+        
+#         return pooled_output
+
+
+# class MllamaForSequenceClassification(PreTrainedModel, SequenceClassificationMixin):
 #     """
 #     Mllama model with a sequence classification head on top (a linear layer on top of the pooled output).
 #     """
@@ -52,7 +106,6 @@
 #             output.requires_grad_(True)
         
 #         # Access embeddings through the language model
-#         # embedding_layer = self.language_model.get_input_embeddings()
 #         embedding_layer = self.mllama.model.language_model.embed_tokens
 #         self._require_grads_hook = embedding_layer.register_forward_hook(make_inputs_require_grads)
 
@@ -89,45 +142,16 @@
 #             return_dict=return_dict
 #         )
         
-#         # Get the last hidden state
+#         # Get the last hidden state and pool it
 #         last_hidden_state = language_model_outputs.last_hidden_state
-        
-#         # Pool the sequence (use the last token's representation)
-#         if attention_mask is not None:
-#             # Find the last non-padded token for each sequence
-#             batch_size = input_ids.shape[0]
-#             sequence_lengths = attention_mask.sum(dim=1) - 1
-#             pooled_output = last_hidden_state[torch.arange(batch_size), sequence_lengths]
-#         else:
-#             # Use the last token
-#             pooled_output = last_hidden_state[:, -1, :]
+#         pooled_output = self.pool_sequence(last_hidden_state, attention_mask)
         
 #         # Apply dropout and classification
 #         pooled_output = self.dropout(pooled_output)
 #         logits = self.score(pooled_output)
         
-#         loss = None
-#         if labels is not None:
-#             if self.config.problem_type is None:
-#                 if self.num_labels == 1:
-#                     self.config.problem_type = "regression"
-#                 elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
-#                     self.config.problem_type = "single_label_classification"
-#                 else:
-#                     self.config.problem_type = "multi_label_classification"
-
-#             if self.config.problem_type == "regression":
-#                 loss_fct = nn.MSELoss()
-#                 if self.num_labels == 1:
-#                     loss = loss_fct(logits.squeeze(), labels.squeeze())
-#                 else:
-#                     loss = loss_fct(logits, labels)
-#             elif self.config.problem_type == "single_label_classification":
-#                 loss_fct = nn.CrossEntropyLoss()
-#                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-#             elif self.config.problem_type == "multi_label_classification":
-#                 loss_fct = nn.BCEWithLogitsLoss()
-#                 loss = loss_fct(logits, labels)
+#         # Compute loss using the mixin method
+#         loss = self.compute_classification_loss(logits, labels, self.num_labels, self.config)
         
 #         if not return_dict:
 #             output = (logits,) + language_model_outputs[1:]
@@ -141,7 +165,7 @@
 #         )
 
 
-# class LlavaNextForSequenceClassification(PreTrainedModel):
+# class LlavaNextForSequenceClassification(PreTrainedModel, SequenceClassificationMixin):
 #     """
 #     LlavaNext model with a sequence classification head on top (a linear layer on top of the pooled output).
 #     """
@@ -172,16 +196,19 @@
     
 #     def _create_classification_head(self, hidden_size, num_labels):
 #         """Create classification head with quantization support"""
-#         import bitsandbytes as bnb
-#         from transformers.utils import is_bitsandbytes_available
-#         if is_bitsandbytes_available() and hasattr(self.llava_next, 'language_model'):
-#             # Check if the base model is quantized
-#             if hasattr(self.llava_next.language_model, 'model'):
-#                 first_layer = next(iter(self.llava_next.language_model.model.layers))
-#                 if hasattr(first_layer, 'self_attn') and hasattr(first_layer.self_attn, 'q_proj'):
-#                     if hasattr(first_layer.self_attn.q_proj, 'quant_state'):
-#                         # Model is quantized, use Linear8bitLt for the classification head
-#                         return bnb.nn.Linear8bitLt(hidden_size, num_labels, has_fp16_weights=False)
+#         try:
+#             import bitsandbytes as bnb
+#             from transformers.utils import is_bitsandbytes_available
+#             if is_bitsandbytes_available() and hasattr(self.llava_next, 'language_model'):
+#                 # Check if the base model is quantized
+#                 if hasattr(self.llava_next.language_model, 'model'):
+#                     first_layer = next(iter(self.llava_next.language_model.model.layers))
+#                     if hasattr(first_layer, 'self_attn') and hasattr(first_layer.self_attn, 'q_proj'):
+#                         if hasattr(first_layer.self_attn.q_proj, 'quant_state'):
+#                             # Model is quantized, use Linear8bitLt for the classification head
+#                             return bnb.nn.Linear8bitLt(hidden_size, num_labels, has_fp16_weights=False)
+#         except (ImportError, AttributeError, StopIteration):
+#             pass
         
 #         # Default to regular Linear layer
 #         return nn.Linear(hidden_size, num_labels)
@@ -195,7 +222,6 @@
 #             output.requires_grad_(True)
         
 #         # Access embeddings through the language model
-#         # embedding_layer = self.language_model.get_input_embeddings()
 #         embedding_layer = self.llava_next.model.language_model.embed_tokens
 #         self._require_grads_hook = embedding_layer.register_forward_hook(make_inputs_require_grads)
 
@@ -230,45 +256,16 @@
 #             return_dict=return_dict
 #         )
         
-#         # Get the last hidden state
+#         # Get the last hidden state and pool it
 #         last_hidden_state = language_model_outputs.last_hidden_state
-        
-#         # Pool the sequence (use the last token's representation)
-#         if attention_mask is not None:
-#             # Find the last non-padded token for each sequence
-#             batch_size = input_ids.shape[0]
-#             sequence_lengths = attention_mask.sum(dim=1) - 1
-#             pooled_output = last_hidden_state[torch.arange(batch_size), sequence_lengths]
-#         else:
-#             # Use the last token
-#             pooled_output = last_hidden_state[:, -1, :]
+#         pooled_output = self.pool_sequence(last_hidden_state, attention_mask)
         
 #         # Apply dropout and classification
 #         pooled_output = self.dropout(pooled_output)
 #         logits = self.score(pooled_output)
         
-#         loss = None
-#         if labels is not None:
-#             if self.config.problem_type is None:
-#                 if self.num_labels == 1:
-#                     self.config.problem_type = "regression"
-#                 elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
-#                     self.config.problem_type = "single_label_classification"
-#                 else:
-#                     self.config.problem_type = "multi_label_classification"
-
-#             if self.config.problem_type == "regression":
-#                 loss_fct = nn.MSELoss()
-#                 if self.num_labels == 1:
-#                     loss = loss_fct(logits.squeeze(), labels.squeeze())
-#                 else:
-#                     loss = loss_fct(logits, labels)
-#             elif self.config.problem_type == "single_label_classification":
-#                 loss_fct = nn.CrossEntropyLoss()
-#                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-#             elif self.config.problem_type == "multi_label_classification":
-#                 loss_fct = nn.BCEWithLogitsLoss()
-#                 loss = loss_fct(logits, labels)
+#         # Compute loss using the mixin method
+#         loss = self.compute_classification_loss(logits, labels, self.num_labels, self.config)
         
 #         if not return_dict:
 #             output = (logits,) + language_model_outputs[1:]
@@ -280,8 +277,6 @@
 #             hidden_states=language_model_outputs.hidden_states,
 #             attentions=language_model_outputs.attentions,
 #         )
-
-
 
 import torch
 import torch.nn as nn
@@ -351,6 +346,7 @@ class SequenceClassificationMixin:
             pooled_output = last_hidden_state[:, -1, :]
         
         return pooled_output
+    
 
 
 class MllamaForSequenceClassification(PreTrainedModel, SequenceClassificationMixin):
@@ -382,6 +378,7 @@ class MllamaForSequenceClassification(PreTrainedModel, SequenceClassificationMix
         # Initialize weights
         self.post_init()
 
+
     def enable_input_require_grads(self):
         """
         Enables the gradients for the input embeddings. This is useful for fine-tuning adapter weights while keeping
@@ -394,12 +391,6 @@ class MllamaForSequenceClassification(PreTrainedModel, SequenceClassificationMix
         embedding_layer = self.mllama.model.language_model.embed_tokens
         self._require_grads_hook = embedding_layer.register_forward_hook(make_inputs_require_grads)
 
-    def disable_input_require_grads(self):
-        """
-        Removes the `_require_grads_hook`.
-        """
-        if hasattr(self, '_require_grads_hook'):
-            self._require_grads_hook.remove()
     
     def forward(
         self,
@@ -509,13 +500,6 @@ class LlavaNextForSequenceClassification(PreTrainedModel, SequenceClassification
         # Access embeddings through the language model
         embedding_layer = self.llava_next.model.language_model.embed_tokens
         self._require_grads_hook = embedding_layer.register_forward_hook(make_inputs_require_grads)
-
-    def disable_input_require_grads(self):
-        """
-        Removes the `_require_grads_hook`.
-        """
-        if hasattr(self, '_require_grads_hook'):
-            self._require_grads_hook.remove()
     
     def forward(
         self,
