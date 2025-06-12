@@ -79,29 +79,20 @@ if DEVICE_TYPE == "cuda":
     get_ptr = bnb.functional.get_ptr
 
 
-if DEVICE_TYPE == "cuda":
-    if torch.cuda.device_count() > 1:
-        torch_gpu_device = torch.cuda.device
-    else:
-        from contextlib import nullcontext
-        def torch_gpu_device(device): return nullcontext()
+if DEVICE_TYPE == "cuda" and torch.cuda.device_count() > 1:
+    torch_gpu_device = torch.cuda.device
+elif DEVICE_TYPE == "xpu" and torch.xpu.device_count() > 1:
+    torch_gpu_device = torch.xpu.device
+else:
+    from contextlib import nullcontext
+    def torch_gpu_device(device): return nullcontext()
     pass
-    _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
-    c_void_p = ctypes.c_void_p
-    def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
-        return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
-    pass
-elif DEVICE_TYPE == "xpu":
-    if torch.xpu.device_count() > 1:
-        torch_gpu_device = torch.xpu.device
-    else:
-        from contextlib import nullcontext
-        def torch_gpu_device(device): return nullcontext()
-    pass
-    _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
-    c_void_p = ctypes.c_void_p
-    def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
-        return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
+
+_gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream if DEVICE_TYPE=="cuda" else torch._C._xpu_getCurrentRawStream 
+c_void_p = ctypes.c_void_p
+def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
+    return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
+pass
 
 
 # Get array of CUDA streams and other buffers
