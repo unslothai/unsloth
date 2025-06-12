@@ -221,9 +221,9 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
-            #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            return hidden_states
+            logits = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
+            logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            return logits
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
@@ -280,8 +280,12 @@ def grpo_trainer_compute_loss(function_name, function):
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
         # https://github.com/huggingface/trl/blob/05bc43e960396581e458195b8388efe6b82cae1f/trl/trainer/grpo_trainer.py#L1328
         if self.beta != 0.0:
-            with torch.inference_mode(), model.disable_adapter():
-                ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+            with torch.inference_mode():
+                if model._hf_peft_config_loaded:
+                    with model.disable_adapters():
+                        ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+                else:
+                    ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
         else:
             ref_per_token_logps = None
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
