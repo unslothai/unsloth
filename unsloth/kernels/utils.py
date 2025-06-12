@@ -23,20 +23,21 @@ from unsloth import DEVICE_TYPE
 import torch
 torch_Tensor = torch.Tensor
 from packaging.version import Version
-if DEVICE_TYPE == "cuda":
-    if Version(torch.__version__) < Version("2.4.0"):
-        torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
-        torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
-    else:
-        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
-        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
-    pass
-elif DEVICE_TYPE == "xpu":
-    if Version(torch.__version__) < Version("2.6.0"):
-        raise RuntimeError("torch.xpu currently only supports torch.version >= 2.6.0")
-    else:
-        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
-        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+
+if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
+    raise RuntimeError("Intel xpu currently supports unsloth with torch.version >= 2.6.0")
+
+if Version(torch.__version__) < Version("2.4.0"):
+    torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
+    torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
+else:
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
+pass
+
+if DEVICE_TYPE == "xpu"
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 
 
 # tl.math.tanh now is libdevice.tanh
