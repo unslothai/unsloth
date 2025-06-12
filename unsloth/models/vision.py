@@ -457,8 +457,6 @@ class FastBaseModel:
             config = create_config_for_classification(model_name, **kwargs)
             del kwargs["attn_implementation"]
             del kwargs["num_labels"]
-
-        if auto_model.__name__.endswith("ForSequenceClassification"):
             model = auto_model.from_pretrained(
                 model_name,
                 config = config,
@@ -573,7 +571,7 @@ class FastBaseModel:
                     base_model._old_generate = base_model.generate
                     unsloth_base_fast_generate.__doc__ = base_model._old_generate.__doc__
                     base_model.generate = types.MethodType(unsloth_base_fast_generate, model)
-            if not model.__class__.__name__.endswith("ForSequenceClassification") and  model.generate.__name__ != "unsloth_base_fast_generate":
+            elif model.generate.__name__ != "unsloth_base_fast_generate":
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
