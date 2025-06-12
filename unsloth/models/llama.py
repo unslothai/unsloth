@@ -1257,7 +1257,8 @@ def PeftModel_fast_forward(
     logits_to_keep = 0,
     **kwargs,
 ):
-    if "Classification" in str(type( self.base_model.model)): 
+    is_classification =  "Classification" in str(type( self.base_model.model))
+    if is_classification: 
         #causal_mask = causal_mask,
         return self.base_model(
             input_ids = input_ids,
@@ -2442,8 +2443,9 @@ class FastLlamaModel:
         lora_config = LoraConfig(**arguments)
 
         # First offload lm_head and embed_tokens to disk
-        input_embeddings_device  = model. get_input_embeddings().weight.device
-        if "Classification" in str(type(model)):
+        input_embeddings_device  = model. get_input_embeddings().weight.deviceis_classification =  "Classification" in str(type( self.base_model.model))
+        is_classification =  "Classification" in str(type( self.base_model.model))
+        if is_classification:
              output_embeddings_device = model.score.weight.device
         else: 
             output_embeddings_device = model.get_output_embeddings().weight.device
