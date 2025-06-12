@@ -2419,8 +2419,9 @@ class FastLlamaModel:
             if bias != "none":
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
         pass
-        
-        is_classification =  "Classification" in str(type( self.base_model.model))
+
+        #does not get lora yet, so get name from model, not base model
+        is_classification =  "Classification" in str(type( self.model))
         # Get LoRA
         arguments = dict(
             r                   = r,
