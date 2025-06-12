@@ -2419,7 +2419,8 @@ class FastLlamaModel:
             if bias != "none":
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
         pass
-
+        
+        is_classification =  "Classification" in str(type( self.base_model.model))
         # Get LoRA
         arguments = dict(
             r                   = r,
@@ -2427,7 +2428,7 @@ class FastLlamaModel:
             target_modules      = final_modules,
             lora_dropout        = lora_dropout,
             bias                = bias,
-            task_type           = TaskType.CAUSAL_LM,
+            task_type           = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,
             layers_to_transform = layers_to_transform,
             init_lora_weights   = init_lora_weights,
             loftq_config        = loftq_config,
@@ -2443,8 +2444,7 @@ class FastLlamaModel:
         lora_config = LoraConfig(**arguments)
 
         # First offload lm_head and embed_tokens to disk
-        input_embeddings_device  = model. get_input_embeddings().weight.deviceis_classification =  "Classification" in str(type( self.base_model.model))
-        is_classification =  "Classification" in str(type( self.base_model.model))
+        input_embeddings_device  = model. get_input_embeddings().weight.device
         if is_classification:
              output_embeddings_device = model.score.weight.device
         else: 
