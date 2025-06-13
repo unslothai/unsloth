@@ -35,7 +35,7 @@ else:
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 pass
 
-if DEVICE_TYPE == "xpu"
+if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 
