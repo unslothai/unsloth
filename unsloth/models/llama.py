@@ -1702,6 +1702,7 @@ class FastLlamaModel:
         random_state      = 3407,
         max_lora_rank     = 16,
         disable_log_stats = False,
+        enable_sleep_mode = True,
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
@@ -1869,6 +1870,7 @@ class FastLlamaModel:
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
                 use_bitsandbytes       = load_in_4bit,
+                enable_sleep_mode      = enable_sleep_mode,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
