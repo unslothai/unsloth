@@ -2421,15 +2421,18 @@ class FastLlamaModel:
         pass
 
         #does not get lora yet, so get name from model, not base model
-        is_classification =  "Classification" in str(type( self.model))
+
+        is_classification =  "Classification" in str(type(model))
         # Get LoRA
+        # if not is_classification else TaskType.SEQ_CLS
+
         arguments = dict(
             r                   = r,
             lora_alpha          = lora_alpha,
             target_modules      = final_modules,
             lora_dropout        = lora_dropout,
             bias                = bias,
-            task_type           = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,
+            task_type           = TaskType.CAUSAL_LM,
             layers_to_transform = layers_to_transform,
             init_lora_weights   = init_lora_weights,
             loftq_config        = loftq_config,
@@ -2445,7 +2448,7 @@ class FastLlamaModel:
         lora_config = LoraConfig(**arguments)
 
         # First offload lm_head and embed_tokens to disk
-        input_embeddings_device  = model. get_input_embeddings().weight.device
+        input_embeddings_device  = model.get_input_embeddings().weight.device
         if is_classification:
              output_embeddings_device = model.score.weight.device
         else: 
