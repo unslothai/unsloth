@@ -968,6 +968,11 @@ else:
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ),
+    "unsloth/Magistral-Small-2506-unsloth-bnb-4bit" : (
+        "unsloth/Magistral-Small-2506",
+        "mistralai/Magistral-Small-2506",
+        "unsloth/Magistral-Small-2506-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
