@@ -593,7 +593,7 @@ if hasattr(transformers.integrations.bitsandbytes, "_replace_with_bnb_linear") a
     )
 
     score_code = """if name == 'score':
-        modules_to_not_convert.append("score")"""
+    modules_to_not_convert.append("score")"""
 
     pattern = r"(^\s*)(current_key_name\.append\(name\))"
 
