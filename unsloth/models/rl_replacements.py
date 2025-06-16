@@ -181,11 +181,11 @@ def grpo_generate_and_score_completions(function_name, function):
         if not self.use_vision:
            pixel_values = None
            image_grid_thw = None
-           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)
+           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True,padding_side="left", add_special_tokens=False)
            prompt_inputs = super()._prepare_inputs(prompt_inputs)
         else:
            images = [x['image'] for x in inputs] # Only image inputs support for now 
-           prompt_inputs = self.processing_class(images = images, text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)
+           prompt_inputs = self.processing_class(images = images, text=prompts_text, return_tensors='pt', padding=True,padding_side="left", add_special_tokens=False)
            prompt_inputs = super()._prepare_inputs(prompt_inputs)
            pixel_values, image_grid_thw = prompt_inputs['pixel_values'], prompt_inputs['image_grid_thw']
 
@@ -277,17 +277,6 @@ def grpo_generate_and_score_completions(function_name, function):
             else:
                 old_per_token_logps = None
 
-            if self.beta == 0.0:
-                ref_per_token_logps = None
-            elif self.ref_model is not None:
-                ref_per_token_logps = self._get_per_token_logps(
-                    self.ref_model, prompt_completion_ids, attention_mask,pixel_values,image_grid_thw, logits_to_keep, batch_size
-                )
-            else:
-                with self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False).disable_adapter():
-                    ref_per_token_logps = self._get_per_token_logps(
-                        self.model, prompt_completion_ids, attention_mask,pixel_values,image_grid_thw, logits_to_keep, batch_size
-                    )
 
         # Decode the generated completions
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
@@ -411,7 +400,6 @@ def grpo_generate_and_score_completions(function_name, function):
             "completion_mask": completion_mask,
             "advantages": advantages,
             "old_per_token_logps": old_per_token_logps,
-            "ref_per_token_logps": ref_per_token_logps,
         }
 
     function = inspect.getsource(_generate_and_score_completions)
@@ -438,13 +426,13 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_generate_and_score_completions)
 def grpo_prepare_inputs(function_name, function):
     if  function_name != "_prepare_inputs": return function
 
-    if "accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)" not in function : return function
+    if "generation_batch = self._generate_and_score_completions(generation_batch)" not in function : return function
     
     function = function.replace(
-        "accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)",
+        "generation_batch = self._generate_and_score_completions(generation_batch)",
         
-        "accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)\n"\
-        "                if self.use_vision : accumulated_local_batch['pixel_values']=accumulated_local_batch['pixel_values'].view(accumulated_local_batch['prompt_ids'].size(0), -1, accumulated_local_batch['pixel_values'].size(1)) # (batch_size * n_patches, dim embedding)->(batch_size,n_patches,dim embeddding)"
+        "generation_batch = self._generate_and_score_completions(generation_batch)\n"\
+        "                if self.use_vision : generation_batch['pixel_values']=generation_batch['pixel_values'].view(generation_batch['prompt_ids'].size(0), -1, generation_batch['pixel_values'].size(1)) # (batch_size * n_patches, dim embedding)->(batch_size,n_patches,dim embeddding)"
     )
 
     return function
@@ -484,6 +472,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             else:
                 hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
             #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            hidden_states = hidden_states[:, :-1, :]
+            hidden_states = hidden_states[:, -logits_to_keep:]
             return hidden_states
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
@@ -526,6 +516,7 @@ def grpo_trainer_compute_loss(function_name, function):
         # Compute the per-token log probabilities for the model
 
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
+        pixel_values,image_grid_thw = inputs.get("pixel_values", None), inputs.get("image_grid_thw", None)
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         bsz, qlen = input_ids.shape
@@ -534,19 +525,18 @@ def grpo_trainer_compute_loss(function_name, function):
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         _input_ids = input_ids
         _logits_to_keep = logits_to_keep
-        
-        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+        print(input_ids.shape)
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask,pixel_values,image_grid_thw, logits_to_keep)
 
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
         # https://github.com/huggingface/trl/blob/05bc43e960396581e458195b8388efe6b82cae1f/trl/trainer/grpo_trainer.py#L1328
         if self.beta != 0.0:
             with torch.inference_mode(), model.disable_adapter():
-                ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+                ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask,pixel_values,image_grid_thw, logits_to_keep)
         else:
             ref_per_token_logps = None
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
-
         # x - x.detach() allows for preserving gradients from x
         advantages = inputs["advantages"]
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
