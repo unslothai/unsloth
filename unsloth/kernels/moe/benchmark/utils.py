@@ -227,7 +227,7 @@ def create_kernel_configs(args: argparse.Namespace, permute_x: bool, permute_y: 
 
 def power_of_two_range(start: int, end: int) -> list[int]:
     """
-    Generates a list of power-of-two values between the given start and end values.
+    Generates a list of power-of-two values between start and end (inclusive).
     
     Args:
         start (`int`):
@@ -236,7 +236,7 @@ def power_of_two_range(start: int, end: int) -> list[int]:
             Ending value (inclusive). Must be a power of two.
     
     Returns:
-        `list[int]`: List of power-of-two values from start to end.
+        `list[int]`: List of power-of-two values from start to end (inclusive).
     """
     start = math.log2(start)
     end = math.log2(end)

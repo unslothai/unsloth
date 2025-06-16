@@ -111,6 +111,43 @@ def test_qwen3_moe(
     permute_y: bool,
     autotune: bool,
 ) -> None:
+    """
+    Tests the Qwen3 MoE implementation with grouped GEMM optimizations.
+    
+    This test validates the correctness of the optimized Triton-based grouped GEMM
+    implementation against the reference HuggingFace implementation. It tests both
+    forward and backward passes, checking intermediate results and gradients.
+    
+    The test compares three implementations:
+    1. HuggingFace reference (Qwen3MoeSparseMoeBlock)
+    2. PyTorch native grouped GEMM (for sanity checking)
+    3. Triton kernel grouped GEMM (the optimized implementation being tested)
+    
+    Args:
+        config (`Qwen3MoeConfig`):
+            Configuration object for the Qwen3 MoE model.
+        seqlen (`int`):
+            Sequence length for the input tensors.
+        dtype (`torch.dtype`):
+            Data type for tensors (e.g., torch.bfloat16, torch.float16).
+        permute_x (`bool`):
+            If True, test with input permutation from token order to expert order.
+        permute_y (`bool`):
+            If True, test with output permutation from expert order to token order.
+        autotune (`bool`):
+            If True, use autotuning to find optimal kernel configurations.
+            If False, use manual kernel configurations.
+    
+    Tests performed:
+        Forward pass:
+        - Output equivalence between all three implementations
+        - Intermediate results for grouped GEMM operations
+        
+        Backward pass:
+        - Gradient of input (dX)
+        - Gradient of gate weights (router)
+        - Gradients of expert projections (gate_proj, up_proj, down_proj)
+    """
     torch.manual_seed(
         SEED
     )  # Should not be needed when running using pytest -- autouse fixture in conftest.py

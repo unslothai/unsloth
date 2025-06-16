@@ -177,8 +177,12 @@ def setup_model(
     """
     Setup and return reference and Triton models based on configuration.
     
+    This function only supports Qwen3MoeConfig and Llama4TextConfig configurations.
+    Other configuration types will raise a ValueError.
+    
     Args:
-        config (Qwen3MoeConfig | Llama4TextConfig): Model configuration.
+        config (Qwen3MoeConfig | Llama4TextConfig): Model configuration. Must be either
+            Qwen3MoeConfig or Llama4TextConfig.
         dtype (torch.dtype): Data type for models.
         permute_x (bool): Whether to permute input X.
         permute_y (bool): Whether to permute output Y.
@@ -193,6 +197,9 @@ def setup_model(
     
     Returns:
         tuple[torch.nn.Module, torch.nn.Module]: Reference and Triton models.
+    
+    Raises:
+        ValueError: If the config is not an instance of Qwen3MoeConfig or Llama4TextConfig.
     """
     if isinstance(config, Qwen3MoeConfig):
         ref_model = Qwen3MoeSparseMoeBlock(config).to(device, dtype)

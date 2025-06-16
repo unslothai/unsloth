@@ -88,7 +88,10 @@ def original_apply_qkv(self, X: torch.Tensor) -> Tuple[torch.Tensor, torch.Tenso
     """
     Applies the Q, K, V projections to the input tensor X.
     
+    This function is designed to be bound as a method to attention modules.
+    
     Args:
+        self: The attention module containing q_proj, k_proj, and v_proj layers
         X (`torch.Tensor`): Input tensor of shape (batch_size, seq_len, hidden_size)
     
     Returns:
@@ -105,7 +108,10 @@ def original_apply_o(self, X: torch.Tensor) -> torch.Tensor:
     """
     Applies the output projection to the input tensor X.
     
+    This function is designed to be bound as a method to attention modules.
+    
     Args:
+        self: The attention module containing o_proj layer
         X (`torch.Tensor`): Input tensor of shape (batch_size, seq_len, hidden_size)
     
     Returns:
@@ -452,12 +458,12 @@ pass
 
 # Normal layernorm with mean removal
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
-def fast_layernorm_compiled(layernorm: LlamaRMSNorm, X: torch.Tensor) -> torch.Tensor:
+def fast_layernorm_compiled(layernorm: torch.nn.Module, X: torch.Tensor) -> torch.Tensor:
     """
     Compiled version of layer normalization with mean removal.
     
     Args:
-        layernorm (`LlamaRMSNorm`): LayerNorm module
+        layernorm (`torch.nn.Module`): LayerNorm/RMSNorm module with variance_epsilon and weight attributes
         X (`torch.Tensor`): Input tensor
     
     Returns:

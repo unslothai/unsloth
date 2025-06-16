@@ -379,7 +379,7 @@ def estimate_smem_reqs(
             Data type of the tensors.
     
     Returns:
-        `int`: The estimated shared memory requirements in bytes.
+        `int`: Estimated shared memory requirements (in bytes).
     """
     num_bytes = dtype.itemsize
     return (
@@ -429,6 +429,9 @@ def common_prune_criteria(config: triton.Config, kwargs: dict, dtype: torch.dtyp
     """
     Common pruning criteria for kernel configurations.
     
+    Determines whether a kernel configuration should be pruned based on shared memory
+    constraints and other performance considerations.
+    
     Args:
         config (`triton.Config`):
             Kernel configuration to check.
@@ -438,7 +441,10 @@ def common_prune_criteria(config: triton.Config, kwargs: dict, dtype: torch.dtyp
             Data type of the tensors.
     
     Returns:
-        `bool`: True if the kernel configuration should be pruned, False otherwise.
+        `bool`: True if the kernel configuration should be pruned based on:
+            - Shared memory requirements exceeding device capacity
+            - Block size being too large relative to tokens per expert
+            - Both permute_x and permute_y being enabled simultaneously
     """
     from grouped_gemm.interface import supports_tma
     from grouped_gemm.kernels.tuning import get_device_properties

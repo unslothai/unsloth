@@ -49,7 +49,7 @@ else:
 pass
 
 
-def calculate_settings(n : int) -> (int, int,):
+def calculate_settings(n : int) -> tuple[int, int]:
     """
     Calculate the optimal Triton block size and number of warps for a given tensor size.
     

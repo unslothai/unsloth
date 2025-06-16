@@ -131,28 +131,80 @@ def grouped_gemm_forward(
     debug: bool                  = False,
 ) -> torch.Tensor:
     """
-    Grouped GEMM forward pass for MoE MLPs.
+    Performs grouped GEMM forward pass for Mixture-of-Experts (MoE) MLPs.
 
-    The implementation offers a number of fusions specific to MoE:
-    - `permute_x`: fuse the permutation of hidden states from token order (original order) to grouped expert order, typically only needed for the first grouped GEMM in an MoE MLP.
-        - When `permute_x` is True, `X` is expected to be of shape (num_tokens, K).
-        - When `permute_x` is False, `X` is expected to be of shape (total_tokens, K) where `total_tokens = num_tokens * topk` AND already permuted to grouped expert order, i.e., hidden states are sorted such that tokens assigned to each expert are contiguous.
-    - `permute_y`: fused the permuation of the output from expert grouped order back to original token order, typically only needed for the second grouped GEMM in an MoE MLP.
-    - `fuse_mul_pre`: fuse the multiplication of the routed input with topk_weights, only done in the first grouped GEMM in an MoE MLP as for Llama4.  Do not use, since results in performance regression as it interrupts the GEMM mainloop.
-    - `fuse_mul_post`: fuse the multiplication of the routed output with topk_weights, used only when `permute_y` is True. NOTE: this should only be used when using this kernel for inference, not for training.
+    This function implements an optimized grouped matrix multiplication operation with
+    support for various MoE-specific optimizations including permutation, weight fusion,
+    and TMA (Tensor Memory Accelerator) support.
 
-    X: (M, K) hidden states where M is the num_tokens if `permute_x` is True, otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
-    W: (E, N, K) expert weights, where E is number of experts, N in the intermediate (output) dim, and K is the reduction dim
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    gather_indices: (total_tokens,) indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert.
-    topk_weights: (total_tokens,) weights to multiply routed output by in expert MLP calculation, used only when `fuse_mul_post` is True (see note on `fuse_mul_post`).
-    use_fast_accum: currently unused; trade off faster accumulation dtype in GEMM for less precision.
-    use_tma_load_x: use TMA for loading activations, incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+.
-    use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
-    use_tma_store: use TMA for storing output, incompatible with permute_y.  TODO: add TMA scatter support for Blackwell+.
+    The implementation offers several fusions specific to MoE:
+    - `permute_x`: Fuses permutation of hidden states from token order to expert order
+    - `permute_y`: Fuses permutation of output from expert order back to token order
+    - `fuse_mul_post`: Fuses multiplication with routing weights after GEMM
+
+    Args:
+        X (`torch.Tensor`):
+            Input hidden states tensor. Shape is (num_tokens, K) if `permute_x` is True,
+            otherwise (total_tokens, K) where total_tokens = num_tokens * topk.
+        W (`torch.Tensor`):
+            Expert weight matrices with shape (E, N, K) where E is number of experts,
+            N is output dimension, and K is input dimension.
+        topk (`int`):
+            Number of experts selected per token.
+        m_sizes (`torch.Tensor`):
+            Number of tokens assigned to each expert.
+        gather_indices (`torch.Tensor`, *optional*):
+            Indices for gathering tokens assigned to each expert. Required when
+            permute_x or permute_y is True. Shape: (total_tokens,).
+        topk_weights (`torch.Tensor`, *optional*):
+            Routing weights for weighted output. Required when fuse_mul_post is True.
+            Shape: (total_tokens,).
+        permute_x (`bool`, *optional*):
+            If True, permute input from token order to expert-grouped order.
+            Only used for first grouped GEMM in MoE MLP. Defaults to False.
+        permute_y (`bool`, *optional*):
+            If True, permute output from expert-grouped order to token order.
+            Only used for second grouped GEMM in MoE MLP. Defaults to False.
+        fuse_mul_post (`bool`, *optional*):
+            If True, fuse multiplication with routing weights after GEMM.
+            Should only be used for inference, not training. Defaults to False.
+        autotune (`bool`, *optional*):
+            If True, use autotuning to find optimal kernel configuration.
+            Manual kernel parameters will be ignored. Defaults to False.
+        BLOCK_SIZE_M (`int`, *optional*):
+            Block size for M dimension tiling. Defaults to 32.
+        BLOCK_SIZE_N (`int`, *optional*):
+            Block size for N dimension tiling. Defaults to 32.
+        BLOCK_SIZE_K (`int`, *optional*):
+            Block size for K dimension tiling. Defaults to 32.
+        num_warps (`int`, *optional*):
+            Number of warps per thread block. Defaults to 4.
+        num_stages (`int`, *optional*):
+            Number of pipeline stages. Defaults to 2.
+        use_tma_load_w (`bool`, *optional*):
+            If True, use TMA for loading weights. Recommended when supported.
+            Defaults to False.
+        use_tma_load_x (`bool`, *optional*):
+            If True, use TMA for loading inputs. Incompatible with permute_x.
+            Defaults to False.
+        use_tma_store (`bool`, *optional*):
+            If True, use TMA for storing output. Incompatible with permute_y.
+            Defaults to False.
+        flatten (`bool`, *optional*):
+            If True, flatten loops for better performance. Defaults to True.
+        debug (`bool`, *optional*):
+            If True, print debug information. Defaults to False.
 
     Returns:
-        y: (total_tokens, N) output of grouped GEMM
+        `torch.Tensor`: Output tensor with shape (total_tokens, N) containing the
+            grouped GEMM result.
+
+    Notes:
+        - permute_x and permute_y are mutually exclusive
+        - use_tma_load_x is incompatible with permute_x
+        - use_tma_store is incompatible with permute_y
+        - fuse_mul_post should only be used for inference
+        - Manual kernel parameters need proper tuning for good performance
     """
 
     assert X.device.type == "cuda", "X and W must be on CUDA"
@@ -329,24 +381,72 @@ def grouped_gemm_dX(
     autotune: bool        = False,
 ) -> torch.Tensor:
     """
-    dX backward kernel
-    grad_output: (M, N)
-    gather_indices: (total_tokens,), indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert.
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    topk: number of experts chosen per token.
-    `permute_x`: whether X was permuted on load in the forward pass, typically only used for the first grouped GEMM in an MoE MLP to group tokens by expert.
-    - In the forward pass, if we permuted X on load, we need to permute store in the backward pass
-    - Shapes
-        - the forward pass input X shape is [NUM_TOKENS, K], reduce across K, output y is [NUM_TOKENS * TOPK, K]
-        - the backward pass input dy shape is [NUM_TOKENS * TOPK, N], reduce across N, output dX is [NUM_TOKENS * TOPK, K]
-    - Note that in the backward pass, the output size is still [NUM_TOKENS * TOPK, K] since we still need to accumulate gradients for each expert chosen by the token in a post-processing step.
-    `permute_y`: whether the output was permuted on store in the forward pass, typically only used for the second grouped GEMM in an MoE MLP to restore to the original token order.
-    - In the forward pass, if we permuted output on store (e.g., in the second grouped GEMM in fused MoE MLP), we need to permute on load to get from token order to expert grouped order
-    - We still store in contiguous order since we are writing out dX which will be the input to the backwards pass of the first grouped GEMM
-    `fuse_mul_{pre,post}`: always set to False since this should only be used for inference.
-    use_tma_load_dy: use TMA for loading dy. use_tma_load_dy is incompatible with permute_y.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_y and use_tma_load_dy.
-    use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
-    use_tma_store: use TMA for storing dX.  Incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_store.
+    Computes gradient with respect to input X in grouped GEMM backward pass.
+    
+    This function computes dX = dY @ W^T for the backward pass of grouped GEMM,
+    handling multiple experts in parallel with support for permutation and TMA
+    optimizations.
+    
+    For permute_x handling:
+    - If X was permuted on load in forward pass, we permute on store in backward
+    - Output shape is [NUM_TOKENS * TOPK, K] for gradient accumulation
+    
+    For permute_y handling:
+    - If Y was permuted on store in forward pass, we permute dY on load in backward
+    - Output dX is stored in contiguous order
+    
+    Args:
+        dY (`torch.Tensor`):
+            Gradient from next layer with shape (M, N).
+        W (`torch.Tensor`):
+            Expert weight matrices with shape (E, N, K).
+        gather_indices (`torch.Tensor`):
+            Indices of tokens assigned to each expert. Shape: (total_tokens,).
+        m_sizes (`torch.Tensor`):
+            Number of tokens assigned to each expert.
+        topk (`int`):
+            Number of experts selected per token.
+        BLOCK_SIZE_M (`int`, *optional*):
+            Block size for M dimension tiling. Defaults to 32.
+        BLOCK_SIZE_N (`int`, *optional*):
+            Block size for N dimension tiling. Defaults to 32.
+        BLOCK_SIZE_K (`int`, *optional*):
+            Block size for K dimension tiling. Defaults to 32.
+        debug (`bool`, *optional*):
+            If True, print debug information. Defaults to False.
+        permute_x (`bool`, *optional*):
+            Whether X was permuted in forward pass. Defaults to False.
+        permute_y (`bool`, *optional*):
+            Whether Y was permuted in forward pass. Defaults to False.
+        use_tma_load_w (`bool`, *optional*):
+            If True, use TMA for loading weights. Defaults to False.
+        use_tma_load_dy (`bool`, *optional*):
+            If True, use TMA for loading dY. Incompatible with permute_y.
+            Defaults to False.
+        use_tma_store (`bool`, *optional*):
+            If True, use TMA for storing dX. Incompatible with permute_x.
+            Defaults to False.
+        num_warps (`int`, *optional*):
+            Number of warps per thread block. Defaults to 4.
+        num_stages (`int`, *optional*):
+            Number of pipeline stages. Defaults to 2.
+        flatten (`bool`, *optional*):
+            If True, flatten loops for better performance. Defaults to True.
+        fuse_mul_pre (`bool`, *optional*):
+            Must be False for training. Defaults to False.
+        fuse_mul_post (`bool`, *optional*):
+            Must be False for training. Defaults to False.
+        autotune (`bool`, *optional*):
+            If True, use autotuning for kernel configuration. Defaults to False.
+    
+    Returns:
+        `torch.Tensor`: Gradient with respect to input X. Shape: (total_tokens, K).
+    
+    Notes:
+        - Output shape is [NUM_TOKENS * TOPK, K] requiring post-processing reduction
+        - fuse_mul_pre and fuse_mul_post must be False for training
+        - use_tma_load_dy is incompatible with permute_y
+        - use_tma_store is incompatible with permute_x
     """
     assert not fuse_mul_pre, (
         "fuse_mul_pre should only be used for inference, not for training"

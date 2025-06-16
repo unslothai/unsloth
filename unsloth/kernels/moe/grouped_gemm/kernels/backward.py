@@ -66,6 +66,68 @@ def _grouped_gemm_dX_kernel(
     USE_TMA_STORE: tl.constexpr   = False,
     FLATTEN: tl.constexpr         = True,
 ) -> None:
+    """
+    Computes the gradient with respect to input X in a grouped GEMM operation for MoE models.
+    
+    This kernel performs the backward pass computation dX = dY @ W^T for multiple experts
+    in parallel, where each expert processes a different subset of tokens. It supports
+    various optimization strategies including permutation and TMA (Tensor Memory Accelerator).
+    
+    Mathematical operation:
+        dX = dY @ W^T
+    where:
+        - dY is the gradient from the next layer [M_total, N]
+        - W is the weight matrix for each expert [E, N, K]
+        - dX is the computed gradient [M_total, K]
+    
+    Args:
+        dY_ptr (`torch.Tensor`):
+            Pointer to gradient tensor from next layer with shape [M_total, N]
+        w_ptr (`torch.Tensor`):
+            Pointer to weight matrices for all experts with shape [E, N, K]
+        dX_ptr (`torch.Tensor`):
+            Pointer to output gradient tensor with shape [M_total, K]
+        gather_indices_ptr (`torch.Tensor`):
+            Pointer to indices for gathering tokens in permuted order
+        m_sizes_ptr (`torch.Tensor`):
+            Pointer to array containing number of tokens per expert
+        NUM_EXPERTS (`tl.constexpr`):
+            Total number of experts
+        NUM_TOKENS (`tl.constexpr`):
+            Total number of input tokens
+        TOPK (`tl.constexpr`):
+            Number of experts selected per token
+        N (`tl.constexpr`):
+            Hidden dimension (columns of dY, rows of W)
+        K (`tl.constexpr`):
+            Input dimension (columns of W and dX)
+        NUM_SMS (`tl.constexpr`):
+            Number of streaming multiprocessors for work distribution
+        BLOCK_SIZE_M (`tl.constexpr`):
+            Block size for M dimension tiling
+        BLOCK_SIZE_N (`tl.constexpr`):
+            Block size for N dimension tiling
+        BLOCK_SIZE_K (`tl.constexpr`):
+            Block size for K dimension tiling
+        PERMUTE_X (`tl.constexpr`, optional):
+            If True, permute on store to restore original token order. Defaults to False.
+        PERMUTE_Y (`tl.constexpr`, optional):
+            If True, permute on load to convert from token to expert order. Defaults to False.
+        USE_TMA_LOAD_W (`tl.constexpr`, optional):
+            If True, use TMA for loading weight matrix. Defaults to False.
+        USE_TMA_LOAD_dY (`tl.constexpr`, optional):
+            If True, use TMA for loading dY gradient. Defaults to False.
+        USE_TMA_STORE (`tl.constexpr`, optional):
+            If True, use TMA for storing result. Defaults to False.
+        FLATTEN (`tl.constexpr`, optional):
+            If True, flatten the expert loop for better performance. Defaults to True.
+    
+    Notes:
+        - N and K must be divisible by their respective block sizes
+        - PERMUTE_Y with USE_TMA_LOAD_dY is invalid (requires scatter/gather TMA)
+        - PERMUTE_X with USE_TMA_STORE is invalid (requires scatter/gather TMA)
+        - Output shape is [NUM_TOKENS * TOPK, K] requiring post-processing reduction
+    """
     TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK
     output_dtype = dX_ptr.dtype.element_ty
 
@@ -312,6 +374,70 @@ def _grouped_gemm_dW_kernel(
     FLATTEN: tl.constexpr         = True,
     acc_dtype: tl.constexpr       = tl.float32,
 ) -> None:
+    """
+    Computes the gradient with respect to weights W in a grouped GEMM operation for MoE models.
+    
+    This kernel performs the backward pass computation dW = X^T @ dY for multiple experts
+    in parallel, where each expert has its own weight matrix. It accumulates gradients
+    across all tokens processed by each expert.
+    
+    Mathematical operation:
+        dW = X^T @ dY
+    where:
+        - X is the input tensor [M_total, K]
+        - dY is the gradient from next layer [M_total, N]
+        - dW is the computed weight gradient [E, N, K]
+    
+    Args:
+        x_ptr (`torch.Tensor`):
+            Pointer to input tensor with shape [M_total, K]
+        dY_ptr (`torch.Tensor`):
+            Pointer to gradient tensor from next layer with shape [M_total, N]
+        dW_ptr (`torch.Tensor`):
+            Pointer to output weight gradient tensor with shape [E, N, K]
+        m_sizes_ptr (`torch.Tensor`):
+            Pointer to array containing number of tokens per expert
+        gather_indices_ptr (`torch.Tensor`):
+            Pointer to indices for gathering tokens in permuted order
+        NUM_TOKENS (`tl.constexpr`):
+            Total number of input tokens
+        TOPK (`tl.constexpr`):
+            Number of experts selected per token
+        NUM_EXPERTS (`tl.constexpr`):
+            Total number of experts
+        N (`tl.constexpr`):
+            Output dimension (columns of dY and rows of dW)
+        K (`tl.constexpr`):
+            Input dimension (columns of X and dW)
+        NUM_SMS (`tl.constexpr`):
+            Number of streaming multiprocessors for work distribution
+        BLOCK_SIZE_N (`tl.constexpr`):
+            Block size for N dimension tiling
+        BLOCK_SIZE_K (`tl.constexpr`):
+            Block size for K dimension tiling
+        BLOCK_SIZE_M (`tl.constexpr`):
+            Block size for M dimension tiling
+        PERMUTE_X (`tl.constexpr`, optional):
+            If True, permute X on load from token to expert order. Defaults to False.
+        PERMUTE_Y (`tl.constexpr`, optional):
+            If True, permute dY on load from token to expert order. Defaults to False.
+        USE_TMA_LOAD_dY (`tl.constexpr`, optional):
+            If True, use TMA for loading dY gradient. Defaults to False.
+        USE_TMA_LOAD_X (`tl.constexpr`, optional):
+            If True, use TMA for loading input X. Defaults to False.
+        USE_TMA_STORE (`tl.constexpr`, optional):
+            If True, use TMA for storing result. Defaults to False.
+        FLATTEN (`tl.constexpr`, optional):
+            If True, flatten loops for better performance. Defaults to True.
+        acc_dtype (`tl.constexpr`, optional):
+            Data type for accumulator. Defaults to tl.float32.
+    
+    Notes:
+        - N and K must be divisible by their respective block sizes when using TMA store
+        - PERMUTE_X with USE_TMA_LOAD_X is invalid (requires scatter/gather TMA)
+        - PERMUTE_Y with USE_TMA_LOAD_dY is invalid (requires scatter/gather TMA)
+        - Each expert's weight gradient is computed independently and stored in [E, N, K] format
+    """
     TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK
     TMA_LOAD_BOTH: tl.constexpr = USE_TMA_LOAD_X and USE_TMA_LOAD_dY
 

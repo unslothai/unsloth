@@ -181,6 +181,8 @@ class SyntheticDataKit:
                 Level of conservativeness for the generation process.
             token (`str`, *optional*):
                 Authentication token for private models.
+            **kwargs:
+                Additional keyword arguments to pass to the SyntheticDataKit constructor.
         
         Returns:
             `SyntheticDataKit`: A new instance of SyntheticDataKit with the specified configuration.
@@ -258,6 +260,10 @@ class SyntheticDataKit:
     def chunk_data(self, filename: str = None) -> list[str]:
         """
         Split a text file into chunks suitable for question-answer generation.
+        
+        The chunk length is calculated as the model's max context length minus twice the 
+        max generation tokens and an additional 128-token buffer to reduce errors:
+        chunk_length = max_seq_length - (max_generation_tokens * 2) - 128
         
         Args:
             filename (`str`):

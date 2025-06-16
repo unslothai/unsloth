@@ -293,6 +293,10 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         """
         Computes the forward pass of the cross entropy loss.
         
+        For large vocabularies (>65336=2**16), performs chunked loss calculation to keep memory 
+        usage in check by dividing the vocabulary into manageable chunks and processing 
+        them separately before combining results.
+        
         Args:
             ctx: Context object for saving values for backward pass
             logits (`torch.Tensor`):
@@ -427,11 +431,31 @@ def fast_cross_entropy_loss(
     n_items: Optional[int]   = None,
 ) -> torch.Tensor:
     """
-    Arguments:
-        logits: (batch, seq_len, vocab_size)
-        labels: (batch, seq_len,)
+    Computes fast cross entropy loss using optimized Triton kernels.
+    
+    This function provides an accelerated implementation of cross entropy loss calculation
+    with support for logit softcapping (Gemma 2) and logit scaling (Cohere). The loss
+    is automatically normalized by the number of non-padding tokens.
+    
+    Args:
+        logits (`torch.Tensor`):
+            Input logits tensor of shape (batch, seq_len, vocab_size) containing raw model outputs
+        labels (`torch.Tensor`):
+            Ground truth labels of shape (batch, seq_len) containing class indices.
+            Padding tokens should be marked with -100 and will be excluded from loss calculation.
+        logit_softcapping (`float`, *optional*):
+            Softcapping value for Gemma 2 models. When > 0, applies: softcap * tanh(logits / softcap).
+            Defaults to 0 (no softcapping).
+        logit_scaling (`float`, *optional*):
+            Scaling factor for Cohere models. When > 0, applies: scale * logits.
+            Defaults to 0 (no scaling).
+        n_items (`int`, *optional*):
+            Number of non-padding tokens for normalization. If None, automatically computed
+            by counting labels != -100. Defaults to None.
+    
     Returns:
-        losses: float
+        `torch.Tensor`: Cross entropy loss value (scalar tensor), normalized by the number 
+            of non-padding tokens
     """
     batch, seq_len, d = logits.shape
     assert(labels.shape == (batch, seq_len))
