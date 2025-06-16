@@ -180,11 +180,11 @@ def grpo_generate_and_score_completions(function_name, function):
         """prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]""",
 
         "prompts_text = [maybe_apply_chat_template(example, self.processing_class)['prompt'] for example in inputs]\n"\
-        "       if not self.use_vision:\n" \
+        "        if not self.use_vision:\n" \
         "           pixel_values = None\n"\
         "           image_grid_thw = None\n"\
         "           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\
-        "       else:\n"\
+        "        else:\n"\
         "           images = [x['image'] for x in inputs] # Only image inputs support for now \n"\
         "           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\
         "           pixel_values, image_grid_thw = prompt_inputs['pixel_values'], prompt_inputs['image_grid_thw']\n"
@@ -261,7 +261,7 @@ def grpo_prepare_inputs(function_name, function):
         "accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)",
         
         "accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)\n"\
-        "               if self.use_vision : accumulated_local_batch['pixel_values']=accumulated_local_batch['pixel_values'].view(accumulated_local_batch['prompt_ids'].size(0), -1, accumulated_local_batch['pixel_values'].size(1)) # (batch_size * n_patches, dim embedding)->(batch_size,n_patches,dim embeddding)"
+        "                if self.use_vision : accumulated_local_batch['pixel_values']=accumulated_local_batch['pixel_values'].view(accumulated_local_batch['prompt_ids'].size(0), -1, accumulated_local_batch['pixel_values'].size(1)) # (batch_size * n_patches, dim embedding)->(batch_size,n_patches,dim embeddding)"
     )
 
     return function
