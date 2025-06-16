@@ -73,6 +73,7 @@ def calculate_settings(n : int) -> (int, int,):
     return BLOCK_SIZE, num_warps
 pass
 
+HAS_CUDA_STREAM = False
 # INTEL GPU specific logic
 if DEVICE_TYPE == "xpu":
     # TODO: Changed here after adding XPU BNB support
