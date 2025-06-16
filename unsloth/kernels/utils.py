@@ -96,7 +96,13 @@ else:
     def torch_gpu_device(device): return nullcontext()
     pass
 
-_gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream if DEVICE_TYPE=="cuda" else torch._C._xpu_getCurrentRawStream 
+# INTEL GPU Specific Logic
+if DEVICE_TYPE == "xpu":
+    _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream 
+# NVIDIA GPU Default Logic
+else:
+    _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
+
 c_void_p = ctypes.c_void_p
 def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
@@ -121,7 +127,7 @@ if DEVICE_TYPE == "xpu":
         GPU_STREAMS[k] = v
     GPU_STREAMS = tuple(GPU_STREAMS)
     del _XPU_STREAMS
-else DEVICE_TYPE == "cuda":
+else:
     # NVIDIA GPU Default Logic
     _CUDA_STREAMS = {
         (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
