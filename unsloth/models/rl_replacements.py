@@ -175,7 +175,15 @@ def grpo_generate_and_score_completions(function_name, function):
 
     if """prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]""" not in function : return function
 
+
     # Add vision handling 
+    function = function.replace(
+            """prompt_inputs = self.processing_class(
+            text=prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False
+        )""",
+        ""
+    )
+
     function = function.replace(
         """prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]""",
 
@@ -186,7 +194,7 @@ def grpo_generate_and_score_completions(function_name, function):
         "           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\
         "        else:\n"\
         "           images = [x['image'] for x in inputs] # Only image inputs support for now \n"\
-        "           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\
+        "           prompt_inputs = self.processing_class(images = images,text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\
         "           pixel_values, image_grid_thw = prompt_inputs['pixel_values'], prompt_inputs['image_grid_thw']\n"
         )
 
@@ -224,7 +232,7 @@ def grpo_generate_and_score_completions(function_name, function):
                         self.model,  prompt_completion_ids, attention_mask,pixel_values, image_grid_thw, logits_to_keep, batch_size
                     )""")
     function.replace("""self._get_per_token_logps(
-                        self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
+                        self.ref_model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
                     )""",
                     
                     """self._get_per_token_logps(
