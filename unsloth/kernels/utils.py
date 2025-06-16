@@ -14,6 +14,7 @@
 
 import triton
 import ctypes
+from typing import Optional
 MAX_FUSED_SIZE : int = 65536
 next_power_of_2 = triton.next_power_of_2
 import functools
@@ -73,6 +74,7 @@ def calculate_settings(n : int) -> (int, int,):
     return BLOCK_SIZE, num_warps
 pass
 
+HAS_CUDA_STREAM = False
 # INTEL GPU specific logic
 if DEVICE_TYPE == "xpu":
     # TODO: Changed here after adding XPU BNB support
