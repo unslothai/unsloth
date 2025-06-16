@@ -183,10 +183,10 @@ def grpo_generate_and_score_completions(function_name, function):
         "       if not self.use_vision:\n" \
         "           pixel_values = None\n"\
         "           image_grid_thw = None\n"\
-        "           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\   
+        "           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\
         "       else:\n"\
         "           images = [x['image'] for x in inputs] # Only image inputs support for now \n"\
-        "           prompt_inputs = self.processing_class(images=images, text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\
+        "           prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, add_special_tokens=False)\n"\
         "           pixel_values, image_grid_thw = prompt_inputs['pixel_values'], prompt_inputs['image_grid_thw']\n"
         )
 
