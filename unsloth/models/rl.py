@@ -238,7 +238,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Add boolean for vision support
     if "args" in call_args : 
-        use_vision = "self.use_vision = args.use_vision"
+        use_vision = "self.use_vision = args.use_vision \n"
         extra_args += use_vision
 
     if "args" in call_args and "model" in call_args:
