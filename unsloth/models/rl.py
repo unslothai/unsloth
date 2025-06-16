@@ -134,6 +134,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
     def __init__({RLConfig_arguments},
+        use_vision = False,
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
         **kwargs,
@@ -142,6 +143,7 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        self.use_vision = use_vision
 pass
 
 {RLTrainer_extras}
@@ -233,6 +235,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Edit bf16, fp16 by checking model's torch_dtype directly
     extra_args = ""
+
+    # Add boolean for vision support
+    if "args" in call_args : 
+        use_vision = "self.use_vision = args.use_vision"
+        extra_args += use_vision
+
     if "args" in call_args and "model" in call_args:
         mixed_precision = \
         "use_bf16 = getattr(args, 'bf16', False)\n"\

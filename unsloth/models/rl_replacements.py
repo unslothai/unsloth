@@ -168,11 +168,67 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
 # Autocast precision for GRPO
-def grpo_trainer__prepare_inputs(function_name, function):
-    if  function_name != "_prepare_inputs": return function
+def grpo_generate_and_score_completions(function_name, function):
+    if  function_name != "_generate_and_score_completions": return function
 
     if "with torch.inference_mode()" not in function: return function
 
+    if """prompts = [x["prompt"] for x in inputs]""" not in function : return function
+
+    # Add vision handling 
+    function = function.replace(
+        """prompts = [x["prompt"] for x in inputs]""",
+
+        "prompts = [x['prompt'] for x in inputs]\n"\
+        "if not self.use_vision:\n" \
+        "   pixel_values = None\n"\
+        "   image_grid_thw = None\n"\
+        "else:\n"\
+        "   images = [x['image'] for x in inputs] # Only image inputs support for now \n"\
+    )
+
+    # Output pixel values and image grid 
+    function = function.replace(
+        """return {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "advantages": advantages,
+            "old_per_token_logps": old_per_token_logps,
+            "ref_per_token_logps": ref_per_token_logps,
+        }""",
+
+        """return {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "pixel_values": pixel_values,
+            "image_grid_thw": image_grid_thw,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "advantages": advantages,
+            "old_per_token_logps": old_per_token_logps,
+            "ref_per_token_logps": ref_per_token_logps,
+        }"""
+    )
+
+
+    function.replace("""self._get_per_token_logps(
+                        self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
+                    )""",
+                    
+                    """self._get_per_token_logps(
+                        self.model,  prompt_completion_ids, attention_mask,pixel_values, image_grid_thw, logits_to_keep, batch_size
+                    )""")
+    function.replace("""self._get_per_token_logps(
+                        self.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size
+                    )""",
+                    
+                    """self._get_per_token_logps(
+                        self.ref_model,  prompt_completion_ids, attention_mask,pixel_values, image_grid_thw, logits_to_keep, batch_size
+                    )""")
+
+    
     # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
@@ -191,7 +247,23 @@ def grpo_trainer__prepare_inputs(function_name, function):
     )
     return function
 pass
-RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
+RL_FUNCTIONS["grpo_trainer"].append(grpo_generate_and_score_completions)
+
+def grpo_prepare_inputs(function_name, function):
+    if  function_name != "_prepare_inputs": return function
+
+    if "accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)" not in function : return function
+    
+    function = function.replace(
+        "accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)",
+        
+        "accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)\n"\
+        "if self.use_vision : accumulated_local_batch['pixel_values']=accumulated_local_batch['pixel_values'].view(accumulated_local_batch['prompt_ids'].size(0), -1, accumulated_local_batch['pixel_values'].size(1)) # (batch_size * n_patches, dim embedding)->(batch_size,n_patches,dim embeddding)"
+    )
+
+    return function
+pass
+RL_FUNCTIONS["grpo_trainer"].append(grpo_prepare_inputs)
 
 
 # Remove _move_model_to_vllm
@@ -210,7 +282,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 def grpo_trainer__get_per_token_logps(function_name, function):
     if  function_name != "_get_per_token_logps": return function
 
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, calc_logprob_flag = None):
+    def _get_per_token_logps(self, model, input_ids, attention_mask,pixel_values,image_grid_thw, logits_to_keep, calc_logprob_flag = None):
         if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0' and  not calc_logprob_flag:
             return None # Unsloth efficient GRPO
         # Otherwise, calculate normally:
@@ -221,7 +293,10 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
+            if self.use_vision : 
+               hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, pixel_values=pixel_values, image_grid_thw=image_grid_thw, logits_to_keep=logits_to_keep + 1).logits
+            else:
+                hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
             #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             return hidden_states
             # input_ids = input_ids[:, -logits_to_keep:]
