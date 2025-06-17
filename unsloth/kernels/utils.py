@@ -111,7 +111,8 @@ pass
 
 
 # Get array of CUDA streams and other buffers
-global GPU_STREAMS
+global CUDA_STREAMS
+global XPU_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
@@ -121,12 +122,12 @@ if DEVICE_TYPE == "xpu":
         (index := torch.xpu.device(i).idx) : ctypes.c_void_p(torch._C._xpu_getCurrentRawStream(index))
         for i in range(torch.xpu.device_count())
     }
-    GPU_STREAMS   = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    XPU_STREAMS   = [None] * (max(_XPU_STREAMS.keys()) + 1)
     WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
     ABSMAX_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
     for k, v in _XPU_STREAMS.items(): 
-        GPU_STREAMS[k] = v
-    GPU_STREAMS = tuple(GPU_STREAMS)
+        XPU_STREAMS[k] = v
+    XPU_STREAMS = tuple(XPU_STREAMS)
     del _XPU_STREAMS
 else:
     # NVIDIA GPU Default Logic
@@ -134,11 +135,11 @@ else:
         (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
         for i in range(torch.cuda.device_count())
     }
-    GPU_STREAMS   = [None] * (max(_CUDA_STREAMS.keys()) + 1)
+    CUDA_STREAMS   = [None] * (max(_CUDA_STREAMS.keys()) + 1)
     WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
     ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-    for k, v in _CUDA_STREAMS.items(): GPU_STREAMS[k] = v
-    GPU_STREAMS = tuple(CUDA_STREAMS)
+    for k, v in _CUDA_STREAMS.items(): CUDA_STREAMS[k] = v
+    CUDA_STREAMS = tuple(CUDA_STREAMS)
     del _CUDA_STREAMS
 
 
