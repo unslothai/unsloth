@@ -1335,12 +1335,28 @@ def patch_model_for_beam_search(model):
     """
     import types
     
+    print(f"[DEBUG] patch_model_for_beam_search called with model type: {type(model)}")
+    print(f"[DEBUG] Model instance has _reorder_cache: {hasattr(model, '_reorder_cache')}")
+    
     # Patch the model instance
     if not hasattr(model, '_reorder_cache'):
         model._reorder_cache = types.MethodType(general_reorder_cache, model)
+        print("[DEBUG] Added _reorder_cache method to model instance")
     
     # Also patch base_model if it exists (for PEFT models)
-    if hasattr(model, 'base_model') and not hasattr(model.base_model, '_reorder_cache'):
-        model.base_model._reorder_cache = types.MethodType(general_reorder_cache, model.base_model)
+    if hasattr(model, 'base_model'):
+        print(f"[DEBUG] Model has base_model, type: {type(model.base_model)}")
+        print(f"[DEBUG] base_model has _reorder_cache: {hasattr(model.base_model, '_reorder_cache')}")
+        if not hasattr(model.base_model, '_reorder_cache'):
+            model.base_model._reorder_cache = types.MethodType(general_reorder_cache, model.base_model)
+            print("[DEBUG] Added _reorder_cache method to base_model")
+    
+    # Let's also check what the actual model class is and if it has _reorder_cache
+    if hasattr(model, 'base_model'):
+        actual_model = model.base_model
+        while hasattr(actual_model, 'model'):
+            actual_model = actual_model.model
+        print(f"[DEBUG] Actual underlying model type: {type(actual_model)}")
+        print(f"[DEBUG] Actual model class has _reorder_cache: {hasattr(type(actual_model), '_reorder_cache')}")
     
     return model

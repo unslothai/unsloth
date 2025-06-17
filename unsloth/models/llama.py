@@ -1667,6 +1667,10 @@ class FastLlamaModel:
 
     @staticmethod
     def pre_patch():
+        print("[DEBUG] FastLlamaModel.pre_patch() called!")
+        print(f"[DEBUG] LlamaForCausalLM class: {LlamaForCausalLM}")
+        print(f"[DEBUG] LlamaForCausalLM module: {LlamaForCausalLM.__module__}")
+        
         init_name, function = patch_llama_rope_scaling(
             model_name           = "llama",
             rope_module          = LlamaRotaryEmbedding,
@@ -1692,12 +1696,18 @@ class FastLlamaModel:
         from ._utils import general_reorder_cache
         
         # Patch the actual model class with a static method
+        print(f"[DEBUG] Before patching - hasattr(LlamaForCausalLM, '_reorder_cache'): {hasattr(LlamaForCausalLM, '_reorder_cache')}")
         if not hasattr(LlamaForCausalLM, '_reorder_cache'):
             LlamaForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
+            print("[DEBUG] Added _reorder_cache to LlamaForCausalLM")
+        print(f"[DEBUG] After patching - hasattr(LlamaForCausalLM, '_reorder_cache'): {hasattr(LlamaForCausalLM, '_reorder_cache')}")
         
         # Also patch PeftModelForCausalLM to support beam search
+        print(f"[DEBUG] Before patching - hasattr(PeftModelForCausalLM, '_reorder_cache'): {hasattr(PeftModelForCausalLM, '_reorder_cache')}")
         if not hasattr(PeftModelForCausalLM, '_reorder_cache'):
             PeftModelForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
+            print("[DEBUG] Added _reorder_cache to PeftModelForCausalLM")
+        print(f"[DEBUG] After patching - hasattr(PeftModelForCausalLM, '_reorder_cache'): {hasattr(PeftModelForCausalLM, '_reorder_cache')}")
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
@@ -1707,6 +1717,12 @@ class FastLlamaModel:
         import transformers.models.llama.modeling_llama
         transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
         transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
+        
+        # CRITICAL: Also patch the LlamaForCausalLM in the transformers module itself!
+        # The error message shows it's looking in transformers.models.llama.modeling_llama
+        if not hasattr(transformers.models.llama.modeling_llama.LlamaForCausalLM, '_reorder_cache'):
+            transformers.models.llama.modeling_llama.LlamaForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
+            print("[DEBUG] Added _reorder_cache to transformers.models.llama.modeling_llama.LlamaForCausalLM")
         return
     pass
 
