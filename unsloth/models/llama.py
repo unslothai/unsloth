@@ -1690,12 +1690,14 @@ class FastLlamaModel:
         
         # Fix beam search for model classes - use the general implementation
         from ._utils import general_reorder_cache
+        
+        # Patch the actual model class with a static method
         if not hasattr(LlamaForCausalLM, '_reorder_cache'):
-            LlamaForCausalLM._reorder_cache = general_reorder_cache
+            LlamaForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
         
         # Also patch PeftModelForCausalLM to support beam search
         if not hasattr(PeftModelForCausalLM, '_reorder_cache'):
-            PeftModelForCausalLM._reorder_cache = general_reorder_cache
+            PeftModelForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
