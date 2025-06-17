@@ -507,9 +507,9 @@ def prepare_saving(
 
         # Too small - try using the temporary file system (sometimes large like Kaggle)
         try_temp_file = tempfile.TemporaryDirectory(ignore_cleanup_errors = True)
-        try_save_directory = temp_file.name
+        try_save_directory = try_temp_file.name
 
-        total, used, free = shutil.disk_usage(save_directory)
+        total, used, free = shutil.disk_usage(try_save_directory)
         free = int(free*0.95)
         if not push_to_hub and free > save_size: raise_upload_works()
         elif push_to_hub and free < save_size:
