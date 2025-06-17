@@ -20,6 +20,7 @@ from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__
+from ._utils import patch_model_for_beam_search
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
@@ -1659,19 +1660,7 @@ def unsloth_fast_generate(
 pass
 
 
-@staticmethod
-def _llama_reorder_cache(past_key_values, beam_idx):
-    """
-    This function is used to re-order the `past_key_values` cache if
-    [`~PreTrainedModel.beam_search`] or [`~PreTrainedModel.beam_sample`] is called.
-    This is required to match `past_key_values` with the correct beam_idx at every generation step.
-    """
-    reordered_past = ()
-    for layer_past in past_key_values:
-        reordered_past += (
-            tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
-        )
-    return reordered_past
+# Moved to _utils.py as general_reorder_cache for reuse across all models
 
 
 class FastLlamaModel:
@@ -1699,13 +1688,14 @@ class FastLlamaModel:
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
         
-        # Fix beam search by ensuring _reorder_cache method exists
+        # Fix beam search for model classes - use the general implementation
+        from ._utils import general_reorder_cache
         if not hasattr(LlamaForCausalLM, '_reorder_cache'):
-            LlamaForCausalLM._reorder_cache = _llama_reorder_cache
+            LlamaForCausalLM._reorder_cache = general_reorder_cache
         
         # Also patch PeftModelForCausalLM to support beam search
         if not hasattr(PeftModelForCausalLM, '_reorder_cache'):
-            PeftModelForCausalLM._reorder_cache = _llama_reorder_cache
+            PeftModelForCausalLM._reorder_cache = general_reorder_cache
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
@@ -2104,9 +2094,8 @@ class FastLlamaModel:
             model.generate = types.MethodType(unsloth_fast_generate, model)
         pass
         
-        # Fix beam search by ensuring _reorder_cache method exists on the model instance
-        if not hasattr(model, '_reorder_cache'):
-            model._reorder_cache = types.MethodType(_llama_reorder_cache, model)
+        # Fix beam search by patching the model instance
+        model = patch_model_for_beam_search(model)
         return model, tokenizer
     pass
 
@@ -2581,13 +2570,8 @@ class FastLlamaModel:
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         
-        # Fix beam search by ensuring _reorder_cache method exists on the PEFT model instance
-        if not hasattr(model, '_reorder_cache'):
-            model._reorder_cache = types.MethodType(_llama_reorder_cache, model)
-        
-        # Also ensure the base_model has _reorder_cache (for PEFT models)
-        if hasattr(model, 'base_model') and not hasattr(model.base_model, '_reorder_cache'):
-            model.base_model._reorder_cache = types.MethodType(_llama_reorder_cache, model.base_model)
+        # Fix beam search by patching the PEFT model instance
+        model = patch_model_for_beam_search(model)
         
         return model
     pass
@@ -2806,13 +2790,8 @@ class FastLlamaModel:
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         
-        # Fix beam search by ensuring _reorder_cache method exists on the PEFT model instance
-        if not hasattr(model, '_reorder_cache'):
-            model._reorder_cache = types.MethodType(_llama_reorder_cache, model)
-        
-        # Also ensure the base_model has _reorder_cache (for PEFT models)
-        if hasattr(model, 'base_model') and not hasattr(model.base_model, '_reorder_cache'):
-            model.base_model._reorder_cache = types.MethodType(_llama_reorder_cache, model.base_model)
+        # Fix beam search by patching the PEFT model instance
+        model = patch_model_for_beam_search(model)
         
         return model
     pass
