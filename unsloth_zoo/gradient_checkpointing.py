@@ -343,7 +343,7 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
     if DEVICE_TYPE == "cuda":
         MAIN_STREAMS  = tuple([torch.cuda.default_stream(torch.device(f"cuda:{i}")) for i in range(n_gpus)])
     elif DEVICE_TYPE == "xpu":
-        MAIN_STREAMS  = tuple([torch.xpu.Stream(torch.device(f"xpu:{i}")) for i in range(n_gpus)])
+        MAIN_STREAMS  = tuple([torch.xpu.current_stream(torch.device(f"xpu:{i}")) for i in range(n_gpus)])
 
     # Minimum size to enable Unsloth GC is 2MB -> 32 layers = 64MB
     n_bytes = torch.finfo(dtype).bits // 8
