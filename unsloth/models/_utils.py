@@ -1305,8 +1305,14 @@ def general_reorder_cache(past_key_values, beam_idx):
     This is required to match `past_key_values` with the correct beam_idx at every generation step.
     
     This implementation works for most transformer models that use standard
-    key-value cache format.
+    key-value cache format. It's based on the implementation from models like
+    GPT2, OPT, and others in the transformers library.
     """
+    # Handle the case where past_key_values might not be a simple tuple
+    # (though with cache_implementation="dynamic" it should be handled differently)
+    if past_key_values is None:
+        return past_key_values
+        
     reordered_past = ()
     for layer_past in past_key_values:
         reordered_past += (
@@ -1319,6 +1325,13 @@ def patch_model_for_beam_search(model):
     """
     Patches a model instance to support beam search by adding the _reorder_cache method.
     This works for both base models and PEFT wrapped models.
+    
+    Why this is needed:
+    - Newer transformer models (Llama, Gemma, Mistral) don't implement _reorder_cache
+      because they rely on the new Cache classes
+    - However, beam search might still use the legacy cache format internally
+    - We can't modify the transformers library, so we patch the models at runtime
+    - This implementation is based on working models like GPT2 and OPT
     """
     import types
     
