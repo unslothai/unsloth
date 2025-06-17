@@ -343,7 +343,8 @@ def create_new_function(
     if not overwrite and os.path.isfile(function_location):
 
         # Check if exactly equivalent
-        with open(function_location, "r") as f: file_source = f.read()
+        with open(function_location, "r", encoding="utf-8") as f:
+            file_source = f.read()
 
         if file_source != write_new_source:
             overwrite = True
