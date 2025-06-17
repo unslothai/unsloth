@@ -1659,6 +1659,21 @@ def unsloth_fast_generate(
 pass
 
 
+@staticmethod
+def _llama_reorder_cache(past_key_values, beam_idx):
+    """
+    This function is used to re-order the `past_key_values` cache if
+    [`~PreTrainedModel.beam_search`] or [`~PreTrainedModel.beam_sample`] is called.
+    This is required to match `past_key_values` with the correct beam_idx at every generation step.
+    """
+    reordered_past = ()
+    for layer_past in past_key_values:
+        reordered_past += (
+            tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
+        )
+    return reordered_past
+
+
 class FastLlamaModel:
 
     @staticmethod
@@ -1686,21 +1701,7 @@ class FastLlamaModel:
         
         # Fix beam search by ensuring _reorder_cache method exists
         if not hasattr(LlamaForCausalLM, '_reorder_cache'):
-            @staticmethod
-            def _reorder_cache(past_key_values, beam_idx):
-                """
-                This function is used to re-order the `past_key_values` cache if
-                [`~PreTrainedModel.beam_search`] or [`~PreTrainedModel.beam_sample`] is called.
-                This is required to match `past_key_values` with the correct beam_idx at every generation step.
-                """
-                reordered_past = ()
-                for layer_past in past_key_values:
-                    reordered_past += (
-                        tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
-                    )
-                return reordered_past
-            
-            LlamaForCausalLM._reorder_cache = _reorder_cache
+            LlamaForCausalLM._reorder_cache = _llama_reorder_cache
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
