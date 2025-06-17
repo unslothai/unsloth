@@ -223,7 +223,7 @@ def grpo_generate_and_score_completions(function_name, function):
         r"(?P=indent) {4}self\.model, prompt_completion_ids, attention_mask, logits_to_keep, batch_size\n"
         r"(?P=indent)\)",
         re.MULTILINE
-)
+    )
 
     replacement = """                old_per_token_logps = self._get_per_token_logps(
                         self.model, prompt_completion_ids, attention_mask, pixel_values, image_grid_thw, logits_to_keep, batch_size
@@ -277,6 +277,7 @@ def grpo_generate_and_score_completions(function_name, function):
 
     return function
 pass
+
 RL_FUNCTIONS["grpo_trainer"].append(grpo_generate_and_score_completions)
 
 def grpo_prepare_inputs(function_name, function):
