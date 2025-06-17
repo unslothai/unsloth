@@ -65,7 +65,7 @@ except:
     LlamaFlashAttention2 = LlamaAttention
 pass
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, BitsAndBytesConfig, AutoConfig
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -1242,7 +1242,7 @@ pass
 
 
 @torch._disable_dynamo
-def PeftModelForCausalLM_fast_forward(
+def PeftModel_fast_forward(
     self,
     input_ids = None,
     causal_mask = None,
@@ -1257,19 +1257,33 @@ def PeftModelForCausalLM_fast_forward(
     logits_to_keep = 0,
     **kwargs,
 ):
-    return self.base_model(
-        input_ids = input_ids,
-        causal_mask = causal_mask,
-        attention_mask = attention_mask,
-        inputs_embeds = inputs_embeds,
-        labels = labels,
-        output_attentions = output_attentions,
-        output_hidden_states = output_hidden_states,
-        return_dict = return_dict,
-        num_logits_to_keep = num_logits_to_keep,
-        logits_to_keep = logits_to_keep,
-        **kwargs,
-    )
+    is_classification =  "Classification" in str(type( self.base_model.model))
+    if is_classification: 
+        #causal_mask = causal_mask,
+        return self.base_model(
+            input_ids = input_ids,
+            attention_mask = attention_mask, 
+            inputs_embeds = inputs_embeds, 
+            labels = labels, 
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states, 
+            return_dict = return_dict, 
+            **kwargs,
+            )
+    else:
+        return self.base_model(
+            input_ids = input_ids,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            inputs_embeds = inputs_embeds,
+            labels = labels,
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states,
+            return_dict = return_dict,
+            num_logits_to_keep = num_logits_to_keep,
+            logits_to_keep = logits_to_keep,
+            **kwargs,
+        )
 pass
 
 
@@ -1667,7 +1681,7 @@ class FastLlamaModel:
         LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         LlamaModel          .forward = LlamaModel_fast_forward
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168
@@ -1695,6 +1709,7 @@ class FastLlamaModel:
         model_patcher     = None,
         tokenizer_name    = None,
         trust_remote_code = False,
+        revision = None,
 
         fast_inference    = False, # uses vLLM
         gpu_memory_utilization = 0.5,
@@ -1702,6 +1717,7 @@ class FastLlamaModel:
         random_state      = 3407,
         max_lora_rank     = 16,
         disable_log_stats = False,
+        num_labels =  None, 
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
@@ -1836,7 +1852,20 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
         
-        if not fast_inference:
+        if num_labels is not None:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = dtype,
+                num_labels              = num_labels,
+                #quantization_config     = bnb_config,
+                token                   = token,
+                max_position_embeddings = max_position_embeddings,
+                trust_remote_code       = trust_remote_code,
+                attn_implementation     = "eager",
+                **kwargs,
+            )
+        elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map              = device_map,
@@ -2391,7 +2420,12 @@ class FastLlamaModel:
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
         pass
 
+        #does not get lora yet, so get name from model, not base model
+
+        is_classification =  "Classification" in str(type(model))
         # Get LoRA
+        # if not is_classification else TaskType.SEQ_CLS
+
         arguments = dict(
             r                   = r,
             lora_alpha          = lora_alpha,
@@ -2414,8 +2448,11 @@ class FastLlamaModel:
         lora_config = LoraConfig(**arguments)
 
         # First offload lm_head and embed_tokens to disk
-        input_embeddings_device  = model. get_input_embeddings().weight.device
-        output_embeddings_device = model.get_output_embeddings().weight.device
+        input_embeddings_device  = model.get_input_embeddings().weight.device
+        if is_classification:
+             output_embeddings_device = model.score.weight.device
+        else: 
+            output_embeddings_device = model.get_output_embeddings().weight.device
 
         if use_gradient_checkpointing == "unsloth":
             if train_embed_tokens:
