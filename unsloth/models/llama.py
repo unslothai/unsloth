@@ -2103,6 +2103,10 @@ class FastLlamaModel:
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
         pass
+        
+        # Fix beam search by ensuring _reorder_cache method exists on the model instance
+        if not hasattr(model, '_reorder_cache'):
+            model._reorder_cache = types.MethodType(_llama_reorder_cache, model)
         return model, tokenizer
     pass
 
@@ -2576,6 +2580,15 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        
+        # Fix beam search by ensuring _reorder_cache method exists on the PEFT model instance
+        if not hasattr(model, '_reorder_cache'):
+            model._reorder_cache = types.MethodType(_llama_reorder_cache, model)
+        
+        # Also ensure the base_model has _reorder_cache (for PEFT models)
+        if hasattr(model, 'base_model') and not hasattr(model.base_model, '_reorder_cache'):
+            model.base_model._reorder_cache = types.MethodType(_llama_reorder_cache, model.base_model)
+        
         return model
     pass
 
@@ -2792,6 +2805,15 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        
+        # Fix beam search by ensuring _reorder_cache method exists on the PEFT model instance
+        if not hasattr(model, '_reorder_cache'):
+            model._reorder_cache = types.MethodType(_llama_reorder_cache, model)
+        
+        # Also ensure the base_model has _reorder_cache (for PEFT models)
+        if hasattr(model, 'base_model') and not hasattr(model.base_model, '_reorder_cache'):
+            model.base_model._reorder_cache = types.MethodType(_llama_reorder_cache, model.base_model)
+        
         return model
     pass
 
