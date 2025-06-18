@@ -37,7 +37,7 @@ triton = [
 ]
 
 huggingface = [
-    "unsloth_zoo>=2025.8.8",
+    "unsloth_zoo @ git+https://github.com/arnavgarg1/unsloth-zoo.git@351d231c19db1f8a7e165314ef08ecce35c825af",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1",
@@ -453,7 +453,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.8.8",
+    "unsloth_zoo @ git+https://github.com/arnavgarg1/unsloth-zoo.git@351d231c19db1f8a7e165314ef08ecce35c825af",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1",
