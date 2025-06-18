@@ -1668,25 +1668,25 @@ class FastLlamaModel:
 
     @staticmethod
     def from_pretrained(
-        model_name        = "unsloth/llama-3-8b-bnb-4bit",
-        max_seq_length    = None,
-        dtype             = None,
-        load_in_4bit      = True,
-        token             = None,
-        device_map        = "sequential",
-        rope_scaling      = None,
-        fix_tokenizer     = True,
-        model_patcher     = None,
-        tokenizer_name    = None,
-        trust_remote_code = False,
+        model_name               = "unsloth/llama-3-8b-bnb-4bit",
+        max_seq_length           = None,
+        dtype                    = None,
+        load_in_4bit             = True,
+        token                    = None,
+        device_map               = "sequential",
+        rope_scaling             = None,
+        fix_tokenizer            = True,
+        model_patcher            = None,
+        tokenizer_name           = None,
+        trust_remote_code        = False,
 
-        fast_inference    = False, # uses vLLM
-        gpu_memory_utilization = 0.5,
-        float8_kv_cache   = False,
-        random_state      = 3407,
-        max_lora_rank     = 16,
-        disable_log_stats = False,
-        enable_sleep_mode = True,
+        fast_inference           = False, # uses vLLM
+        gpu_memory_utilization   = 0.5,
+        float8_kv_cache          = False,
+        random_state             = 3407,
+        max_lora_rank            = 16,
+        disable_log_stats        = False,
+        unsloth_vllm_standby     = False,
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
@@ -1854,7 +1854,7 @@ class FastLlamaModel:
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
                 use_bitsandbytes       = load_in_4bit,
-                enable_sleep_mode      = enable_sleep_mode,
+                unsloth_vllm_standby   = unsloth_vllm_standby,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:

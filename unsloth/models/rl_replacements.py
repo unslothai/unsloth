@@ -184,7 +184,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
         rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
         rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
         insert = (
-            "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', True):\n"
+            "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
             "            self.llm.wake_up()\n"
         )
         function = function[:sig_end] + insert +  rest
@@ -199,7 +199,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
             rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
             rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
             insert = (
-                "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', True):\n"
+                "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
                 "            self.llm.wake_up()\n"
             )
             function = header_and_comments + insert + rest
@@ -218,7 +218,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
     sleep_and_cache = (
-        "if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', True):\n"
+        "if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
         "            self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
         "        "
     )
