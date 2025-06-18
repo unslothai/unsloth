@@ -1706,6 +1706,8 @@ class FastLlamaModel:
             if major_version < 7:
                 print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
                 fast_inference = False
+            if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") == "0":
+                raise RuntimeError("Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!")
         pass
 
         if token is None: token = get_token()
