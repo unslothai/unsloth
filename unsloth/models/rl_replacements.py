@@ -100,30 +100,32 @@ def sft_trainer_prepare_dataset(function_name, function):
         pass
     pass
 
-    check_text = \
-    "if 'skip_prepare_dataset' in locals() and skip_prepare_dataset:\n"\
-    "    return dataset\n"\
-    "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
-    "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
-    "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"\
-    "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"\
-    "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"\
-    "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
-    "chat_template = '' if chat_template is None else chat_template\n"\
-    "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
-    "if getattr(tokenizer, 'bos_token', None) is not None else False\n"\
-    "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"\
-    "    from functools import partial\n"\
-    "    tokenizer_call = tokenizer.__call__\n"\
-    "    tokenizer.__call__ = partial(tokenizer_call, add_special_tokens = False)\n"\
-    "    processing_class = tokenizer\n"\
-    "else:\n"\
-    "    tokenizer_call = None\n"\
-    "    add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
+    # check_text = \
+    # "if 'skip_prepare_dataset' in locals() and skip_prepare_dataset:\n"\
+    # "    return dataset\n"\
+    # "if 'tokenizer'          not in locals(): tokenizer = processing_class\n"\
+    # "if 'formatting_func'    not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `formatting_func` does not exist!')\n"\
+    # "if 'dataset_text_field' not in locals() and 'args' in locals(): dataset_text_field = args.dataset_text_field\n"\
+    # "if 'dataset_text_field' not in locals(): raise RuntimeError('Unsloth: Please file a bug report - `dataset_text_field` does not exist!')\n"\
+    # "test_text = dataset[0][dataset_text_field] if (formatting_func is None and dataset_text_field is not None) else formatting_func(dataset[0])[0]\n"\
+    # "chat_template = getattr(tokenizer, 'chat_template', None)\n"\
+    # "chat_template = '' if chat_template is None else chat_template\n"\
+    # "has_bos_token_already = (test_text.startswith(tokenizer.bos_token) or tokenizer.bos_token in chat_template) "\
+    # "if getattr(tokenizer, 'bos_token', None) is not None else False\n"\
+    # "if 'add_special_tokens' not in locals() and has_bos_token_already:\n"\
+    # "    from functools import partial\n"\
+    # "    tokenizer_call = tokenizer.__call__\n"\
+    # "    tokenizer.__call__ = partial(tokenizer_call, add_special_tokens = False)\n"\
+    # "    processing_class = tokenizer\n"\
+    # "else:\n"\
+    # "    tokenizer_call = None\n"\
+    # "    add_special_tokens = False if has_bos_token_already else locals().get('add_special_tokens', False)\n"
 
-    check_text = check_text.split("\n")
-    check_text = "\n".join(" "*8 + x for x in check_text)
-    check_text = check_text.rstrip() + "\n"
+    # check_text = check_text.split("\n")
+    # check_text = "\n".join(" "*8 + x for x in check_text)
+    # check_text = check_text.rstrip() + "\n"
+
+    check_text = ""
 
     # .*? matches first match. .+? matches final match.
     replacer = re.findall(
