@@ -332,7 +332,7 @@ class FastGemmaModel(FastLlamaModel):
         GemmaDecoderLayer   .forward = GemmaDecoderLayer_fast_forward
         GemmaModel          .forward = LlamaModel_fast_forward
         GemmaForCausalLM    .forward = CausalLM_fast_forward(GemmaModel_fast_forward_inference)
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(GemmaForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168
