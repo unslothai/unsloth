@@ -192,7 +192,7 @@ def grpo_generate_and_score_completions(function_name, function):
     re.MULTILINE
     )
 
-    replacement = """    return {
+    replacement = """        return {
         "prompt_ids": prompt_ids,
         "prompt_mask": prompt_mask,
         "pixel_values": pixel_values,
@@ -201,7 +201,7 @@ def grpo_generate_and_score_completions(function_name, function):
         "completion_mask": completion_mask,
         "advantages": advantages,
         "old_per_token_logps": old_per_token_logps,
-        }"""
+            }"""
     function = re.sub(pattern, replacement, function)
 
     # 2. Replace the prompt_completion_ids generation
@@ -212,8 +212,8 @@ def grpo_generate_and_score_completions(function_name, function):
     re.MULTILINE
     )
 
-    replacement = """                if self.use_vision : prompt_completion_ids = unwrapped_model.generate(prompt_ids, attention_mask=prompt_mask,pixel_values = pixel_values,image_grid_thw=image_grid_thw, generation_config=self.generation_config)
-                else : prompt_completion_ids = unwrapped_model.generate(prompt_ids, attention_mask=prompt_mask, generation_config=self.generation_config)"""
+    replacement = """                    if self.use_vision : prompt_completion_ids = unwrapped_model.generate(prompt_ids, attention_mask=prompt_mask,pixel_values = pixel_values,image_grid_thw=image_grid_thw, generation_config=self.generation_config)
+                    else : prompt_completion_ids = unwrapped_model.generate(prompt_ids, attention_mask=prompt_mask, generation_config=self.generation_config)"""
     
     function = pattern.sub(replacement, function)
 
@@ -243,17 +243,17 @@ def grpo_generate_and_score_completions(function_name, function):
         re.MULTILINE
     )
 
-    replacement = """    prompts = [x["prompt"] for x in inputs]
-    prompts_text = [maybe_apply_chat_template(example, self.processing_class)['prompt'] for example in inputs]
-    if not self.use_vision:
-        pixel_values, image_grid_thw = None, None
-        prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, padding_side="left", add_special_tokens=False)
-        prompt_inputs = super()._prepare_inputs(prompt_inputs)
-    else:
-        images = [x['image'] for x in inputs]  # Only image inputs support for now 
-        prompt_inputs = self.processing_class(images=images, text=prompts_text, return_tensors='pt', padding=True, padding_side="left", add_special_tokens=False)
-        prompt_inputs = super()._prepare_inputs(prompt_inputs)
-        pixel_values, image_grid_thw = prompt_inputs['pixel_values'], prompt_inputs['image_grid_thw']"""
+    replacement = """        prompts = [x["prompt"] for x in inputs]
+        prompts_text = [maybe_apply_chat_template(example, self.processing_class)['prompt'] for example in inputs]
+        if not self.use_vision:
+            pixel_values, image_grid_thw = None, None
+            prompt_inputs = self.processing_class(text=prompts_text, return_tensors='pt', padding=True, padding_side="left", add_special_tokens=False)
+            prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        else:
+            images = [x['image'] for x in inputs]  # Only image inputs support for now 
+            prompt_inputs = self.processing_class(images=images, text=prompts_text, return_tensors='pt', padding=True, padding_side="left", add_special_tokens=False)
+            prompt_inputs = super()._prepare_inputs(prompt_inputs)
+            pixel_values, image_grid_thw = prompt_inputs['pixel_values'], prompt_inputs['image_grid_thw']"""
 
     function = pattern.sub(replacement, function)
 
