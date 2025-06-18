@@ -146,30 +146,11 @@ else:
 # Bitsandbytes operations
 ctypes_c_int   = ctypes.c_int
 ctypes_c_int32 = ctypes.c_int32
-# INTEL GPU Specific Logic
-if DEVICE_TYPE == "xpu":
-    # TODO: After adding XPU BNB support, this function should be implemented
-    def cdequantize_blockwise_fp32(*args, **kwargs):
-        raise RuntimeError("XPU BNB support is not implemented yet. cdequantize_blockwise_fp32 should not be called now.")
-    
-    def cdequantize_blockwise_fp16_nf4(*args, **kwargs):
-        raise RuntimeError("XPU BNB support is not implemented yet. cdequantize_blockwise_fp16_nf4 should not be called now.")
-    
-    def cdequantize_blockwise_bf16_nf4(*args, **kwargs):
-        raise RuntimeError("XPU BNB support is not implemented yet. cdequantize_blockwise_bf16_nf4 should not be called now.")
-    
-    def cgemm_4bit_inference_naive_fp16(*args, **kwargs):
-        raise RuntimeError("XPU BNB support is not implemented yet. cgemm_4bit_inference_naive_fp16 should not be called now.")
-    
-    def cgemm_4bit_inference_naive_bf16(*args, **kwargs):
-        raise RuntimeError("XPU BNB support is not implemented yet. cgemm_4bit_inference_naive_bf16 should not be called now.")
-else:
-    # NVIDIA GPU Default Logic
-    cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
-    cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
-    cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
-    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
+cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
+cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
+cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 
 torch_mm = torch.mm
 torch_mv = torch.mv

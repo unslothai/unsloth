@@ -161,6 +161,7 @@ pass
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
+import bitsandbytes as bnb
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
@@ -169,7 +170,6 @@ if DEVICE_TYPE == "cuda":
     else: from triton.common.build import libcuda_dirs
 
     # Try loading bitsandbytes and triton
-    import bitsandbytes as bnb
     try:
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
