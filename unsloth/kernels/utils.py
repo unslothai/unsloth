@@ -75,18 +75,17 @@ def calculate_settings(n : int) -> (int, int,):
 pass
 
 HAS_CUDA_STREAM = False
+import bitsandbytes as bnb
+get_ptr = bnb.functional.get_ptr
+
 # INTEL GPU specific logic
 if DEVICE_TYPE == "xpu":
     # TODO: Changed here after adding XPU BNB support
     HAS_XPU_STREAM = False
-    def get_ptr(x: Optional[torch.Tensor]):
-        raise RuntimeError("XPU BNB support is not implemented yet. This function should not be called.")
 else:
     # NVIDIA-GPU logic here as default
-    import bitsandbytes as bnb
     # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
     HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
-    get_ptr = bnb.functional.get_ptr
 
 
 if DEVICE_TYPE == "cuda" and torch.cuda.device_count() > 1:
