@@ -451,7 +451,7 @@ def FalconH1DecoderLayer_fast_forward(
     return outputs
 pass
 
-def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconAttention_fast_forward_inference, mlp_fast_forward_inference=fast_swiglu_inference):
+def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconH1Attention_fast_forward_inference, mlp_fast_forward_inference=fast_swiglu_inference):
     # This makes the attention and MLP customisable.
     # Now for models like qwen3 or cohere which use custom attention operations, we can use this function
     def FalconH1Model_fast_forward_inference_custom(
@@ -482,7 +482,6 @@ def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconAtte
         variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = "cuda:0")
         temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
         temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
-        import pdb; pdb.set_trace()
         seq_len = past_key_values[0][0].shape[-2]
         if bsz != 1:
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
