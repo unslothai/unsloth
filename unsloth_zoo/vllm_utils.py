@@ -413,6 +413,127 @@ else:
     pass
 pass
 
+def patch_vllm_enable_sleep_mode():
+    from vllm.device_allocator.cumem import CuMemAllocator, libcudart, unmap_and_release, create_and_map
+    from vllm.logger import init_logger
+    from vllm.utils import is_pin_memory_available
+    from typing import Optional, Union, Tuple
+
+    logger = init_logger(__name__)
+
+    def sleep(
+            self,
+            offload_tags: Optional[Union[Tuple[str, ...],
+                                            str]] = None) -> None:
+        """
+        Put the allocator in sleep mode.
+        All data in the memory allocation with the specified tag will be
+        offloaded to CPU memory, and others will be discarded.
+
+        :param offload_tags: The tags of the memory allocation that will be
+            offloaded. The rest of the memory allocation will be discarded.
+        """
+        if offload_tags is None:
+            # by default, allocated tensors are offloaded
+            # when the allocator sleeps
+            offload_tags = (CuMemAllocator.default_tag, )
+        elif isinstance(offload_tags, str):
+            offload_tags = (offload_tags, )
+
+        assert isinstance(offload_tags, tuple)
+
+        logger.debug(f'Sleeping allocator with tags: {offload_tags}')
+        set_of_tags = set([data.tag for _, data in self.pointer_to_data.items()])
+        logger.debug(f'Set of tags {set_of_tags} and len of data {len(self.pointer_to_data.items())}')
+
+        self.print_memory_summary()
+        cpu_offloads = 0
+        true_offloads = 0
+        total_offloads = 0
+
+        for ptr, data in self.pointer_to_data.items():
+            total_offloads += 1
+            handle = data.handle
+            if data.tag == 'weights':
+                # In unsloth's case we have weights managed by unsloth. So we neither offload/delete them nor onload/create them here.
+                continue
+            if data.tag in offload_tags:
+                size_in_bytes = handle[1]
+                cpu_backup_tensor = torch.empty(
+                    size_in_bytes,
+                    dtype=torch.uint8,
+                    device='cpu',
+                    pin_memory=is_pin_memory_available())
+                cpu_ptr = cpu_backup_tensor.data_ptr()
+                libcudart.cudaMemcpy(cpu_ptr, ptr, size_in_bytes)
+                data.cpu_backup_tensor = cpu_backup_tensor
+                cpu_offloads += 1
+            logger.debug(f"data's tag is {data.tag} and is offloaded to cpu? {data.tag in offload_tags}")
+            
+            unmap_and_release(handle)
+            true_offloads += 1
+        
+
+        logger.debug(f'CPU offloads {cpu_offloads} true offloads {true_offloads} total {total_offloads}')
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    def wake_up(self, tags: Optional[list[str]] = None) -> None:
+        """
+        Wake up the allocator from sleep mode.
+        All data that is previously offloaded will be loaded back to GPU 
+        memory, and the rest of the data will have empty memory.
+        
+        :param tags: The tags of the memory allocation that will be loaded
+            back to GPU memory. If None, all memory allocation will be loaded
+            back to GPU memory.
+        """
+        delete_memory()
+        for ptr, data in self.pointer_to_data.items():
+            if data.tag == "weights": 
+                # In unsloth's case we have weights managed by unsloth. So we neither offload/delete them nor onload/create them here.
+                continue
+            if tags is None or data.tag in tags:
+                handle = data.handle
+                create_and_map(handle)
+                if data.cpu_backup_tensor is not None:
+                    cpu_backup_tensor = data.cpu_backup_tensor
+                    if cpu_backup_tensor is not None:
+                        size_in_bytes = cpu_backup_tensor.numel(
+                        ) * cpu_backup_tensor.element_size()
+                        cpu_ptr = cpu_backup_tensor.data_ptr()
+                        libcudart.cudaMemcpy(ptr, cpu_ptr, size_in_bytes)
+                        data.cpu_backup_tensor = None
+
+    def delete_memory():
+        torch.cuda.empty_cache()
+        gc.collect()
+    pass
+
+    def print_memory_summary(self):
+        """
+        Print the total memory usage for weights and KVCache allocations.
+        """
+        weights_total = 0
+        kv_cache_total = 0
+        kv_cache_count = 0
+        weights_count  = 0
+        for data in self.pointer_to_data.values():
+            size = data.handle[1]
+            if data.tag == "weights":
+                weights_count += 1
+                weights_total += size
+            elif data.tag == "kv_cache":
+                kv_cache_total += size
+                kv_cache_count += 1
+        logger.debug(f"Total weights memory: {weights_total / 1e9:.2f} GB for {weights_count} items")
+        logger.debug(f"Total KVCache memory: {kv_cache_total / 1e9:.2f} GB for {kv_cache_count} items")
+
+    CuMemAllocator.sleep = sleep
+    CuMemAllocator.wake_up = wake_up
+    CuMemAllocator.print_memory_summary = print_memory_summary
+pass
+
 
 def patch_vllm(debug = True):
     # Temporary patch to disable multiprocessing for vLLM
@@ -426,6 +547,7 @@ def patch_vllm(debug = True):
     patch_vllm_bitsandbytes()
     patch_vllm_lora_tokenizer()
     patch_vllm_lora_load_tensors()
+    patch_vllm_enable_sleep_mode()
     global LORA_REQUEST_ID
     LORA_REQUEST_ID = 1
 pass
@@ -952,6 +1074,7 @@ def load_vllm(
     conservativeness       : float = 1.0, # For low VRAM devices, scale batches, num_seqs
     max_logprobs           : int  = 0,
     use_bitsandbytes       : bool = True,
+    unsloth_vllm_standby   : bool = False,
     return_args            : bool = False, # Just return args
 ):
     # All Unsloth Zoo code licensed under LGPLv3
@@ -1171,7 +1294,10 @@ def load_vllm(
         device                 = device,
         # New vLLM versions need to pass this in!
         # worker_extension_cls   = "unsloth_zoo.vllm_rlhf_utils.ColocateWorkerExtension",
+        enable_sleep_mode      = unsloth_vllm_standby,
     )
+    if unsloth_vllm_standby and "PYTORCH_CUDA_ALLOC_CONF" in os.environ:
+        del os.environ['PYTORCH_CUDA_ALLOC_CONF'] # Disable expandable segments cuz https://github.com/pytorch/pytorch/issues/147851
     good_keys = inspect.signature(AsyncEngineArgs if use_async else EngineArgs).parameters.keys()
     old_keys = engine_args.keys()
     for key in old_keys:
@@ -1682,6 +1808,7 @@ def _test_get_vllm_state_dict(
     counts = 100,
     conservativeness = 1.0,
     float8_kv_cache = False,
+    unsloth_vllm_standby = False,
 ):
     # All Unsloth Zoo code licensed under LGPLv3
     # Check if model is allowed to be used in vLLM
@@ -1736,6 +1863,7 @@ def _test_get_vllm_state_dict(
         disable_log_stats      = False,
         float8_kv_cache        = float8_kv_cache,
         conservativeness       = conservativeness,
+        enable_sleep_mode      = unsloth_vllm_standby,
     )
 
     state_dict, quant_state_dict = get_vllm_state_dict(
@@ -1863,6 +1991,7 @@ def test_get_vllm_state_dict():
                 counts = counts,
                 conservativeness = conservativeness,
                 float8_kv_cache = float8_kv_cache,
+                unsloth_vllm_standby = unsloth_vllm_standby,
             )
         except Exception as error:
             error = str(error)
