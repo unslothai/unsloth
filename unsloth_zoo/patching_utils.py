@@ -284,6 +284,11 @@ def patch_model_and_tokenizer(
     for name, module in model.named_modules():
         if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
             weight = module.weight
+            # Check if quant_state exists for vision models like unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit, unsloth/granite-vision-3.2-2b
+            if not hasattr(weight, 'quant_state'):
+                print(f"Skipping {name}: no quant_state found")
+                continue
+
             quant_state = weight.quant_state
 
             if type(quant_state) is list:
