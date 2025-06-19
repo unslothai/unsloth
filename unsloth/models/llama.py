@@ -1710,8 +1710,8 @@ class FastLlamaModel:
         
         # CRITICAL: Also patch the LlamaForCausalLM in the transformers module itself!
         # The error message shows it's looking in transformers.models.llama.modeling_llama
-        if not hasattr(transformers.models.llama.modeling_llama.LlamaForCausalLM, '_reorder_cache'):
-            transformers.models.llama.modeling_llama.LlamaForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
+        # Force patch even if it exists - it might be a wrong/default implementation
+        transformers.models.llama.modeling_llama.LlamaForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
         return
     pass
 
