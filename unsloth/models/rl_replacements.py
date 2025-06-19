@@ -332,7 +332,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             
             hidden_states = hidden_states[:, :-1, :] # if not using fast path, we need to slice the last logit (also see PR #2702 from unsloth )
             
-            if hidden_states.size(1) != logits_to_keep + 1 : # Some models like Qwen VL don't have logits_to_keep parameter so you need to trim the output manually
+            if hidden_states.size(1) != logits_to_keep  : # Some models like Qwen VL don't have logits_to_keep parameter so you need to trim the output manually
                 hidden_states = hidden_states[:, -logits_to_keep:, :] 
             
             return hidden_states
