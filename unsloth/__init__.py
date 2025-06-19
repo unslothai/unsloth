@@ -89,7 +89,7 @@ DEVICE_TYPE : str = get_device_type()
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"

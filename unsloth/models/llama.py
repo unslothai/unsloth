@@ -1698,18 +1698,18 @@ class FastLlamaModel:
 
     @staticmethod
     def from_pretrained(
-        model_name        = "unsloth/llama-3-8b-bnb-4bit",
-        max_seq_length    = None,
-        dtype             = None,
-        load_in_4bit      = True,
-        token             = None,
-        device_map        = "sequential",
-        rope_scaling      = None,
-        fix_tokenizer     = True,
-        model_patcher     = None,
-        tokenizer_name    = None,
-        trust_remote_code = False,
-        revision = None,
+        model_name         = "unsloth/llama-3-8b-bnb-4bit",
+        max_seq_length     = None,
+        dtype              = None,
+        load_in_4bit       = True,
+        token              = None,
+        device_map         = "sequential",
+        rope_scaling       = None,
+        fix_tokenizer      = True,
+        model_patcher      = None,
+        tokenizer_name     = None,
+        trust_remote_code  = False,
+        revision           = None,
 
         fast_inference    = False, # uses vLLM
         gpu_memory_utilization = 0.5,
@@ -1717,6 +1717,7 @@ class FastLlamaModel:
         random_state      = 3407,
         max_lora_rank     = 16,
         disable_log_stats = False,
+        unsloth_vllm_standby = False,
         num_labels =  None, 
         **kwargs,
     ):
@@ -1737,6 +1738,8 @@ class FastLlamaModel:
             if major_version < 7:
                 print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
                 fast_inference = False
+            if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") == "0":
+                raise RuntimeError("Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!")
         pass
 
         if token is None: token = get_token()
@@ -1898,6 +1901,7 @@ class FastLlamaModel:
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
                 use_bitsandbytes       = load_in_4bit,
+                unsloth_vllm_standby   = unsloth_vllm_standby,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
