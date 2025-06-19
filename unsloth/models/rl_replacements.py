@@ -255,6 +255,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         batch_size = batch_size or input_ids.size(0)
         lm_head = model.get_output_embeddings().weight
 
+        prev_UNSLOTH_RETURN_HIDDEN_STATES = os.environ["UNSLOTH_RETURN_HIDDEN_STATES"]
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             all_logps = []
@@ -270,6 +271,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
                 all_logps.append(logps[:, :-1])
             pass
         pass
+        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = prev_UNSLOTH_RETURN_HIDDEN_STATES
         
         return torch.cat(all_logps, dim=0)
     pass
@@ -322,7 +324,7 @@ def grpo_trainer_compute_loss(function_name, function):
         else: 
             old_per_token_logps = None
         
-        if per_token_logps is not None:
+        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '1':
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 ref_per_token_logps, per_token_logps, old_per_token_logps, input_ids, completion_mask, self.beta, advantages, 
                 loss_type = self.args.loss_type,
