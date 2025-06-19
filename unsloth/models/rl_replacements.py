@@ -329,8 +329,12 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             else:
                 hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
             #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            hidden_states = hidden_states[:, :-1, :] 
-            hidden_states = hidden_states[:, -logits_to_keep:, :] 
+            
+            hidden_states = hidden_states[:, :-1, :] # if not using fast path, we need to slice the last logit (also see PR #2702 from unsloth )
+            
+            if hidden_states.size(1) != logits_to_keep + 1 : # Some models like Qwen VL don't have logits_to_keep parameter so you need to trim the output manually
+                hidden_states = hidden_states[:, -logits_to_keep:, :] 
+            
             return hidden_states
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
