@@ -171,38 +171,38 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 def grpo_trainer__prepare_inputs(function_name, function):
     if  function_name != "_prepare_inputs": return function
 
-    # import re
-    # # Try to find the function signature and insert after it
-    # # This matches the function signature and any decorators/comments, then finds the first non-empty line after the signature
-    # pattern = r"(def _prepare_inputs\s*\([^\)]*\)\s*(->\s*[^:]+)?\s*:\s*\n)"
-    # match = re.search(pattern, function)
-    # if match:
-    #     sig_end = match.end(1)
-    #     rest = function[sig_end:]
-    #     rest = re.sub(r"^[ \t]*self\.llm\.wake_up\(\)\s*\n", "", rest)
-    #     rest = re.sub(r"^[ \t]*torch\.cuda\.empty_cache\(\)\s*\n", "", rest)
-    #     rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
-    #     rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
-    #     insert = (
-    #         "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-    #         "            self.llm.wake_up()\n"
-    #     )
-    #     function = function[:sig_end] + insert +  rest
-    # else:
-    #     pattern2 = r"(def _prepare_inputs\(.*?\):\n(?:[ ]+#[^\n]*\n)+)"
-    #     match2 = re.search(pattern2, function, flags=re.DOTALL)
-    #     if match2:
-    #         header_and_comments = match2.group(1)
-    #         rest = function[len(header_and_comments):]
-    #         rest = re.sub(r"^[ \t]*self\.llm\.wake_up\(\)\s*\n", "", rest)
-    #         rest = re.sub(r"^[ \t]*torch\.cuda\.empty_cache\(\)\s*\n", "", rest)
-    #         rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
-    #         rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
-    #         insert = (
-    #             "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-    #             "            self.llm.wake_up()\n"
-    #         )
-    #         function = header_and_comments + insert + rest
+    import re
+    # Try to find the function signature and insert after it
+    # This matches the function signature and any decorators/comments, then finds the first non-empty line after the signature
+    pattern = r"(def _prepare_inputs\s*\([^\)]*\)\s*(->\s*[^:]+)?\s*:\s*\n)"
+    match = re.search(pattern, function)
+    if match:
+        sig_end = match.end(1)
+        rest = function[sig_end:]
+        rest = re.sub(r"^[ \t]*self\.llm\.wake_up\(\)\s*\n", "", rest)
+        rest = re.sub(r"^[ \t]*torch\.cuda\.empty_cache\(\)\s*\n", "", rest)
+        rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
+        rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
+        insert = (
+            "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+            "            self.llm.wake_up()\n"
+        )
+        function = function[:sig_end] + insert +  rest
+    else:
+        pattern2 = r"(def _prepare_inputs\(.*?\):\n(?:[ ]+#[^\n]*\n)+)"
+        match2 = re.search(pattern2, function, flags=re.DOTALL)
+        if match2:
+            header_and_comments = match2.group(1)
+            rest = function[len(header_and_comments):]
+            rest = re.sub(r"^[ \t]*self\.llm\.wake_up\(\)\s*\n", "", rest)
+            rest = re.sub(r"^[ \t]*torch\.cuda\.empty_cache\(\)\s*\n", "", rest)
+            rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
+            rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
+            insert = (
+                "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                "            self.llm.wake_up()\n"
+            )
+            function = header_and_comments + insert + rest
 
     # Add mixed precision training
     function = function.replace(
@@ -217,15 +217,15 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "self.accelerator.unwrap_model(self.model)",
         "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
-    # sleep_and_cache = (
-    #     "if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-    #     "            self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
-    #     "        "
-    # )
-    # if re.search(r"\n\s*return ", function):
-    #     function = re.sub(r"(\n\s*)return ", f"\\1{sleep_and_cache}return ", function, count=1)
-    # else:
-    #     function = function.rstrip() + "\n    " + sleep_and_cache
+    sleep_and_cache = (
+        "if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+        "            self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
+        "        "
+    )
+    if re.search(r"\n\s*return ", function):
+        function = re.sub(r"(\n\s*)return ", f"\\1{sleep_and_cache}return ", function, count=1)
+    else:
+        function = function.rstrip() + "\n    " + sleep_and_cache
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
