@@ -534,13 +534,28 @@ UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
 import functools
+from torch._inductor.runtime.hints import DeviceProperties
+
 @functools.lru_cache(None)
-def is_big_gpu(index):
-    sms = torch.cuda.get_device_properties(index).multi_processor_count
-    if sms < 80:  # V100
-        # log.warning("not enough SMs to use max_autotune_gemm mode")
+def is_big_gpu(index_or_device: Union[int, torch.device] = 0) -> bool:
+
+    if isinstance(index_or_device, torch.device):
+        device = index_or_device
+    else:
+        device = torch.device(get_gpu_type(), index_or_device)
+
+    prop = DeviceProperties.create(device)
+
+    min_sms = 16 if device.type == "xpu" else 80
+    avail_sms = prop.multi_processor_count
+    if avail_sms < min_sms:
+        log.warning(
+            "Not enough SMs to use max_autotune_gemm mode",
+            extra={"min_sms": min_sms, "avail_sms": avail_sms},
+        )
         return False
     return True
+
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
 patch_torch_compile(
