@@ -536,15 +536,15 @@ UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", 
 import functools
 from torch._inductor.runtime.hints import DeviceProperties
 
+from unsloth import DEVICE_TYPE
+
 @functools.lru_cache(None)
-def is_big_gpu(index_or_device: Union[int, torch.device] = 0) -> bool:
+def is_big_gpu(index) -> bool:
 
-    if isinstance(index_or_device, torch.device):
-        device = index_or_device
+    if DEVICE_TYPE == "xpu":
+        prop = torch.xpu.get_device_properties(index)
     else:
-        device = torch.device(get_gpu_type(), index_or_device)
-
-    prop = DeviceProperties.create(device)
+        prop = torch.cuda.get_device_properties(index)
 
     min_sms = 16 if device.type == "xpu" else 80
     avail_sms = prop.multi_processor_count
