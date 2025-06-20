@@ -55,7 +55,7 @@ class FastQwen2Model(FastLlamaModel):
         Qwen2DecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         Qwen2Model          .forward = LlamaModel_fast_forward
         Qwen2ForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen2ForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168

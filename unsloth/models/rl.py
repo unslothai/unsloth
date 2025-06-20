@@ -645,6 +645,18 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
+    # Remove brackets in comments since it interferes ie (...)
+    comments = re.findall(r"\#[^\n]{1,}\n", init)
+    bracketed_comments = [x for x in comments if "(" in x or ")" in x]
+    # Replace with [...] instead
+    for bracketed_comment in bracketed_comments:
+        init = init.replace(
+            bracketed_comment,
+            bracketed_comment.replace("(", "[").replace(")", "]"),
+        )
+    pass
+
+
     # Remove peft_config
     init = init.replace("elif peft_config is None:", "elif False:")
     init = init.replace("elif peft_config is not None:", "elif False:")
@@ -734,7 +746,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         if trl_version >= "0.18":
             # Replace LLM init with already existing vLLM engine for colocate mode
-            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)*\)"
+            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
             vllm_llm_replacement = "self.llm = model.vllm_engine\n"
             new_vllm_part = re.sub(
                 vllm_llm_init_pattern,
