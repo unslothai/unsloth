@@ -60,8 +60,12 @@ keynames = "\n" + "\n".join(os.environ.keys())
 if "HF_XET_HIGH_PERFORMANCE" not in os.environ:
     os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
 pass
-if "\nCOLAB_" in keynames:
+# Disable XET cache sine it eats too much space
+if "HF_XET_CHUNK_CACHE_SIZE_BYTES" not in os.environ:
     os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = "0"
+pass
+if "\nCOLAB_" in keynames:
+    os.environ["HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY"] = "0"
 pass
 
 # Log Unsloth is being used
