@@ -746,7 +746,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         if trl_version >= "0.18":
             # Replace LLM init with already existing vLLM engine for colocate mode
-            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)*\)"
+            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
             vllm_llm_replacement = "self.llm = model.vllm_engine\n"
             new_vllm_part = re.sub(
                 vllm_llm_init_pattern,
