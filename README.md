@@ -437,3 +437,30 @@ You can cite the Unsloth repo as follows:
 - [Erik](https://github.com/erikwijmans) for his help adding [Apple's ML Cross Entropy](https://github.com/apple/ml-cross-entropy) in Unsloth
 - [Etherl](https://github.com/Etherll) for adding support for [TTS, diffusion and BERT models](https://github.com/unslothai/notebooks/pull/34)
 - And of course for every single person who has contributed or has used Unsloth!
+
+## 📜 Licensing Overview
+
+| Part of the repository | License | License file |
+|------------------------|---------|--------------|
+| **Core Unsloth** code (everything **outside** `unsloth/unsloth_zoo/`) | **Apache License 2.0** | [`LICENSE`](./LICENSE) |
+| Vendored **Unsloth Zoo** sub-package (`unsloth/unsloth_zoo/`) | **GNU Lesser General Public License v3.0** | [`unsloth/unsloth_zoo/LICENSE-LGPL-3.0`](./unsloth/unsloth_zoo/LICENSE-LGPL-3.0) |
+
+### What changed?
+
+Previously, the `unsloth_zoo` package was installed as an **external dependency**, but now it is **vendored directly inside this repository** under `unsloth/unsloth_zoo/`.
+
+No APIs or behavior changed—the move only affects how the code is shipped and licensed.
+
+### How the dual-license applies
+
+* **Apache-2.0** governs every file *outside* the `unsloth/unsloth_zoo/` directory.  
+  * You may use, modify, and redistribute that code under the terms of the [Apache License 2.0](./LICENSE).
+
+* **LGPL-3.0** governs every file *inside* the `unsloth/unsloth_zoo/` directory.  
+  * The LGPL-3.0 has specific requirements for both use and distribution. Please consult the [LGPL-3.0 license](./unsloth/unsloth_zoo/LICENSE-LGPL-3.0).
+
+> **Important**  
+> *This is a dual-licensed project. Everything in* `unsloth/unsloth_zoo/` *is LGPL-3.0. Everything else is Apache-2.0. Both license texts must be included with any distribution.*
+
+For questions, reach out on Discord or open and issue.
+

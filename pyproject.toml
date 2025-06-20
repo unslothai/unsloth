@@ -9,6 +9,10 @@ description = "2-5X faster LLM finetuning"
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
 license = "Apache-2.0"
+license-files = [
+  "LICENSE",
+  "unsloth/unsloth_zoo/LICENSE-LGPL-3.0",
+]
 keywords = ["ai", "llm",]
 authors = [
     {email = "info@unsloth.ai"},
