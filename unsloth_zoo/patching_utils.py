@@ -242,19 +242,30 @@ def patch_model_and_tokenizer(
     pass
     # If we force float32, we first use bfloat16, then downcast to float16
     if do_forced_float32:
-        correct_dtype = torch.float16
-        for name, module in model.named_modules():
-            if "down_proj" in name or "up_proj" in name or "gate_proj" in name:
-                exec(f"module.to(torch.float16)")
-            if "q_proj" in name or "k_proj" in name or "v_proj" in name or "o_proj" in name:
-                exec(f"module.to(torch.float16)")
-            if "lm_head" in name or "embed_tokens" in name:
-                exec(f"module.to(torch.float16)")
-            if "norm" in name:
-                exec(f"module.to(torch.float32)")
-                assert(module.weight.dtype == torch.float32)
-            torch.cuda.empty_cache()
-        pass
+      correct_dtype = torch.float16
+      for name, module in model.named_modules():
+          if "down_proj" in name or "up_proj" in name or "gate_proj" in name or "fc1" in name or "fc2" in name:
+              module.to(torch.float16)
+          if "q_proj" in name or "k_proj" in name or "v_proj" in name or "o_proj" in name or "out_proj" in name:
+              module.to(torch.float16)
+          if "lm_head" in name or "embed_tokens" in name:
+              module.to(torch.float16)
+          if "embed_tokens" in name or "patch_embedding" in name:
+              module.to(torch.float16)
+          if "norm" in name:
+              module.to(torch.float16)
+          torch.cuda.empty_cache()
+
+      # Convert any remaining bfloat16 parameters
+      for name, param in model.named_parameters():
+          if param.dtype == torch.bfloat16:
+              param.data = param.data.to(torch.float16)
+
+      # Also convert buffers (like position embeddings)
+      for name, buffer in model.named_buffers():
+          if buffer.dtype == torch.bfloat16:
+              buffer.data = buffer.data.to(torch.float16)
+      pass
     pass
 
     # Correct torch_dtype
@@ -279,7 +290,7 @@ def patch_model_and_tokenizer(
         try: setattr(m, "dtype", correct_dtype)
         except: pass
     pass
-    
+
     # Check all params and patch!
     for name, module in model.named_modules():
         if isinstance(module, (Bnb_Linear4bit, Peft_Linear4bit)):
@@ -313,7 +324,7 @@ def patch_model_and_tokenizer(
 
             elif hasattr(module, "short_cos_cached") and \
                 (module.short_cos_cached.dtype != correct_dtype):
-                
+
                 module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
                 module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
             pass
@@ -373,7 +384,7 @@ def patch_model_and_tokenizer(
         lm_head.weight = old_output_embedding if not is_tied else old_input_embedding
         lm_head.in_features  = lm_head.weight.shape[1]
         lm_head.out_features = lm_head.weight.shape[0]
-        
+
         lm_head.weight.requires_grad_(requires_grad)
         model.set_output_embeddings(lm_head)
         if hasattr(model, "lm_head"): model.lm_head = lm_head
@@ -457,7 +468,7 @@ def check_conversion_mappings(model, current_key_name_str, skip_modules):
     if hasattr(model_root_cls, "_checkpoint_conversion_mapping") and len(model_root_cls._checkpoint_conversion_mapping) > 0:
         # if this is true, then it means that we must be on transformers >=4.52.0 because conversion_mappings was added in 4.52.0
         # we cant know if the skip module naming convention is new or old
-        # but if we are supposed to skip this current_key_name_str, and it didn't pass 
+        # but if we are supposed to skip this current_key_name_str, and it didn't pass
         # (current_key_name_str in quantization_config.llm_int8_skip_modules)
         # then new transformers + new module hierarchy means it should not be skipped, ie no BC check needed
         # and new transformers + old module hierarchy means we still need to check to skip
@@ -605,9 +616,9 @@ if hasattr(transformers.integrations.bitsandbytes, "_replace_with_bnb_linear") a
     def add_score_code(match):
         indentation = match.group(1)  # Captured indentation
         line_content = match.group(2) # The line 'current_key_name.append(name)'
-        
+
         indented_breakpoint_code = "\n".join([f"{indentation}{line}" for line in score_code.splitlines()])
-        
+
         return f"{indentation}{line_content}\n{indented_breakpoint_code}"
 
     source = re.sub(pattern, add_score_code, source, flags=re.MULTILINE)
