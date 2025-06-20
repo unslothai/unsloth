@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.6.2"
+__version__ = "2025.6.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -755,24 +755,10 @@ exec(BitsAndBytesConfig__init__, globals())
 
 if torch.cuda.device_count() == 1:
     from accelerate.utils.dataclasses import DistributedType
-    def _prepare_backend(
-        self, cpu = False, sagemaker_dp = False, backend: str = None,
-    ) -> tuple[str, DistributedType]:
-        return None, DistributedType.NO
-    pass
+    def _prepare_backend(self, *args, **kwargs): return None, DistributedType.NO
     import accelerate.state
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-
-    import accelerate.accelerator
-    prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
-    prepare = prepare.split("\n")
-    spaces = prepare[0].find("def")
-    prepare = "\n".join(x[spaces:] for x in prepare)
-    x = "for obj in args:"
-    s = " "*spaces
-    prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
-    exec(prepare, globals())
-    accelerate.accelerator.Accelerator.prepare = prepare
+    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
 pass
 
 import transformers.utils.quantization_config

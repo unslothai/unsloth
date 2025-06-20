@@ -645,6 +645,18 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
+    # Remove brackets in comments since it interferes ie (...)
+    comments = re.findall(r"\#[^\n]{1,}\n", init)
+    bracketed_comments = [x for x in comments if "(" in x or ")" in x]
+    # Replace with [...] instead
+    for bracketed_comment in bracketed_comments:
+        init = init.replace(
+            bracketed_comment,
+            bracketed_comment.replace("(", "[").replace(")", "]"),
+        )
+    pass
+
+
     # Remove peft_config
     init = init.replace("elif peft_config is None:", "elif False:")
     init = init.replace("elif peft_config is not None:", "elif False:")
