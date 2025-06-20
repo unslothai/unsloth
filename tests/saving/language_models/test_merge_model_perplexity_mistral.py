@@ -14,8 +14,9 @@ import gc
 import sys
 from pathlib import Path
 
+
 REPO_ROOT = Path(__file__).parents[3]
-sys.path.append(str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 from tests.utils.cleanup_utils import safe_remove_directory
 from tests.utils.perplexity_eval import ppl_model, add_to_comparison, print_model_comparison

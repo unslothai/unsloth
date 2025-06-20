@@ -87,7 +87,7 @@ for config_name, params in configs.items():
 evaluator.print_model_comparison()
 ```
 
-### Handwritting Recognition
+### Handwriting Recognition
 ```python
 # Specialized evaluation for handwriting
 def evaluate_handwriting_models(models, handwriting_dataset):
