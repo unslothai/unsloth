@@ -874,6 +874,11 @@ __INT_TO_FLOAT_MAPPER = \
         "mistralai/Magistral-Small-2506",
         "unsloth/Magistral-Small-2506-bnb-4bit",
     ),
+    "unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit" : (
+        "unsloth/Mistral-Small-3.2-24B-Instruct-2506",
+        "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        "unsloth/Mistral-Small-3.2-24B-Instruct-2506-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
