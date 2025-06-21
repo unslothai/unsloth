@@ -184,8 +184,9 @@ def grpo_trainer__prepare_inputs(function_name, function):
         rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
         rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
         insert = (
-            "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-            "            self.llm.wake_up()\n"
+            "        if hasattr(self, 'llm'):\n"
+            "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+            "               self.llm.wake_up()\n"
         )
         function = function[:sig_end] + insert +  rest
     else:
@@ -199,8 +200,9 @@ def grpo_trainer__prepare_inputs(function_name, function):
             rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
             rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
             insert = (
-                "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                "            self.llm.wake_up()\n"
+                "        if (hasattr(self, 'llm'):\n"
+                "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                "               self.llm.wake_up()\n"
             )
             function = header_and_comments + insert + rest
 
@@ -218,8 +220,9 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
     sleep_and_cache = (
-        "if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-        "            self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
+        "if hasattr(self, 'llm'):\n"
+        "            if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+        "                       self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
         "        "
     )
     if re.search(r"\n\s*return ", function):
@@ -310,7 +313,7 @@ def grpo_trainer_compute_loss(function_name, function):
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         _input_ids = input_ids
         _logits_to_keep = logits_to_keep
-        
+
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
 
         # Compute the KL divergence between the model and the reference model
@@ -330,12 +333,12 @@ def grpo_trainer_compute_loss(function_name, function):
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         if "old_per_token_logps" in inputs.keys():
             old_hidden_states = inputs["old_per_token_logps"]
-        else: 
+        else:
             old_hidden_states = None
         input_ids = input_ids[:, -logits_to_keep:]
         if per_token_logps is not None:
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
-                ref_per_token_logps, per_token_logps, old_hidden_states, input_ids, completion_mask, self.beta, advantages, 
+                ref_per_token_logps, per_token_logps, old_hidden_states, input_ids, completion_mask, self.beta, advantages,
                 loss_type = self.args.loss_type,
                 epsilon_low = self.epsilon_low, epsilon_high = self.epsilon_high,
                 max_completion_length = self.args.max_completion_length,
@@ -356,7 +359,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
                     self, _input_ids, logits_to_keep, completion_mask, advantages, old_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
-                )    
+                )
 
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
