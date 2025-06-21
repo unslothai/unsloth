@@ -184,8 +184,9 @@ def grpo_trainer__prepare_inputs(function_name, function):
         rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
         rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
         insert = (
-            "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-            "            self.llm.wake_up()\n"
+            "        if hasattr(self, 'llm'):\n"
+            "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+            "               self.llm.wake_up()\n"
         )
         function = function[:sig_end] + insert +  rest
     else:
@@ -199,8 +200,9 @@ def grpo_trainer__prepare_inputs(function_name, function):
             rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
             rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
             insert = (
-                "        if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                "            self.llm.wake_up()\n"
+                "        if (hasattr(self, 'llm'):\n"
+                "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                "               self.llm.wake_up()\n"
             )
             function = header_and_comments + insert + rest
 
@@ -218,8 +220,9 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
     sleep_and_cache = (
-        "if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-        "            self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
+        "if hasattr(self, 'llm'):\n"
+        "            if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+        "                       self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
         "        "
     )
     if re.search(r"\n\s*return ", function):
@@ -247,12 +250,20 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
         from cut_cross_entropy import linear_cross_entropy
+        from numpy import searchsorted
+
+        if not batch_size or batch_size == input_ids.shape[0]:
+            # https://github.com/unslothai/unsloth-zoo/blob/4811c67f729b428735185837000449aa3d840d14/unsloth_zoo/rl_replacements.py#L281
+            bsz = input_ids.shape[0]
+            factors = [i for i in range(1, bsz + 1) if bsz % i == 0]
+            n_chunks = self.args.unsloth_num_chunks if self.args.unsloth_num_chunks is not None else bsz
+            n_chunks = factors[min(searchsorted(factors, n_chunks), len(factors)-1)]
+            batch_size = int(bsz / n_chunks)
 
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
             if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float16
 
-        batch_size = batch_size or input_ids.size(0)
         lm_head = model.get_output_embeddings().weight
 
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
@@ -266,7 +277,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
                 hidden_states = model(input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep + 1).logits
                 # Add dummy input_id at the end. Last logp is exluded.
                 input_ids_batch = torch.cat((input_ids_batch[:, -logits_to_keep:], torch.zeros((batch_size, 1), dtype=input_ids_batch.dtype, device=input_ids_batch.device)), dim=-1)
-                logps = -1 * linear_cross_entropy(hidden_states.to(dtype=lm_head.dtype), lm_head, input_ids_batch, reduction="none", impl="cce")
+                # selective_log_softmax(e @ c.T, index) == -cce(e, c, index, reduction="none”)
+                logps = -1 * linear_cross_entropy(hidden_states.to(dtype=lm_head.dtype), lm_head, input_ids_batch, reduction="none", filter_eps=-torch.inf, impl="cce")
                 all_logps.append(logps[:, :-1])
             pass
         pass
@@ -306,7 +318,7 @@ def grpo_trainer_compute_loss(function_name, function):
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         _input_ids = input_ids
         _logits_to_keep = logits_to_keep
-        
+
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
         # ref_per_token_logps is now cached in _buffered_inputs
         # https://github.com/huggingface/trl/blob/5206c927f6bb161e45114531b0bca8286acfeada/trl/trainer/grpo_trainer.py#L1292
@@ -345,7 +357,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
                     self, completion_mask, advantages, ref_per_token_logps, per_token_logps, old_per_token_logps,
                     n_chunks = self.args.unsloth_num_chunks,
-                )    
+                )
 
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
