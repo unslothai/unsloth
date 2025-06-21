@@ -194,11 +194,15 @@ def requires_grad_for_gradient_checkpointing(model):
         if type_output is torch.Tensor:
             output.requires_grad_(True)
         else:
-            try:
-                # Output in huggingface generally a dataclass with loss, try to add to that
-                output.loss.requires_grad_(True)
-            except Exception as _:
-                raise RuntimeError("Unsloth: Failed to make output require gradients!")
+            try: # For dataclass from HF, try on loss or logits 
+                if hasattr(output, "loss") and output.loss is not None:
+                    output.loss.requires_grad_(True)
+                elif hasattr(output, "logits") and output.logits is not None: #with RL like GRPO there are no loss as you don't provide labels 
+                    output.logits.requires_grad_(True)
+                else:
+                    raise ValueError("Neither loss nor logits are available for grad post hook.")
+            except Exception as e:
+                raise RuntimeError(f"Unsloth: Failed to make output require gradients: {e}")
     pass
 
     def requires_grad_pre_hook(module, input):
