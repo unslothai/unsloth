@@ -320,7 +320,9 @@ def initialize_unsloth_gradient_checkpointing(dtype = None):
     CPU_BUFFERS = []
     CPU_INDEX = 0
 
-    if dtype is None:
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+        dtype = torch.float32
+    elif dtype is None:
         if DEVICE_TYPE == "cuda":
             major_version, minor_version = torch.cuda.get_device_capability()
             SUPPORTS_BFLOAT16 = (major_version >= 8)
@@ -604,6 +606,112 @@ class UnslothCheckpointFunction(torch.autograd.Function):
 pass
 
 
+class UnslothCheckpointFunction_Float32(torch.autograd.Function):
+    """Special version for FORCE_FLOAT32 mode without AMP"""
+
+    @staticmethod
+    def forward(ctx, run_function, preserve_rng_state, *args):
+        # Same as original but WITHOUT @torch_amp_custom_fwd decorator
+        ctx.run_function = run_function
+        ctx.preserve_rng_state = preserve_rng_state
+        ctx.device_type = _infer_device_type(*args)
+
+        if preserve_rng_state:
+            ctx.fwd_cpu_state = torch.get_rng_state()
+            ctx.had_device_in_fwd = False
+            device_module = _get_device_module(ctx.device_type)
+            if getattr(device_module, "_initialized", False):
+                ctx.had_device_in_fwd = True
+                ctx.fwd_devices, ctx.fwd_device_states = get_device_states(*args)
+
+        ctx.inputs = []
+        ctx.tensor_indices = []
+        tensor_inputs = []
+        ctx._requires_gradient = False
+
+        for i, arg in enumerate(args):
+            if torch.is_tensor(arg):
+                tensor_inputs.append(arg)
+                ctx.tensor_indices.append(i)
+                ctx.inputs.append(None)
+                if arg.requires_grad:
+                    ctx._requires_gradient = True
+            else:
+                ctx.inputs.append(arg)
+
+        if ctx._requires_gradient:
+            ctx.save_for_backward(*tensor_inputs)
+
+        with torch.no_grad():
+            outputs = run_function(*args)
+
+        return outputs
+
+    @staticmethod
+    def backward(ctx, *args):
+        # Same as original but WITHOUT @torch_amp_custom_bwd decorator
+        if not ctx._requires_gradient:
+            return None
+
+        if not torch.autograd._is_checkpoint_valid():
+            raise RuntimeError(
+                "When use_reentrant=True, torch.utils.checkpoint is incompatible"
+                " with .grad() or passing an `inputs` parameter to .backward()."
+            )
+
+        inputs = list(ctx.inputs)
+        tensor_indices = ctx.tensor_indices
+        tensors = ctx.saved_tensors
+
+        for i, idx in enumerate(tensor_indices):
+            inputs[idx] = tensors[i]
+
+        rng_devices = []
+        if ctx.preserve_rng_state and ctx.had_device_in_fwd:
+            rng_devices = ctx.fwd_devices
+
+        with torch.random.fork_rng(
+            devices=rng_devices, enabled=ctx.preserve_rng_state, device_type=ctx.device_type
+        ):
+            if ctx.preserve_rng_state:
+                torch.set_rng_state(ctx.fwd_cpu_state)
+                if ctx.had_device_in_fwd:
+                    set_device_states(ctx.fwd_devices, ctx.fwd_device_states, device_type=ctx.device_type)
+
+            detached_inputs = []
+            for inp in inputs:
+                if not isinstance(inp, torch.Tensor):
+                    detached_inputs.append(inp)
+                    continue
+                x = inp.detach()
+                x.requires_grad = inp.requires_grad
+                detached_inputs.append(x)
+
+            # NO autocast context here - just pure computation
+            with torch.enable_grad():
+                outputs = ctx.run_function(*detached_inputs)
+
+        if isinstance(outputs, torch.Tensor):
+            outputs = (outputs,)
+
+        outputs_with_grad = []
+        args_with_grad = []
+        for i in range(len(outputs)):
+            if torch.is_tensor(outputs[i]) and outputs[i].requires_grad:
+                outputs_with_grad.append(outputs[i])
+                args_with_grad.append(args[i])
+
+        if len(outputs_with_grad) > 0:
+            torch.autograd.backward(outputs_with_grad, args_with_grad)
+
+        grads = tuple(
+            inp.grad if isinstance(inp, torch.Tensor) else None
+            for inp in detached_inputs
+        )
+
+        return (None, None) + grads
+pass
+
 from torch.utils.checkpoint import (
     ContextManager,
     _DEFAULT_DETERMINISM_MODE,
@@ -756,7 +864,11 @@ def unsloth_checkpoint(
                 "Passing `context_fn` or `debug` is only supported when "
                 "use_reentrant=False."
             )
-        return UnslothCheckpointFunction.apply(function, preserve, *args)
+        # Choose the correct checkpoint function based on FORCE_FLOAT32
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            return UnslothCheckpointFunction_Float32.apply(function, preserve, *args)
+        else:
+            return UnslothCheckpointFunction.apply(function, preserve, *args)
     else:
         gen = _checkpoint_without_reentrant_generator(
             function, preserve, context_fn, determinism_check, debug, *args, **kwargs
@@ -774,13 +886,23 @@ pass
 
 def patch_unsloth_smart_gradient_checkpointing(dtype = None):
     # All Unsloth Zoo code licensed under LGPLv3
-    if torch.utils.checkpoint.CheckpointFunction.__name__ != "UnslothCheckpointFunction":
-        initialize_unsloth_gradient_checkpointing(dtype)
-        torch.utils.checkpoint._old_CheckpointFunction = torch.utils.checkpoint.CheckpointFunction
-        torch.utils.checkpoint.CheckpointFunction = UnslothCheckpointFunction
 
+    # Use float32 version if FORCE_FLOAT32 is set
+    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+        # Force dtype to float32 for buffer initialization
+        initialize_unsloth_gradient_checkpointing(torch.float32)
+
+        # Store the correct checkpoint function
+        if not hasattr(torch.utils.checkpoint, "_checkpoint_mode"):
+            torch.utils.checkpoint._checkpoint_mode = "float32"
+    else:
+        initialize_unsloth_gradient_checkpointing(dtype)
+        if not hasattr(torch.utils.checkpoint, "_checkpoint_mode"):
+            torch.utils.checkpoint._checkpoint_mode = "normal"
+
+    # Always patch checkpoint function
     if torch.utils.checkpoint.checkpoint.__name__ != "unsloth_checkpoint":
-        torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint
+        torch.utils.checkpoint._old_checkpoint = torch.utils.checkpoint.checkpoint
         torch.utils.checkpoint.checkpoint = unsloth_checkpoint
 pass
 
@@ -800,7 +922,7 @@ def unpatch_unsloth_smart_gradient_checkpointing():
 
     if (torch.utils.checkpoint.checkpoint.__name__ == "unsloth_checkpoint") and \
         hasattr(torch.utils, "_old_checkpoint"):
-        
+
         torch.utils.checkpoint = torch.utils._old_checkpoint
 pass
 
