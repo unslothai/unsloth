@@ -337,6 +337,8 @@ def grpo_trainer_compute_loss(function_name, function):
             old_hidden_states = None
         input_ids = input_ids[:, -logits_to_keep:]
         if per_token_logps is not None:
+            ref_per_token_logps = ref_per_token_logps[:, :-1, :]
+            per_token_logps = per_token_logps[:, :-1, :]
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 ref_per_token_logps, per_token_logps, old_hidden_states, input_ids, completion_mask, self.beta, advantages,
                 loss_type = self.args.loss_type,
