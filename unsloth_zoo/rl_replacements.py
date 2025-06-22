@@ -59,27 +59,36 @@ def grpo_compute_loss(
     advantages,
     **kwargs
 ):
+    # All Unsloth Zoo code licensed under LGPLv3
     # Set defaults for optional arguments
     loss_type = kwargs.get("loss_type", "grpo")
     epsilon_low = kwargs.get("epsilon_low", 0.2)
     epsilon_high = kwargs.get("epsilon_high", 0.2)
     max_completion_length = kwargs.get("max_completion_length", 8192)
     delta = kwargs.get("delta", None)
+    temperature = kwargs.get("temperature", 1.0)
 
-    # All Unsloth Zoo code licensed under LGPLv3
     new_logits = new_logits.to(torch.float32)
+    # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+    if temperature != 1.0:
+        new_logits = new_logits / temperature
     input_ids  = input_ids.unsqueeze(-1)
 
     # x_i - logsumexp(x_i)
-
     with torch.no_grad():
         if beta != 0.0:
             assert ref_logits is not None, "ref_logits should not be None when beta != 0.0"
             ref_logits = ref_logits.to(torch.float32)
+            # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+            if temperature != 1.0:
+                ref_logits = ref_logits / temperature
             ref_x = torch.gather(ref_logits, dim = -1, index = input_ids).squeeze(-1)
             ref = ref_x - torch.logsumexp(ref_logits, dim = -1)
         if old_logits is not None:
             old_logits = old_logits.to(torch.float32)
+            # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+            if temperature != 1.0:
+                old_logits = old_logits / temperature
             old_x = torch.gather(old_logits, dim = -1, index = input_ids).squeeze(-1)
             old = old_x - torch.logsumexp(old_logits, dim = -1)
 
@@ -317,7 +326,8 @@ def grpo_accumulated_loss(
             advantages,
             trainer.beta,
             trainer.accelerator.scaler,
-            n_chunks, kwargs # pass kwargs as a dict
+            n_chunks,
+            kwargs # pass kwargs as a dict
         )
 
         return loss, completion_length, mean_kl
