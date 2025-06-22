@@ -236,7 +236,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "args" in call_args and "model" in call_args:
         mixed_precision = \
         "use_bf16 = getattr(args, 'bf16', False)\n"\
+        "if type(use_bf16) is not bool: use_bf16 = False\n"\
         "use_fp16 = getattr(args, 'fp16', False)\n"\
+        "if type(use_fp16) is not bool: use_fp16 = False\n"\
         "force_float32 = False\n"\
         "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1':\n"\
         "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"\
@@ -293,7 +295,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    if eval_bsz == 8 and args.per_device_train_batch_size < eval_bsz: args.per_device_eval_batch_size = args.per_device_train_batch_size\n"\
         "    if getattr(args, 'eval_accumulation_steps', None) is None and ga_steps is not None: args.eval_accumulation_steps = ga_steps\n"\
         "fp16_full_eval = getattr(args, 'fp16_full_eval', False)\n"\
+        "if type(fp16_full_eval) is not bool: fp16_full_eval = False\n"\
         "bf16_full_eval = getattr(args, 'bf16_full_eval', False)\n"\
+        "if type(bf16_full_eval) is not bool: bf16_full_eval = False\n"\
         "if args.fp16 and bf16_full_eval: args.bf16_full_eval = False; args.fp16_full_eval = True\n"\
         "if args.bf16 and fp16_full_eval: args.bf16_full_eval = True; args.fp16_full_eval = False\n"\
         "if force_float32:\n"\
@@ -472,6 +476,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "top_k"                       : None,
         "vllm_mode"                   : "colocate",
         "generation_kwargs"           : {},
+        "bf16"                        : False,
+        "fp16"                        : False,
     }
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
@@ -531,7 +537,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    mask_truncated_completions = True\n"\
         "    epsilon_high = 0.28\n"\
         "    beta = 0.0\n"\
-        "    loss_type = 'bnpo'"
+        "    loss_type = 'bnpo'\n"\
         "\n"
         extra_args += check_dr_grpo
     pass
