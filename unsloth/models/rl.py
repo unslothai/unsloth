@@ -486,6 +486,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         arguments = re.sub(x, y, arguments)
     pass
 
+    # Fix GRPO beta default as 0.001 TRL used to be 0.04, now 0.00!
+    # https://github.com/huggingface/trl/pull/3516
+    # https://verl.readthedocs.io/en/latest/examples/config.html
+    if trainer_file == "grpo_trainer":
+        replacements = {
+            "beta" : 0.001,
+        }
+        for k, v in replacements.items():
+            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            y = f"'{v}'" if type(v) is str else f"{v}"
+            y = f"{k} = {y},\n"
+            arguments = re.sub(x, y, arguments)
+        pass
+    pass
+
     # Warn on too large or too small learning rate
     if " learning_rate" in call_args:
         learning_rate_check = \
@@ -551,6 +566,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    per_device_train_batch_size = num_generations\n"\
         "\n"
         extra_args += check_num_generations
+    pass
+
+    # Check temperature must not be <= 0. Also stop if >= 10
+    if "temperature" in call_args: 
+        check_temperature = \
+        "if temperature <= 0:\n"\
+        "    raise MathError('Unsloth: Please set a positive non-zero temperature since your results will be wrong.')\n"\
+        "elif temperature >= 10:\n"\
+        "    raise MathError('Unsloth: Please set a positive non-zero temperature less than 10, since sampling will be quite erratic.')\n"\
+        "\n"
+        extra_args += check_temperature
     pass
 
     # Edit config with anything extra
