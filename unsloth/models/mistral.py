@@ -368,7 +368,7 @@ class FastMistralModel(FastLlamaModel):
         MistralDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         MistralModel          .forward = LlamaModel_fast_forward
         MistralForCausalLM    .forward = MistralForCausalLM_fast_forward
-        PeftModelForCausalLM  .forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM  .forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(MistralForCausalLM)
         
         # Solves https://github.com/unslothai/unsloth/issues/168
