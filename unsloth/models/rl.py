@@ -476,6 +476,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "top_k"                       : None,
         "vllm_mode"                   : "colocate",
         "generation_kwargs"           : {},
+        "bf16"                        : False,
+        "fp16"                        : False,
     }
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
