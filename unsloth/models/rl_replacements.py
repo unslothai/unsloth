@@ -270,6 +270,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             # See https://github.com/huggingface/trl/issues/2770
             # logits = logits[:, -logits_to_keep:]
             # return logits
+            # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+            # logits = logits / self.temperature
             # logps = selective_log_softmax(logits, input_ids)
 
             # row_indices, col_indices = torch.where(logps < -20)
@@ -358,6 +360,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 epsilon_high = self.epsilon_high,
                 max_completion_length = self.args.max_completion_length,
                 delta = self.args.delta,
+                temperature = self.args.temperature,
             )
         else:
             if hasattr(self.args, "loss_type"):
@@ -374,6 +377,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     epsilon_high = self.epsilon_high,
                     max_completion_length = self.args.max_completion_length,
                     delta = self.args.delta,
+                    temperature = self.args.temperature,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -385,6 +389,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     advantages,
                     old_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
+                    temperature = self.args.temperature,
                 )
 
         # Log the metrics
