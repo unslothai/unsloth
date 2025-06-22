@@ -468,7 +468,7 @@ class FastGraniteModel(FastLlamaModel):
         GraniteModel          .forward  = LlamaModel_fast_forward
         GraniteForCausalLM    .forward  = CausalLM_fast_forward(GraniteModel_fast_forward_inference)
         GraniteForCausalLM    .__init__ = patched_init(GraniteForCausalLM.__init__)
-        PeftModelForCausalLM .forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM .forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(GraniteForCausalLM)
 
         import transformers.models.granite.modeling_granite

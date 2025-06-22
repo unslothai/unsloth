@@ -177,7 +177,7 @@ class FastQwen3MoeModel(FastQwen3Model):
         Qwen3MoeDecoderLayer   .forward = Qwen3MoeDecoderLayer_fast_forward
         Qwen3MoeModel          .forward = LlamaModel_fast_forward
         Qwen3MoeForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Qwen3MoeForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168

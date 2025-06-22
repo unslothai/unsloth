@@ -471,6 +471,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "num_generations"             : 8,
         "top_k"                       : None,
         "vllm_mode"                   : "colocate",
+        "generation_kwargs"           : {},
     }
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
@@ -510,6 +511,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Check for loss_type = dr_grpo and scale_rewards for GRPO
     if "loss_type" in call_args and "scale_rewards" in call_args:
+        # See https://github.com/huggingface/trl/issues/3130#issuecomment-2746947835
+        # DAPO uses per token loss so BNPO loss used
         check_dr_grpo = \
         "if loss_type.lower() == 'dr_grpo':\n"\
         "    loss_type = 'dr_grpo'\n"\
@@ -519,13 +522,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    if scale_rewards == None:\n"\
         "        scale_rewards = True\n"\
         "    elif scale_rewards == True:\n"\
-        "        print('The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to force False.')\n"\
+        "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to force False.')\n"\
         "        scale_rewards = False\n"\
         "elif loss_type.lower() == 'dapo':\n"\
-        "    print('The DAPO paper recommends `mask_truncated_completions = True`')\n"\
-        "    print('The DAPO paper recommends `epsilon_high = 0.28`')\n"\
+        "    print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True`')\n"\
+        "    print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28`')\n"\
+        "    print('Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term')\n"\
         "    mask_truncated_completions = True\n"\
         "    epsilon_high = 0.28\n"\
+        "    beta = 0.0\n"\
+        "    loss_type = 'bnpo'"
         "\n"
         extra_args += check_dr_grpo
     pass
@@ -645,6 +651,18 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
+    # Remove brackets in comments since it interferes ie (...)
+    comments = re.findall(r"\#[^\n]{1,}\n", init)
+    bracketed_comments = [x for x in comments if "(" in x or ")" in x]
+    # Replace with [...] instead
+    for bracketed_comment in bracketed_comments:
+        init = init.replace(
+            bracketed_comment,
+            bracketed_comment.replace("(", "[").replace(")", "]"),
+        )
+    pass
+
+
     # Remove peft_config
     init = init.replace("elif peft_config is None:", "elif False:")
     init = init.replace("elif peft_config is not None:", "elif False:")
@@ -734,7 +752,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         if trl_version >= "0.18":
             # Replace LLM init with already existing vLLM engine for colocate mode
-            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\([^)]*\)*\)"
+            vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
             vllm_llm_replacement = "self.llm = model.vllm_engine\n"
             new_vllm_part = re.sub(
                 vllm_llm_init_pattern,
