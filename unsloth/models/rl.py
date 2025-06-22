@@ -568,6 +568,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += check_num_generations
     pass
 
+    # Check temperature must not be <= 0. Also stop if >= 10
+    if "temperature" in call_args: 
+        check_temperature = \
+        "if temperature <= 0:\n"\
+        "    raise MathError('Unsloth: Please set a positive non-zero temperature since your results will be wrong.')\n"\
+        "elif temperature >= 10:\n"\
+        "    raise MathError('Unsloth: Please set a positive non-zero temperature less than 10, since sampling will be quite erratic.')\n"\
+        "\n"
+        extra_args += check_temperature
+    pass
+
     # Edit config with anything extra
     if trainer_file in RL_CONFIG_CHANGES:
         process_extra_args = RL_CONFIG_CHANGES[trainer_file]
