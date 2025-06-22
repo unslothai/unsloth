@@ -531,7 +531,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    mask_truncated_completions = True\n"\
         "    epsilon_high = 0.28\n"\
         "    beta = 0.0\n"\
-        "    loss_type = 'bnpo'"
+        "    loss_type = 'bnpo'\n"\
         "\n"
         extra_args += check_dr_grpo
     pass
