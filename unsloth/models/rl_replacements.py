@@ -340,6 +340,7 @@ def grpo_trainer_compute_loss(function_name, function):
 
         print("$$$$$$$$$$$ input_ids", input_ids.shape)
         input_ids = input_ids[:, -logits_to_keep:]
+        print("$$$$$$$$$$$ input_ids", input_ids.shape)
         if per_token_logps is not None:
 
             if ref_per_token_logps is not None:
