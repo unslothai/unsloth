@@ -486,6 +486,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         arguments = re.sub(x, y, arguments)
     pass
 
+    # Fix GRPO beta default as 0.001 TRL used to be 0.04, now 0.00!
+    # https://github.com/huggingface/trl/pull/3516
+    # https://verl.readthedocs.io/en/latest/examples/config.html
+    if trainer_file == "grpo_trainer":
+        replacements = {
+            "beta" : 0.001,
+        }
+        for k, v in replacements.items():
+            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            y = f"'{v}'" if type(v) is str else f"{v}"
+            y = f"{k} = {y},\n"
+            arguments = re.sub(x, y, arguments)
+        pass
+    pass
+
     # Warn on too large or too small learning rate
     if " learning_rate" in call_args:
         learning_rate_check = \
