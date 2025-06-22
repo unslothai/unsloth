@@ -466,7 +466,7 @@ class FastCohereModel(FastLlamaModel):
         CohereDecoderLayer   .forward = CohereDecoderLayer_fast_forward
         CohereModel          .forward = LlamaModel_fast_forward
         CohereForCausalLM    .forward = CausalLM_fast_forward(CohereModel_fast_forward_inference)
-        PeftModelForCausalLM .forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM .forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(CohereForCausalLM)
         
         import transformers.models.cohere.modeling_cohere
