@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.5.10"
+__version__ = "2025.6.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -559,6 +559,10 @@ UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
 import functools
+from torch._inductor.runtime.hints import DeviceProperties
+
+from unsloth import DEVICE_TYPE
+
 @functools.lru_cache(None)
 def is_big_gpu(index: int) -> bool:
     """
@@ -571,11 +575,22 @@ def is_big_gpu(index: int) -> bool:
     Returns:
         `bool`: True if the GPU has enough SMs (Streaming Multiprocessors) to use max_autotune_gemm mode, False otherwise.
     """
-    sms = torch.cuda.get_device_properties(index).multi_processor_count
-    if sms < 80:  # V100
-        # log.warning("not enough SMs to use max_autotune_gemm mode")
+
+    if DEVICE_TYPE == "xpu":
+        prop = torch.xpu.get_device_properties(index)
+    else:
+        prop = torch.cuda.get_device_properties(index)
+
+    min_sms = 16 if device.type == "xpu" else 80
+    avail_sms = prop.multi_processor_count
+    if avail_sms < min_sms:
+        log.warning(
+            "Not enough SMs to use max_autotune_gemm mode",
+            extra={"min_sms": min_sms, "avail_sms": avail_sms},
+        )
         return False
     return True
+
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
 patch_torch_compile(
@@ -834,24 +849,10 @@ exec(BitsAndBytesConfig__init__, globals())
 
 if torch.cuda.device_count() == 1:
     from accelerate.utils.dataclasses import DistributedType
-    def _prepare_backend(
-        self, cpu = False, sagemaker_dp = False, backend: str = None,
-    ) -> tuple[str, DistributedType]:
-        return None, DistributedType.NO
-    pass
+    def _prepare_backend(self, *args, **kwargs): return None, DistributedType.NO
     import accelerate.state
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-
-    import accelerate.accelerator
-    prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
-    prepare = prepare.split("\n")
-    spaces = prepare[0].find("def")
-    prepare = "\n".join(x[spaces:] for x in prepare)
-    x = "for obj in args:"
-    s = " "*spaces
-    prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
-    exec(prepare, globals())
-    accelerate.accelerator.Accelerator.prepare = prepare
+    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
 pass
 
 import transformers.utils.quantization_config

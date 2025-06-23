@@ -117,6 +117,9 @@ class SyntheticDataKit:
             elif which == "False":
                 # Ignore flag
                 pass
+            elif which == "None":
+                # Ignore flag
+                pass
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass

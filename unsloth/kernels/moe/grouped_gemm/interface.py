@@ -131,34 +131,35 @@ def grouped_gemm_forward(
     debug: bool                  = False,
 ) -> torch.Tensor:
     """
-    Performs grouped GEMM forward pass for Mixture-of-Experts (MoE) MLPs.
+    Grouped GEMM forward pass for MoE MLPs.
 
-    This function implements an optimized grouped matrix multiplication operation with
-    support for various MoE-specific optimizations including permutation, weight fusion,
-    and TMA (Tensor Memory Accelerator) support.
-
-    The implementation offers several fusions specific to MoE:
-    - `permute_x`: Fuses permutation of hidden states from token order to expert order
-    - `permute_y`: Fuses permutation of output from expert order back to token order
-    - `fuse_mul_post`: Fuses multiplication with routing weights after GEMM
+    The implementation offers a number of fusions specific to MoE:
+    - `permute_x`: fuse the permutation of hidden states from token order (original order) to grouped expert order, typically only needed for the first grouped GEMM in an MoE MLP.
+        - When `permute_x` is True, `X` is expected to be of shape (num_tokens, K).
+        - When `permute_x` is False, `X` is expected to be of shape (total_tokens, K) where `total_tokens = num_tokens * topk` AND already permuted to grouped expert order, i.e., hidden states are sorted such that tokens assigned to each expert are contiguous.
+    - `permute_y`: fused the permutation of the output from expert grouped order back to original token order, typically only needed for the second grouped GEMM in an MoE MLP.
+    - `fuse_mul_pre`: fuse the multiplication of the routed input with topk_weights, only done in the first grouped GEMM in an MoE MLP as for Llama4.  Do not use, since results in performance regression as it interrupts the GEMM mainloop.
+    - `fuse_mul_post`: fuse the multiplication of the routed output with topk_weights, used only when `permute_y` is True. NOTE: this should only be used when using this kernel for inference, not for training.
 
     Args:
         X (`torch.Tensor`):
-            Input hidden states tensor. Shape is (num_tokens, K) if `permute_x` is True,
-            otherwise (total_tokens, K) where total_tokens = num_tokens * topk.
+            (M, K) hidden states where M is the num_tokens if `permute_x` is True,
+            otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
         W (`torch.Tensor`):
-            Expert weight matrices with shape (E, N, K) where E is number of experts,
-            N is output dimension, and K is input dimension.
+            (E, N, K) expert weights, where E is number of experts, N in the 
+            intermediate (output) dim, and K is the reduction dim
         topk (`int`):
             Number of experts selected per token.
         m_sizes (`torch.Tensor`):
-            Number of tokens assigned to each expert.
+            tokens assigned to each expert which correspond to the size of M
+            in the respective GEMMs in the grouped GEMM.
         gather_indices (`torch.Tensor`, *optional*):
-            Indices for gathering tokens assigned to each expert. Required when
-            permute_x or permute_y is True. Shape: (total_tokens,).
+            (total_tokens,) indices of tokens assigned to each expert.  E.g., slicing
+            `gather_indices` by cumsum of `m_sizes` gives the indices of tokens assigned
+            to each expert.
         topk_weights (`torch.Tensor`, *optional*):
-            Routing weights for weighted output. Required when fuse_mul_post is True.
-            Shape: (total_tokens,).
+            (total_tokens,) weights to multiply routed output by in expert MLP calculation,
+            used only when `fuse_mul_post` is True (see note on `fuse_mul_post`).
         permute_x (`bool`, *optional*):
             If True, permute input from token order to expert-grouped order.
             Only used for first grouped GEMM in MoE MLP. Defaults to False.
@@ -181,14 +182,20 @@ def grouped_gemm_forward(
             Number of warps per thread block. Defaults to 4.
         num_stages (`int`, *optional*):
             Number of pipeline stages. Defaults to 2.
+        use_fast_accum (`bool`, *optional*):
+            TODO: Currently unused; trade off faster accumulation dtype in GEMM
+            for less precision.
         use_tma_load_w (`bool`, *optional*):
-            If True, use TMA for loading weights. Recommended when supported.
+            If True, use TMA for loading weights. If TMA supported, this
+            should always be enabled as it is faster than global memory load.
             Defaults to False.
         use_tma_load_x (`bool`, *optional*):
-            If True, use TMA for loading inputs. Incompatible with permute_x.
+            If True, use TMA for loading activations, incompatible with `permute_x`.
+            TODO: add TMA gather / scatter support for Blackwell+.
             Defaults to False.
         use_tma_store (`bool`, *optional*):
-            If True, use TMA for storing output. Incompatible with permute_y.
+            If True, use TMA for storing output, incompatible with `permute_y`.
+            TODO: add TMA scatter support for Blackwell+.
             Defaults to False.
         flatten (`bool`, *optional*):
             If True, flatten loops for better performance. Defaults to True.
@@ -1057,7 +1064,7 @@ def grouped_gemm(
     - `permute_x`: fuse the permutation of hidden states from token order (original order) to grouped expert order, typically only needed for the first grouped GEMM in an MoE MLP.
         - When `permute_x` is True, `X` is expected to be of shape (num_tokens, K).
         - When `permute_x` is False, `X` is expected to be of shape (total_tokens, K) where `total_tokens = num_tokens * topk` AND already permuted to grouped expert order, i.e., hidden states are sorted such that tokens assigned to each expert are contiguous.
-    - `permute_y`: fused the permuation of the output from expert grouped order back to original token order, typically only needed for the second grouped GEMM in an MoE MLP.
+    - `permute_y`: fused the permutation of the output from expert grouped order back to original token order, typically only needed for the second grouped GEMM in an MoE MLP.
     - `fuse_mul`: fuse the multiplication of the routed output with topk_weights, used only when `permute_y` is True. NOTE: this should only be used when using this kernel for inference, not for training.
 
     X: (M, K) hidden states where M is the num_tokens if `permute_x` is True, otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
