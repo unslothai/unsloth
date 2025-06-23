@@ -311,7 +311,7 @@ def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None, gate_multip
     down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
 
     if down_multiplier is not None:
-        down = down * down_multiplier
+        down *= down_multiplier
 
     return down
 pass
