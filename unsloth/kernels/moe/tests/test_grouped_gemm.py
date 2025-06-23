@@ -47,8 +47,22 @@ SEED = 0
 # permute_y => permute the output of the grouped GEMM, only done for the second grouped GEMM
 # fuse_mul_post => fuse the multiplication of topk weights in the epilogue of the second grouped GEMM; only used for inference, not currently tested
 def check_valid_config(
-    permute_x, permute_y, use_W1, fuse_mul_post=False, is_backward=False, verbose=False
-):
+    permute_x: bool, permute_y: bool, use_W1: bool, fuse_mul_post: bool = False, is_backward: bool=False, verbose: bool=False
+) -> bool:
+    """
+    Check if a given configuration is valid for grouped GEMM operations.
+    
+    Args:
+        permute_x (`bool`): Whether to permute the input tensor X.
+        permute_y (`bool`): Whether to permute the output tensor Y.
+        use_W1 (`bool`): Whether to use the first grouped GEMM in a fused MoE MLP.
+        fuse_mul_post (`bool`, optional): Whether to fuse the multiplication of topk weights in the epilogue of the second grouped GEMM. Defaults to False.
+        is_backward (`bool`, optional): Whether the configuration is for a backward pass. Defaults to False.
+        verbose (`bool`, optional): Whether to print verbose output. Defaults to False.
+    
+    Returns:
+        `bool`: True if the configuration is valid, False otherwise.
+    """
     use_W2 = not use_W1
 
     if permute_x and permute_y:
@@ -100,24 +114,48 @@ def _test_grouped_gemm_forward(
     permute_x: bool,
     permute_y: bool,
     use_W1: bool,  # W1 -> first grouped GEMM in a fused MoE MLP, not W1 -> second grouped GEMM in a fused MoE MLP
-    fuse_mul_post: bool = False,
-    flatten: bool = True,
+    fuse_mul_post: bool       = False,
+    flatten: bool             = True,
     # Manually tuned parameters
-    use_tma_load_w: bool = False,
-    use_tma_load_x: bool = False,
-    use_tma_store: bool = False,
-    BLOCK_SIZE_M: int = None,
-    BLOCK_SIZE_N: int = None,
-    BLOCK_SIZE_K: int = None,
-    num_warps: int = None,
-    num_stages: int = None,
+    use_tma_load_w: bool      = False,
+    use_tma_load_x: bool      = False,
+    use_tma_store: bool       = False,
+    BLOCK_SIZE_M: int         = None,
+    BLOCK_SIZE_N: int         = None,
+    BLOCK_SIZE_K: int         = None,
+    num_warps: int            = None,
+    num_stages: int           = None,
     # Autotuning parameters
-    autotune: bool = False,
+    autotune: bool            = False,
     num_autotune_configs: int = None,
     # Flag to manually enable TMA store
-    allow_tma_store: bool = False,
-    use_autograd: bool = False,
-):
+    allow_tma_store: bool     = False,
+    use_autograd: bool        = False,
+) -> None:
+    """
+    Test the forward pass of the grouped GEMM operation.
+    
+    Args:
+        data_config (`DataConfig`): Configuration for the input data.
+        model_config (`ModelConfig`): Configuration for the model.
+        permute_x (`bool`): Whether to permute the input tensor X.
+        permute_y (`bool`): Whether to permute the output tensor Y.
+        use_W1 (`bool`): Whether to use the first grouped GEMM in a fused MoE MLP.
+        fuse_mul_post (`bool`, optional): Whether to fuse the multiplication of topk weights in the epilogue of the second grouped GEMM. Defaults to False.
+        flatten (`bool`, optional): Whether to flatten the output. Defaults to True.
+        use_tma_load_w (`bool`, optional): Whether to use TMA for loading weights. Defaults to False.
+        use_tma_load_x (`bool`, optional): Whether to use TMA for loading input X. Defaults to False.
+        use_tma_store (`bool`, optional): Whether to use TMA for storing the output. Defaults to False.
+        BLOCK_SIZE_M (`int`, optional): Block size for M dimension. Defaults to None.
+        BLOCK_SIZE_N (`int`, optional): Block size for N dimension. Defaults to None.
+        BLOCK_SIZE_K (`int`, optional): Block size for K dimension. Defaults to None.
+        num_warps (`int`, optional): Number of warps to use. Defaults to None.
+        num_stages (`int`, optional): Number of stages to use. Defaults to None.
+        autotune (`bool`, optional): Whether to autotune the kernel. Defaults to False.
+        num_autotune_configs (`int`, optional): Number of autotune configurations to use. Defaults to None.
+        allow_tma_store (`bool`, optional): Whether to allow TMA store. Defaults to False.
+        use_autograd (`bool`, optional): Whether to use autograd. Defaults to False.
+    """
     if not check_valid_config(
         permute_x, permute_y, use_W1=use_W1, fuse_mul_post=fuse_mul_post
     ):
@@ -287,7 +325,7 @@ def test_grouped_gemm_forward_manual(
     model_config: ModelConfig,
     kernel_config: KernelConfigForward,
     use_W1: bool,
-):
+) -> None:
     _test_grouped_gemm_forward(
         data_config=data_config,
         model_config=model_config,
@@ -315,7 +353,7 @@ def test_grouped_gemm_forward_manual_autograd(
     model_config: ModelConfig,
     kernel_config: KernelConfigForward,
     use_W1: bool,
-):
+) -> None:
     _test_grouped_gemm_forward(
         data_config=data_config,
         model_config=model_config,
@@ -350,7 +388,7 @@ def test_grouped_gemm_forward_autotune(
     permute_y: bool,
     use_W1: bool,
     num_autotune_configs: int,
-):
+) -> None:
     _test_grouped_gemm_forward(
         data_config=data_config,
         model_config=model_config,
@@ -388,7 +426,7 @@ def test_grouped_gemm_forward_autotune_autograd(
     permute_y: bool,
     use_W1: bool,
     num_autotune_configs: int,
-):
+) -> None:
     _test_grouped_gemm_forward(
         data_config=data_config,
         model_config=model_config,
@@ -438,24 +476,48 @@ Hence the following conditions:
 def _test_grouped_gemm_backward_dX(
     data_config: DataConfig,
     model_config: ModelConfig,
-    permute_x: bool = False,
-    permute_y: bool = False,
-    use_tma_load_dy: bool = False,
-    use_tma_load_w: bool = False,
-    use_tma_store: bool = False,
-    use_W1: bool = True,
-    autotune: bool = False,
+    permute_x: bool           = False,
+    permute_y: bool           = False,
+    use_tma_load_dy: bool     = False,
+    use_tma_load_w: bool      = False,
+    use_tma_store: bool       = False,
+    use_W1: bool              = True,
+    autotune: bool            = False,
     num_autotune_configs: int = None,
-    BLOCK_SIZE_M: int = None,
-    BLOCK_SIZE_N: int = None,
-    BLOCK_SIZE_K: int = None,
-    num_warps: int = None,
-    num_stages: int = None,
-    flatten: bool = True,
-    allow_tma_store: bool = False,
-    use_autograd: bool = False,
-    fuse_mul_post: bool = False,
-):
+    BLOCK_SIZE_M: int         = None,
+    BLOCK_SIZE_N: int         = None,
+    BLOCK_SIZE_K: int         = None,
+    num_warps: int            = None,
+    num_stages: int           = None,
+    flatten: bool             = True,
+    allow_tma_store: bool     = False,
+    use_autograd: bool        = False,
+    fuse_mul_post: bool       = False,
+) -> None:
+    """
+    Test the backward pass for the input gradient (dX) of the grouped GEMM operation.
+    
+    Args:
+        data_config (`DataConfig`): Configuration for the input data.
+        model_config (`ModelConfig`): Configuration for the model.
+        permute_x (`bool`, optional): Whether to permute the input tensor X. Defaults to False.
+        permute_y (`bool`, optional): Whether to permute the output tensor Y. Defaults to False.
+        use_tma_load_dy (`bool`, optional): Whether to use TMA for loading the gradient of Y. Defaults to False.
+        use_tma_load_w (`bool`, optional): Whether to use TMA for loading weights. Defaults to False.
+        use_tma_store (`bool`, optional): Whether to use TMA for storing the output. Defaults to False.
+        use_W1 (`bool`, optional): Whether to use the first grouped GEMM in a fused MoE MLP. Defaults to True.
+        autotune (`bool`, optional): Whether to autotune the kernel. Defaults to False.
+        num_autotune_configs (`int`, optional): Number of autotune configurations to use. Defaults to None.
+        BLOCK_SIZE_M (`int`, optional): Block size for M dimension. Defaults to None.
+        BLOCK_SIZE_N (`int`, optional): Block size for N dimension. Defaults to None.
+        BLOCK_SIZE_K (`int`, optional): Block size for K dimension. Defaults to None.
+        num_warps (`int`, optional): Number of warps to use. Defaults to None.
+        num_stages (`int`, optional): Number of stages to use. Defaults to None.
+        flatten (`bool`, optional): Whether to flatten the output. Defaults to True.
+        allow_tma_store (`bool`, optional): Whether to allow TMA store. Defaults to False.
+        use_autograd (`bool`, optional): Whether to use autograd. Defaults to False.
+        fuse_mul_post (`bool`, optional): Whether to fuse the multiplication of topk weights in the epilogue of the second grouped GEMM. Defaults to False.
+    """
     if not check_valid_config(permute_x, permute_y, use_W1=use_W1, is_backward=True):
         pytest.skip(
             f"Skipping test due to invalid config: {permute_x=} {permute_y=} {use_W1=}"
@@ -715,7 +777,7 @@ def test_grouped_gemm_backward_dX_manual(
     model_config: ModelConfig,
     kernel_config: KernelConfigBackward_dX,
     use_W1: bool,
-):
+) -> None:
     _test_grouped_gemm_backward_dX(
         data_config=data_config,
         model_config=model_config,
@@ -744,7 +806,7 @@ def test_grouped_gemm_backward_dX_manual_autograd(
     model_config: ModelConfig,
     kernel_config: KernelConfigBackward_dX,
     use_W1: bool,
-):
+) -> None:
     _test_grouped_gemm_backward_dX(
         data_config=data_config,
         model_config=model_config,
@@ -779,7 +841,7 @@ def test_grouped_gemm_backward_dX_autotune(
     permute_y: bool,
     use_W1: bool,
     num_autotune_configs: int,
-):
+) -> None:
     # TMA loads / stores will be autotuned
     _test_grouped_gemm_backward_dX(
         data_config=data_config,
@@ -818,7 +880,7 @@ def test_grouped_gemm_backward_dX_autotune_autograd(
     permute_y: bool,
     use_W1: bool,
     num_autotune_configs: int,
-):
+) -> None:
     # TMA loads / stores will be autotuned
     _test_grouped_gemm_backward_dX(
         data_config=data_config,
@@ -838,22 +900,47 @@ def _test_grouped_gemm_backward_dW(
     permute_x: bool,
     permute_y: bool,
     use_W1: bool,
-    use_tma_load_dy: bool = False,
-    use_tma_load_x: bool = False,
-    use_tma_store: bool = False,
-    BLOCK_SIZE_M: int = None,
-    BLOCK_SIZE_N: int = None,
-    BLOCK_SIZE_K: int = None,
-    num_warps: int = None,
-    num_stages: int = None,
-    flatten: bool = True,
-    autotune: bool = False,
+    use_tma_load_dy: bool     = False,
+    use_tma_load_x: bool      = False,
+    use_tma_store: bool       = False,
+    BLOCK_SIZE_M: int         = None,
+    BLOCK_SIZE_N: int         = None,
+    BLOCK_SIZE_K: int         = None,
+    num_warps: int            = None,
+    num_stages: int           = None,
+    flatten: bool             = True,
+    autotune: bool            = False,
     num_autotune_configs: int = None,
-    allow_tma_store: bool = False,
-    debug: bool = False,
-    fuse_mul_post: bool = False,  # Unused for backward_dW
-    use_autograd: bool = False,
-):
+    allow_tma_store: bool     = False,
+    debug: bool               = False,
+    fuse_mul_post: bool       = False,  # Unused for backward_dW
+    use_autograd: bool        = False,
+) -> None:
+    """
+    Test the backward pass for the weight gradient (dW) of the grouped GEMM operation.
+    
+    Args:
+        data_config (`DataConfig`): Configuration for the input data.
+        model_config (`ModelConfig`): Configuration for the model.
+        permute_x (`bool`): Whether to permute the input tensor X.
+        permute_y (`bool`): Whether to permute the output tensor Y.
+        use_W1 (`bool`): Whether to use the first grouped GEMM in a fused MoE MLP.
+        use_tma_load_dy (`bool`, optional): Whether to use TMA for loading the gradient of Y. Defaults to False.
+        use_tma_load_x (`bool`, optional): Whether to use TMA for loading input X. Defaults to False.
+        use_tma_store (`bool`, optional): Whether to use TMA for storing the output. Defaults to False.
+        BLOCK_SIZE_M (`int`, optional): Block size for M dimension. Defaults to None.
+        BLOCK_SIZE_N (`int`, optional): Block size for N dimension. Defaults to None.
+        BLOCK_SIZE_K (`int`, optional): Block size for K dimension. Defaults to None.
+        num_warps (`int`, optional): Number of warps to use. Defaults to None.
+        num_stages (`int`, optional): Number of stages to use. Defaults to None.
+        flatten (`bool`, optional): Whether to flatten the output. Defaults to True.
+        autotune (`bool`, optional): Whether to autotune the kernel. Defaults to False.
+        num_autotune_configs (`int`, optional): Number of autotune configurations to use. Defaults to None.
+        allow_tma_store (`bool`, optional): Whether to allow TMA store. Defaults to False.
+        debug (`bool`, optional): Whether to enable debug mode. Defaults to False.
+        fuse_mul_post (`bool`, optional): Whether to fuse the multiplication of topk weights in the epilogue of the second grouped GEMM. Defaults to False.
+        use_autograd (`bool`, optional): Whether to use autograd. Defaults to False.
+    """
     if not check_valid_config(
         permute_x,
         permute_y,
@@ -1088,7 +1175,7 @@ def test_grouped_gemm_backward_dW_manual(
     kernel_config: KernelConfig,
     use_W1: bool,
     debug: bool = False,
-):
+) -> None:
     _test_grouped_gemm_backward_dW(
         data_config=data_config,
         model_config=model_config,
@@ -1118,7 +1205,7 @@ def test_grouped_gemm_backward_dW_manual_autograd(
     kernel_config: KernelConfig,
     use_W1: bool,
     debug: bool = False,
-):
+) -> None:
     _test_grouped_gemm_backward_dW(
         data_config=data_config,
         model_config=model_config,
@@ -1153,7 +1240,7 @@ def test_grouped_gemm_backward_dW_autotune(
     permute_y: bool,
     use_W1: bool,
     num_autotune_configs: int,
-):
+) -> None:
     _test_grouped_gemm_backward_dW(
         data_config=data_config,
         model_config=model_config,
@@ -1191,7 +1278,7 @@ def test_grouped_gemm_backward_dW_autotune_autograd(
     permute_y: bool,
     use_W1: bool,
     num_autotune_configs: int,
-):
+) -> None:
     _test_grouped_gemm_backward_dW(
         data_config=data_config,
         model_config=model_config,
