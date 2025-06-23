@@ -338,9 +338,11 @@ def grpo_trainer_compute_loss(function_name, function):
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 ref_per_token_logps, per_token_logps, old_per_token_logps, completion_mask, self.beta, advantages, 
                 loss_type = self.args.loss_type,
-                epsilon_low = self.epsilon_low, epsilon_high = self.epsilon_high,
+                epsilon_low = self.epsilon_low,
+                epsilon_high = self.epsilon_high,
                 max_completion_length = self.args.max_completion_length,
                 delta = self.args.delta,
+                temperature = self.args.temperature,
             )
         else:
             if hasattr(self.args, "loss_type"):
@@ -348,15 +350,18 @@ def grpo_trainer_compute_loss(function_name, function):
                     self, completion_mask, advantages, ref_per_token_logps, per_token_logps, old_per_token_logps,
                     n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
-                    epsilon_low = self.epsilon_low, epsilon_high = self.epsilon_high,
+                    epsilon_low = self.epsilon_low,
+                    epsilon_high = self.epsilon_high,
                     max_completion_length = self.args.max_completion_length,
                     delta = self.args.delta,
+                    temperature = self.args.temperature,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
                     self, completion_mask, advantages, ref_per_token_logps, per_token_logps, old_per_token_logps,
                     n_chunks = self.args.unsloth_num_chunks,
+                    temperature = self.args.temperature,
                 )
 
         # Log the metrics
