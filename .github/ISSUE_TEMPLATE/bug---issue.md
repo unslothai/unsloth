@@ -1,7 +1,7 @@
 ---
 name: Bug / Issue
 about: Bug / Issue
-title: "[Bug]"
+title: "[Bug] Please fill in your issue title here."
 labels: bug
 assignees: ''
 
@@ -14,7 +14,8 @@ assignees: ''
 5. Which Unsloth version, TRL version, transformers version, PyTorch version?
 6. Which trainer? `SFTTrainer`, `GRPOTrainer` etc
 
-🦥 You can also ask via our Reddit page: https://www.reddit.com/r/unsloth/
 ```python
 Put Minimal code to reproduce error here ###Remove Hugging Face token###
 ```
+
+🦥 You can also ask via our Reddit page: https://www.reddit.com/r/unsloth/
