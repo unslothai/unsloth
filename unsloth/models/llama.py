@@ -300,7 +300,7 @@ def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None, gate_multip
     gate = fast_linear_forward(self.gate_proj, X, out = temp_gate)
     
     if gate_multiplier is not None:
-        gate = gate * gate_multiplier
+        gate *= gate_multiplier
     
     up   = fast_linear_forward(self.  up_proj, X, out = temp_up)
 
