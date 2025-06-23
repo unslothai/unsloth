@@ -272,9 +272,15 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             for i in range(0, input_ids.size(0), batch_size):
                 input_ids_batch = input_ids[i : i + batch_size]
                 attention_mask_batch = attention_mask[i : i + batch_size]
-
                 # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
                 hidden_states = model(input_ids=input_ids_batch, attention_mask=attention_mask_batch, logits_to_keep=logits_to_keep + 1).logits
+                
+                # Divide logits by sampling temperature.
+                # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+                # (e @ c.T) / temperature == (e / temperature) @ c.T
+                if (self.temperature is not None):
+                    hidden_states = hidden_states / self.temperature
+                
                 # Add dummy input_id at the end. Last logp is exluded.
                 input_ids_batch = torch.cat((input_ids_batch[:, -logits_to_keep:], torch.zeros((batch_size, 1), dtype=input_ids_batch.dtype, device=input_ids_batch.device)), dim=-1)
                 # selective_log_softmax(e @ c.T, index) == -cce(e, c, index, reduction="none”)
