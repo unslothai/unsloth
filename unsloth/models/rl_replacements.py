@@ -278,7 +278,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
                 # Divide logits by sampling temperature.
                 # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
                 # (e @ c.T) / temperature == (e / temperature) @ c.T
-                if (self.temperature != 1.0):
+                if (self.temperature is not None):
                     hidden_states = hidden_states / self.temperature
                 
                 # Add dummy input_id at the end. Last logp is exluded.
