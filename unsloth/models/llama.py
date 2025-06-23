@@ -2159,6 +2159,20 @@ class FastLlamaModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
+        vllm_engine = None
+        if hasattr(model, "vllm_engine"):
+            # Fast inference!
+            vllm_engine = model.vllm_engine
+            vllm_fast_generate = model.fast_generate
+            vllm_fast_generate_batches = model.fast_generate_batches
+
+            if modules_to_save is not None:
+                raise NotImplementedError("Unsloth: Currently fast inference does not work with training embeddings or lm_head.")
+
+            if bias != "none":
+                raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
+        pass
+
         if isinstance(model, PeftModelForCausalLM):
             # Check if exactly the same and then pass through!
             assert(hasattr(model, "peft_config"))
@@ -2242,6 +2256,21 @@ class FastLlamaModel:
                     model.get_output_embeddings().original_module\
                         .to(device = "cpu", non_blocking = True)
                     model.get_output_embeddings().original_module.requires_grad_(False)
+                pass
+
+                # Now pass the vllm method to loaded model
+
+                # Patch for fast inference
+                if vllm_engine is not None:
+                    model.vllm_engine = vllm_engine
+                    model.fast_generate = vllm_fast_generate
+                    model.fast_generate_batches = vllm_fast_generate_batches
+
+                    # Also saving and loading LoRA
+                    from functools import partial
+                    from unsloth_zoo.vllm_utils import save_lora, load_lora
+                    model.save_lora = partial(save_lora, model)
+                    model.load_lora = partial(load_lora, model)
                 pass
 
                 return model
@@ -2410,19 +2439,6 @@ class FastLlamaModel:
             modules_to_save = list(set(modules_to_save))
         pass
 
-        vllm_engine = None
-        if hasattr(model, "vllm_engine"):
-            # Fast inference!
-            vllm_engine = model.vllm_engine
-            vllm_fast_generate = model.fast_generate
-            vllm_fast_generate_batches = model.fast_generate_batches
-
-            if modules_to_save is not None:
-                raise NotImplementedError("Unsloth: Currently fast inference does not work with training embeddings or lm_head.")
-
-            if bias != "none":
-                raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
-        pass
 
         #does not get lora yet, so get name from model, not base model
 
