@@ -69,7 +69,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequen
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM
+from peft import PeftModelForCausalLM, PeftModelForSequenceClassification
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 import types
@@ -762,8 +762,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
-    # elif attention_mask is None:
+    elif self.training and os.environ.get("UNSLOTH_KEEP_PADDING", "0") != '1':    
         attention_mask = None
         padding_mask = None
     else:
@@ -2079,7 +2078,8 @@ class FastLlamaModel:
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
 
         # Patch generate
-        if model.generate.__name__ != "unsloth_fast_generate":
+        is_classification =  "Classification" in str(type(model))
+        if not is_classification and model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
@@ -2159,7 +2159,7 @@ class FastLlamaModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, PeftModelForCausalLM):
+        if isinstance(model, PeftModelForCausalLM) or isinstance(model, PeftModelForSequenceClassification):
             # Check if exactly the same and then pass through!
             assert(hasattr(model, "peft_config"))
 
@@ -2428,7 +2428,7 @@ class FastLlamaModel:
 
         is_classification =  "Classification" in str(type(model))
         # Get LoRA
-        # if not is_classification else TaskType.SEQ_CLS
+        # 
 
         arguments = dict(
             r                   = r,
@@ -2436,7 +2436,7 @@ class FastLlamaModel:
             target_modules      = final_modules,
             lora_dropout        = lora_dropout,
             bias                = bias,
-            task_type           = TaskType.CAUSAL_LM,
+            task_type           = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,
             layers_to_transform = layers_to_transform,
             init_lora_weights   = init_lora_weights,
             loftq_config        = loftq_config,
@@ -2450,7 +2450,6 @@ class FastLlamaModel:
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
         lora_config = LoraConfig(**arguments)
-
         # First offload lm_head and embed_tokens to disk
         input_embeddings_device  = model.get_input_embeddings().weight.device
         if is_classification:
@@ -2572,7 +2571,7 @@ class FastLlamaModel:
                 use_gradient_checkpointing = use_gradient_checkpointing,
             )
         pass
-        if not isinstance(model, PeftModelForCausalLM):
+        if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModelForSequenceClassification):
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
             )
