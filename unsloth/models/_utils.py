@@ -543,16 +543,13 @@ def is_big_gpu(index) -> bool:
 
     if DEVICE_TYPE == "xpu":
         prop = torch.xpu.get_device_properties(index)
+        min_sms = 16
     else:
         prop = torch.cuda.get_device_properties(index)
+        min_sms = 80
 
-    min_sms = 16 if device.type == "xpu" else 80
     avail_sms = prop.multi_processor_count
     if avail_sms < min_sms:
-        log.warning(
-            "Not enough SMs to use max_autotune_gemm mode",
-            extra={"min_sms": min_sms, "avail_sms": avail_sms},
-        )
         return False
     return True
 
