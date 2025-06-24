@@ -1625,9 +1625,9 @@ def create_ollama_modelfile(tokenizer, gguf_location):
 pass
 
 def create_ollama_model(
-    username: str, 
-    model_name: str, 
-    tag: str, 
+    username: str,
+    model_name: str,
+    tag: str,
     modelfile_path: str
 ):
     try:
@@ -1711,7 +1711,7 @@ def push_to_ollama(
     with open(f"Modelfile_{model_name}", "w") as f:
         f.write(model_file)
         f.close()
-    
+
     create_ollama_model(
         username=username,
         model_name=model_name,
@@ -2320,7 +2320,7 @@ def unsloth_generic_save(
         )
     elif save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
-    
+
     merge_and_overwrite_lora(
         get_model_name,
         model                = model,
@@ -2524,8 +2524,8 @@ def patch_saving_functions(model, vision = False):
     if not vision:
         if hasattr(model, "config"):
             # Counteract tokenizers
-            model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,                    model)
-            model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged,                model)
+            model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,                    model)
+            model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged,                model)
             model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
             model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
             model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)

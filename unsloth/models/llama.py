@@ -27,6 +27,11 @@ from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
 IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
+try:
+    from transformers.modeling_layers import GradientCheckpointingLayer
+except:
+    GradientCheckpointingLayer = type(None)
+
 from transformers.models.llama.modeling_llama import (
     logger,
     BaseModelOutputWithPast,
@@ -60,11 +65,11 @@ except:
     LlamaFlashAttention2 = LlamaAttention
 pass
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, BitsAndBytesConfig, AutoConfig
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
 from transformers import set_seed as transformers_set_seed
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM
+from peft import PeftModelForCausalLM, PeftModelForSequenceClassification
 from ..save import patch_saving_functions
 import re, os, inspect, math, sys
 import types
@@ -99,7 +104,7 @@ torch_nn_functional_softmax = torch.nn.functional.softmax
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 # Fix new HF's inference code
-def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
+def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **kwargs,):
     past_key_values = kwargs.get("past_key_values", None)
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
@@ -107,11 +112,54 @@ def _fast_prepare_inputs_for_generation(self, input_ids, **kwargs,):
             past_key_values = None
             kwargs["past_key_values"] = None
         else:
+            bs, cache_length = input_ids.shape
             input_ids = input_ids[:,[-1]]
-            kwargs["attention_mask"] = kwargs["attention_mask"][:,[-1]]
+            
+            # Get to the base model
+            base_model = self
+            if hasattr(base_model, 'base_model_prefix'):
+                base_model = getattr(base_model, base_model.base_model_prefix)
+                
+            if hasattr(base_model, "_prepare_4d_causal_attention_mask_with_cache_position"):
+                def needs_device_kw(fn) -> bool:
+                    try:
+                        sig = inspect.signature(inspect.unwrap(fn))
+                        return "device" in sig.parameters
+                    except:
+                        # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
+                        return transformers_version < Version("4.52.0")
+
+                kwargs = {
+                    "sequence_length": 1,
+                    "target_length": cache_length,
+                    "dtype": self.dtype,
+                    "cache_position": torch.arange(cache_length, cache_length+1, device=input_ids.device),
+                    "batch_size": bs,
+                    "config": self.config,
+                    "past_key_values": past_key_values,
+                }
+                try:
+                    if needs_device_kw(base_model._prepare_4d_causal_attention_mask_with_cache_position):
+                        kwargs["device"] = input_ids.device
+                except:
+                    print(f"Unsloth: Could not inspect signature of {base_model._prepare_4d_causal_attention_mask_with_cache_position}")
+
+                attention_mask = base_model._prepare_4d_causal_attention_mask_with_cache_position(
+                    attention_mask,
+                    **kwargs,
+                )
+            else:
+                attention_mask = attention_mask[:,[-1]]
+                logger.warning_once(
+                    f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
+                    "defined in its base modeling class. Compiled forward passes will be sub-optimal. If you're "
+                    "writing code, see Llama for an example implementation. If you're a user, please report this "
+                    "issue on GitHub."
+                )
+
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
-    return { "input_ids" : input_ids, **kwargs, }
+    return { "input_ids" : input_ids, "attention_mask": attention_mask, **kwargs, }
 pass
 
 
@@ -727,8 +775,7 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
-    # elif attention_mask is None:
+    elif self.training and os.environ.get("UNSLOTH_KEEP_PADDING", "0") != '1':    
         attention_mask = None
         padding_mask = None
     else:
@@ -863,7 +910,12 @@ def LlamaModel_fast_forward(
                 mask = self. GA_mask if use_static_mask else dynamic_GA_mask
         pass
 
-        if gradient_checkpointing:
+        try:
+            is_gradient_checkpointing_layer = isinstance(decoder_layer, GradientCheckpointingLayer)
+        except:
+            is_gradient_checkpointing_layer = False
+
+        if gradient_checkpointing and not is_gradient_checkpointing_layer:
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
@@ -1208,7 +1260,7 @@ pass
 
 
 @torch._disable_dynamo
-def PeftModelForCausalLM_fast_forward(
+def PeftModel_fast_forward(
     self,
     input_ids = None,
     causal_mask = None,
@@ -1223,19 +1275,33 @@ def PeftModelForCausalLM_fast_forward(
     logits_to_keep = 0,
     **kwargs,
 ):
-    return self.base_model(
-        input_ids = input_ids,
-        causal_mask = causal_mask,
-        attention_mask = attention_mask,
-        inputs_embeds = inputs_embeds,
-        labels = labels,
-        output_attentions = output_attentions,
-        output_hidden_states = output_hidden_states,
-        return_dict = return_dict,
-        num_logits_to_keep = num_logits_to_keep,
-        logits_to_keep = logits_to_keep,
-        **kwargs,
-    )
+    is_classification =  "Classification" in str(type( self.base_model.model))
+    if is_classification: 
+        #causal_mask = causal_mask,
+        return self.base_model(
+            input_ids = input_ids,
+            attention_mask = attention_mask, 
+            inputs_embeds = inputs_embeds, 
+            labels = labels, 
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states, 
+            return_dict = return_dict, 
+            **kwargs,
+            )
+    else:
+        return self.base_model(
+            input_ids = input_ids,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            inputs_embeds = inputs_embeds,
+            labels = labels,
+            output_attentions = output_attentions,
+            output_hidden_states = output_hidden_states,
+            return_dict = return_dict,
+            num_logits_to_keep = num_logits_to_keep,
+            logits_to_keep = logits_to_keep,
+            **kwargs,
+        )
 pass
 
 
@@ -1633,7 +1699,7 @@ class FastLlamaModel:
         LlamaDecoderLayer   .forward = LlamaDecoderLayer_fast_forward
         LlamaModel          .forward = LlamaModel_fast_forward
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168
@@ -1650,17 +1716,18 @@ class FastLlamaModel:
 
     @staticmethod
     def from_pretrained(
-        model_name        = "unsloth/llama-3-8b-bnb-4bit",
-        max_seq_length    = None,
-        dtype             = None,
-        load_in_4bit      = True,
-        token             = None,
-        device_map        = "sequential",
-        rope_scaling      = None,
-        fix_tokenizer     = True,
-        model_patcher     = None,
-        tokenizer_name    = None,
-        trust_remote_code = False,
+        model_name         = "unsloth/llama-3-8b-bnb-4bit",
+        max_seq_length     = None,
+        dtype              = None,
+        load_in_4bit       = True,
+        token              = None,
+        device_map         = "sequential",
+        rope_scaling       = None,
+        fix_tokenizer      = True,
+        model_patcher      = None,
+        tokenizer_name     = None,
+        trust_remote_code  = False,
+        revision           = None,
 
         fast_inference    = False, # uses vLLM
         gpu_memory_utilization = 0.5,
@@ -1668,6 +1735,8 @@ class FastLlamaModel:
         random_state      = 3407,
         max_lora_rank     = 16,
         disable_log_stats = False,
+        unsloth_vllm_standby = False,
+        num_labels =  None, 
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
@@ -1687,6 +1756,8 @@ class FastLlamaModel:
             if major_version < 7:
                 print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
                 fast_inference = False
+            if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") == "0":
+                raise RuntimeError("Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!")
         pass
 
         if token is None: token = get_token()
@@ -1809,7 +1880,20 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
         
-        if not fast_inference:
+        if num_labels is not None:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = dtype,
+                num_labels              = num_labels,
+                #quantization_config     = bnb_config,
+                token                   = token,
+                max_position_embeddings = max_position_embeddings,
+                trust_remote_code       = trust_remote_code,
+                attn_implementation     = "eager",
+                **kwargs,
+            )
+        elif not fast_inference:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map              = device_map,
@@ -1842,6 +1926,7 @@ class FastLlamaModel:
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
                 use_bitsandbytes       = load_in_4bit,
+                unsloth_vllm_standby   = unsloth_vllm_standby,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -2019,7 +2104,8 @@ class FastLlamaModel:
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
 
         # Patch generate
-        if model.generate.__name__ != "unsloth_fast_generate":
+        is_classification =  "Classification" in str(type(model))
+        if not is_classification and model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
@@ -2099,7 +2185,7 @@ class FastLlamaModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, PeftModelForCausalLM):
+        if isinstance(model, PeftModelForCausalLM) or isinstance(model, PeftModelForSequenceClassification):
             # Check if exactly the same and then pass through!
             assert(hasattr(model, "peft_config"))
 
@@ -2364,14 +2450,19 @@ class FastLlamaModel:
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
         pass
 
+        #does not get lora yet, so get name from model, not base model
+
+        is_classification =  "Classification" in str(type(model))
         # Get LoRA
+        # 
+
         arguments = dict(
             r                   = r,
             lora_alpha          = lora_alpha,
             target_modules      = final_modules,
             lora_dropout        = lora_dropout,
             bias                = bias,
-            task_type           = TaskType.CAUSAL_LM,
+            task_type           = TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS,
             layers_to_transform = layers_to_transform,
             init_lora_weights   = init_lora_weights,
             loftq_config        = loftq_config,
@@ -2385,10 +2476,12 @@ class FastLlamaModel:
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
         lora_config = LoraConfig(**arguments)
-
         # First offload lm_head and embed_tokens to disk
-        input_embeddings_device  = model. get_input_embeddings().weight.device
-        output_embeddings_device = model.get_output_embeddings().weight.device
+        input_embeddings_device  = model.get_input_embeddings().weight.device
+        if is_classification:
+             output_embeddings_device = model.score.weight.device
+        else: 
+            output_embeddings_device = model.get_output_embeddings().weight.device
 
         if use_gradient_checkpointing == "unsloth":
             if train_embed_tokens:
@@ -2504,7 +2597,7 @@ class FastLlamaModel:
                 use_gradient_checkpointing = use_gradient_checkpointing,
             )
         pass
-        if not isinstance(model, PeftModelForCausalLM):
+        if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModelForSequenceClassification):
             raise TypeError(
                 "Unsloth: Your model needs to call `.get_peft_model` first!"
             )

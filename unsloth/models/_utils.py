@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.5.8"
+__version__ = "2025.6.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -201,6 +201,35 @@ except:
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
+
+def extract_approx_params_from_config(config):
+    """
+    Extract approximate parameter count from model config's name_or_path
+    Returns int (param count) or None if not found.
+    """
+    lowercase_b_families = ["gemma"] # gemma uses small 'b' : google/gemma-3-1b-it
+    model_name = getattr(config, "name_or_path", "")
+    import re
+    cleaned = re.sub(r"[-_]?bnb[-_]?4bit|[-_]?4bit|[-_]?8bit|[-_]?bnb", "", model_name, flags=re.IGNORECASE) # replace bnb and xbit
+    match_B = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*B", cleaned) # first prefer searching 'B'
+    if match_B:
+        # most model names would come in this flow
+        billions = float(match_B.group(1))
+        return int(1_000_000_000 * billions)
+    else:
+        if any(fam in cleaned.lower() for fam in lowercase_b_families):
+            match_b = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*b", cleaned)
+            if match_b:
+                billions = float(match_b.group(1))
+                return int(1_000_000_000 * billions)
+        else:
+            match_any = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*[bB]", cleaned)
+            if match_any:
+                billions = float(match_any.group(1))
+                return int(1_000_000_000 * billions)
+    return None
+
+
 def get_model_param_count(model, trainable_only = False):
     """
     Calculate model's total param count. If trainable_only is True then count only those requiring grads
@@ -215,12 +244,9 @@ def get_model_param_count(model, trainable_only = False):
     if (not trainable_only) and \
         hasattr(model, "config") and \
         hasattr(model.config, "quantization_config"):
-
-        billions = re.findall(r"([0-9]{1,})(?:b|B)", model.config.name_or_path)
-        if len(billions) != 0:
-            billions = int(billions[0])
-            s = 1_000_000_000 * billions
-    pass
+        approx = extract_approx_params_from_config(model.config)
+        if approx is not None:
+            s = approx
     return s
 pass
 import transformers.trainer_pt_utils
@@ -508,13 +534,25 @@ UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
 import functools
+from torch._inductor.runtime.hints import DeviceProperties
+
+from unsloth import DEVICE_TYPE
+
 @functools.lru_cache(None)
-def is_big_gpu(index):
-    sms = torch.cuda.get_device_properties(index).multi_processor_count
-    if sms < 80:  # V100
-        # log.warning("not enough SMs to use max_autotune_gemm mode")
+def is_big_gpu(index) -> bool:
+
+    if DEVICE_TYPE == "xpu":
+        prop = torch.xpu.get_device_properties(index)
+        min_sms = 16
+    else:
+        prop = torch.cuda.get_device_properties(index)
+        min_sms = 80
+
+    avail_sms = prop.multi_processor_count
+    if avail_sms < min_sms:
         return False
     return True
+
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
 patch_torch_compile(
@@ -729,24 +767,10 @@ exec(BitsAndBytesConfig__init__, globals())
 
 if torch.cuda.device_count() == 1:
     from accelerate.utils.dataclasses import DistributedType
-    def _prepare_backend(
-        self, cpu = False, sagemaker_dp = False, backend: str = None,
-    ) -> tuple[str, DistributedType]:
-        return None, DistributedType.NO
-    pass
+    def _prepare_backend(self, *args, **kwargs): return None, DistributedType.NO
     import accelerate.state
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-
-    import accelerate.accelerator
-    prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
-    prepare = prepare.split("\n")
-    spaces = prepare[0].find("def")
-    prepare = "\n".join(x[spaces:] for x in prepare)
-    x = "for obj in args:"
-    s = " "*spaces
-    prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
-    exec(prepare, globals())
-    accelerate.accelerator.Accelerator.prepare = prepare
+    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
 pass
 
 import transformers.utils.quantization_config
