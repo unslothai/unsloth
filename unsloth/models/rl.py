@@ -178,8 +178,7 @@ def PatchRL(FastLanguageModel):
                 else:
                     loss = None
                     with self.compute_loss_context_manager():
-                        #breakpoint()
-                        tokenized_output = self.processing_class(inputs["prompt"], padding=True, truncation=True, return_tensors="pt")
+                        tokenized_output = self.processing_class(inputs["prompt"], padding=True, truncation=True, return_tensors="pt").to(model.device)
                         outputs = model(**tokenized_output)
                     if isinstance(outputs, dict):
                         logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
