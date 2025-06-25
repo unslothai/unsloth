@@ -85,16 +85,6 @@ def PatchRL(FastLanguageModel):
     pass
     
     from transformers import Trainer
-    from transformers.utils import is_sagemaker_mp_enabled
-    if is_sagemaker_mp_enabled():
-        import smdistributed.modelparallel.torch as smp
-        from smdistributed.modelparallel import __version__ as SMP_VERSION
-
-        IS_SAGEMAKER_MP_POST_1_10 = version.parse(SMP_VERSION) >= version.parse("1.10")
-
-        from .trainer_pt_utils import smp_forward_backward, smp_forward_only, smp_gather, smp_nested_concat
-    else:
-        IS_SAGEMAKER_MP_POST_1_10 = False
     from transformers.trainer_pt_utils import nested_detach
     @torch.no_grad()    
     def unsloth_prediction_step(self, model, inputs, prediction_loss_only,ignore_keys,):
@@ -146,47 +136,27 @@ def PatchRL(FastLanguageModel):
             labels = None
 
         with torch.no_grad():
-            if is_sagemaker_mp_enabled():
-                raw_outputs = smp_forward_only(model, inputs)
-                if has_labels or loss_without_labels:
-                    if isinstance(raw_outputs, dict):
-                        loss_mb = raw_outputs["loss"]
-                        logits_mb = tuple(v for k, v in raw_outputs.items() if k not in ignore_keys + ["loss"])
-                    else:
-                        loss_mb = raw_outputs[0]
-                        logits_mb = raw_outputs[1:]
+            if has_labels or loss_without_labels:
+                with self.compute_loss_context_manager():
+                    loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+                loss = loss.mean().detach()
 
-                    loss = loss_mb.reduce_mean().detach().cpu()
-                    logits = smp_nested_concat(logits_mb)
+                if isinstance(outputs, dict):
+                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
                 else:
-                    loss = None
-                    if isinstance(raw_outputs, dict):
-                        logits_mb = tuple(v for k, v in raw_outputs.items() if k not in ignore_keys)
-                    else:
-                        logits_mb = raw_outputs
-                    logits = smp_nested_concat(logits_mb)
+                    logits = outputs[1:]
             else:
-                if has_labels or loss_without_labels:
-                    with self.compute_loss_context_manager():
-                        loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
-                    loss = loss.mean().detach()
-
-                    if isinstance(outputs, dict):
-                        logits = tuple(v for k, v in outputs.items() if k not in ignore_keys + ["loss"])
-                    else:
-                        logits = outputs[1:]
+                loss = None
+                with self.compute_loss_context_manager():
+                    tokenized_output = self.processing_class(inputs["prompt"], padding=True, truncation=True, return_tensors="pt").to(model.device)
+                    outputs = model(**tokenized_output)
+                if isinstance(outputs, dict):
+                    logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
                 else:
-                    loss = None
-                    with self.compute_loss_context_manager():
-                        inputs = self.processing_class(inputs["prompt"], padding=True, truncation=True, return_tensors="pt").to(model.device)
-                        outputs = model(**inputs)
-                    if isinstance(outputs, dict):
-                        logits = tuple(v for k, v in outputs.items() if k not in ignore_keys)
-                    else:
-                        logits = outputs
-                    # TODO: this needs to be fixed and made cleaner later.
-                    if self.args.past_index >= 0:
-                        self._past = outputs[self.args.past_index - 1]
+                    logits = outputs
+                # TODO: this needs to be fixed and made cleaner later.
+                if self.args.past_index >= 0:
+                    self._past = outputs[self.args.past_index - 1]
 
         if prediction_loss_only:
             return (loss, None, None)
