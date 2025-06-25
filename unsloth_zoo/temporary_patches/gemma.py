@@ -104,10 +104,10 @@ def patch_Gemma3Processor():
                 iterable_num_crops = num_crops_for_item
 
                 if isinstance(num_crops_for_item, int):
-                        if len(image_indexes) > 0:
-                            iterable_num_crops = [num_crops_for_item] + [0] * (len(image_indexes) - 1)
-                        else:
-                            iterable_num_crops = []
+                    if len(image_indexes) > 0:
+                        iterable_num_crops = [num_crops_for_item] + [0] * (len(image_indexes) - 1)
+                    else:
+                        iterable_num_crops = []
 
                 # Insert additional image tokens for Pan-and-Scan crops
                 for num, idx in reversed(list(zip(iterable_num_crops, image_indexes))):
@@ -281,7 +281,7 @@ def patch_Gemma3ForConditionalGeneration_forward_multimodal():
           is_training = token_type_ids is not None and labels is not None
 
           # Replace image id woth PAD if the image token if OOV, to avoid index-errors
-          #if input_ids is not None and self.config.image_token_index >= self.vocab_size:
+          # if input_ids is not None and self.config.image_token_index >= self.vocab_size:
           if input_ids is not None and self.config.image_token_index >= self.config.text_config.vocab_size:
               special_image_mask = input_ids == self.config.image_token_index
               llm_input_ids = input_ids.clone()

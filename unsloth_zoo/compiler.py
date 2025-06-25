@@ -725,12 +725,7 @@ if labels is not None:$SPACES$loss = self.loss_function($LOGITS$, $LABELS$, $VOC
 
 cross_entropy_replacement_2 = """
 NOT_RETURN_LOGITS = os.environ.get('UNSLOTH_RETURN_LOGITS', '0') == '0'
-all_locals = locals()
-n_items = None
-for __kwargs in all_locals.values():
-    if type(__kwargs) is dict:
-        n_items = __kwargs.get("num_items_in_batch", None) or __kwargs.get("n_items", None)
-        break
+n_items = (\\9).get("num_items_in_batch", None) or (\\9).get("n_items", None)
 requires_grad_ = self.lm_head.weight.requires_grad
 requires_grad_ = requires_grad_ or self.lm_head.weight.dtype == torch.float32
 
@@ -942,7 +937,6 @@ ce_finders = [
 
 def apply_fused_lm_head(forward):
     # All Unsloth Zoo code licensed under LGPLv3
-    import regex
     for cross_entropy_find, cross_entropy_replacement in ce_finders:
         cross_entropy_find = cross_entropy_find.strip()\
             .replace("*", r"\*").replace("^", r"\^")\
@@ -1013,8 +1007,11 @@ def apply_fused_lm_head(forward):
             .replace(r"$OUTPUTLOGITS$",
                      r"(?:"\
                      r"logits = outputs\.logits|"\
-                     r"logits = self\.lm_head\(hidden_states\)"\
+                     r"logits = self\.lm_head\(hidden_states\)|"\
+                     r"logits = self\.lm_head\(hidden_states$INDEXING$"
                      r")")\
+            .replace("$INDEXING$",
+                     r"([^\n^\)]{0,})\)(?:\.float\(\))?[\n][\s]{0,}")\
             .replace(r"shift_", r"(?:shift_|flat_)")\
             .replace("$CONTIGUOUS$",   r"(?:\.contiguous\(\))?")\
             .replace(r"shift\_", r"(?:shift\_|flat\_)")\
@@ -1022,6 +1019,7 @@ def apply_fused_lm_head(forward):
             .replace(r"@@@", r"[^\[]{1,}\[[^\]]{1,}\][^\n]{0,}\n")\
             .replace(r"$EMPTY$", r"()")
 
+        # print(cross_entropy_find)
         cross_entropy_replacement = cross_entropy_replacement\
             .replace(
                 "$KWARGS$",
@@ -1037,6 +1035,7 @@ def apply_fused_lm_head(forward):
             "shift_labels = shift_labels.to(shift_logits.device)\n"\
             "loss = loss_fct(shift_logits, shift_labels)"
         )
+
         # Find matches
         if r"loss\_function" in cross_entropy_find and "loss_function" not in forward:
             continue
@@ -1045,6 +1044,7 @@ def apply_fused_lm_head(forward):
         elif "CrossEntropyLoss" not in cross_entropy_find and "CrossEntropyLoss" in forward:
             continue
         elif "CrossEntropyLoss" in cross_entropy_find and "CrossEntropyLoss" not in forward:
+            print(forward)
             continue
         try:
             finder = regex.findall(
@@ -1053,7 +1053,9 @@ def apply_fused_lm_head(forward):
                 flags = regex.DOTALL | regex.MULTILINE,
                 timeout = 1
             )
-        except:
+        except Exception as e:
+            if UNSLOTH_ENABLE_LOGGING:
+                print(f"Unsloth failed patching fast linear cross entropy with error: {str(e)}")
             continue
         if len(finder) == 0: continue
 
@@ -1091,7 +1093,6 @@ def apply_fused_lm_head(forward):
         forward = forward.replace(", **)", ")")
         forward = forward.replace(",**)", ")")
         forward = forward.replace(",** )", ")")
-
         return forward
     pass
     return forward
@@ -1121,12 +1122,34 @@ def test_apply_fused_lm_head():
     forwards.append(IdeficsForVisionText2Text)
     from transformers.models.idefics3.modeling_idefics3 import Idefics3ForConditionalGeneration
     forwards.append(Idefics3ForConditionalGeneration)
+    from transformers.models.mistral3.modeling_mistral3 import Mistral3ForConditionalGeneration
+    forwards.append(Mistral3ForConditionalGeneration)
+    from transformers.models.mllama.modeling_mllama import MllamaForConditionalGeneration
+    forwards.append(MllamaForConditionalGeneration)
+    from transformers.models.mllama.modeling_mllama import MllamaForCausalLM
+    forwards.append(MllamaForCausalLM)
+    from transformers.models.llama4.modeling_llama4 import Llama4ForCausalLM
+    forwards.append(Llama4ForCausalLM)
+    from transformers.models.llama4.modeling_llama4 import Llama4ForConditionalGeneration
+    forwards.append(Llama4ForConditionalGeneration)
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+    forwards.append(Qwen3ForCausalLM)
+    from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+    forwards.append(Qwen2_5_VLForConditionalGeneration)
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3ForConditionalGeneration
+    forwards.append(Gemma3ForConditionalGeneration)
     forwards = [(f.__name__, inspect.getsource(f.forward),) for f in forwards]
     for name, forward in forwards:
-        print("=" * 30)
-        print(name)
-        print(apply_fused_lm_head(forward))
-        print("=" * 30)
+        # print("=" * 30)
+        # print(name)
+        forward = apply_fused_lm_head(forward)
+        if "NOT_RETURN_LOGITS" not in forward:
+            print(f"Failed patching fast CE forward for {name}")
+        if "loss = outputs.loss" in forward:
+            print(f"Failed patching fast CE forward for {name} since `loss = outputs.loss` exists")
+        # return apply_fused_lm_head(forward)
+        # print(apply_fused_lm_head(forward))
+        # print("=" * 30)
     pass
 pass
 
