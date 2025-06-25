@@ -291,17 +291,19 @@ class FastBaseModel:
             for model_type_arch in model_types:
                 if model_type_arch != "siglip": break
 
+        device_count = torch.xpu.device_count() if DEVICE_TYPE == "xpu" else torch.cuda.device_count()
+
         if DEVICE_TYPE == "cuda":
             statistics = \
             f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
-            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.cuda.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {device_count}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
             f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
             f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
             f' "-____-"     Free license: http://github.com/unslothai/unsloth'
         elif DEVICE_TYPE == "xpu":
             statistics = \
             f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
-            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.xpu.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {device_count}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
             f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. XPU Toolkit: {torch.version.xpu}. Triton: {triton_version}\n"\
             f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
             f' "-____-"     Free license: http://github.com/unslothai/unsloth'
