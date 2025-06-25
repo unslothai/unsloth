@@ -1682,17 +1682,27 @@ class FastLlamaModel:
             from importlib.metadata import version as importlib_version
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
             except: vllm_version = ""
+            num_gpus = torch.cuda.device_count()
+        elif DEVICE_TYPE == "xpu":
+            # TODO: After adding vLLM support for XPU, changed this
+            vllm_version = ""
+            num_gpus = torch.xpu.device_count()
+
+        if DEVICE_TYPE == "cuda":
+            from importlib.metadata import version as importlib_version
+            try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except: vllm_version = ""
 
             statistics = \
             f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"\
-            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.cuda.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {num_gpus}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
             f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
             f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
             f' "-____-"     Free license: http://github.com/unslothai/unsloth'
         elif DEVICE_TYPE == "xpu":
             statistics = \
             f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}\n"\
-            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.xpu.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {num_gpus}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
             f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. Intel Toolkit: {torch.version.xpu}. Triton: {triton_version}\n"\
             f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
             f' "-____-"     Free license: http://github.com/unslothai/unsloth'
