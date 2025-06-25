@@ -1130,9 +1130,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         # Output last hidden states without logits if asked
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
-                print("llama 1133 hidden_states", hidden_states.shape)
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
-                print("llama 1133 hidden_states", hidden_states.shape)
             return CausalLMOutputWithPast(
                 loss = None,
                 logits = hidden_states,
