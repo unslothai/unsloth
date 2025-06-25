@@ -1746,37 +1746,35 @@ class FastLlamaModel:
         if token is None: token = get_token()
         if model_patcher is None: model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
-        gpu_stats = torch.cuda.get_device_properties(0) if DEVICE_TYPE == "cuda" else torch.xpu.get_device_properties(0)
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         if DEVICE_TYPE == "cuda":
+            gpu_stats = torch.cuda.get_device_properties(0)
+            gpu_version = torch.version.cuda
+            gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
+            num_gpus = torch.cuda.device_count()
+
             from importlib.metadata import version as importlib_version
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
             except: vllm_version = ""
-            num_gpus = torch.cuda.device_count()
         elif DEVICE_TYPE == "xpu":
+            gpu_stats = torch.xpu.get_device_properties(0)
+            gpu_version = torch.version.xpu
+            num_gpus = torch.xpu.device_count()
+            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
+
             # TODO: After adding vLLM support for XPU, changed this
             vllm_version = ""
-            num_gpus = torch.xpu.device_count()
+        else:
+            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 
-        if DEVICE_TYPE == "cuda":
-            from importlib.metadata import version as importlib_version
-            try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except: vllm_version = ""
+        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
-            statistics = \
-            f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"\
-            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {num_gpus}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
-            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
-            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
-            f' "-____-"     Free license: http://github.com/unslothai/unsloth'
-        elif DEVICE_TYPE == "xpu":
-            statistics = \
-            f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}\n"\
-            f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {num_gpus}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
-            f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. Intel Toolkit: {torch.version.xpu}. Triton: {triton_version}\n"\
-            f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
-            f' "-____-"     Free license: http://github.com/unslothai/unsloth'
+        statistics = \
+        f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"\
+        f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {num_gpus}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+        f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. {gpu_stats_snippet} Triton: {triton_version}\n"\
+        f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
+        f' "-____-"     Free license: http://github.com/unslothai/unsloth'
 
         print(statistics)
 
