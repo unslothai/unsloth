@@ -261,7 +261,10 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+            print("input_ids Unsloth 264", input_ids.shape)
+            print("logits_to_keep Unsloth 264", logits_to_keep)
             hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
+            print("hidden_states Unsloth 264", hidden_states.shape)
             #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             return hidden_states
             # input_ids = input_ids[:, -logits_to_keep:]
@@ -315,8 +318,13 @@ def grpo_trainer_compute_loss(function_name, function):
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         _input_ids = input_ids
         _logits_to_keep = logits_to_keep
+        print("prompt_mask Unsloth 320", prompt_mask.shape)
+        print("completion_mask Unsloth 320", completion_mask.shape)
+        print("input_ids Unsloth 320", input_ids.shape)
+        print("logits_to_keep Unsloth 320", logits_to_keep)
 
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+        print("per_token_logps Unsloth 320", per_token_logps.shape)
 
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
@@ -324,26 +332,36 @@ def grpo_trainer_compute_loss(function_name, function):
         if self.beta != 0.0:
             with torch.inference_mode(), model.disable_adapter():
                 ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
+                print("ref_per_token_logps Unsloth 320", ref_per_token_logps.shape)
         else:
             ref_per_token_logps = None
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
         # x - x.detach() allows for preserving gradients from x
         advantages = inputs["advantages"]
+        print("advantages Unsloth 320", advantages.shape)
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         if "old_per_token_logps" in inputs.keys():
             old_hidden_states = inputs["old_per_token_logps"]
+            print("old_hidden_states Unsloth 320", old_hidden_states.shape)
         else:
             old_hidden_states = None
 
+        print("input_ids Unsloth 320", input_ids.shape)
+        print("logits_to_keep Unsloth 320", logits_to_keep)
         input_ids = input_ids[:, -logits_to_keep:]
+        print("input_ids Unsloth 320", input_ids.shape)
         if per_token_logps is not None:
 
             if ref_per_token_logps is not None:
+                print("ref_per_token_logps Unsloth 320", ref_per_token_logps.shape)
                 ref_per_token_logps = ref_per_token_logps[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-
+                print("ref_per_token_logps Unsloth 320", ref_per_token_logps.shape)
+            
+            print("per_token_logps Unsloth 320", per_token_logps.shape)
             per_token_logps = per_token_logps[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            print("per_token_logps Unsloth 320", per_token_logps.shape)
             
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 ref_per_token_logps,
