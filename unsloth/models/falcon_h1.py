@@ -508,13 +508,13 @@ def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconH1At
             )
             attention_hidden_states, present_key_value = attention_fast_forward_inference(
                 decoder_layer.self_attn,
-                hidden_states = X,
+                hidden_states = X * decoder_layer.attention_in_multiplier,
                 past_key_value = past_key_values[idx],
                 position_ids = position_ids,
                 attention_mask = attention_mask,
                 do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             )
-            attention_hidden_states = attention_hidden_states * decoder_layer.attention_in_multiplier
+            attention_hidden_states = attention_hidden_states * decoder_layer.attention_out_multiplier
             mamba_hidden_states = decoder_layer.mamba(
                 hidden_states=X,
                 cache_params=present_key_value,
@@ -652,7 +652,7 @@ class FastFalconH1Model(FastLlamaModel):
         FalconH1DecoderLayer   .forward = FalconH1DecoderLayer_fast_forward
         FalconH1Model          .forward = LlamaModel_fast_forward
         FalconH1ForCausalLM    .forward = CausalLM_fast_forward(_FalconH1_fast_forward_inference(FalconH1Attention_fast_forward_inference))
-        PeftModelForCausalLM.forward = PeftModelForCausalLM_fast_forward
+        PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(FalconH1ForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168

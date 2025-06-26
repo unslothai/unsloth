@@ -965,7 +965,6 @@ def LlamaModel_fast_forward(
         hidden_states = self.norm(hidden_states)
     elif IS_FALCON_H1:
         hidden_states = fast_rms_layernorm(self.final_layernorm, hidden_states, gemma = IS_GEMMA)
-        hidden_states = hidden_states * self.lm_head_multiplier
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
     pass
@@ -1138,6 +1137,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         bsz, q_len, hd = hidden_states.shape
         lm_head = self.lm_head.weight
         lm_head_device = lm_head.device
+
+        if self.config.model_type == "falcon_h1":
+            lm_head = lm_head * self.config.lm_head_multiplier
 
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
