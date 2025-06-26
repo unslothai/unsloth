@@ -324,7 +324,8 @@ def grpo_trainer_compute_loss(function_name, function):
         print("logits_to_keep Unsloth 320", logits_to_keep)
 
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep)
-        print("per_token_logps Unsloth 320", per_token_logps.shape)
+        if per_token_logps is not None:
+            print("per_token_logps Unsloth 320", per_token_logps.shape)
 
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
