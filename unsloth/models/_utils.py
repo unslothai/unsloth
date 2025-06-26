@@ -430,7 +430,7 @@ if DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
     pass
 elif DEVICE_TYPE == "xpu":
-    SUPPORTS_BFLOAT16=True
+    SUPPORTS_BFLOAT16 = True
 
 from transformers.models.llama.modeling_llama import logger
 
