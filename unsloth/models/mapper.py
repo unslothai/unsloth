@@ -879,6 +879,26 @@ __INT_TO_FLOAT_MAPPER = \
         "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506-bnb-4bit",
     ),
+    "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E4B-it",
+        "google/gemma-3n-E4B-it",
+        "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E2B-it",
+        "google/gemma-3n-E2B-it",
+        "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E4B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E4B",
+        "google/gemma-3n-E4B",
+        "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E2B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E2B",
+        "google/gemma-3n-E2B",
+        "unsloth/gemma-3n-E2B-unsloth-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
