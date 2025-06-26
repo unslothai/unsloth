@@ -56,7 +56,7 @@ SUPPORTS_LLAMA32   = transformers_version  > Version("4.45.0")
 SUPPORTS_GRANITE   = transformers_version >= Version("4.46.0")
 SUPPORTS_QWEN3     = transformers_version >= Version("4.50.3")
 SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
-SUPPORTS_GEMMA3N   = transformers_version >= Version("4.52.4")
+SUPPORTS_GEMMA3N   = transformers_version >= Version("4.53.0")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -544,6 +544,8 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "torch.float16;if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"
         elif "olmo-2" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "gemma-3n" in lowered_model_name and transformers_version < Version("4.53.0"):
+            raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
