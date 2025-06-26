@@ -248,10 +248,11 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer__get_per_token_logps(function_name, function):
-    if  function_name != "_get_per_token_logps": return function
+    if function_name != "_get_per_token_logps": return function
 
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, calc_logprob_flag = None):
-        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0' and not calc_logprob_flag:
+    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
+        if True: #os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             return None # Unsloth efficient GRPO
         # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
