@@ -352,10 +352,13 @@ def grpo_trainer_compute_loss(function_name, function):
         print("input_ids Unsloth 320", input_ids.shape)
 
         # Get logit softcapping and logit scale
-        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
+        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0) # Gemma
         if logit_softcapping is None: logit_softcapping = 0
-        logit_scale_multiply = getattr(model.config, "logit_scale", 0)
+        logit_scale_multiply = getattr(model.config, "logit_scale", 0) # Cohere
         if logit_scale_multiply is None: logit_scale_multiply = 0
+        logit_scale_divide = getattr(model.config, "logits_scaling", 0) # Granite
+        if logit_scale_divide is None: logit_scale_divide = 0
+
 
         if per_token_logps is not None:
 
@@ -384,6 +387,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 temperature = self.args.temperature,
                 logit_softcapping = logit_softcapping,
                 logit_scale_multiply = logit_scale_multiply,
+                logit_scale_divide = logit_scale_divide,
             )
         else:
             if hasattr(self.args, "loss_type"):
@@ -403,6 +407,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     temperature = self.args.temperature,
                     logit_softcapping = logit_softcapping,
                     logit_scale_multiply = logit_scale_multiply,
+                    logit_scale_divide = logit_scale_divide,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -417,6 +422,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     temperature = self.args.temperature,
                     logit_softcapping = logit_softcapping,
                     logit_scale_multiply = logit_scale_multiply,
+                    logit_scale_divide = logit_scale_divide,
                 )
 
         # Log the metrics
