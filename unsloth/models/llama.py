@@ -1131,6 +1131,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+                hidden_states.__is_hidden_state = True
             return CausalLMOutputWithPast(
                 loss = None,
                 logits = hidden_states,
