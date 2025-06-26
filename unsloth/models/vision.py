@@ -690,6 +690,8 @@ class FastBaseModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"): embeddings.training = False
         pass
+        # Must disable returning hidden states in the case for GRPO
+        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         return model
     pass
 
