@@ -61,6 +61,7 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 pass
+from unsloth import DEVICE_TYPE
 
 __all__ = [
     "FastBaseModel",
@@ -275,12 +276,28 @@ class FastBaseModel:
         pass
         if token is None: token = get_token()
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
-        gpu_stats = torch.cuda.get_device_properties(0)
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
-        from importlib.metadata import version as importlib_version
-        try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
-        except: vllm_version = ""
+        if DEVICE_TYPE == "cuda":
+            gpu_stats = torch.cuda.get_device_properties(0)
+            gpu_version = torch.version.cuda
+            gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
+            num_gpus = torch.cuda.device_count()
+
+            from importlib.metadata import version as importlib_version
+            try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except: vllm_version = ""
+        elif DEVICE_TYPE == "xpu":
+            gpu_stats = torch.xpu.get_device_properties(0)
+            gpu_version = torch.version.xpu
+            num_gpus = torch.xpu.device_count()
+            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
+
+            # TODO: After adding vLLM support for XPU, changed this
+            vllm_version = ""
+        else:
+            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
+
+        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
         model_type_arch = model_types[0]
         if model_type_arch == "siglip":
@@ -288,11 +305,12 @@ class FastBaseModel:
                 if model_type_arch != "siglip": break
 
         statistics = \
-           f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
-           f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {torch.cuda.device_count()}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
-           f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}. Triton: {triton_version}\n"\
-           f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
-           f' "-____-"     Free license: http://github.com/unslothai/unsloth'
+        f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
+        f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {num_gpus}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+        f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. {gpu_stats_snippet} Triton: {triton_version}\n"\
+        f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
+        f' "-____-"     Free license: http://github.com/unslothai/unsloth'
+        
         print(statistics)
 
         # Warn about fast transfers
@@ -500,7 +518,10 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            if DEVICE_TYPE == "cuda":
+                torch.cuda.empty_cache()
+            elif DEVICE_TYPE == "xpu":
+                torch.xpu.empty_cache()
         pass
         return model, tokenizer
     pass
@@ -566,7 +587,10 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            if DEVICE_TYPE == "cuda":
+                torch.cuda.empty_cache()
+            elif DEVICE_TYPE == "xpu":
+                torch.xpu.empty_cache()
         pass
         max_seq_length = model.max_seq_length
         lora_config = LoraConfig(
@@ -591,7 +615,10 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            if DEVICE_TYPE == "cuda":
+                torch.cuda.empty_cache()
+            elif DEVICE_TYPE == "xpu":
+                torch.xpu.empty_cache()
         pass
         patch_saving_functions(model, vision = True)
 
@@ -653,7 +680,10 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            if DEVICE_TYPE == "cuda":
+                torch.cuda.empty_cache()
+            elif DEVICE_TYPE == "xpu":
+                torch.xpu.empty_cache()
         pass
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
@@ -690,6 +720,8 @@ class FastBaseModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"): embeddings.training = False
         pass
+        # Must disable returning hidden states in the case for GRPO
+        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         return model
     pass
 
