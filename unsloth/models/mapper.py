@@ -882,22 +882,22 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit" : (
         "unsloth/gemma-3n-E4B-it",
         "google/gemma-3n-E4B-it",
-        "unsloth/gemma-3n-E4B-it-bnb-4bit",
+        "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit",
     ),
     "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit" : (
         "unsloth/gemma-3n-E2B-it",
         "google/gemma-3n-E2B-it",
-        "unsloth/gemma-3n-E2B-it-bnb-4bit",
+        "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit",
     ),
     "unsloth/gemma-3n-E4B-unsloth-bnb-4bit" : (
         "unsloth/gemma-3n-E4B",
         "google/gemma-3n-E4B",
-        "unsloth/gemma-3n-E4B-bnb-4bit",
+        "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
     ),
     "unsloth/gemma-3n-E2B-unsloth-bnb-4bit" : (
         "unsloth/gemma-3n-E2B",
         "google/gemma-3n-E2B",
-        "unsloth/gemma-3n-E2B-bnb-4bit",
+        "unsloth/gemma-3n-E2B-unsloth-bnb-4bit",
     ),
 }
 
