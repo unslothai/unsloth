@@ -729,7 +729,7 @@ class FastModel(FastBaseModel):
             )
         pass
         # Fix SDPA
-        if "gemma3n" in lowered_model_name:
+        if "gemma-3n" in lowered_model_name:
             supports_sdpa = False
         pass
 
