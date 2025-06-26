@@ -556,10 +556,10 @@ from unsloth import DEVICE_TYPE
 def is_big_gpu(index) -> bool:
 
     if DEVICE_TYPE == "xpu":
-        prop = torch.xpu.get_device_properties(index)
+        prop = DeviceProperties.create(torch.device("xpu", index) if type(index) is int else index)
         min_sms = 16
     else:
-        prop = torch.cuda.get_device_properties(index)
+        prop = DeviceProperties.create(torch.device("cuda", index) if type(index) is int else index)
         min_sms = 80
 
     avail_sms = prop.multi_processor_count
