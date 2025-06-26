@@ -342,11 +342,9 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-        if "old_per_token_logps" in inputs.keys():
-            old_hidden_states = inputs["old_per_token_logps"]
+        old_hidden_states = inputs.get("old_per_token_logps", None)
+        if old_hidden_states is not None:
             print("old_hidden_states Unsloth 320", old_hidden_states.shape)
-        else:
-            old_hidden_states = None
 
         print("input_ids Unsloth 320", input_ids.shape)
         print("logits_to_keep Unsloth 320", logits_to_keep)
