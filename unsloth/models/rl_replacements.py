@@ -172,40 +172,39 @@ def grpo_trainer__prepare_inputs(function_name, function):
     if  function_name != "_prepare_inputs": return function
 
     import re
-    # Try to find the function signature and insert after it
-    # This matches the function signature and any decorators/comments, then finds the first non-empty line after the signature
-    pattern = r"(def _prepare_inputs\s*\([^\)]*\)\s*(->\s*[^:]+)?\s*:\s*\n)"
+    # This matches the function signature, decorators and any comments immediately following
+    pattern = r"(\s*@profiling_decorator\s*\n\s*def _prepare_inputs\s*\([^\)]*\)\s*(->\s*[^:]+)?\s*:\s*\n(?:[ ]*#[^\n]*\n)*)"
+    
     match = re.search(pattern, function)
+    insert = (
+        "        if hasattr(self, 'llm'):\n"
+        "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+        "               self.llm.wake_up()\n"
+    )
     if match:
-        sig_end = match.end(1)
-        rest = function[sig_end:]
-        rest = re.sub(r"^[ \t]*self\.llm\.wake_up\(\)\s*\n", "", rest)
-        rest = re.sub(r"^[ \t]*torch\.cuda\.empty_cache\(\)\s*\n", "", rest)
-        rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
-        rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
-        insert = (
-            "        if hasattr(self, 'llm'):\n"
-            "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-            "               self.llm.wake_up()\n"
-        )
-        function = function[:sig_end] + insert +  rest
-    else:
-        pattern2 = r"(def _prepare_inputs\(.*?\):\n(?:[ ]+#[^\n]*\n)+)"
-        match2 = re.search(pattern2, function, flags=re.DOTALL)
-        if match2:
-            header_and_comments = match2.group(1)
-            rest = function[len(header_and_comments):]
-            rest = re.sub(r"^[ \t]*self\.llm\.wake_up\(\)\s*\n", "", rest)
-            rest = re.sub(r"^[ \t]*torch\.cuda\.empty_cache\(\)\s*\n", "", rest)
-            rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
-            rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
-            insert = (
-                "        if (hasattr(self, 'llm'):\n"
-                "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                "               self.llm.wake_up()\n"
-            )
-            function = header_and_comments + insert + rest
+        header_and_comments = match.group(1)
+        # Find where the code block starts after comments
+        code_start_index = match.end(1)
+        rest_of_function = function[code_start_index:]
 
+        # Remove any old wake_up call that might be at the start of the function body
+        rest_of_function = re.sub(
+            r"^\s*if hasattr\(self, 'llm'\):.*?self\.llm\.wake_up\(\).*?\n",
+            "",
+            rest_of_function,
+            flags=re.DOTALL | re.MULTILINE
+        )
+        
+        # We also need to remove the old wake up call from the beginning of the function
+        # since it's injected before the comments.
+        header_and_comments = re.sub(
+            r"(:\s*\n)\s*if hasattr\(self, 'llm'\):.*?self\.llm\.wake_up\(\).*?\n",
+            r"\1",
+            header_and_comments,
+            flags=re.DOTALL | re.MULTILINE
+        )
+
+        function = header_and_comments + insert + rest_of_function
     # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
@@ -222,7 +221,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
     sleep_and_cache = (
         "if hasattr(self, 'llm'):\n"
         "            if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-        "                       self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
+        "                self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
         "        "
     )
     if re.search(r"\n\s*return ", function):
@@ -248,10 +247,10 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 
 # Edit _get_per_token_logps to handle mixed precision
 def grpo_trainer__get_per_token_logps(function_name, function):
-    if  function_name != "_get_per_token_logps": return function
+    if function_name != "_get_per_token_logps": return function
 
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, calc_logprob_flag = None):
-        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0' and not calc_logprob_flag:
+    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
+        if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return None # Unsloth efficient GRPO
         # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
@@ -261,9 +260,13 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
-            #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            return hidden_states
+            logits = model(
+                input_ids = input_ids,
+                attention_mask = attention_mask,
+                logits_to_keep = logits_to_keep + 1,
+            ).logits
+            # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            return logits
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
@@ -332,19 +335,24 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-        if "old_per_token_logps" in inputs.keys():
-            old_hidden_states = inputs["old_per_token_logps"]
-        else:
-            old_hidden_states = None
-
+        old_hidden_states = inputs.get("old_per_token_logps", None)
         input_ids = input_ids[:, -logits_to_keep:]
+
+        # Get logit softcapping and logit scale
+        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0) # Gemma
+        if logit_softcapping is None: logit_softcapping = 0
+        logit_scale_multiply = getattr(model.config, "logit_scale", 0) # Cohere
+        if logit_scale_multiply is None: logit_scale_multiply = 0
+        logit_scale_divide = getattr(model.config, "logits_scaling", 0) # Granite
+        if logit_scale_divide is None: logit_scale_divide = 0
+
+
         if per_token_logps is not None:
 
             if ref_per_token_logps is not None:
                 ref_per_token_logps = ref_per_token_logps[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-
             per_token_logps = per_token_logps[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            
+
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
                 ref_per_token_logps,
                 per_token_logps,
@@ -359,16 +367,19 @@ def grpo_trainer_compute_loss(function_name, function):
                 max_completion_length = self.args.max_completion_length,
                 delta = self.args.delta,
                 temperature = self.args.temperature,
+                logit_softcapping = logit_softcapping,
+                logit_scale_multiply = logit_scale_multiply,
+                logit_scale_divide = logit_scale_divide,
             )
         else:
             if hasattr(self.args, "loss_type"):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
-                    self,
-                    _input_ids,
-                    logits_to_keep,
-                    completion_mask,
-                    advantages,
-                    old_hidden_states,
+                    trainer = self,
+                    input_ids = _input_ids,
+                    logits_to_keep = logits_to_keep,
+                    completion_mask = completion_mask,
+                    advantages = advantages,
+                    old_hidden_states = old_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
                     epsilon_low = self.epsilon_low,
@@ -376,26 +387,33 @@ def grpo_trainer_compute_loss(function_name, function):
                     max_completion_length = self.args.max_completion_length,
                     delta = self.args.delta,
                     temperature = self.args.temperature,
+                    logit_softcapping = logit_softcapping,
+                    logit_scale_multiply = logit_scale_multiply,
+                    logit_scale_divide = logit_scale_divide,
+                    attention_mask = attention_mask,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
-                    self,
-                    _input_ids,
-                    logits_to_keep,
-                    completion_mask,
-                    advantages,
-                    old_hidden_states,
+                    trainer = self,
+                    input_ids = _input_ids,
+                    logits_to_keep = logits_to_keep,
+                    completion_mask = completion_mask,
+                    advantages = advantages,
+                    old_hidden_states = old_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                     temperature = self.args.temperature,
+                    logit_softcapping = logit_softcapping,
+                    logit_scale_multiply = logit_scale_multiply,
+                    logit_scale_divide = logit_scale_divide,
+                    attention_mask = attention_mask,
                 )
-
+            pass
+        pass
         # Log the metrics
         # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
-
         # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
-
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
             self._metrics[mode]["completion_length"].append(completion_length.item())
