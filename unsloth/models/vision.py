@@ -722,6 +722,8 @@ class FastBaseModel:
         pass
         # Must disable returning hidden states in the case for GRPO
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
+        # Must enable returning logits
+        os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         return model
     pass
 
@@ -760,6 +762,8 @@ class FastBaseModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"): embeddings.training = True
         pass
+        # Can re-enable not returning logits
+        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
         return model
     pass
 pass
