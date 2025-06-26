@@ -48,14 +48,15 @@ import importlib.util
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
 transformers_version = Version(transformers_version)
-SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
-SUPPORTS_GEMMA   = transformers_version >= Version("4.38")
-SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
-SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
-SUPPORTS_LLAMA32 = transformers_version  > Version("4.45.0")
-SUPPORTS_GRANITE = transformers_version >= Version("4.46.0")
-SUPPORTS_QWEN3   = transformers_version >= Version("4.50.3")
+SUPPORTS_FOURBIT   = transformers_version >= Version("4.37")
+SUPPORTS_GEMMA     = transformers_version >= Version("4.38")
+SUPPORTS_GEMMA2    = transformers_version >= Version("4.42")
+SUPPORTS_LLAMA31   = transformers_version >= Version("4.43.2")
+SUPPORTS_LLAMA32   = transformers_version  > Version("4.45.0")
+SUPPORTS_GRANITE   = transformers_version >= Version("4.46.0")
+SUPPORTS_QWEN3     = transformers_version >= Version("4.50.3")
 SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
+SUPPORTS_GEMMA3N   = transformers_version >= Version("4.52.4")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -726,6 +727,10 @@ class FastModel(FastBaseModel):
                 trust_remote_code       = trust_remote_code,
                 unsloth_force_compile   = unsloth_force_compile,
             )
+        pass
+        # Fix SDPA
+        if "gemma3n" in lowered_model_name:
+            supports_sdpa = False
         pass
 
         # Check if this is local model since the tokenizer gets overwritten
