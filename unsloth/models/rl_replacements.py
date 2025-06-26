@@ -394,12 +394,12 @@ def grpo_trainer_compute_loss(function_name, function):
         else:
             if hasattr(self.args, "loss_type"):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
-                    self,
-                    _input_ids,
-                    logits_to_keep,
-                    completion_mask,
-                    advantages,
-                    old_hidden_states,
+                    trainer = self,
+                    input_ids = _input_ids,
+                    logits_to_keep = logits_to_keep,
+                    completion_mask = completion_mask,
+                    advantages = advantages,
+                    old_hidden_states = old_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
                     epsilon_low = self.epsilon_low,
@@ -410,21 +410,23 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_softcapping = logit_softcapping,
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
+                    attention_mask = attention_mask,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
-                    self,
-                    _input_ids,
-                    logits_to_keep,
-                    completion_mask,
-                    advantages,
-                    old_hidden_states,
+                    trainer = self,
+                    input_ids = _input_ids,
+                    logits_to_keep = logits_to_keep,
+                    completion_mask = completion_mask,
+                    advantages = advantages,
+                    old_hidden_states = old_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                     temperature = self.args.temperature,
                     logit_softcapping = logit_softcapping,
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
+                    attention_mask = attention_mask,
                 )
 
         # Log the metrics
