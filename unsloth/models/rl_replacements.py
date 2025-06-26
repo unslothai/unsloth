@@ -172,40 +172,39 @@ def grpo_trainer__prepare_inputs(function_name, function):
     if  function_name != "_prepare_inputs": return function
 
     import re
-    # Try to find the function signature and insert after it
-    # This matches the function signature and any decorators/comments, then finds the first non-empty line after the signature
-    pattern = r"(def _prepare_inputs\s*\([^\)]*\)\s*(->\s*[^:]+)?\s*:\s*\n)"
+    # This matches the function signature, decorators and any comments immediately following
+    pattern = r"(\s*@profiling_decorator\s*\n\s*def _prepare_inputs\s*\([^\)]*\)\s*(->\s*[^:]+)?\s*:\s*\n(?:[ ]*#[^\n]*\n)*)"
+    
     match = re.search(pattern, function)
+    insert = (
+        "        if hasattr(self, 'llm'):\n"
+        "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+        "               self.llm.wake_up()\n"
+    )
     if match:
-        sig_end = match.end(1)
-        rest = function[sig_end:]
-        rest = re.sub(r"^[ \t]*self\.llm\.wake_up\(\)\s*\n", "", rest)
-        rest = re.sub(r"^[ \t]*torch\.cuda\.empty_cache\(\)\s*\n", "", rest)
-        rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
-        rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
-        insert = (
-            "        if hasattr(self, 'llm'):\n"
-            "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-            "               self.llm.wake_up()\n"
-        )
-        function = function[:sig_end] + insert +  rest
-    else:
-        pattern2 = r"(def _prepare_inputs\(.*?\):\n(?:[ ]+#[^\n]*\n)+)"
-        match2 = re.search(pattern2, function, flags=re.DOTALL)
-        if match2:
-            header_and_comments = match2.group(1)
-            rest = function[len(header_and_comments):]
-            rest = re.sub(r"^[ \t]*self\.llm\.wake_up\(\)\s*\n", "", rest)
-            rest = re.sub(r"^[ \t]*torch\.cuda\.empty_cache\(\)\s*\n", "", rest)
-            rest = re.sub(r"^[ \t]*free, total = torch.cuda.mem_get_info\(\)\s*\n", "", rest)
-            rest = re.sub(r"^[ \t]*print\(f?\".*cuda.*\"\)\s*\n", "", rest)
-            insert = (
-                "        if (hasattr(self, 'llm'):\n"
-                "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                "               self.llm.wake_up()\n"
-            )
-            function = header_and_comments + insert + rest
+        header_and_comments = match.group(1)
+        # Find where the code block starts after comments
+        code_start_index = match.end(1)
+        rest_of_function = function[code_start_index:]
 
+        # Remove any old wake_up call that might be at the start of the function body
+        rest_of_function = re.sub(
+            r"^\s*if hasattr\(self, 'llm'\):.*?self\.llm\.wake_up\(\).*?\n",
+            "",
+            rest_of_function,
+            flags=re.DOTALL | re.MULTILINE
+        )
+        
+        # We also need to remove the old wake up call from the beginning of the function
+        # since it's injected before the comments.
+        header_and_comments = re.sub(
+            r"(:\s*\n)\s*if hasattr\(self, 'llm'\):.*?self\.llm\.wake_up\(\).*?\n",
+            r"\1",
+            header_and_comments,
+            flags=re.DOTALL | re.MULTILINE
+        )
+
+        function = header_and_comments + insert + rest_of_function
     # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
@@ -222,7 +221,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
     sleep_and_cache = (
         "if hasattr(self, 'llm'):\n"
         "            if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-        "                       self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
+        "                self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
         "        "
     )
     if re.search(r"\n\s*return ", function):
