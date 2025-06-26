@@ -352,6 +352,13 @@ def grpo_trainer_compute_loss(function_name, function):
         print("logits_to_keep Unsloth 320", logits_to_keep)
         input_ids = input_ids[:, -logits_to_keep:]
         print("input_ids Unsloth 320", input_ids.shape)
+
+        # Get logit softcapping and logit scale
+        logit_softcapping = getattr(model.config, "final_logit_softcapping", 0)
+        if logit_softcapping is None: logit_softcapping = 0
+        logit_scale_multiply = getattr(model.config, "logit_scale", 0)
+        if logit_scale_multiply is None: logit_scale_multiply = 0
+
         if per_token_logps is not None:
 
             if ref_per_token_logps is not None:
@@ -377,6 +384,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 max_completion_length = self.args.max_completion_length,
                 delta = self.args.delta,
                 temperature = self.args.temperature,
+                logit_softcapping = logit_softcapping,
+                logit_scale_multiply = logit_scale_multiply,
             )
         else:
             if hasattr(self.args, "loss_type"):
@@ -394,6 +403,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     max_completion_length = self.args.max_completion_length,
                     delta = self.args.delta,
                     temperature = self.args.temperature,
+                    logit_softcapping = logit_softcapping,
+                    logit_scale_multiply = logit_scale_multiply,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -406,6 +417,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     old_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                     temperature = self.args.temperature,
+                    logit_softcapping = logit_softcapping,
+                    logit_scale_multiply = logit_scale_multiply,
                 )
 
         # Log the metrics
