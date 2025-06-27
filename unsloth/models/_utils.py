@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.6.6"
+__version__ = "2025.6.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -153,6 +153,8 @@ from transformers.training_args import logger as transformers_training_args_logg
 transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 # torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
 transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
+# average_tokens_across_devices is set to True but it is invalid when world size is1
+transformers_training_args_logger.addFilter(HideLoggingMessage("average_tokens_across_devices"))
 del transformers_training_args_logger
 
 # No label_names provided for model class
