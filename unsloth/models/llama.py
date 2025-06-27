@@ -727,9 +727,6 @@ def LlamaModel_fast_forward(
     IS_GRANITE = self.config.model_type.startswith("granite")
     IS_FALCON_H1 = self.config.model_type.startswith("falcon_h1")
 
-    if IS_FALCON_H1:
-        inputs_embeds = inputs_embeds * self.config.embedding_multiplier
-
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
     if IS_GEMMA:
@@ -799,8 +796,8 @@ def LlamaModel_fast_forward(
     pass
 
     hidden_states = inputs_embeds
-    if IS_GRANITE: #granite has embedding multiplier
-        hidden_states = self.embedding_multiplier * hidden_states
+    if IS_GRANITE or IS_FALCON_H1: #granite has embedding multiplier
+        hidden_states = self.config.embedding_multiplier * hidden_states
 
     if past_key_values is None and self.training:
         use_cache = False
@@ -956,7 +953,7 @@ def LlamaModel_fast_forward(
     # Final layernorm
     if use_cache:
         if IS_FALCON_H1:
-                    hidden_states = fast_rms_layernorm_inference(self.final_layernorm, hidden_states)
+            hidden_states = fast_rms_layernorm_inference(self.final_layernorm, hidden_states)
         else:
             hidden_states = \
                 (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
@@ -1138,9 +1135,6 @@ def CausalLM_fast_forward(fast_forward_inference):
         lm_head = self.lm_head.weight
         lm_head_device = lm_head.device
 
-        if self.config.model_type == "falcon_h1":
-            lm_head = lm_head * self.config.lm_head_multiplier
-
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
         dtype = lm_head.dtype
@@ -1176,6 +1170,10 @@ def CausalLM_fast_forward(fast_forward_inference):
             if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
 
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
+
+                if self.config.model_type == "falcon_h1":
+                    hidden_states = hidden_states * self.config.lm_head_multiplier
+
                 loss = fused_linear_cross_entropy(
                     hidden_states      = hidden_states,
                     lm_weight          = lm_head,
@@ -1209,6 +1207,8 @@ def CausalLM_fast_forward(fast_forward_inference):
             # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
             # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
             logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
+        elif self.config.model_type == "falcon_h1":
+            logit_scaling = self.config.lm_head_multiplier
 
         if labels is not None:
             shift_logits = logits
