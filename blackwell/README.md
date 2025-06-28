@@ -97,7 +97,7 @@ The installation order is important, since we want the overwrite bundled depende
 
     Create a conda or mamba environment
     ```bash
-    conda create --name unsloth-blackwell python==3.12 -yet
+    conda create --name unsloth-blackwell python==3.12 -y
     ```
 
     Activate newly created environment
@@ -110,7 +110,7 @@ The installation order is important, since we want the overwrite bundled depende
     Make sure you are inside the activated conda/mamba environment. You should see the name of your environment as a prefix to your terminal shell like this your  `(unsloth-blackwell)user@machine:`
 
     ```bash
-    pip install -U vllm --torch-backend=cu128 --extra-index-url https://wheels.vllm.ai/nightly
+    pip install -U vllm --extra-index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://wheels.vllm.ai/nightly
     ```
 
     Note that we have to specify `cu128`, otherwise `vllm` will install `torch==2.7.0` but with `cu126`.
