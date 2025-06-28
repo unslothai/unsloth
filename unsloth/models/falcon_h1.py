@@ -30,8 +30,9 @@ try:
         FalconHybridMambaAttentionDynamicCache,
     )
 except:
+    from transformers import __version__ as transformers_version
     transformers_version = Version(transformers_version)
-    if not transformers_version >= Version("4.50.3"): #TODO: Update when transformers is updated
+    if not transformers_version >= Version("4.53.0"): #TODO: Update when transformers is updated
         raise ImportError(
             f"Unsloth: Your transformers version of {transformers_version} does not support FalconH1.\n"\
             f"The minimum required version is 4.50.3.\n"\
@@ -48,7 +49,10 @@ try:
         FalconH1Attention,
     )
 except:
-    FalconH1Attention   = FalconH1Attention
+    # if we are on a old version of transformers technically it should fail in the try except above
+    # but if somehow we make it here, we need to raise an error since FalconH1Attention is not available
+    # or renamed
+    raise ImportError("Unsloth: Could not import FalconH1Attention from transformers.models.falcon_h1.modeling_falcon_h1.")
 pass
 
 
