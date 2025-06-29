@@ -699,6 +699,8 @@ class FastBaseModel:
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"): m.gradient_checkpointing = False
+            # Transformers >= 4.53.0 need gradient_checkpointing_disable() instead of setting gradient_checkpointing to False
+            if hasattr(m, "gradient_checkpointing_disable"): m.gradient_checkpointing_disable()
             if hasattr(m, "training"): m.training = False
             # Pad tokenizer to the left
             if hasattr(m, "_saved_temp_tokenizer"): m._saved_temp_tokenizer.padding_side = "left"
@@ -741,6 +743,8 @@ class FastBaseModel:
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"): m.gradient_checkpointing = use_gradient_checkpointing
+            # Transformers >= 4.53.0 need gradient_checkpointing_enable() instead of setting gradient_checkpointing to True
+            if hasattr(m, "gradient_checkpointing_enable"): m.gradient_checkpointing_enable()
             if hasattr(m, "training"): m.training = True
             # Pad tokenizer to the left
             if hasattr(m, "_saved_temp_tokenizer"): m._saved_temp_tokenizer.padding_side = "right"
