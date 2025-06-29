@@ -26,7 +26,6 @@ from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
 from .qwen3   import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
-from .falcon_h1 import FastFalconH1Model
 from .cohere  import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
@@ -64,6 +63,9 @@ if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
+pass
+if SUPPORTS_FALCON_H1:
+    from .falcon_h1 import FastFalconH1Model
 pass
 import torch
 from ._utils import (
