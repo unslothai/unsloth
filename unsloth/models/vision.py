@@ -594,13 +594,15 @@ class FastBaseModel:
         pass
         max_seq_length = model.max_seq_length
         lora_config = LoraConfig(
-            r               = r,
-            lora_alpha      = lora_alpha,
-            target_modules  = target_modules,
-            lora_dropout    = lora_dropout,
-            bias            = bias,
-            task_type       = task_type,
-            use_rslora      = use_rslora,
+            r                 = r,
+            lora_alpha        = lora_alpha,
+            target_modules    = target_modules,
+            lora_dropout      = lora_dropout,
+            bias              = bias,
+            task_type         = task_type,
+            use_rslora        = use_rslora,
+            init_lora_weights = init_lora_weights,
+            loftq_config      = loftq_config,
         )
         model = prepare_model_for_kbit_training(
             model,
