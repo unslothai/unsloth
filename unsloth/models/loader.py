@@ -562,7 +562,9 @@ class FastModel(FastBaseModel):
         # Sesame
         elif "csm-1b" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "all;torch.float32;torch.float16;if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "all;torch.float32;torch.float16;"\
+                "if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16);"
         # Granite 4
         elif 'granite-4' in lowered_model_name:
             # granite-4 rms norms are stored as 16 bit, but we upcast
@@ -574,7 +576,11 @@ class FastModel(FastBaseModel):
         # Gemma 3N
         elif "gemma-3n" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "float16;torch.float16;torch.float16;if name.endswith(('.conv')): module.to(torch.float32)"
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "float16;torch.float16;torch.float16;"\
+                "if name.endswith(('.conv')): module.to(torch.float32);"\
+                "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
+            
             if transformers_version < Version("4.53.0"):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
         else:

@@ -350,8 +350,8 @@ class FastBaseModel:
         correct_dtype = None
         if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
             custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
-            assert custom_datatype.count(";") == 3
-            checker, _dtype, _bnb_compute_dtype, _custom_datatype = custom_datatype.split(";", 3)
+            assert custom_datatype.count(";") >= 4
+            checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code = custom_datatype.split(";", 4)
 
             # Allow custom dtypes on all runs
             allow_all_runs = (checker == "all")
@@ -363,6 +363,9 @@ class FastBaseModel:
                 bnb_compute_dtype = eval(_bnb_compute_dtype)
                 correct_dtype = bnb_compute_dtype
                 custom_datatype = _custom_datatype
+                # Execute code as well
+                print(execute_code)
+                exec(execute_code)
             pass
         pass
 
