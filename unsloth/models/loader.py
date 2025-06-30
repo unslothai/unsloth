@@ -578,7 +578,7 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                 "float16;torch.float16;torch.float16;"\
-                "if name.endswith(('.conv')): module.to(torch.float32);"\
+                "if name.endswith(('.conv')): module;"\
                 "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
             
             if transformers_version < Version("4.53.0"):
