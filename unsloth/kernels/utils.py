@@ -80,7 +80,7 @@ get_ptr = bnb.functional.get_ptr
 # INTEL GPU specific logic
 if DEVICE_TYPE == "xpu":
     # TODO: Changed here after adding XPU BNB support
-    HAS_XPU_STREAM = False
+    HAS_XPU_STREAM = True
 else:
     # NVIDIA-GPU logic here as default
     # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
