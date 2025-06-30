@@ -76,6 +76,7 @@ pass
 
 HAS_CUDA_STREAM = False
 import bitsandbytes as bnb
+get_ptr = bnb.functional.get_ptr
 # INTEL GPU specific logic
 if DEVICE_TYPE == "xpu":
     # TODO: Changed here after adding XPU BNB support
