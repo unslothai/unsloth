@@ -78,10 +78,6 @@ class SyntheticDataKit:
             use_bitsandbytes       = False,
             **kwargs,
         )
-
-
-
-
         if "dtype" in engine_args:
             dtype_val = engine_args["dtype"]
             # Convert torch.bfloat16, torch.float16, etc. to valid CLI string
@@ -93,8 +89,6 @@ class SyntheticDataKit:
             valid_dtypes = {"auto", "bfloat16", "float", "float16", "float32", "half"}
             if engine_args["dtype"] not in valid_dtypes:
                 engine_args["dtype"] = "auto"
-
-        
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
         if "compilation_config" in engine_args:
