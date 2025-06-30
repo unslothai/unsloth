@@ -31,10 +31,7 @@ jobs:
           # A label to apply to stale issues.
           stale-issue-label: 'inactive'
 
-          # Set to true to only process issues and ignore pull requests.
-          only-issues: true
-
           # The number of operations to perform per run to avoid rate limiting.
-          operations-per-run: 30
+          operations-per-run: 100
 
           enable-statistics: false
