@@ -199,6 +199,7 @@ class RocmExtraInstallCommand(install):
                 subprocess.check_call(['FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE"', 'python', 'setup.py', 'install', ], shell=True)
                 os.chdir('..')
 
+        # Comment out the following if you need xformers installed.
         # # only install xformers in Instinct GPUs
         # if importlib.util.find_spec("xformers") is None:
         #     print("Installing xformers...")
