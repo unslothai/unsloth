@@ -2,7 +2,7 @@ name: 'Inactive Issue Pinger'
 
 on:
   schedule:
-    - cron: '30 0 * * *' # Runs at 12:30 UTC every day
+    - cron: '45 0 * * *' # Runs at 12:30 UTC every day
 
 jobs:
   stale:
@@ -11,7 +11,7 @@ jobs:
       issues: write
 
     steps:
-      - uses: actions/stale@v9.1.0
+      - uses: actions/stale@v9
         with:
           # The message to post on stale issues.
           # This message will ping the issue author.
