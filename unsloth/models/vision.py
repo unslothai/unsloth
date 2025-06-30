@@ -612,6 +612,8 @@ class FastBaseModel:
                 torch.xpu.empty_cache()
         pass
         max_seq_length = model.max_seq_length
+        # if we pass loftq_config = None we will get an error
+        loftq_config = validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model)
         lora_config = LoraConfig(
             r                 = r,
             lora_alpha        = lora_alpha,
