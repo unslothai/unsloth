@@ -340,7 +340,7 @@ pass
 
 
 torch_nn_functional_silu = torch.nn.functional.silu
-def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None):
+def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None, gate_multiplier = None, down_multiplier = None):
     # gate = self.gate_proj(X)
     # up   = self.up_proj(X)
     bsz, _, hd = X.shape
@@ -348,12 +348,21 @@ def fast_swiglu_inference(self, X, temp_gate = None, temp_up = None):
     # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
 
     gate = fast_linear_forward(self.gate_proj, X, out = temp_gate)
+    
+    if gate_multiplier is not None:
+        gate *= gate_multiplier
+    
     up   = fast_linear_forward(self.  up_proj, X, out = temp_up)
+
     gate = torch_nn_functional_silu(gate, inplace = True)
     gate *= up
 
     # X = self.down_proj(gate)
     down = fast_linear_forward(self.down_proj, gate, out = up[:,:,:hd])
+
+    if down_multiplier is not None:
+        down *= down_multiplier
+
     return down
 pass
 
@@ -716,6 +725,7 @@ def LlamaModel_fast_forward(
     IS_GEMMA2  = self.config.model_type.startswith("gemma2")
     IS_COHERE  = self.config.model_type.startswith("cohere")
     IS_GRANITE = self.config.model_type.startswith("granite")
+    IS_FALCON_H1 = self.config.model_type.startswith("falcon_h1")
 
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
@@ -786,8 +796,8 @@ def LlamaModel_fast_forward(
     pass
 
     hidden_states = inputs_embeds
-    if IS_GRANITE: #granite has embedding multiplier
-        hidden_states = self.embedding_multiplier * hidden_states
+    if IS_GRANITE or IS_FALCON_H1: #granite has embedding multiplier
+        hidden_states = self.config.embedding_multiplier * hidden_states
 
     if past_key_values is None and self.training:
         use_cache = False
@@ -899,12 +909,7 @@ def LlamaModel_fast_forward(
                 mask = self. GA_mask if use_static_mask else dynamic_GA_mask
         pass
 
-        try:
-            is_gradient_checkpointing_layer = isinstance(decoder_layer, GradientCheckpointingLayer)
-        except:
-            is_gradient_checkpointing_layer = False
-
-        if gradient_checkpointing and not is_gradient_checkpointing_layer:
+        if gradient_checkpointing and not isinstance(decoder_layer, GradientCheckpointingLayer):
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
@@ -942,11 +947,16 @@ def LlamaModel_fast_forward(
 
     # Final layernorm
     if use_cache:
-        hidden_states = \
-            (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
-            (self.norm, hidden_states)
+        if IS_FALCON_H1:
+            hidden_states = fast_rms_layernorm_inference(self.final_layernorm, hidden_states)
+        else:
+            hidden_states = \
+                (fast_rms_layernorm_inference_gemma if IS_GEMMA else fast_rms_layernorm_inference)\
+                (self.norm, hidden_states)
     elif IS_COHERE:
         hidden_states = self.norm(hidden_states)
+    elif IS_FALCON_H1:
+        hidden_states = fast_rms_layernorm(self.final_layernorm, hidden_states, gemma = IS_GEMMA)
     else:
         hidden_states = fast_rms_layernorm(self.norm, hidden_states, gemma = IS_GEMMA)
     pass
@@ -1155,6 +1165,10 @@ def CausalLM_fast_forward(fast_forward_inference):
             if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
 
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
+
+                if self.config.model_type == "falcon_h1":
+                    hidden_states = hidden_states * self.config.lm_head_multiplier
+
                 loss = fused_linear_cross_entropy(
                     hidden_states      = hidden_states,
                     lm_weight          = lm_head,
@@ -1188,6 +1202,8 @@ def CausalLM_fast_forward(fast_forward_inference):
             # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
             # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
             logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
+        elif self.config.model_type == "falcon_h1":
+            logit_scaling = self.config.lm_head_multiplier
 
         if labels is not None:
             shift_logits = logits
@@ -1814,6 +1830,8 @@ class FastLlamaModel:
 
         # Check if RoPE Scaling is even allowed
         model_function = MODEL_FOR_CAUSAL_LM_MAPPING[model_config.__class__]
+        IS_FALCON_H1 = model_config.model_type.startswith("falcon_h1")
+
         has_rope_scaling = False
         try:
             with open(inspect.getfile(model_function), "r") as file:
@@ -1856,12 +1874,16 @@ class FastLlamaModel:
 
         bnb_config = None
         if load_in_4bit:
+            llm_int8_skip_modules =  SKIP_QUANTIZATION_MODULES.copy()
+            if IS_FALCON_H1:
+                # we cannot quantize out_proj layer due to mamba kernels: https://github.com/tiiuae/Falcon-H1/issues/13#issuecomment-2918671274
+                llm_int8_skip_modules.append("out_proj")
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit              = True,
                 bnb_4bit_use_double_quant = True,
                 bnb_4bit_quant_type       = "nf4",
                 bnb_4bit_compute_dtype    = dtype,
-                llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
+                llm_int8_skip_modules     = llm_int8_skip_modules,
             )
         pass
 
@@ -1992,7 +2014,7 @@ class FastLlamaModel:
         f"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\n"\\
         f"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size:,}\\n"\\
-        f' "-____-"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,}/{get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_param_count(model)*100:.2f}% trained)'
+        f' "-____-"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,} of {get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_param_count(model)*100:.2f}% trained)'
         logger.warning(debug_info)
         import gc
         for _ in range(3):
@@ -2607,6 +2629,7 @@ class FastLlamaModel:
         elif model_type == "cohere":  apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "granite": apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "falcon_h1":   apply_lora_mlp = apply_lora_mlp_swiglu
         elif model_type == "qwen3moe":   apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
@@ -2814,6 +2837,12 @@ class FastLlamaModel:
             m = m.model
         _for_inference(m)
 
+        # Since transformers 4.53, must turn off explicitly
+        for module in model.modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = False
+        pass
+
         # Also disable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
@@ -2851,6 +2880,12 @@ class FastLlamaModel:
             _for_training(m)
             m = m.model
         _for_training(m)
+
+        # Since transformers 4.53, must turn on explicitly
+        for module in model.modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = use_gradient_checkpointing
+        pass
 
         # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
