@@ -18,7 +18,7 @@ jobs:
           # Note: The stale bot action does not currently support a direct placeholder for the last commenter.
           # As a workaround, this message encourages any participant to reply.
           stale-issue-message: >
-            @${{ github.event.issue.user.login }}, is this issue still important to you?
+            Is this issue still important to you?
             Apologies in advance we might have missed this issue as well.
             For faster response times, please post on our Reddit server - https://www.reddit.com/r/unsloth or our Discord - https://discord.com/invite/unsloth 
 
@@ -32,6 +32,6 @@ jobs:
           stale-issue-label: 'inactive'
 
           # The number of operations to perform per run to avoid rate limiting.
-          operations-per-run: 100
+          operations-per-run: 500
 
           enable-statistics: false
