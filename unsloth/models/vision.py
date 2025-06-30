@@ -435,8 +435,20 @@ class FastBaseModel:
 
         # Edit data-types
         if custom_datatype is not None:
-            for name, module in model.named_modules():
+            for jj, (name, module) in enumerate(model.named_modules()):
                 exec(custom_datatype)
+                if jj % 10 == 0:
+                    gc.collect()
+                    if DEVICE_TYPE == "cuda":  torch.cuda.empty_cache()
+                    elif DEVICE_TYPE == "xpu": torch.xpu.empty_cache()
+                pass
+            pass
+            # Clear deleted GPU items
+            for _ in range(3):
+                gc.collect()
+                if DEVICE_TYPE == "cuda":  torch.cuda.empty_cache()
+                elif DEVICE_TYPE == "xpu": torch.xpu.empty_cache()
+            pass
         pass
 
         # Counteract saved tokenizers
