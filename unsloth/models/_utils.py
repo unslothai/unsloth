@@ -48,6 +48,8 @@ __all__ = [
     "patch_regional_compilation",
     "patch_layernorm",
     "patch_torch_compile",
+    "general_reorder_cache",
+    "patch_model_for_beam_search",
     "patch_model_and_tokenizer",
 
     "patch_unsloth_gradient_checkpointing",
@@ -1307,3 +1309,60 @@ if USE_MODELSCOPE:
         raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
     pass
 pass
+
+
+def general_reorder_cache(past_key_values, beam_idx):
+    """
+    General implementation of _reorder_cache for beam search support.
+    This function is used to re-order the `past_key_values` cache if
+    [`~PreTrainedModel.beam_search`] or [`~PreTrainedModel.beam_sample`] is called.
+    This is required to match `past_key_values` with the correct beam_idx at every generation step.
+    
+    This implementation works for most transformer models that use standard
+    key-value cache format. It's based on the implementation from models like
+    GPT2, OPT, and others in the transformers library.
+    """
+    # Handle the case where past_key_values might not be a simple tuple
+    # (though with cache_implementation="dynamic" it should be handled differently)
+    if past_key_values is None:
+        return past_key_values
+        
+    reordered_past = ()
+    for layer_past in past_key_values:
+        reordered_past += (
+            tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
+        )
+    return reordered_past
+
+
+def patch_model_for_beam_search(model):
+    """
+    Patches a model instance to support beam search by adding the _reorder_cache method.
+    This works for both base models and PEFT wrapped models.
+    
+    Why this is needed:
+    - Newer transformer models (Llama, Gemma, Mistral) don't implement _reorder_cache
+      because they rely on the new Cache classes
+    - However, beam search might still use the legacy cache format internally
+    - We can't modify the transformers library, so we patch the models at runtime
+    - This implementation is based on working models like GPT2 and OPT
+    """
+    import types
+    
+    
+    # Patch the model instance
+    if not hasattr(model, '_reorder_cache'):
+        model._reorder_cache = types.MethodType(general_reorder_cache, model)
+    
+    # Also patch base_model if it exists (for PEFT models)
+    if hasattr(model, 'base_model'):
+        if not hasattr(model.base_model, '_reorder_cache'):
+            model.base_model._reorder_cache = types.MethodType(general_reorder_cache, model.base_model)
+            
+        # For PEFT models, also patch the actual underlying model
+        if hasattr(model.base_model, 'model'):
+            actual_model = model.base_model.model
+            if not hasattr(actual_model, '_reorder_cache'):
+                actual_model._reorder_cache = types.MethodType(general_reorder_cache, actual_model)
+    
+    return model

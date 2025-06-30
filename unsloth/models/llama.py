@@ -20,6 +20,7 @@ from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__
+from ._utils import patch_model_for_beam_search
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
@@ -1681,6 +1682,9 @@ def unsloth_fast_generate(
 pass
 
 
+# Moved to _utils.py as general_reorder_cache for reuse across all models
+
+
 class FastLlamaModel:
 
     @staticmethod
@@ -1705,6 +1709,17 @@ class FastLlamaModel:
         LlamaForCausalLM    .forward = CausalLM_fast_forward(LlamaModel_fast_forward_inference)
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
+        
+        # Fix beam search for model classes - use the general implementation
+        from ._utils import general_reorder_cache
+        
+        # Patch the actual model class with a static method
+        if not hasattr(LlamaForCausalLM, '_reorder_cache'):
+            LlamaForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
+        
+        # Also patch PeftModelForCausalLM to support beam search
+        if not hasattr(PeftModelForCausalLM, '_reorder_cache'):
+            PeftModelForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
@@ -1714,6 +1729,11 @@ class FastLlamaModel:
         import transformers.models.llama.modeling_llama
         transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
         transformers.models.llama.modeling_llama.LlamaLinearScalingRotaryEmbedding = LlamaLinearScalingRotaryEmbedding
+        
+        # CRITICAL: Also patch the LlamaForCausalLM in the transformers module itself!
+        # The error message shows it's looking in transformers.models.llama.modeling_llama
+        # Force patch even if it exists - it might be a wrong/default implementation
+        transformers.models.llama.modeling_llama.LlamaForCausalLM._reorder_cache = staticmethod(general_reorder_cache)
         return
     pass
 
@@ -2130,6 +2150,9 @@ class FastLlamaModel:
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
         pass
+        
+        # Fix beam search by patching the model instance
+        model = patch_model_for_beam_search(model)
         return model, tokenizer
     pass
 
@@ -2602,6 +2625,10 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        
+        # Fix beam search by patching the PEFT model instance
+        model = patch_model_for_beam_search(model)
+        
         return model
     pass
 
@@ -2819,6 +2846,10 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        
+        # Fix beam search by patching the PEFT model instance
+        model = patch_model_for_beam_search(model)
+        
         return model
     pass
 
