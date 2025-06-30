@@ -909,12 +909,7 @@ def LlamaModel_fast_forward(
                 mask = self. GA_mask if use_static_mask else dynamic_GA_mask
         pass
 
-        try:
-            is_gradient_checkpointing_layer = isinstance(decoder_layer, GradientCheckpointingLayer)
-        except:
-            is_gradient_checkpointing_layer = False
-
-        if gradient_checkpointing and not is_gradient_checkpointing_layer:
+        if gradient_checkpointing and not isinstance(decoder_layer, GradientCheckpointingLayer):
             def create_custom_forward(module):
                 def custom_forward(*inputs):
                     return module(*inputs, past_key_value, output_attentions, padding_mask = padding_mask, position_embeddings = position_embeddings)
@@ -2019,7 +2014,7 @@ class FastLlamaModel:
         f"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\n"\\
         f"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\n"\\
         f"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size:,}\\n"\\
-        f' "-____-"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,}/{get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_param_count(model)*100:.2f}% trained)'
+        f' "-____-"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,} of {get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_param_count(model)*100:.2f}% trained)'
         logger.warning(debug_info)
         import gc
         for _ in range(3):
@@ -2842,6 +2837,12 @@ class FastLlamaModel:
             m = m.model
         _for_inference(m)
 
+        # Since transformers 4.53, must turn off explicitly
+        for module in model.modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = False
+        pass
+
         # Also disable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
@@ -2879,6 +2880,12 @@ class FastLlamaModel:
             _for_training(m)
             m = m.model
         _for_training(m)
+
+        # Since transformers 4.53, must turn on explicitly
+        for module in model.modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module.gradient_checkpointing = use_gradient_checkpointing
+        pass
 
         # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
