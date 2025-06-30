@@ -352,11 +352,20 @@ class FastBaseModel:
         correct_dtype = None
         if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
             custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
-            assert custom_datatype.count(";") == 1
-            bnb_compute_dtype, custom_datatype = custom_datatype.split(";", 1)
-            dtype = torch.float32
-            bnb_compute_dtype = eval(bnb_compute_dtype)
-            correct_dtype = bnb_compute_dtype
+            assert custom_datatype.count(";") == 3
+            checker, _dtype, _bnb_compute_dtype, _custom_datatype = custom_datatype.split(";", 3)
+
+            # Allow custom dtypes on all runs
+            allow_all_runs = (checker == "all")
+            # Allow only on float16 datatypes
+            allow_float16_runs = (checker == "float16" and dtype == torch.float16)
+
+            if allow_all_runs or allow_float16_runs:
+                dtype = eval(_dtype)
+                bnb_compute_dtype = eval(_bnb_compute_dtype)
+                correct_dtype = bnb_compute_dtype
+                custom_datatype = _custom_datatype
+            pass
         pass
 
         # Stop SDPA for some archs like Pixtral / Mistral3

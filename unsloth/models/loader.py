@@ -557,7 +557,7 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
         elif "csm-1b" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "torch.float16;if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "all;torch.float32;torch.float16;if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"
         elif 'granite-4' in lowered_model_name:
             # granite-4 rms norms are stored as 16 bit, but we upcast
             os.environ["UNSLOTH_UPCAST_LAYERNORM"] = "1"
@@ -566,6 +566,7 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
         elif "gemma-3n" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            s.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "float16;torch.float16;torch.float16;if name.endswith(('.conv')): module.to(torch.float32)"
             if transformers_version < Version("4.53.0"):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
         else:
