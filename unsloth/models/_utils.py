@@ -373,8 +373,7 @@ pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-if DEVICE_TYPE == "cuda":
-    import bitsandbytes as bnb
+import bitsandbytes as bnb
 
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
