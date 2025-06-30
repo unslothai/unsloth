@@ -2,7 +2,7 @@ name: 'Inactive Issue Pinger'
 
 on:
   schedule:
-    - cron: '30 5 * * *' # Runs at 05:30 UTC every day
+    - cron: '30 0 * * *' # Runs at 12:30 UTC every day
 
 jobs:
   stale:
