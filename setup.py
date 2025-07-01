@@ -25,7 +25,6 @@ from setuptools.command.install import install
 ROOT_DIR = Path(__file__).parent
 UNSLOTH_TARGET_DEVICE = os.environ.get("UNSLOTH_TARGET_DEVICE", "cuda")
 IS_COLAB = "COLAB_" not in "".join(os.environ.keys())
-UNSLOTH_VERSION = load_module_from_path('ver', os.path.join(ROOT_DIR, 'unsloth', 'version.py'))
 
 # Try importing torch
 HAS_TORCH = False
@@ -55,6 +54,7 @@ def load_module_from_path(module_name, path):
     spec.loader.exec_module(module)
     return module
 pass
+ver = load_module_from_path('ver', os.path.join(ROOT_DIR, 'unsloth', 'version.py'))
 
 
 def get_nvcc_cuda_version():
@@ -103,7 +103,7 @@ pass
 
 
 def get_unsloth_version():
-    version = UNSLOTH_VERSION.__version__
+    version = ver.__version__
 
     if version is None:
         raise RuntimeError("unsloth version not found")
