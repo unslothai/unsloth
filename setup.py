@@ -26,6 +26,9 @@ ROOT_DIR = Path(__file__).parent
 UNSLOTH_TARGET_DEVICE = os.environ.get("UNSLOTH_TARGET_DEVICE", "cuda")
 IS_COLAB = "COLAB_" not in "".join(os.environ.keys())
 
+import torch
+from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
+
 # Try importing torch
 HAS_TORCH = False
 HAS_CUDA  = True
