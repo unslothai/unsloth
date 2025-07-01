@@ -50,6 +50,10 @@ def _is_hip() -> bool:
             or UNSLOTH_TARGET_DEVICE == "rocm") and torch.version.hip is not None
 
 
+def _is_xpu() -> bool:
+    return (UNSLOTH_TARGET_DEVICE == "xpu")
+
+
 def get_nvcc_cuda_version() -> Version:
     """Get the CUDA version from nvcc.
 
@@ -92,6 +96,23 @@ def get_rocm_version():
         return None
 
 
+def get_sycl_version():
+    # Guess 1: user install icpx from Intel oneAPI
+    icpx_path = shutil.which('icpx')
+    if icpx_path is not None:
+        match = re.search(r'(\d{4})\.(\d{2}).(\d{2})', icpx_path)
+        if match:
+            year = match.group(1)  # Year
+            month = match.group(2) # month
+            day = match.group(3)   # day
+            sycl_version = f"{year}{version}{day}"  # day only for format
+    else:
+    # Guess 2: depends on torch.version.xpu
+        sycl_version = torch.version.xpu or "20250101"  # dummy version
+
+    return sycl_version
+
+
 def get_unsloth_version() -> str:
     version = ver.__version__
 
@@ -111,6 +132,9 @@ def get_unsloth_version() -> str:
         rocm_version = get_rocm_version() or torch.version.hip
         if rocm_version:
             version += f"{sep}rocm{rocm_version.replace('.', '')[:3]}"
+    elif _is_xpu():
+        sycl_version = torch.version.xpu or get_sycl_version()
+        version += f"{sep}sycl{sycl_version.replace('.', '')}"
     else:
         raise RuntimeError("Unknown runtime environment")
 
@@ -136,6 +160,8 @@ def get_requirements() -> list[str]:
         requirements = _read_requirements("cuda.txt")
     elif _is_hip():
         requirements = _read_requirements("rocm.txt")
+    elif _is_xpu():
+        requirements = _read_requirements("xpu.txt")
     else:
         requirements = _read_requirements("common.txt")
         raise ValueError(

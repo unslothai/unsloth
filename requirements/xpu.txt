@@ -1,9 +1,4 @@
 # Common dependencies
 -r common.txt
---extra-index-url https://download.pytorch.org/whl/xpu
 
-torch-xpu==2.7.0
-torchvision==0.22.0
-torchaudio==2.7.0
-
-pytorch-triton-xpu==3.3.0
+# currently xpu will install by using extras_require within setup.py
