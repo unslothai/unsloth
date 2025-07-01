@@ -134,7 +134,7 @@ def get_unsloth_version() -> str:
             version += f"{sep}rocm{rocm_version.replace('.', '')[:3]}"
     elif _is_xpu():
         sycl_version = torch.version.xpu or get_sycl_version()
-        version += f"{sep}sycl{sycl_version.replace('.', '')}"
+        version += f"{sep}sycl{sycl_version}"
     else:
         raise RuntimeError("Unknown runtime environment")
 
