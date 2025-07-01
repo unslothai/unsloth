@@ -1,7 +1,0 @@
-# Common dependencies
--r common.txt
-
-torch
-torchaudio
-torchvision
-xformers
