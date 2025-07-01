@@ -38,7 +38,8 @@ if importlib.util.find_spec("torch") is not None:
         HAS_TORCH = True
         HAS_CUDA  = (torch.version.cuda is not None)
         HAS_HIP   = (torch.version. hip is not None)
-
+        print(f"Unsloth: Imported torch with CUDA_HOME = {str(CUDA_HOME)}.")
+        print(f"Unsloth: Imported torch with ROCM_HOME = {str(ROCM_HOME)}.")
     except Exception as e:
         print(f"Unsloth: Importing torch failed with error = {str(e)}.")
         HAS_TORCH = False
