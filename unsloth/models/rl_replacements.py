@@ -363,9 +363,19 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             if self.use_vision : 
-               hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, pixel_values=pixel_values, image_grid_thw=image_grid_thw, logits_to_keep=logits_to_keep + 1).logits
+               hidden_states = model(
+                    input_ids=input_ids, 
+                    attention_mask=attention_mask, 
+                    pixel_values=pixel_values, 
+                    image_grid_thw=image_grid_thw, 
+                    logits_to_keep=logits_to_keep + 1
+                    ).logits
             else:
-                hidden_states = model(input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1).logits
+                hidden_states = model(
+                    input_ids=input_ids, 
+                    attention_mask=attention_mask, 
+                    logits_to_keep=logits_to_keep + 1
+                    ).logits
             #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
                         
             if hidden_states.size(1) != logits_to_keep+1  : # Some models like Qwen VL don't have logits_to_keep parameter so you need to trim the output manually
@@ -416,23 +426,23 @@ def grpo_trainer_compute_loss(function_name, function):
 
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
-        pixel_values,image_grid_thw = inputs.get("pixel_values", None), inputs.get("image_grid_thw", None)
+        pixel_values, image_grid_thw = inputs.get("pixel_values", None), inputs.get("image_grid_thw", None)
+        
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         bsz, qlen = input_ids.shape
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         # attention_mask = None
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         _input_ids = input_ids
-        _logits_to_keep = logits_to_keep
-        
-        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask,pixel_values,image_grid_thw, logits_to_keep)
+        _logits_to_keep = logits_to_keep  
+        per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, pixel_values, image_grid_thw, logits_to_keep)
 
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
         # https://github.com/huggingface/trl/blob/05bc43e960396581e458195b8388efe6b82cae1f/trl/trainer/grpo_trainer.py#L1328
         if self.beta != 0.0:
             with torch.inference_mode(), model.disable_adapter():
-                ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask,pixel_values,image_grid_thw, logits_to_keep)
+                ref_per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, pixel_values, image_grid_thw, logits_to_keep)
         else:
             ref_per_token_logps = None
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
