@@ -1,7 +1,0 @@
-cmake>=3.26
-ninja
-packaging>=24.2
-setuptools>=77.0.3,<80.0.0
-setuptools-scm>=8.0
-wheel
-jinja2
