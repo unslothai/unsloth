@@ -553,8 +553,6 @@ UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", 
 import functools
 from torch._inductor.runtime.hints import DeviceProperties
 
-from unsloth import DEVICE_TYPE
-
 @functools.lru_cache(None)
 def is_big_gpu(index) -> bool:
 
