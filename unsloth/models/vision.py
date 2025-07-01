@@ -440,12 +440,12 @@ class FastBaseModel:
             for jj, (name, module) in enumerate(model.named_modules()):
                 exec(custom_datatype)
             pass
-            # Clear deleted GPU items
-            for _ in range(3):
-                gc.collect()
-                if DEVICE_TYPE == "cuda":  torch.cuda.empty_cache()
-                elif DEVICE_TYPE == "xpu": torch.xpu.empty_cache()
-            pass
+        pass
+        # Clear deleted GPU items
+        for _ in range(3):
+            gc.collect()
+            if DEVICE_TYPE == "cuda":  torch.cuda.empty_cache()
+            elif DEVICE_TYPE == "xpu": torch.xpu.empty_cache()
         pass
 
         # Counteract saved tokenizers
@@ -562,7 +562,7 @@ class FastBaseModel:
         finetune_mlp_modules       = True,
         layers_to_transform        = None,
         layers_pattern             = None,
-        use_gradient_checkpointing = True,
+        use_gradient_checkpointing = "unsloth",
         random_state               = 3407,
         max_seq_length             = 2048, # not used anymore
         use_rslora                 = False,
