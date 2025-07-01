@@ -81,7 +81,6 @@ For Windows install instructions, see [here](https://docs.unsloth.ai/get-started
 - All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. **Manual backprop engine**.
 - **0% loss in accuracy** - no approximation methods - all exact.
 - No change of hardware. Supports NVIDIA GPUs since 2018+. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc) [Check your GPU!](https://developer.nvidia.com/cuda-gpus) GTX 1070, 1080 works, but is slow.
-- AMD ROCm GPUs including Instinct 3xx series and Radeon GPUs are now supported!
 - Works on **Linux** and **Windows**
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" height="50" align="center" />
 
@@ -98,42 +97,6 @@ pip install unsloth
 pip install --upgrade --force-reinstall --no-cache-dir unsloth unsloth_zoo
 ```
 See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip-installation) for advanced pip install instructions.
-
-### AMD ROCm GPU Installation
-
-**Launch container environment:**
-```
-CONTAINER_NAME=<your container name>
-IMAGE_NAME=rocm/vllm:rocm6.4.1_vllm_0.9.0.1_20250605
-
-docker run -it \
-        --rm \
-        --device /dev/dri \
-        --device /dev/kfd \
-        --network host \
-        --ipc host \
-        --group-add video \
-        --cap-add SYS_PTRACE \
-        --security-opt seccomp=unconfined \
-        --privileged \
-        --shm-size 32G \
-        --name ${CONTAINER_NAME} \
-        ${IMAGE_NAME} /bin/bash
-```
-
-**Install by setup.py install**
-```
-# choose your rocm arch from INSTINCT_ARCH=("gfx942", "gfx90a"), or
-# RADEON_ARCH=("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201")
-# Specify gfx942 here for MI300X device
-ROCM_ARCH=gfx942 python setup.py bdist_wheel 
-
-root@root:/workspace/unsloth# ls dist/
-unsloth-2025.6.5+rocm641-py3-none-any.whl
-
-pip install ./dist/unsloth-2025.6.5+rocm641-py3-none-any.whl
-```
-
 ### Windows Installation
 > [!warning]
 > Python 3.13 does not support Unsloth. Use 3.12, 3.11 or 3.10
@@ -172,7 +135,7 @@ trainer = SFTTrainer(
 
 For **advanced installation instructions** or if you see weird errors during installations:
 
-1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`. For AMD GPUs, please add `--extra-index-url https://download.pytorch.org/whl/rocm6.3` . For AMD support matrix info, please refer to https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html.
+1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
 2. Confirm if CUDA is installed correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
 3. Install `xformers` manually. You can try installing `vllm` and seeing if `vllm` succeeds. Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs.
 4. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 

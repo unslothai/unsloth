@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.6.11"
+__version__ = "2025.6.12"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1310,22 +1310,26 @@ pass
 
 def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
     from peft import LoraConfig
+
     if loftq_config is None: loftq_config = {}
 
     signature = str(inspect.signature(LoraConfig))
     SUPPORTS_LOFTQ  = "loftq_config" in signature
+
     if lora_dropout != 0:
         logger.warning_once(
             f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"\
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
         )
     pass
+
     if bias != "none":
         logger.warning_once(
             f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"\
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
         )
     pass
+
     if not (type(init_lora_weights) is bool or \
         init_lora_weights == "gaussian" or init_lora_weights == "loftq"):
         raise ValueError(
@@ -1334,6 +1338,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
     pass
 
     if init_lora_weights == "loftq":
+
         if not SUPPORTS_LOFTQ:
             import peft
             raise RuntimeError(
@@ -1342,6 +1347,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
             )
         pass
+
         if loftq_config == {}:
             from peft import LoftQConfig
             logger.warning_once(
@@ -1350,6 +1356,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
             )
             loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
         pass
+        
         if hasattr(model.config, "quantization_config"):
             raise ValueError(
                 "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"\
@@ -1357,5 +1364,5 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
             )
         pass
     pass
+
     return loftq_config
-pass
