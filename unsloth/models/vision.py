@@ -562,7 +562,7 @@ class FastBaseModel:
         finetune_mlp_modules       = True,
         layers_to_transform        = None,
         layers_pattern             = None,
-        use_gradient_checkpointing = True,
+        use_gradient_checkpointing = "unsloth",
         random_state               = 3407,
         max_seq_length             = 2048, # not used anymore
         use_rslora                 = False,
