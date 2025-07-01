@@ -23,11 +23,10 @@ from setuptools import setup
 from setuptools.command.install import install
 
 ROOT_DIR = Path(__file__).parent
-UNSLOTH_TARGET_DEVICE = os.environ.get("UNSLOTH_TARGET_DEVICE", "cuda")
 IS_COLAB = "COLAB_" not in "".join(os.environ.keys())
 
-import torch
-from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
+output = subprocess.run(["python", "-c", "from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME; from torch.version import cuda, hip; print(CUDA_HOME); print(ROCM_HOME); print(cuda); print(hip);"], capture_output = True, text = True)
+print(output)
 
 # Try importing torch
 HAS_TORCH = False
