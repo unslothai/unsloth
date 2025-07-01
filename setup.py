@@ -770,6 +770,10 @@ if HAS_HIP:
             os.mkdir('thirdparties')
             os.chdir('thirdparties')
 
+            # Cmake and ninja
+            subprocess.check_call(['pip', 'install', 'cmake>=3.26'])
+            subprocess.check_call(['pip', 'install', 'ninja'])
+
             # Extract ROCm GPU arch from environment variable. If unset, then detect ROCm arch from rocminfo
             # Refer to https://github.com/bitsandbytes-foundation/bitsandbytes/blob/1abd5e781013a085f86586b30a248dc769909668/bitsandbytes/cuda_specs.py#L81
             # TODO(billishyahao): need to triage rocminfo unavailable observation from https://github.com/bitsandbytes-foundation/bitsandbytes/issues/1444
