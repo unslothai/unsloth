@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unsloth.version import __version__
+from ..version import __version__
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -76,8 +76,10 @@ import numpy as np
 import contextlib
 import re
 import warnings, subprocess, re, inspect, psutil, os, math
-from unsloth_zoo.utils import Version
-from unsloth import DEVICE_TYPE
+from unsloth_zoo.utils import (
+    Version,
+    DEVICE_TYPE,
+)
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
