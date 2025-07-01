@@ -1,5 +1,4 @@
 [build-system]
-# Should be mirrored in requirements/build.txt
 requires = [
     "packaging>=24.2",
     "setuptools>=77.0.3,<80.0.0",
