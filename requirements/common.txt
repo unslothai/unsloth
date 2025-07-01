@@ -1,5 +1,5 @@
 unsloth_zoo>=2025.6.7
-packaging>=24.1
+packaging>=24.2
 tyro
 transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3
 datasets>=3.4.1
