@@ -23,7 +23,7 @@ jobs:
             For faster response times, please post on our Reddit server - https://www.reddit.com/r/unsloth or our Discord - https://discord.com/invite/unsloth 
 
           # The number of days of inactivity before an issue is considered stale.
-          days-before-issue-stale: 10
+          days-before-issue-stale: 9999
 
           # Set to -1 to never close stale issues.
           days-before-issue-close: -1
