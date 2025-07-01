@@ -842,7 +842,7 @@ print(get_requirements())
 setup(
     # static metadata should rather go in pyproject.toml
     version=get_unsloth_version(),
-    install_requires=get_requirements(),
+    # install_requires=get_requirements(),
     # extras_require=extras_require,
     cmdclass=cmdclass,
     package_data=package_data,
