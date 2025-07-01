@@ -1,7 +1,9 @@
 # Common dependencies
 -r common.txt
 
-torch
+torch<=2.7.0
 torchaudio
 torchvision
-xformers
+xformers<=0.0.30
+triton ; platform_system == 'Linux'
+triton_windows ; platform_system == 'Windows'

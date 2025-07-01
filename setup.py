@@ -1,29 +1,51 @@
-# Copid and modified based on https://github.com/vllm-project/vllm/blob/main/setup.py
-# SPDX-License-Identifier: Apache-2.0
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Modified from https://github.com/vllm-project/vllm/blob/main/setup.py
 
-import ctypes
 import importlib.util
-import json
-import logging
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
-from shutil import which
-import shutil
-
-import torch
 from packaging.version import Version, parse
-from setuptools import Extension, setup
-from setuptools.command.build_ext import build_ext
-from setuptools_scm import get_version
-from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
-
+from setuptools import setup
 from setuptools.command.install import install
 
-# This arg is for multi-device
-UNSLOTH_TARGET_DEVICE = os.environ.get('UNSLOTH_TARGET_DEVICE', 'cuda')
+ROOT_DIR = Path(__file__).parent
+UNSLOTH_TARGET_DEVICE = os.environ.get("UNSLOTH_TARGET_DEVICE", "cuda")
+IS_COLAB = "COLAB_" not in "".join(os.environ.keys())
+UNSLOTH_VERSION = load_module_from_path('ver', os.path.join(ROOT_DIR, 'unsloth', 'version.py'))
+
+# Try importing torch
+HAS_TORCH = False
+HAS_CUDA  = True
+HAS_HIP   = False
+CUDA_HOME = None
+ROCM_HOME = None
+torch = None
+if importlib.util.find_spec("torch") is not None:
+    try:
+        import torch
+        from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
+        HAS_TORCH = True
+        HAS_CUDA  = (torch.version.cuda is not None)
+        HAS_HIP   = (torch.version. hip is not None)
+
+    except Exception as e:
+        print(f"Unsloth: Importing torch failed with error = {str(e)}.")
+        HAS_TORCH = False
+pass
 
 
 def load_module_from_path(module_name, path):
@@ -32,25 +54,10 @@ def load_module_from_path(module_name, path):
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
-
-ROOT_DIR = Path(__file__).parent
-
-
-# cannot import version directly because it depends on unsloth,
-#  which is not installed yet
-ver = load_module_from_path('ver', os.path.join(ROOT_DIR, 'unsloth', 'version.py'))
-
-def _is_cuda() -> bool:
-    has_cuda = torch.version.cuda is not None
-    return UNSLOTH_TARGET_DEVICE == "cuda" and has_cuda
+pass
 
 
-def _is_hip() -> bool:
-    return (UNSLOTH_TARGET_DEVICE == "cuda"
-            or UNSLOTH_TARGET_DEVICE == "rocm") and torch.version.hip is not None
-
-
-def get_nvcc_cuda_version() -> Version:
+def get_nvcc_cuda_version():
     """Get the CUDA version from nvcc.
 
     Adapted from https://github.com/NVIDIA/apex/blob/8b7a1ff183741dd8f9b87e7bafd04cfde99cea28/setup.py
@@ -62,11 +69,13 @@ def get_nvcc_cuda_version() -> Version:
     release_idx = output.index("release") + 1
     nvcc_cuda_version = parse(output[release_idx].split(",")[0])
     return nvcc_cuda_version
+pass
 
 
 def get_rocm_version():
     # Get the Rocm version from the ROCM_HOME/bin/librocm-core.so
     # see https://github.com/ROCm/rocm-core/blob/d11f5c20d500f729c393680a01fa902ebf92094b/rocm_version.cpp#L21
+    import ctypes
     try:
         librocm_core_file = Path(ROCM_HOME) / "lib" / "librocm-core.so"
         if not librocm_core_file.is_file():
@@ -90,37 +99,38 @@ def get_rocm_version():
         return None
     except Exception:
         return None
+pass
 
 
-def get_unsloth_version() -> str:
-    version = ver.__version__
+def get_unsloth_version():
+    version = UNSLOTH_VERSION.__version__
 
     if version is None:
         raise RuntimeError("unsloth version not found")
 
     sep = "+" if "+" not in version else "."  # dev versions might contain +
 
-    if _is_cuda():
+    if HAS_CUDA:
         cuda_version = str(get_nvcc_cuda_version())
         cuda_version_str = cuda_version.replace(".", "")[:3]
         # skip this for source tarball, required for pypi
         if "sdist" not in sys.argv:
             version += f"{sep}cu{cuda_version_str}"
-    elif _is_hip():
+    elif HAS_HIP:
         # Get the Rocm Version
         rocm_version = get_rocm_version() or torch.version.hip
         if rocm_version:
             version += f"{sep}rocm{rocm_version.replace('.', '')[:3]}"
     else:
         raise RuntimeError("Unknown runtime environment")
-
     return version
+pass
 
-def get_requirements() -> list[str]:
+
+def get_requirements():
     """Get Python package dependencies from requirements.txt."""
     requirements_dir = ROOT_DIR / "requirements"
-
-    def _read_requirements(filename: str) -> list[str]:
+    def _read_requirements(filename):
         with open(requirements_dir / filename) as f:
             requirements = f.read().strip().split("\n")
         resolved_requirements = []
@@ -131,102 +141,19 @@ def get_requirements() -> list[str]:
                     "#") and line.strip() != "":
                 resolved_requirements.append(line)
         return resolved_requirements
-
-    if _is_cuda():
+    pass
+    if HAS_CUDA:
         requirements = _read_requirements("cuda.txt")
-    elif _is_hip():
+    elif HAS_HIP:
         requirements = _read_requirements("rocm.txt")
     else:
         requirements = _read_requirements("common.txt")
         raise ValueError(
             "Unsupported platform, please use CUDA, ROCm, "
         )
-
     return requirements
+pass
 
-
-INSTINCT_ARCH=("gfx942", "gfx90a")
-RADEON_ARCH=("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201")
-
-
-class RocmExtraInstallCommand(install):
-    def run(self):
-
-        if os.path.exists('thirdparties'):
-            shutil.rmtree('thirdparties')
-
-        os.mkdir('thirdparties')
-        os.chdir('thirdparties')
-
-        # Extract ROCm GPU arch from environment variable. If unset, then detect ROCm arch from rocminfo
-        # Refer to https://github.com/bitsandbytes-foundation/bitsandbytes/blob/1abd5e781013a085f86586b30a248dc769909668/bitsandbytes/cuda_specs.py#L81
-        # TODO(billishyahao): need to triage rocminfo unavailable observation from https://github.com/bitsandbytes-foundation/bitsandbytes/issues/1444
-        rocm_arch = os.environ.get('ROCM_ARCH', None)
-        if rocm_arch is None:
-            try:
-                result = subprocess.run(["rocminfo"], capture_output=True, text=True)
-                match = re.search(r"Name:\s+gfx([a-zA-Z\d]+)", result.stdout)
-                if match:
-                    rocm_arch = f"gfx{match.group(1)}"
-                    print(f"Automatically detected ROCm GPU architecture: {rocm_arch}")
-                else:
-                    print("Skipping ROCm extra install, cannot detect ROCm arch automatically...")
-                    install.run(self)
-                    return
-            except Exception as e:
-                print("Could not detect ROCm GPU architecture: {e}")
-                if torch.cuda.is_available():
-                    print("ROCm GPU architecture detection failed despite ROCm being available...")
-                install.run(self)
-                return
-
-        # flash-attention
-        # MI3xx has both CK backend and Triton backend.
-        import importlib
-        if importlib.util.find_spec("flash_attn") is None:
-            print("Installing flash-attention...")
-            if rocm_arch in INSTINCT_ARCH:
-                subprocess.check_call(['git', 'clone', '--recursive', 'https://github.com/ROCm/flash-attention.git'])
-                os.chdir('flash-attention')
-                num_jobs = os.cpu_count() - 1
-                subprocess.check_call(['pip', 'install', '-v', '.', f'MAX_JOBS={num_jobs}'], shell=True)
-                os.chdir('..')
-            # Only Triton backend supports Radeon GPUs
-            elif rocm_arch in RADEON_ARCH:
-                subprocess.check_call(['git', 'clone', '--recursive', 'https://github.com/ROCm/flash-attention.git'])
-                os.chdir('flash-attention')
-                subprocess.check_call(['git', 'checkout', 'main_perf'])
-                subprocess.check_call(['FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE"', 'python', 'setup.py', 'install', ], shell=True)
-                os.chdir('..')
-
-        # Comment out the following if you need xformers installed.
-        # # only install xformers in Instinct GPUs
-        # if importlib.util.find_spec("xformers") is None:
-        #     print("Installing xformers...")
-        #     if rocm_arch in INSTINCT_ARCH:
-        #         subprocess.check_call(['git', 'clone', 'https://github.com/ROCm/xformers.git'])
-        #         os.chdir('xformers')
-        #         subprocess.check_call(['git', 'submodule', 'update', '--init', '--recursive'])
-        #         os.environ['PYTORCH_ROCM_ARCH'] = rocm_arch
-        #         subprocess.check_call(['python', 'setup.py', 'install'])
-        #         os.chdir('..')
-
-        # bitsandbytes
-        if importlib.util.find_spec("bitsandbytes") is None:
-            print("Installing bitsandbytes...")
-            subprocess.check_call(['git', 'clone', '--recurse-submodules', 'https://github.com/ROCm/bitsandbytes'])
-            os.chdir('bitsandbytes')
-            subprocess.check_call(['git', 'checkout', 'rocm_enabled_multi_backend'])
-            subprocess.check_call(['pip', 'install', '-r', 'requirements-dev.txt'])
-            subprocess.check_call(['cmake', '-DCOMPUTE_BACKEND=hip', '-S', '.'])  # Add -DBNB_ROCM_ARCH if needed
-            subprocess.check_call(['make'])
-            subprocess.check_call(['pip', 'install', '.'])
-            os.chdir('..')
-        
-        os.chdir('..')
-
-        # Continue with regular install
-        install.run(self)
 
 package_data = {
     "unsloth": [
@@ -234,7 +161,7 @@ package_data = {
     ]
 }
 
-extras_require = {
+extras_requires = {
     "triton" : [
         "triton-windows ; platform_system == 'Windows'",
     ],
@@ -829,16 +756,99 @@ extras_require = {
 
 cmdclass = {}
 
-if _is_hip():
+if HAS_HIP:
+    class RocmExtraInstallCommand(install):
+        def run(self):
+            import re
+            import shutil
+            INSTINCT_ARCH = ("gfx942", "gfx90a")
+            RADEON_ARCH   = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201")
+
+            if os.path.exists('thirdparties'):
+                shutil.rmtree('thirdparties')
+
+            os.mkdir('thirdparties')
+            os.chdir('thirdparties')
+
+            # Extract ROCm GPU arch from environment variable. If unset, then detect ROCm arch from rocminfo
+            # Refer to https://github.com/bitsandbytes-foundation/bitsandbytes/blob/1abd5e781013a085f86586b30a248dc769909668/bitsandbytes/cuda_specs.py#L81
+            # TODO(billishyahao): need to triage rocminfo unavailable observation from https://github.com/bitsandbytes-foundation/bitsandbytes/issues/1444
+            rocm_arch = os.environ.get('ROCM_ARCH', None)
+            if rocm_arch is None:
+                try:
+                    result = subprocess.run(["rocminfo"], capture_output=True, text=True)
+                    match = re.search(r"Name:\s+gfx([a-zA-Z\d]+)", result.stdout)
+                    if match:
+                        rocm_arch = f"gfx{match.group(1)}"
+                        print(f"Automatically detected ROCm GPU architecture: {rocm_arch}")
+                    else:
+                        print("Skipping ROCm extra install, cannot detect ROCm arch automatically...")
+                        install.run(self)
+                        return
+                except Exception as e:
+                    print("Could not detect ROCm GPU architecture: {e}")
+                    if torch.cuda.is_available():
+                        print("ROCm GPU architecture detection failed despite ROCm being available...")
+                    install.run(self)
+                    return
+
+            # flash-attention
+            # MI3xx has both CK backend and Triton backend.
+            if importlib.util.find_spec("flash_attn") is None:
+                print("Installing flash-attention...")
+                if rocm_arch in INSTINCT_ARCH:
+                    subprocess.check_call(['git', 'clone', '--recursive', 'https://github.com/ROCm/flash-attention.git'])
+                    os.chdir('flash-attention')
+                    num_jobs = os.cpu_count() - 1
+                    subprocess.check_call(['pip', 'install', '-v', '.', f'MAX_JOBS={num_jobs}'], shell=True)
+                    os.chdir('..')
+                # Only Triton backend supports Radeon GPUs
+                elif rocm_arch in RADEON_ARCH:
+                    subprocess.check_call(['git', 'clone', '--recursive', 'https://github.com/ROCm/flash-attention.git'])
+                    os.chdir('flash-attention')
+                    subprocess.check_call(['git', 'checkout', 'main_perf'])
+                    subprocess.check_call(['FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE"', 'python', 'setup.py', 'install', ], shell=True)
+                    os.chdir('..')
+
+            # Comment out the following if you need xformers installed.
+            # # only install xformers in Instinct GPUs
+            # if importlib.util.find_spec("xformers") is None:
+            #     print("Installing xformers...")
+            #     if rocm_arch in INSTINCT_ARCH:
+            #         subprocess.check_call(['git', 'clone', 'https://github.com/ROCm/xformers.git'])
+            #         os.chdir('xformers')
+            #         subprocess.check_call(['git', 'submodule', 'update', '--init', '--recursive'])
+            #         os.environ['PYTORCH_ROCM_ARCH'] = rocm_arch
+            #         subprocess.check_call(['python', 'setup.py', 'install'])
+            #         os.chdir('..')
+
+            # bitsandbytes
+            if importlib.util.find_spec("bitsandbytes") is None:
+                print("Installing bitsandbytes...")
+                subprocess.check_call(['git', 'clone', '--recurse-submodules', 'https://github.com/ROCm/bitsandbytes'])
+                os.chdir('bitsandbytes')
+                subprocess.check_call(['git', 'checkout', 'rocm_enabled_multi_backend'])
+                subprocess.check_call(['pip', 'install', '-r', 'requirements-dev.txt'])
+                subprocess.check_call(['cmake', '-DCOMPUTE_BACKEND=hip', '-S', '.'])  # Add -DBNB_ROCM_ARCH if needed
+                subprocess.check_call(['make'])
+                subprocess.check_call(['pip', 'install', '.'])
+                os.chdir('..')
+            
+            os.chdir('..')
+
+            # Continue with regular install
+            install.run(self)
+        pass
+    pass
     cmdclass = {
         'install': RocmExtraInstallCommand
     }
+pass
 
 setup(
-    # static metadata should rather go in pyproject.toml
-    version=get_unsloth_version(),
-    install_requires=get_requirements(),
-    extras_require=extras_require,
-    cmdclass=cmdclass,
-    package_data=package_data,
+    version          = get_unsloth_version(),
+    install_requires = get_requirements(),
+    extras_require   = extras_requires,
+    cmdclass         = cmdclass,
+    package_data     = package_data,
 )
