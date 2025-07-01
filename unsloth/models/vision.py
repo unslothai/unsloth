@@ -364,8 +364,8 @@ class FastBaseModel:
                 correct_dtype = bnb_compute_dtype
                 custom_datatype = _custom_datatype
                 # Execute code as well
-                # if len(execute_code.strip()) != 0:
-                #     exec(execute_code)
+                if len(execute_code.strip()) != 0:
+                    exec(execute_code)
             else:
                 custom_datatype = None
                 correct_dtype = None
@@ -440,12 +440,12 @@ class FastBaseModel:
             for jj, (name, module) in enumerate(model.named_modules()):
                 exec(custom_datatype)
             pass
-            # Clear deleted GPU items
-            for _ in range(3):
-                gc.collect()
-                if DEVICE_TYPE == "cuda":  torch.cuda.empty_cache()
-                elif DEVICE_TYPE == "xpu": torch.xpu.empty_cache()
-            pass
+        pass
+        # Clear deleted GPU items
+        for _ in range(3):
+            gc.collect()
+            if DEVICE_TYPE == "cuda":  torch.cuda.empty_cache()
+            elif DEVICE_TYPE == "xpu": torch.xpu.empty_cache()
         pass
 
         # Counteract saved tokenizers
