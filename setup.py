@@ -28,7 +28,7 @@ IS_COLAB = "COLAB_" not in "".join(os.environ.keys())
 
 # Try importing torch
 HAS_TORCH = False
-HAS_CUDA  = True
+HAS_CUDA  = False
 HAS_HIP   = False
 torch     = None
 if importlib.util.find_spec("torch") is not None:
