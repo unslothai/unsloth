@@ -366,7 +366,9 @@ class FastBaseModel:
                 # Execute code as well
                 if len(execute_code.strip()) != 0:
                     exec(execute_code)
-            pass
+            else:
+                custom_datatype = None
+                correct_dtype = None
         pass
 
         # Stop SDPA for some archs like Pixtral / Mistral3
