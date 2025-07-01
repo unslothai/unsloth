@@ -1,13 +1,5 @@
 [build-system]
-<<<<<<< HEAD
-requires = [
-    "packaging>=24.2",
-    "setuptools>=77.0.3,<80.0.0",
-    "setuptools-scm>=8.0",
-]
-=======
 requires = ["setuptools", "setuptools-scm"]
->>>>>>> parent of 06ca5c2 ([Feature] enable unsloth on amd gpu (#2520))
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,14 +7,8 @@ name = "unsloth"
 dynamic = ["version"]
 description = "2-5X faster LLM finetuning"
 readme = "README.md"
-<<<<<<< HEAD
-requires-python = ">=3.9"
-dynamic = ["version", "dependencies", "optional-dependencies"]
-license = { file = "LICENSE" }
-=======
 requires-python = ">=3.9,<3.13"
 license = {text = "Apache-2.0"}
->>>>>>> parent of 06ca5c2 ([Feature] enable unsloth on amd gpu (#2520))
 keywords = ["ai", "llm",]
 authors = [
     {email = "info@unsloth.ai"},
