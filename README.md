@@ -10,7 +10,7 @@
 <a href="https://discord.com/invite/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" height="48"></a>
 <a href="https://docs.unsloth.ai"><img src="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/images/Documentation%20Button.png" height="48"></a>
 
-### Finetune Qwen3, Llama 4, Gemma 3, Phi-4 & Mistral 2x faster with 80% less VRAM!
+### Finetune Gemma 3n, Qwen3, Llama 4, Phi-4 & Mistral 2x faster with 80% less VRAM!
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
@@ -22,6 +22,7 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 
 | Unsloth supports | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
+| **Gemma 3n (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3N_(4B)-Conversational.ipynb)               | 1.5x faster | 50% less |
 | **Qwen3 (14B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(14B)-Reasoning-Conversational.ipynb)               | 2x faster | 70% less |
 | **Qwen3 (4B): GRPO**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_(4B)-GRPO.ipynb)               | 2x faster | 80% less |
 | **Gemma 3 (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma3_(4B).ipynb)               | 1.6x faster | 60% less |
@@ -45,12 +46,12 @@ pip install unsloth
 For Windows install instructions, see [here](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
 
 ## 🦥 Unsloth.ai News
-- 📣 NEW! **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
-- 📣 NEW! **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
-- 📣 NEW! Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & KL Divergence.
+- 📣 **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
+- 📣 **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
+- 📣 **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
+- 📣 Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & KL Divergence.
 - 📣 **[Llama 4](https://unsloth.ai/blog/llama4)** by Meta, including Scout & Maverick are now supported.
 - 📣 [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (BERT, diffusion, Cohere, Mamba), FFT, etc. MultiGPU coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
-- 📣 **Gemma 3** by Google: [Read Blog](https://unsloth.ai/blog/gemma3). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3-67d12b7e8816ec6efa7e4e5b).
 - 📣 Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - run or fine-tune them [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
 <details>
