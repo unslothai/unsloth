@@ -13,12 +13,12 @@ from pathlib import Path
 from shutil import which
 import shutil
 
-import torch
+# import torch
 from packaging.version import Version, parse
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 from setuptools_scm import get_version
-from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
+# from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
 
 from setuptools.command.install import install
 
@@ -838,7 +838,7 @@ if _is_hip():
     }
 
 print(get_unsloth_version())
-print(get_requirements())
+# print(get_requirements())
 setup(
     # static metadata should rather go in pyproject.toml
     version=get_unsloth_version(),
