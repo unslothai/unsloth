@@ -30,9 +30,7 @@ IS_COLAB = "COLAB_" not in "".join(os.environ.keys())
 HAS_TORCH = False
 HAS_CUDA  = True
 HAS_HIP   = False
-CUDA_HOME = None
-ROCM_HOME = None
-torch = None
+torch     = None
 if importlib.util.find_spec("torch") is not None:
     try:
         import torch
@@ -44,8 +42,12 @@ if importlib.util.find_spec("torch") is not None:
     except Exception as e:
         print(f"Unsloth: Importing torch failed with error = {str(e)}.")
         HAS_TORCH = False
+        CUDA_HOME = None
+        ROCM_HOME = None
+else:
+    CUDA_HOME = None
+    ROCM_HOME = None
 pass
-
 
 def load_module_from_path(module_name, path):
     spec = importlib.util.spec_from_file_location(module_name, path)
