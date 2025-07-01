@@ -31,6 +31,8 @@ HAS_TORCH = False
 HAS_CUDA  = False
 HAS_HIP   = False
 torch     = None
+print(f"Unsloth: Imported torch with CUDA_HOME = {str(CUDA_HOME)}.")
+print(f"Unsloth: Imported torch with ROCM_HOME = {str(ROCM_HOME)}.")
 if importlib.util.find_spec("torch") is not None:
     try:
         import torch
