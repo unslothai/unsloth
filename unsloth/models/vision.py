@@ -364,8 +364,8 @@ class FastBaseModel:
                 correct_dtype = bnb_compute_dtype
                 custom_datatype = _custom_datatype
                 # Execute code as well
-                if len(execute_code.strip()) != 0:
-                    exec(execute_code)
+                # if len(execute_code.strip()) != 0:
+                #     exec(execute_code)
             else:
                 custom_datatype = None
                 correct_dtype = None
