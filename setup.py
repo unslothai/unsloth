@@ -145,8 +145,8 @@ def get_requirements() -> list[str]:
     return requirements
 
 
-INSTINCT_ARCH = ("gfx942", "gfx90a")
-RADEON_ARCH = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201")
+INSTINCT_ARCH = ("gfx942", "gfx90a",)
+RADEON_ARCH = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201",)
 
 
 class RocmExtraInstallCommand(install):
@@ -834,6 +834,8 @@ if _is_hip():
         'install': RocmExtraInstallCommand
     }
 
+print(get_unsloth_version())
+print(get_requirements())
 setup(
     # static metadata should rather go in pyproject.toml
     version=get_unsloth_version(),
