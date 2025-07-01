@@ -8,7 +8,6 @@ requires = [
     "setuptools-scm>=8.0",
     "wheel",
     "jinja2",
-    "torch",
 ]
 build-backend = "setuptools.build_meta"
 
