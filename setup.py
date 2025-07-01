@@ -25,6 +25,7 @@ from setuptools.command.install import install
 # This arg is for multi-device
 UNSLOTH_TARGET_DEVICE = os.environ.get('UNSLOTH_TARGET_DEVICE', 'cuda')
 
+print("[1] Installing Unsloth...")
 
 def load_module_from_path(module_name, path):
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -39,6 +40,8 @@ ROOT_DIR = Path(__file__).parent
 # cannot import version directly because it depends on unsloth,
 #  which is not installed yet
 ver = load_module_from_path('ver', os.path.join(ROOT_DIR, 'unsloth', 'version.py'))
+
+print("[2] Installing Unsloth...")
 
 def _is_cuda() -> bool:
     has_cuda = torch.version.cuda is not None
