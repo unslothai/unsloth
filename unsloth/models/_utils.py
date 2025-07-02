@@ -211,13 +211,13 @@ def extract_quant_model_param_count(model):
     Calculate quant model param count based on difference in param class. Returns int for param count.
     """
     count: int = 0
-    for name,p in model.named_parameters():
-        if p.__class__.__name__ == "Params4bit":
-            count += 2* p.numel()
+    for name,_p in model.named_parameters():
+        if _p.__class__.__name__ == "Params4bit":
+            count += 2 * _p.numel()
         else:
-            count += p.numel()
+            count += _p.numel()
     return count
-
+pass
 
 def get_model_param_count(model, trainable_only = False):
     """
