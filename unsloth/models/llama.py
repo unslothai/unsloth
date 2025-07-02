@@ -1021,7 +1021,6 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         next_decoder_cache = []
 
         for idx, decoder_layer in enumerate(self.model.layers):
-            print(f'Inference through layer {idx}')
             decoder_device = decoder_layer.self_attn.q_proj.weight.device
             if X.device != decoder_device:
                 X = X.to(decoder_device)
@@ -1031,6 +1030,8 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
                 temp_gate = temp_gate.to(decoder_device)
             if temp_up.device != decoder_device:
                 temp_up = temp_up.to(decoder_device)
+            if position_ids.device != decoder_device:
+                position_ids = position_ids.to(decoder_device)
             residual.copy_(X) # residual = X
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,

@@ -90,10 +90,11 @@ def MistralAttention_fast_forward(
     else:
         cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
         if cos.device != Q.device:
+            # without this, even though V is on GPU0, by the time we reach the foward function
+            # the argument x is on GPU1, and hence cos, sin end up on GPU1
+            # this is a hack to get around this quirk
             cos = cos.to(Q.device)
             sin = sin.to(Q.device)
-        if Q.device != K.device:
-            raise ValueError("Q and K must be on the same device")
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 

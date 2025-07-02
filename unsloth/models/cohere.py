@@ -254,6 +254,8 @@ def CohereAttention_fast_forward_inference(
     do_prefill = False,
     attention_mask = None,
 ):
+    if position_ids is not None:
+        position_ids = position_ids.to('cpu')
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -321,8 +323,8 @@ def CohereAttention_fast_forward_inference(
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len)
-    cos = cos[position_ids].unsqueeze(1)
-    sin = sin[position_ids].unsqueeze(1)
+    cos = cos[position_ids].unsqueeze(1).to(Qn.device)
+    sin = sin[position_ids].unsqueeze(1).to(Qn.device)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q

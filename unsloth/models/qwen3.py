@@ -232,6 +232,8 @@ def Qwen3Attention_fast_forward_inference(
         This means we can pass in a row of Q, but we need to
         remember K and V, which are called the KV cache.
     """
+    if position_ids is not None:
+        position_ids = position_ids.to('cpu')
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -298,8 +300,8 @@ def Qwen3Attention_fast_forward_inference(
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len)
-    cos = cos[position_ids].unsqueeze(1)
-    sin = sin[position_ids].unsqueeze(1)
+    cos = cos[position_ids].unsqueeze(1).to(Qn.device)
+    sin = sin[position_ids].unsqueeze(1).to(Qn.device)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q

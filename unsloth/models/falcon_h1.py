@@ -116,6 +116,8 @@ def FalconH1Attention_fast_forward(
             cos, sin = rotary_emb.get_cached(kv_seq_len)
         else:
             cos, sin = rotary_emb(V, seq_len = kv_seq_len)
+    cos = cos.to(Q.device)
+    sin = sin.to(Q.device)
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
@@ -281,8 +283,8 @@ def FalconH1Attention_fast_forward_inference(
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len)
-    cos = cos[position_ids].unsqueeze(1)
-    sin = sin[position_ids].unsqueeze(1)
+    cos = cos[position_ids].unsqueeze(1).to(Qn.device)
+    sin = sin[position_ids].unsqueeze(1).to(Qn.device)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
