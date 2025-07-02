@@ -351,8 +351,8 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 def grpo_trainer__get_per_token_logps(function_name, function):
     if function_name != "_get_per_token_logps": return function
 
-    def _get_per_token_logps(self, model, input_ids, attention_mask,pixel_values,image_grid_thw, logits_to_keep, calc_logprob_flag = None):
-        if os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0' and  not calc_logprob_flag:
+    def _get_per_token_logps(self, model, input_ids, attention_mask, pixel_values, image_grid_thw, logits_to_keep):
+        if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return None # Unsloth efficient GRPO
         # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
@@ -362,26 +362,13 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            if self.use_vision : 
-               hidden_states = model(
-                    input_ids=input_ids, 
-                    attention_mask=attention_mask, 
-                    pixel_values=pixel_values, 
-                    image_grid_thw=image_grid_thw, 
-                    logits_to_keep=logits_to_keep + 1
-                    ).logits
-            else:
-                hidden_states = model(
-                    input_ids=input_ids, 
-                    attention_mask=attention_mask, 
-                    logits_to_keep=logits_to_keep + 1
-                    ).logits
-            #logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-                        
-            if hidden_states.size(1) != logits_to_keep+1  : # Some models like Qwen VL don't have logits_to_keep parameter so you need to trim the output manually
-                hidden_states = hidden_states[:, -(logits_to_keep+1):, :] 
-            
-            return hidden_states
+            logits = model(
+                input_ids = input_ids,
+                attention_mask = attention_mask,
+                logits_to_keep = logits_to_keep + 1,
+            ).logits
+            # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            return logits
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
@@ -492,6 +479,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
+                    pixel_values = pixel_values,
+                    image_grid_thw = image_grid_thw,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
@@ -513,6 +502,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
+                    pixel_values = pixel_values,
+                    image_grid_thw = image_grid_thw,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
