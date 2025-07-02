@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.6.6"
+__version__ = "2025.6.12"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -65,6 +65,7 @@ __all__ = [
     "process_vision_info",
     "unsloth_compile_transformers",
     "patch_fast_lora",
+    "validate_loftq_config",
 ]
 
 import torch
@@ -76,7 +77,7 @@ import contextlib
 import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
-from unsloth import DEVICE_TYPE
+from unsloth_zoo import DEVICE_TYPE
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -153,6 +154,8 @@ from transformers.training_args import logger as transformers_training_args_logg
 transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 # torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
 transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
+# average_tokens_across_devices is set to True but it is invalid when world size is1
+transformers_training_args_logger.addFilter(HideLoggingMessage("average_tokens_across_devices"))
 del transformers_training_args_logger
 
 # No label_names provided for model class
@@ -203,33 +206,18 @@ except:
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
 
-def extract_approx_params_from_config(config):
+def extract_quant_model_param_count(model):
     """
-    Extract approximate parameter count from model config's name_or_path
-    Returns int (param count) or None if not found.
+    Calculate quant model param count based on difference in param class. Returns int for param count.
     """
-    lowercase_b_families = ["gemma"] # gemma uses small 'b' : google/gemma-3-1b-it
-    model_name = getattr(config, "name_or_path", "")
-    import re
-    cleaned = re.sub(r"[-_]?bnb[-_]?4bit|[-_]?4bit|[-_]?8bit|[-_]?bnb", "", model_name, flags=re.IGNORECASE) # replace bnb and xbit
-    match_B = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*B", cleaned) # first prefer searching 'B'
-    if match_B:
-        # most model names would come in this flow
-        billions = float(match_B.group(1))
-        return int(1_000_000_000 * billions)
-    else:
-        if any(fam in cleaned.lower() for fam in lowercase_b_families):
-            match_b = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*b", cleaned)
-            if match_b:
-                billions = float(match_b.group(1))
-                return int(1_000_000_000 * billions)
+    count: int = 0
+    for name, p in model.named_parameters():
+        if p.__class__.__name__ == "Params4bit":
+            count += 2 * p.numel()
         else:
-            match_any = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*[bB]", cleaned)
-            if match_any:
-                billions = float(match_any.group(1))
-                return int(1_000_000_000 * billions)
-    return None
-
+            count += p.numel()
+    return count
+pass
 
 def get_model_param_count(model, trainable_only = False):
     """
@@ -245,7 +233,7 @@ def get_model_param_count(model, trainable_only = False):
     if (not trainable_only) and \
         hasattr(model, "config") and \
         hasattr(model.config, "quantization_config"):
-        approx = extract_approx_params_from_config(model.config)
+        approx = extract_quant_model_param_count(model)
         if approx is not None:
             s = approx
     return s
@@ -278,7 +266,7 @@ pass
 
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
-model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe"]
+model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
 
 for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
@@ -367,7 +355,7 @@ if is_openai_available():
         def _is_openai_available(): return False
         transformers.utils.is_openai_available = _is_openai_available
     pass
-pass 
+pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
@@ -549,8 +537,6 @@ UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", 
 # Just remove max_autotune_gemm warning
 import functools
 from torch._inductor.runtime.hints import DeviceProperties
-
-from unsloth import DEVICE_TYPE
 
 @functools.lru_cache(None)
 def is_big_gpu(index) -> bool:
@@ -1084,7 +1070,7 @@ pass
 
 
 def patch_gradient_accumulation_fix(Trainer):
-    # Fixes gradient accumulation 
+    # Fixes gradient accumulation
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
@@ -1158,10 +1144,10 @@ def patch_gradient_accumulation_fix(Trainer):
         "\2if num_items_in_batch is None:\n"\
         "\3loss = loss / self.args.gradient_accumulation_steps\n"\
         "\1self.accelerator.backward(loss, **kwargs)",
-        
+
         function,
     )
-    
+
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
 pass
@@ -1305,3 +1291,63 @@ if USE_MODELSCOPE:
         raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
     pass
 pass
+
+
+def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
+    from peft import LoraConfig
+
+    if loftq_config is None: loftq_config = {}
+
+    signature = str(inspect.signature(LoraConfig))
+    SUPPORTS_LOFTQ  = "loftq_config" in signature
+
+    if lora_dropout != 0:
+        logger.warning_once(
+            f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"\
+            f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
+        )
+    pass
+
+    if bias != "none":
+        logger.warning_once(
+            f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"\
+            f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
+        )
+    pass
+
+    if not (type(init_lora_weights) is bool or \
+        init_lora_weights == "gaussian" or init_lora_weights == "loftq"):
+        raise ValueError(
+            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
+        )
+    pass
+
+    if init_lora_weights == "loftq":
+
+        if not SUPPORTS_LOFTQ:
+            import peft
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
+                "Please install PEFT 0.7.2 or higher.\n"\
+                "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+            )
+        pass
+
+        if loftq_config == {}:
+            from peft import LoftQConfig
+            logger.warning_once(
+                "Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
+                "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
+            )
+            loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
+        pass
+
+        if hasattr(model.config, "quantization_config"):
+            raise ValueError(
+                "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"\
+                "Reload your model without any quantization by setting `load_in_4bit = False`."
+            )
+        pass
+    pass
+
+    return loftq_config

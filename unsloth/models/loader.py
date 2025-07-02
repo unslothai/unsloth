@@ -48,18 +48,24 @@ import importlib.util
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
 transformers_version = Version(transformers_version)
-SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
-SUPPORTS_GEMMA   = transformers_version >= Version("4.38")
-SUPPORTS_GEMMA2  = transformers_version >= Version("4.42")
-SUPPORTS_LLAMA31 = transformers_version >= Version("4.43.2")
-SUPPORTS_LLAMA32 = transformers_version  > Version("4.45.0")
-SUPPORTS_GRANITE = transformers_version >= Version("4.46.0")
-SUPPORTS_QWEN3   = transformers_version >= Version("4.50.3")
+SUPPORTS_FOURBIT   = transformers_version >= Version("4.37")
+SUPPORTS_GEMMA     = transformers_version >= Version("4.38")
+SUPPORTS_GEMMA2    = transformers_version >= Version("4.42")
+SUPPORTS_LLAMA31   = transformers_version >= Version("4.43.2")
+SUPPORTS_LLAMA32   = transformers_version  > Version("4.45.0")
+SUPPORTS_GRANITE   = transformers_version >= Version("4.46.0")
+SUPPORTS_QWEN3     = transformers_version >= Version("4.50.3")
 SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
+SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
+SUPPORTS_GEMMA3N   = transformers_version >= Version("4.53.0")
+
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
     from .gemma2 import FastGemma2Model
+pass
+if SUPPORTS_FALCON_H1:
+    from .falcon_h1 import FastFalconH1Model
 pass
 import torch
 from ._utils import (
@@ -128,6 +134,8 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if token is None: token = get_token()
+        if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
+            dtype = getattr(torch, dtype)
         assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
 
         if use_gradient_checkpointing == "unsloth":
@@ -312,6 +320,15 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."\
                 )
             dispatch_model = FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
+        elif model_type == "falcon_h1":
+            dispatch_model = FastFalconH1Model
+            if not SUPPORTS_FALCON_H1:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support FalconH1.\n"\
+                    f"The minimum required version is 4.50.3.\n"\
+                    f'Try `pip install --upgrade "transformers>=4.50.3"`\n'\
+                    f"to obtain the latest transformers build, then restart this session."\
+                )
         # Temporary disable optimized Cohere until errors match
         # elif model_type == "cohere":
         #     dispatch_model = FastCohereModel
@@ -530,19 +547,42 @@ class FastModel(FastBaseModel):
         lowered_model_name = model_name.lower()
         LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
         NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
+        # Pixtral
         if "pixtral" in lowered_model_name and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
+        # Qwen 2.5
         elif "qwen2.5" in lowered_model_name and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
+        # Gemma 3
         elif "gemma-3" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+        # Cohere
         elif "c4ai-command-a-03-2025" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
+        # Sesame
         elif "csm-1b" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = "torch.float16;if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "all;torch.float32;torch.float16;"\
+                "if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16);"
+        # Granite 4
+        elif 'granite-4' in lowered_model_name:
+            # granite-4 rms norms are stored as 16 bit, but we upcast
+            os.environ["UNSLOTH_UPCAST_LAYERNORM"] = "1"
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+        # Olmo 2
         elif "olmo-2" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
+        # Gemma 3N
+        elif "gemma-3n" in lowered_model_name:
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "float16;torch.float16;torch.float16;"\
+                "if name.endswith(('.conv')): module;"\
+                "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
+            
+            if transformers_version < Version("4.53.0"):
+                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
@@ -726,6 +766,10 @@ class FastModel(FastBaseModel):
                 trust_remote_code       = trust_remote_code,
                 unsloth_force_compile   = unsloth_force_compile,
             )
+        pass
+        # Fix SDPA
+        if "gemma-3n" in lowered_model_name:
+            supports_sdpa = False
         pass
 
         # Check if this is local model since the tokenizer gets overwritten
