@@ -763,6 +763,8 @@ def LlamaModel_fast_forward(
         pads_right = (attention_mask[:, -1] == 0).any()
         if pads_right.item():
             os.environ["UNSLOTH_KEEP_PADDING"] = '1'
+        else:
+            os.environ["UNSLOTH_KEEP_PADDING"] = '0'
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
