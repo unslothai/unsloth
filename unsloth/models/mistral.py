@@ -89,6 +89,11 @@ def MistralAttention_fast_forward(
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
         cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
+        if cos.device != Q.device:
+            cos = cos.to(Q.device)
+            sin = sin.to(Q.device)
+        if Q.device != K.device:
+            raise ValueError("Q and K must be on the same device")
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 

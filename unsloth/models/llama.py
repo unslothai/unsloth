@@ -209,6 +209,8 @@ def LlamaAttention_fast_forward_inference(
         This means we can pass in a row of Q, but we need to
         remember K and V, which are called the KV cache.
     """
+    if position_ids is not None:
+        position_ids = position_ids.to('cpu')
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -269,8 +271,8 @@ def LlamaAttention_fast_forward_inference(
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len)
-    cos = cos[position_ids].unsqueeze(1)
-    sin = sin[position_ids].unsqueeze(1)
+    cos = cos[position_ids].unsqueeze(1).to(Qn.device)
+    sin = sin[position_ids].unsqueeze(1).to(Qn.device)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
@@ -1019,6 +1021,16 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         next_decoder_cache = []
 
         for idx, decoder_layer in enumerate(self.model.layers):
+            print(f'Inference through layer {idx}')
+            decoder_device = decoder_layer.self_attn.q_proj.weight.device
+            if X.device != decoder_device:
+                X = X.to(decoder_device)
+            if residual.device != decoder_device:
+                residual = residual.to(decoder_device)
+            if temp_gate.device != decoder_device:
+                temp_gate = temp_gate.to(decoder_device)
+            if temp_up.device != decoder_device:
+                temp_up = temp_up.to(decoder_device)
             residual.copy_(X) # residual = X
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
