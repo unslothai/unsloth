@@ -69,10 +69,8 @@ pass
 
 class UnslothTrainingArguments(TrainingArguments):
     def __init__(self, embedding_learning_rate: float = None, *args, **kwargs):
-        embedding_learning_rate : Optional[float] = field(
-            default = embedding_learning_rate,
-            metadata = {"help" : "Different learning rates for embeddings and lm_head."}
-        )
+        embedding_learning_rate = embedding_learning_rate
+        super().__init__(*args, **kwargs)
 pass
 
 
