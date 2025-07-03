@@ -83,18 +83,10 @@ def MistralAttention_fast_forward(
     # Extend RoPE dynamically to fit in VRAM
     self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
 
+    cos, sin = self.rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
     if position_ids is None:
-        cos = self.rotary_emb.cos_cached
-        sin = self.rotary_emb.sin_cached
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
-        if cos.device != Q.device:
-            # without this, even though V is on GPU0, by the time we reach the foward function
-            # the argument x is on GPU1, and hence cos, sin end up on GPU1
-            # this is a hack to get around this quirk
-            cos = cos.to(Q.device)
-            sin = sin.to(Q.device)
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 

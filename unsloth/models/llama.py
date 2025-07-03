@@ -20,6 +20,7 @@ from typing import Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__
+from ._utils import move_to_device
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
@@ -270,9 +271,9 @@ def LlamaAttention_fast_forward_inference(
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len)
-    cos = cos[position_ids].unsqueeze(1).to(Qn.device)
-    sin = sin[position_ids].unsqueeze(1).to(Qn.device)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, device = Qn.device)
+    cos = cos[position_ids].unsqueeze(1)
+    sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
@@ -472,11 +473,12 @@ def LlamaAttention_fast_forward(
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
 
-        if position_ids is None:
-            # Useful for LongRoPE
-            cos, sin = rotary_emb.get_cached(kv_seq_len)
-        else:
-            cos, sin = rotary_emb(V, seq_len = kv_seq_len)
+        # if position_ids is None:
+        #     # Useful for LongRoPE
+        #     cos, sin = rotary_emb.get_cached(kv_seq_len, device = Q.device)
+        # else:
+        #     cos, sin = rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
+        cos, sin = rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
 
     # Q, K = (
     #     fast_rope_embedding(Q, K, cos, sin)
@@ -893,7 +895,7 @@ def LlamaModel_fast_forward(
         # Also, transformers 4.45.0 supports granite but with the attention refactor (it always had the refactor)
         # unsloth's check for granite too has "version >= 4.45.0 (rightly so)".
         # so let granite always use the attention refactor implementation.
-        position_embeddings = self.rotary_emb(hidden_states, position_ids, self.config.max_position_embeddings)
+        position_embeddings = self.rotary_emb.get_cached(seq_len = self.config.max_position_embeddings, device = hidden_states.device)
     else:
         position_embeddings = None
 
@@ -1022,16 +1024,9 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
 
         for idx, decoder_layer in enumerate(self.model.layers):
             decoder_device = decoder_layer.self_attn.q_proj.weight.device
-            if X.device != decoder_device:
-                X = X.to(decoder_device)
-            if residual.device != decoder_device:
-                residual = residual.to(decoder_device)
-            if temp_gate.device != decoder_device:
-                temp_gate = temp_gate.to(decoder_device)
-            if temp_up.device != decoder_device:
-                temp_up = temp_up.to(decoder_device)
-            if position_ids.device != decoder_device:
-                position_ids = position_ids.to(decoder_device)
+            X, residual, temp_gate, temp_up, position_ids = move_to_device(
+                decoder_device, X, residual, temp_gate, temp_up, position_ids
+            )
             residual.copy_(X) # residual = X
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
@@ -1345,9 +1340,16 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
+        self.multi_gpu_cos_cached = {}
+        self.multi_gpu_sin_cached = {}
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
+        for device_idx in range(torch.cuda.device_count()):
+            self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device_idx), dtype=torch.get_default_dtype())
+        
+        # dummy so that patch_utils doesn't fail for now
+        self.cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -1362,30 +1364,36 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         freqs = torch.outer(t, inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        cos = emb.cos().to(dtype=dtype, device=device, non_blocking=True)
+        sin = emb.sin().to(dtype=dtype, device=device, non_blocking=True)
+        self.multi_gpu_cos_cached[device] = cos
+        self.multi_gpu_sin_cached[device] = sin
+        return cos, sin
     pass
 
     def forward(self, x, position_ids=None, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.current_rope_size:
+        if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
         return (
-            self.cos_cached[:seq_len].to(dtype = x.dtype),
-            self.sin_cached[:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_cos_cached[x.device][:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_sin_cached[x.device][:seq_len].to(dtype = x.dtype),
         )
     pass
 
-    def get_cached(self, seq_len = None):
-        return self.cos_cached, self.sin_cached
+    def get_cached(self, seq_len = None, device = None):
+        if device is None:
+            device = torch.cuda.current_device()
+        return self.multi_gpu_cos_cached[device], self.multi_gpu_sin_cached[device]
     pass
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        self._set_cos_sin_cache(self.current_rope_size, device = DEVICE_TYPE, dtype = x.dtype)
+        for device_idx in range(torch.cuda.device_count()):
+            self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 pass
 
@@ -1413,8 +1421,11 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         freqs = torch.outer(t, inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        cos = emb.cos().to(dtype=dtype, device=device, non_blocking=True)
+        sin = emb.sin().to(dtype=dtype, device=device, non_blocking=True)
+        self.multi_gpu_cos_cached[device] = cos
+        self.multi_gpu_sin_cached[device] = sin
+        return cos, sin
     pass
 pass
 
@@ -1440,6 +1451,8 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
+        self.multi_gpu_cos_cached = {}
+        self.multi_gpu_sin_cached = {}
 
         # Normal Llama-3 RoPE
         inv_freq = 1.0 / (
@@ -1449,7 +1462,12 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
+        for device_idx in range(torch.cuda.device_count()):
+            self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device_idx), dtype=torch.get_default_dtype())
+        
+        # dummy so that patch_utils doesn't fail for now
+        self.cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -1462,8 +1480,36 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         freqs = torch.outer(t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
-        self.register_buffer("sin_cached", emb.sin().to(dtype=dtype, device=device, non_blocking=True), persistent=False)
+        cos = emb.cos().to(dtype=dtype, device=device, non_blocking=True)
+        sin = emb.sin().to(dtype=dtype, device=device, non_blocking=True)
+        self.multi_gpu_cos_cached[device] = cos
+        self.multi_gpu_sin_cached[device] = sin
+        return cos, sin
+    pass
+
+    def forward(self, x, position_ids=None, seq_len=None):
+        # x: [bs, num_attention_heads, seq_len, head_size]
+        if seq_len is not None and seq_len > self.current_rope_size:
+            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
+
+        return (
+            self.multi_gpu_cos_cached[x.device][:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_sin_cached[x.device][:seq_len].to(dtype = x.dtype),
+        )
+    pass
+
+    def get_cached(self, seq_len = None, device = None):
+        if device is None:
+            device = torch.cuda.current_device()
+        return self.multi_gpu_cos_cached[device], self.multi_gpu_sin_cached[device]
+    pass
+
+    def extend_rope_embedding(self, x, seq_len):
+        if seq_len <= self.current_rope_size: return
+        # Iteratively grow by increments of 8192
+        self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
+        for device_idx in range(torch.cuda.device_count()):
+            self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 
     # From https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py#L41
@@ -1490,28 +1536,6 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
                 )
                 new_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
         return torch.tensor(new_freqs, dtype=freqs.dtype, device=freqs.device)
-    pass
-
-    def forward(self, x, position_ids=None, seq_len=None):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.current_rope_size:
-            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
-
-        return (
-            self.cos_cached[:seq_len].to(dtype = x.dtype),
-            self.sin_cached[:seq_len].to(dtype = x.dtype),
-        )
-    pass
-
-    def get_cached(self, seq_len = None):
-        return self.cos_cached, self.sin_cached
-    pass
-
-    def extend_rope_embedding(self, x, seq_len):
-        if seq_len <= self.current_rope_size: return
-        # Iteratively grow by increments of 8192
-        self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        self._set_cos_sin_cache(self.current_rope_size, device = DEVICE_TYPE, dtype = x.dtype)
     pass
 pass
 
@@ -1548,6 +1572,10 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(original_max_position_embeddings, self.max_position_embeddings)
+        self.multi_gpu_short_cos_cached = {}
+        self.multi_gpu_short_sin_cached = {}
+        self.multi_gpu_long_cos_cached = {}
+        self.multi_gpu_long_sin_cached = {}
 
         # Long RoPE similar to RoPE except short sequences have 1 cos / sin
         # and long sequences have another cos / sin
@@ -1569,18 +1597,26 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         # Short and long inv_freq
         self.register_buffer("short_inv_freq", short_inv_freq, persistent = False)
         self.register_buffer("long_inv_freq",  long_inv_freq,  persistent = False)
+        
         # Build here to make `torch.jit.trace` work.
-        # self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
-
-        # Short sequences
+        # Initialize short sequences cache for all devices
         dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
         t = torch.arange(original_max_position_embeddings, device=self.short_inv_freq.device, dtype=torch.int64).float()
         freqs = torch.outer(t, self.short_inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
-        cos_cached = (emb.cos() * self.scaling_factor).to(dtype=dtype, device=device, non_blocking=True)
-        sin_cached = (emb.sin() * self.scaling_factor).to(dtype=dtype, device=device, non_blocking=True)
-        self.register_buffer("short_cos_cached", cos_cached, persistent=False)
-        self.register_buffer("short_sin_cached", sin_cached, persistent=False)
+        
+        for device_idx in range(torch.cuda.device_count()):
+            device_obj = torch.device(device_idx)
+            cos_cached = (emb.cos() * self.scaling_factor).to(dtype=dtype, device=device_obj, non_blocking=True)
+            sin_cached = (emb.sin() * self.scaling_factor).to(dtype=dtype, device=device_obj, non_blocking=True)
+            self.multi_gpu_short_cos_cached[device_obj] = cos_cached
+            self.multi_gpu_short_sin_cached[device_obj] = sin_cached
+        
+        # dummy so that patch_utils doesn't fail for now
+        self.short_cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.short_sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.long_cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.long_sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -1594,39 +1630,43 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)
         cos_cached = (emb.cos() * self.scaling_factor).to(dtype=dtype, device=device, non_blocking=True)
         sin_cached = (emb.sin() * self.scaling_factor).to(dtype=dtype, device=device, non_blocking=True)
-        self.register_buffer("long_cos_cached", cos_cached, persistent=False)
-        self.register_buffer("long_sin_cached", sin_cached, persistent=False)
+        self.multi_gpu_long_cos_cached[device] = cos_cached
+        self.multi_gpu_long_sin_cached[device] = sin_cached
+        return cos_cached, sin_cached
     pass
 
     def forward(self, x, position_ids=None, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.current_rope_size:
+        if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
-        if seq_len < self.original_max_position_embeddings:
+        if seq_len is not None and seq_len < self.original_max_position_embeddings:
             return (
-                self.short_cos_cached[:seq_len].to(dtype = x.dtype),
-                self.short_sin_cached[:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_short_cos_cached[x.device][:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_short_sin_cached[x.device][:seq_len].to(dtype = x.dtype),
             )
         else:
             return (
-                self.long_cos_cached[:seq_len].to(dtype = x.dtype),
-                self.long_sin_cached[:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_long_cos_cached[x.device][:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_long_sin_cached[x.device][:seq_len].to(dtype = x.dtype),
             )
         pass
     pass
 
-    def get_cached(self, seq_len = None):
-        if seq_len < self.original_max_position_embeddings:
-            return self.short_cos_cached, self.short_sin_cached
-        return self.long_cos_cached, self.long_sin_cached
+    def get_cached(self, seq_len = None, device = None):
+        if device is None:
+            device = torch.cuda.current_device()
+        if seq_len is not None and seq_len < self.original_max_position_embeddings:
+            return self.multi_gpu_short_cos_cached[device], self.multi_gpu_short_sin_cached[device]
+        return self.multi_gpu_long_cos_cached[device], self.multi_gpu_long_sin_cached[device]
     pass
 
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        self._set_cos_sin_cache(self.current_rope_size, device = DEVICE_TYPE, dtype = x.dtype)
+        for device_idx in range(torch.cuda.device_count()):
+            self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 pass
 

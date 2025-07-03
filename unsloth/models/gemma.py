@@ -170,6 +170,12 @@ def GemmaModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
+
+        decoder_device = decoder_layer.self_attn.q_proj.weight.device
+        hidden_states, out_weight, position_ids = move_to_device(
+            decoder_device, hidden_states, out_weight, position_ids
+        )
+
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
@@ -299,7 +305,7 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-# Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
+        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
 
@@ -315,10 +321,11 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device = "cuda", non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = "cuda", non_blocking = True)#, dtype = dtype)
-        self.register_buffer("cos_cached", cos, persistent = False)
-        self.register_buffer("sin_cached", sin, persistent = False)
+        cos = emb.cos().to(device = device, non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = device, non_blocking = True)#, dtype = dtype)
+        self.multi_gpu_cos_cached[device] = cos
+        self.multi_gpu_sin_cached[device] = sin
+        return cos, sin
     pass
 pass
 

@@ -395,10 +395,15 @@ def GraniteModel_fast_forward_inference(
         attention_mask = None
     pass
 
-    position_embeddings = self.model.rotary_emb(hidden_states, position_ids, self.max_seq_length)
+    position_embeddings = self.model.rotary_emb.get_cached(seq_len = self.max_seq_length, device = hidden_states.device)
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
+
+        decoder_device = decoder_layer.self_attn.q_proj.weight.device
+        hidden_states, position_ids = move_to_device(
+            decoder_device, hidden_states, position_ids
+        )
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
