@@ -518,6 +518,13 @@ def LlamaAttention_fast_forward(
         V = V.transpose(1, 2)
         A = flash_attn_func(Q, K, V, causal = True)
     else:
+        # when qlen==vlen and attn_mask is None, we should use causal attention
+        Q_len = Q.shape[-2]
+        K_len = K.shape[-2]
+        if attention_mask is None and Q_len == K_len:
+            is_causal = True
+        else:
+            is_causal = False
         # Grouped query attention
         if SDPA_HAS_GQA:
             # Needs (batch_size, n_heads, seq_len, head_dim)
