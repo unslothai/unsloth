@@ -61,9 +61,13 @@ else:
     pass
 pass
 
-from trl import SFTConfig
-@dataclass
-class UnslothTrainingArguments(SFTConfig):
+try:
+    from trl import SFTConfig as TrainingArguments
+except:
+    from transformers import TrainingArguments
+pass
+
+class UnslothTrainingArguments(TrainingArguments):
     embedding_learning_rate : Optional[float] = field(
         default = None,
         metadata = {"help" : "Different learning rates for embeddings and lm_head."}
