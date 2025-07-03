@@ -561,6 +561,7 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
         # Sesame
         elif "csm-1b" in lowered_model_name:
+            os.environ["UNSLOTH_COMPILE_DISABLE"] = "1" # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                 "all;torch.float32;torch.float16;"\
