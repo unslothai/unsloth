@@ -66,12 +66,11 @@ try:
 except:
     from transformers import TrainingArguments
 pass
-@dataclass
+
 class UnslothTrainingArguments(TrainingArguments):
-    embedding_learning_rate : Optional[float] = field(
-        default = None,
-        metadata = {"help" : "Different learning rates for embeddings and lm_head."}
-    )
+    def __init__(self, embedding_learning_rate: float = None, *args, **kwargs):
+        embedding_learning_rate = embedding_learning_rate
+        super().__init__(*args, **kwargs)
 pass
 
 
