@@ -114,11 +114,11 @@ def Gemma2Attention_fast_forward(
         kv_seq_len += past_key_value[0].shape[-2]
 
     if position_ids is None:
-        cos = self.rotary_emb.cos_cached
-        sin = self.rotary_emb.sin_cached
+        cos = self.rotary_emb.multi_gpu_cos_cached[Q.device]
+        sin = self.rotary_emb.multi_gpu_sin_cached[Q.device]
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
+        cos, sin = self.rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
@@ -307,8 +307,9 @@ def Gemma2Attention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1).to(Qn.device)
-    sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1).to(Qn.device)
+    cos, sin = self.rotary_emb.get_cached(seq_len = kv_seq_len, device = Qn.device)
+    cos = cos[position_ids].unsqueeze(1)
+    sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
@@ -385,7 +386,7 @@ def Gemma2Model_fast_forward_inference(
     past_key_values,
     position_ids,
     attention_mask = None,
-):
+):  
     out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
@@ -421,6 +422,17 @@ def Gemma2Model_fast_forward_inference(
     pass
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
+
+        # For pipeline parallelism, we need to move all tensors to the same device
+        # note that this movement is once per GPU in PP
+        layer_device = decoder_layer.self_attn.q_proj.weight.device
+        if hidden_states.device != layer_device:
+            hidden_states = hidden_states.to(layer_device)
+        if out_weight.device != layer_device:
+            out_weight = out_weight.to(layer_device)
+        if position_ids.device != layer_device:
+            position_ids = position_ids.to(layer_device)
+        pass
 
         use_sliding_window = idx % 2 == 0
 
