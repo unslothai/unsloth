@@ -114,8 +114,8 @@ def Gemma2Attention_fast_forward(
         kv_seq_len += past_key_value[0].shape[-2]
 
     if position_ids is None:
-        cos = self.rotary_emb.multi_gpu_cos_cached[Q.device]
-        sin = self.rotary_emb.multi_gpu_sin_cached[Q.device]
+        cos = self.rotary_emb.multi_gpu_cos_cached[Q.device.index]
+        sin = self.rotary_emb.multi_gpu_sin_cached[Q.device.index]
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
         cos, sin = self.rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)

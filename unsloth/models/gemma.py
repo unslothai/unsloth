@@ -230,8 +230,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
-        self.multi_gpu_cos_cached = {}
-        self.multi_gpu_sin_cached = {}
+        self.multi_gpu_cos_cached = [None]*torch.cuda.device_count()
+        self.multi_gpu_sin_cached = [None]*torch.cuda.device_count()
 
         # Build here to make `torch.jit.trace` work.
         for device in range(torch.cuda.device_count()):
@@ -260,8 +260,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         # We must do RoPE in float32!
         cos = emb.cos().to(device = device, non_blocking = True)#, dtype = dtype)
         sin = emb.sin().to(device = device, non_blocking = True)#, dtype = dtype)
-        self.multi_gpu_cos_cached[device] = cos
-        self.multi_gpu_sin_cached[device] = sin
+        self.multi_gpu_cos_cached[device.index] = cos
+        self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
     pass
 
@@ -271,15 +271,15 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
         return (
-            self.multi_gpu_cos_cached[x.device][:seq_len].to(dtype=x.dtype),
-            self.multi_gpu_sin_cached[x.device][:seq_len].to(dtype=x.dtype),
+            self.multi_gpu_cos_cached[x.device.index][:seq_len].to(dtype=x.dtype),
+            self.multi_gpu_sin_cached[x.device.index][:seq_len].to(dtype=x.dtype),
         )
     pass
 
     def get_cached(self, seq_len = None, device = None):
         if device is None:
             device = torch.cuda.current_device()
-        return self.multi_gpu_cos_cached[device], self.multi_gpu_sin_cached[device]
+        return self.multi_gpu_cos_cached[device.index], self.multi_gpu_sin_cached[device.index]
     pass
 
     def extend_rope_embedding(self, x, seq_len):
@@ -323,8 +323,8 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
         # We must do RoPE in float32!
         cos = emb.cos().to(device = device, non_blocking = True)#, dtype = dtype)
         sin = emb.sin().to(device = device, non_blocking = True)#, dtype = dtype)
-        self.multi_gpu_cos_cached[device] = cos
-        self.multi_gpu_sin_cached[device] = sin
+        self.multi_gpu_cos_cached[device.index] = cos
+        self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
     pass
 pass
