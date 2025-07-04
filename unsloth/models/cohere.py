@@ -254,8 +254,7 @@ def CohereAttention_fast_forward_inference(
     do_prefill = False,
     attention_mask = None,
 ):
-    if position_ids is not None:
-        position_ids = position_ids.to('cpu')
+
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
