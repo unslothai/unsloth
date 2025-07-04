@@ -318,6 +318,13 @@ def LlamaAttention_fast_forward_inference(
     #     Knn, Vnn = Knn, Vnn
     # pass
 
+    # when qlen==vlen and attn_mask is None, we should use causal attention
+    Q_len = Q.shape[-2]
+    K_len = K.shape[-2]
+    if attention_mask is None and Q_len == K_len:
+        is_causal = True
+    else:
+        is_causal = False
     # Attention
     if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
