@@ -319,8 +319,8 @@ def LlamaAttention_fast_forward_inference(
     # pass
 
     # when qlen==vlen and attn_mask is None, we should use causal attention
-    Q_len = Q.shape[-2]
-    K_len = K.shape[-2]
+    Q_len = Qn.shape[-2]
+    K_len = Knn.shape[-2]
     if attention_mask is None and Q_len == K_len:
         is_causal = True
     else:
