@@ -254,6 +254,7 @@ def CohereAttention_fast_forward_inference(
     do_prefill = False,
     attention_mask = None,
 ):
+
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -320,7 +321,7 @@ def CohereAttention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, device = Qn.device)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
@@ -417,6 +418,10 @@ def CohereModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
+        decoder_device = decoder_layer.self_attn.q_proj.weight.device
+        hidden_states, out_weight, position_ids = move_to_device(
+            decoder_device, hidden_states, out_weight, position_ids
+        )
         residual = hidden_states
         hidden_states = fast_layernorm_inference(decoder_layer.input_layernorm, hidden_states, out_weight)
         hidden_states_attention, present_key_value = CohereAttention_fast_forward_inference(

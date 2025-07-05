@@ -83,12 +83,10 @@ def MistralAttention_fast_forward(
     # Extend RoPE dynamically to fit in VRAM
     self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
 
+    cos, sin = self.rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
     if position_ids is None:
-        cos = self.rotary_emb.cos_cached
-        sin = self.rotary_emb.sin_cached
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
