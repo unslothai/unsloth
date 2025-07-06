@@ -72,7 +72,7 @@ NUM_LOGITS_TO_KEEP = dict()
 global PROMPT_LOOPKUP
 PROMPT_LOOPKUP = dict()
 
-from transformers import GenerationConfig, CompileConfig, HybridCache
+from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig
 _compile_config = CompileConfig(
     fullgraph = False,
     dynamic = None,
@@ -260,8 +260,19 @@ class FastBaseModel:
         supports_sdpa     = True,
         whisper_language  = None,
         whisper_task      = None,
+        fast_inference   = False,
+        gpu_memory_utilization = 0.5,
+        float8_kv_cache   = False,
+        random_state      = 3407,
+        max_lora_rank     = 16,
+        disable_log_stats = False,
+        unsloth_vllm_standby = False,
         **kwargs,
-    ):
+    ):  
+        if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
+            raise RuntimeError("Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!")
+        pass
+
         if model_types is None:
             raise RuntimeError(
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
@@ -422,16 +433,61 @@ class FastBaseModel:
         torch_dtype = dtype
         if do_forced_float32: torch_dtype = torch.bfloat16
 
-        model = auto_model.from_pretrained(
-            model_name,
-            device_map              = device_map,
-            torch_dtype             = torch_dtype,
-            # quantization_config   = bnb_config,
-            token                   = token,
-            trust_remote_code       = trust_remote_code,
-            # attn_implementation   = attn_implementation,
-            **kwargs,
-        )
+        if not fast_inference:
+            model = auto_model.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = torch_dtype,
+                # quantization_config   = bnb_config,
+                token                   = token,
+                trust_remote_code       = trust_remote_code,
+                # attn_implementation   = attn_implementation,
+                **kwargs,
+            )
+            model.fast_generate = model.generate
+            model.fast_generate_batches = None
+        else:
+            from unsloth_zoo.vllm_utils import (
+                load_vllm,
+                get_vllm_state_dict,
+                convert_vllm_to_huggingface,
+                generate_batches,
+            )
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                attn_implementation = "sdpa",
+            )
+
+            allowed_args = inspect.getfullargspec(load_vllm).args
+            load_vllm_kwargs = dict(
+                model_name             = model_name,
+                config                 = model_config,
+                gpu_memory_utilization = gpu_memory_utilization,
+                max_seq_length         = max_seq_length,
+                dtype                  = dtype,
+                float8_kv_cache        = float8_kv_cache,
+                enable_lora            = False,
+                max_lora_rank          = max_lora_rank,
+                disable_log_stats      = disable_log_stats,
+                use_bitsandbytes       = load_in_4bit,
+                unsloth_vllm_standby   = unsloth_vllm_standby,
+            )
+            for allowed_arg in allowed_args:
+                if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
+                    load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
+            pass
+
+            # Load vLLM first
+            llm = load_vllm(**load_vllm_kwargs)
+
+            # Convert to HF format
+            _, quant_state_dict = get_vllm_state_dict(llm, config = model_config)
+            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config)
+            model.vllm_engine = llm
+            model.fast_generate = model.vllm_engine.generate
+            model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
+        pass
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
