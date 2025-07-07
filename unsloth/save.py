@@ -889,7 +889,9 @@ def install_llama_cpp_old(version = -10):
         os.path.exists("llama.cpp/llama-quantize") or
         os.path.exists("llama.cpp/quantize.exe") or
         os.path.exists("llama.cpp/quantize") or
+        os.path.exists("llama.cpp/build/bin/Release/llama-quantize.exe") or
         os.path.exists("llama.cpp/build/bin/llama-quantize") or
+        os.path.exists("llama.cpp/build/bin/Release/quantize.exe") or
         os.path.exists("llama.cpp/build/bin/quantize")
     ):
         raise RuntimeError(
@@ -1077,18 +1079,21 @@ def save_to_gguf(
         # and llama.cpp/main changed to llama.cpp/llama-cli
         # See https://github.com/ggerganov/llama.cpp/pull/7809
         quantize_location = None
-        if os.path.exists("llama.cpp/quantize.exe"):
-            quantize_location = "llama.cpp/quantize.exe"
-        elif os.path.exists("llama.cpp/quantize"):
-            quantize_location = "llama.cpp/quantize"
-        elif os.path.exists("llama.cpp/llama-quantize.exe"):
-            quantize_location = "llama.cpp/llama-quantize.exe"
-        elif os.path.exists("llama.cpp/llama-quantize"):
-            quantize_location = "llama.cpp/llama-quantize"
-        elif os.path.exists("llama.cpp/build/bin/llama-quantize"):
-            quantize_location = "llama.cpp/build/bin/llama-quantize"
-        elif os.path.exists("llama.cpp/build/bin/quantize"):
-            quantize_location = "llama.cpp/build/bin/quantize"
+        possible_paths = [
+            os.path.join(".", "llama.cpp", "quantize.exe"),
+            os.path.join(".", "llama.cpp", "quantize"),
+            os.path.join(".", "llama.cpp", "llama-quantize.exe"),
+            os.path.join(".", "llama.cpp", "llama-quantize"),
+            os.path.join(".", "llama.cpp", "build", "bin", "llama-quantize"),
+            os.path.join(".", "llama.cpp", "build", "bin", "quantize"),
+            os.path.join(".", "llama.cpp", "build", "bin", "Release", "llama-quantize.exe"),
+            os.path.join(".", "llama.cpp", "build", "bin", "Release", "quantize.exe")
+        ]
+
+        for path in possible_paths:
+            if os.path.exists(path):
+                quantize_location = path
+                break
         else:
             raise RuntimeError(
                 "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
@@ -1239,7 +1244,7 @@ def save_to_gguf(
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This might take 20 minutes...")
             final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
 
-            command = f"./{quantize_location} {full_precision_location} "\
+            command = f"{quantize_location} {full_precision_location} "\
                 f"{final_location} {quant_method} {n_cpus}"
 
             try_execute([command,], force_complete = True)
