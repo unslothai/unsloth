@@ -884,16 +884,7 @@ def install_llama_cpp_old(version = -10):
     pass
 
     # Check if successful
-    if not (
-        os.path.exists("llama.cpp/llama-quantize.exe") or
-        os.path.exists("llama.cpp/llama-quantize") or
-        os.path.exists("llama.cpp/quantize.exe") or
-        os.path.exists("llama.cpp/quantize") or
-        os.path.exists("llama.cpp/build/bin/Release/llama-quantize.exe") or
-        os.path.exists("llama.cpp/build/bin/llama-quantize") or
-        os.path.exists("llama.cpp/build/bin/Release/quantize.exe") or
-        os.path.exists("llama.cpp/build/bin/quantize")
-    ):
+    if not (get_local_llamacpp_quantize_location()):
         raise RuntimeError(
             "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
             "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
@@ -948,6 +939,27 @@ def get_executable(executables):
     pass
     return None
 pass
+
+def get_local_llamacpp_quantize_location():
+    # Look for llama.cpp quantize binary in a local installation
+    # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
+    # and llama.cpp/main changed to llama.cpp/llama-cli
+    # See https://github.com/ggerganov/llama.cpp/pull/7809
+    possible_paths = [
+        os.path.join(".", "llama.cpp", "quantize.exe"),
+        os.path.join(".", "llama.cpp", "quantize"),
+        os.path.join(".", "llama.cpp", "llama-quantize.exe"),
+        os.path.join(".", "llama.cpp", "llama-quantize"),
+        os.path.join(".", "llama.cpp", "build", "bin", "llama-quantize"),
+        os.path.join(".", "llama.cpp", "build", "bin", "quantize"),
+        os.path.join(".", "llama.cpp", "build", "bin", "Release", "llama-quantize.exe"),
+        os.path.join(".", "llama.cpp", "build", "bin", "Release", "quantize.exe")
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
+    return None
 
 
 def save_to_gguf(
@@ -1075,26 +1087,8 @@ def save_to_gguf(
             install_llama_cpp_blocking()
         pass
 
-        # Careful llama.cpp/quantize changed to llama.cpp/llama-quantize
-        # and llama.cpp/main changed to llama.cpp/llama-cli
-        # See https://github.com/ggerganov/llama.cpp/pull/7809
-        quantize_location = None
-        possible_paths = [
-            os.path.join(".", "llama.cpp", "quantize.exe"),
-            os.path.join(".", "llama.cpp", "quantize"),
-            os.path.join(".", "llama.cpp", "llama-quantize.exe"),
-            os.path.join(".", "llama.cpp", "llama-quantize"),
-            os.path.join(".", "llama.cpp", "build", "bin", "llama-quantize"),
-            os.path.join(".", "llama.cpp", "build", "bin", "quantize"),
-            os.path.join(".", "llama.cpp", "build", "bin", "Release", "llama-quantize.exe"),
-            os.path.join(".", "llama.cpp", "build", "bin", "Release", "quantize.exe")
-        ]
-
-        for path in possible_paths:
-            if os.path.exists(path):
-                quantize_location = path
-                break
-        else:
+        quantize_location = get_local_llamacpp_quantize_location()
+        if quantize_location is None:
             raise RuntimeError(
                 "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
                 "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
