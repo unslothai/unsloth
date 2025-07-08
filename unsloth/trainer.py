@@ -66,7 +66,7 @@ try:
 except:
     from transformers import TrainingArguments
 pass
-@dataclass
+
 class UnslothTrainingArguments(TrainingArguments):
     """
     UnslothTrainingArguments is a dataclass that extends the base TrainingArguments class to provide additional configuration options for training models with Unsloth optimizations.
@@ -76,10 +76,9 @@ class UnslothTrainingArguments(TrainingArguments):
             Optional different learning rate for embeddings and lm_head.
             If not specified, defaults to the same learning rate as other parameters.
     """
-    embedding_learning_rate : Optional[float] = field(
-        default = None,
-        metadata = {"help" : "Different learning rates for embeddings and lm_head."}
-    )
+    def __init__(self, embedding_learning_rate: float = None, *args, **kwargs):
+        embedding_learning_rate = embedding_learning_rate
+        super().__init__(*args, **kwargs)
 pass
 
 

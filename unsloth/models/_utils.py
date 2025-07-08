@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.6.5"
+__version__ = "2025.7.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -65,6 +65,7 @@ __all__ = [
     "process_vision_info",
     "unsloth_compile_transformers",
     "patch_fast_lora",
+    "validate_loftq_config",
 ]
 
 import torch
@@ -76,6 +77,7 @@ import contextlib
 import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
+from unsloth_zoo import DEVICE_TYPE
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -167,6 +169,8 @@ from transformers.training_args import logger as transformers_training_args_logg
 transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 # torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
 transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
+# average_tokens_across_devices is set to True but it is invalid when world size is1
+transformers_training_args_logger.addFilter(HideLoggingMessage("average_tokens_across_devices"))
 del transformers_training_args_logger
 
 # No label_names provided for model class
@@ -217,33 +221,20 @@ except:
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
 
-def extract_approx_params_from_config(config: PretrainedConfig) -> Optional[int]:
-    """
-    Extract approximate parameter count from model config's name_or_path
-    Returns int (param count) or None if not found.
-    """
-    lowercase_b_families = ["gemma"] # gemma uses small 'b' : google/gemma-3-1b-it
-    model_name = getattr(config, "name_or_path", "")
-    import re
-    cleaned = re.sub(r"[-_]?bnb[-_]?4bit|[-_]?4bit|[-_]?8bit|[-_]?bnb", "", model_name, flags=re.IGNORECASE) # replace bnb and xbit
-    match_B = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*B", cleaned) # first prefer searching 'B'
-    if match_B:
-        # most model names would come in this flow
-        billions = float(match_B.group(1))
-        return int(1_000_000_000 * billions)
-    else:
-        if any(fam in cleaned.lower() for fam in lowercase_b_families):
-            match_b = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*b", cleaned)
-            if match_b:
-                billions = float(match_b.group(1))
-                return int(1_000_000_000 * billions)
-        else:
-            match_any = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*[bB]", cleaned)
-            if match_any:
-                billions = float(match_any.group(1))
-                return int(1_000_000_000 * billions)
-    return None
 
+def extract_quant_model_param_count(model: nn.Module) -> int:
+    """
+    Calculate number of parameters of the quantized model.
+    Returns int for parameters count.
+    """
+    count: int = 0
+    for name, p in model.named_parameters():
+        if p.__class__.__name__ == "Params4bit":
+            count += 2 * p.numel()
+        else:
+            count += p.numel()
+    return count
+pass
 
 def get_model_param_count(model: nn.Module, trainable_only: bool = False) -> int:
     """
@@ -259,7 +250,7 @@ def get_model_param_count(model: nn.Module, trainable_only: bool = False) -> int
     if (not trainable_only) and \
         hasattr(model, "config") and \
         hasattr(model.config, "quantization_config"):
-        approx = extract_approx_params_from_config(model.config)
+        approx = extract_quant_model_param_count(model)
         if approx is not None:
             s = approx
     return s
@@ -302,7 +293,7 @@ pass
 
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
-model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe"]
+model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
 
 for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
@@ -341,13 +332,20 @@ pass
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 torch_version = torch.__version__
-if Version(torch_version) < Version("2.4.0"):
-    torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
-    torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
-else:
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
-pass
+if DEVICE_TYPE == "cuda":
+    if Version(torch_version) < Version("2.4.0"):
+        torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
+        torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
+    pass
+elif DEVICE_TYPE == "xpu":
+    if Version(torch_version) < Version("2.6.0"):
+        raise RuntimeError("torch.xpu currently only supports torch.version >= 2.6.0")
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 # =============================================
 
 # =============================================
@@ -384,64 +382,70 @@ if is_openai_available():
         def _is_openai_available(): return False
         transformers.utils.is_openai_available = _is_openai_available
     pass
-pass 
+pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
+if DEVICE_TYPE == "cuda":
+    import bitsandbytes as bnb
+
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
-major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
-if major_version >= 8:
-    SUPPORTS_BFLOAT16 = True
-    if _is_package_available("flash_attn"):
-        # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
-        try:
+if DEVICE_TYPE == "cuda":
+    major_version, minor_version = torch.cuda.get_device_capability()
+
+    if major_version >= 8:
+        SUPPORTS_BFLOAT16 = True
+        if _is_package_available("flash_attn"):
+            # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
             try:
-                # See https://github.com/unslothai/unsloth/issues/1437
-                from flash_attn.flash_attn_interface import flash_attn_gpu
+                try:
+                    # See https://github.com/unslothai/unsloth/issues/1437
+                    from flash_attn.flash_attn_interface import flash_attn_gpu
+                except:
+                    from flash_attn.flash_attn_interface import flash_attn_cuda
+                HAS_FLASH_ATTENTION = True
+
+                # Also check for softcapping
+                from flash_attn import __version__ as flash_attn_version
+                HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
+                if not HAS_FLASH_ATTENTION_SOFTCAPPING:
+                    print(
+                        "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
+                        "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
+                        "To update flash-attn, do the below:\n"\
+                        '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
+                    )
             except:
-                from flash_attn.flash_attn_interface import flash_attn_cuda
-            HAS_FLASH_ATTENTION = True
-
-            # Also check for softcapping
-            from flash_attn import __version__ as flash_attn_version
-            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
-            if not HAS_FLASH_ATTENTION_SOFTCAPPING:
                 print(
-                    "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
-                    "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
-                    "To update flash-attn, do the below:\n"\
-                    '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
+                    "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
+                    "A possible explanation is you have a new CUDA version which isn't\n"\
+                    "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
+                    "We shall now use Xformers instead, which does not have any performance hits!\n"\
+                    "We found this negligible impact by benchmarking on 1x A100."
                 )
-        except:
-            print(
-                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
-                "A possible explanation is you have a new CUDA version which isn't\n"\
-                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
-                "We shall now use Xformers instead, which does not have any performance hits!\n"\
-                "We found this negligible impact by benchmarking on 1x A100."
-            )
 
-            # Stop Flash Attention from importing!
-            import transformers.utils.import_utils
-            transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
-            import transformers.utils
-            transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+                # Stop Flash Attention from importing!
+                import transformers.utils.import_utils
+                transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+                import transformers.utils
+                transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
 
+                HAS_FLASH_ATTENTION = False
+            pass
+        else:
             HAS_FLASH_ATTENTION = False
-        pass
     else:
+        # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
-else:
-    # Tri Dao's benchmark shows xformers is faster for now.
-    HAS_FLASH_ATTENTION = False
-pass
+    pass
+elif DEVICE_TYPE == "xpu":
+    SUPPORTS_BFLOAT16 = True
 
 from transformers.models.llama.modeling_llama import logger
 
@@ -561,8 +565,6 @@ UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", 
 import functools
 from torch._inductor.runtime.hints import DeviceProperties
 
-from unsloth import DEVICE_TYPE
-
 @functools.lru_cache(None)
 def is_big_gpu(index: int) -> bool:
     """
@@ -577,17 +579,14 @@ def is_big_gpu(index: int) -> bool:
     """
 
     if DEVICE_TYPE == "xpu":
-        prop = torch.xpu.get_device_properties(index)
+        prop = DeviceProperties.create(torch.device("xpu", index) if type(index) is int else index)
+        min_sms = 16
     else:
-        prop = torch.cuda.get_device_properties(index)
+        prop = DeviceProperties.create(torch.device("cuda", index) if type(index) is int else index)
+        min_sms = 80
 
-    min_sms = 16 if device.type == "xpu" else 80
     avail_sms = prop.multi_processor_count
     if avail_sms < min_sms:
-        log.warning(
-            "Not enough SMs to use max_autotune_gemm mode",
-            extra={"min_sms": min_sms, "avail_sms": avail_sms},
-        )
         return False
     return True
 
@@ -1271,7 +1270,7 @@ pass
 
 def patch_gradient_accumulation_fix(Trainer) -> None:
     """
-    Fix gradient accumulation in the Trainer class.
+    Fixes gradient accumulation in the Trainer class.
     
     Args:
         Trainer: The Trainer class to patch.
@@ -1279,7 +1278,7 @@ def patch_gradient_accumulation_fix(Trainer) -> None:
     Returns:
         `None`
     """
-    # Fixes gradient accumulation 
+
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
@@ -1353,10 +1352,10 @@ def patch_gradient_accumulation_fix(Trainer) -> None:
         "\2if num_items_in_batch is None:\n"\
         "\3loss = loss / self.args.gradient_accumulation_steps\n"\
         "\1self.accelerator.backward(loss, **kwargs)",
-        
+
         function,
     )
-    
+
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
 pass
@@ -1630,3 +1629,63 @@ if USE_MODELSCOPE:
         raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
     pass
 pass
+
+
+def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
+    from peft import LoraConfig
+
+    if loftq_config is None: loftq_config = {}
+
+    signature = str(inspect.signature(LoraConfig))
+    SUPPORTS_LOFTQ  = "loftq_config" in signature
+
+    if lora_dropout != 0:
+        logger.warning_once(
+            f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"\
+            f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
+        )
+    pass
+
+    if bias != "none":
+        logger.warning_once(
+            f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"\
+            f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
+        )
+    pass
+
+    if not (type(init_lora_weights) is bool or \
+        init_lora_weights == "gaussian" or init_lora_weights == "loftq"):
+        raise ValueError(
+            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
+        )
+    pass
+
+    if init_lora_weights == "loftq":
+
+        if not SUPPORTS_LOFTQ:
+            import peft
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
+                "Please install PEFT 0.7.2 or higher.\n"\
+                "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+            )
+        pass
+
+        if loftq_config == {}:
+            from peft import LoftQConfig
+            logger.warning_once(
+                "Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
+                "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
+            )
+            loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
+        pass
+
+        if hasattr(model.config, "quantization_config"):
+            raise ValueError(
+                "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"\
+                "Reload your model without any quantization by setting `load_in_4bit = False`."
+            )
+        pass
+    pass
+
+    return loftq_config

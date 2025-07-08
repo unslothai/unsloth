@@ -16,7 +16,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_cuda_device
+from .utils import calculate_settings, torch_gpu_device
 from unsloth_zoo.patching_utils import (
     patch_layernorm,
 )
@@ -113,7 +113,7 @@ class Fast_Layernorm(torch.autograd.Function):
         r  = torch.empty(n_rows, dtype = torch.float32, device = device)
         mu = torch.empty(n_rows, dtype = torch.float32, device = device)
 
-        with torch_cuda_device(device):
+        with torch_gpu_device(device):
             layernorm_forward[(n_rows,)](
                 Y, Y.stride(0),
                 X, X.stride(0),
@@ -140,7 +140,7 @@ class Fast_Layernorm(torch.autograd.Function):
         X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
 
-        with torch_cuda_device(dY.device):
+        with torch_gpu_device(dY.device):
             layernorm_backward[(n_rows,)](
                 dY, dY.stride(0),
                 X,  X .stride(0),

@@ -16,7 +16,7 @@ from typing import Any
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_cuda_device
+from .utils import calculate_settings, torch_gpu_device
 
 @triton.jit
 def _rms_layernorm_forward(
@@ -157,7 +157,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         r = torch.empty(n_rows, dtype = torch.float32, device = device)
 
         fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
-        with torch_cuda_device(device):
+        with torch_gpu_device(device):
             fx[(n_rows,)](
                 Y, Y.stride(0),
                 X, X.stride(0),
@@ -187,7 +187,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         # dW = X
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
 
-        with torch_cuda_device(dY.device):
+        with torch_gpu_device(dY.device):
             _rms_layernorm_backward[(n_rows,)](
                 dY, dY.stride(0),
                 dX, dX.stride(0),
