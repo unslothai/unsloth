@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_cuda_device
+from .utils import calculate_settings, torch_gpu_device
 ROPE_GROUP_SIZE : int = 4
 
 def _rope_embedding(
@@ -100,7 +100,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         div, mod = divmod(n_heads, ROPE_GROUP_SIZE)
         n_groups : int = div + (mod != 0)
 
-        with torch_cuda_device(Q.device):
+        with torch_gpu_device(Q.device):
             _rope_embedding[(n_rows, n_groups, )](
                   Q,   Q.stride(0),
                 cos, cos.stride(0),
@@ -135,7 +135,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         cos = ctx.cos
         sin = ctx.sin
 
-        with torch_cuda_device(dY.device):
+        with torch_gpu_device(dY.device):
             _rope_embedding[(n_rows, ctx.n_groups, )](
                 dY,  dY .stride(0),
                 cos, cos.stride(0),
