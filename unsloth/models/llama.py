@@ -759,24 +759,21 @@ def LlamaModel_fast_forward(
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
     #Figure out if there is right padding
+    keep_padding = False 
     if attention_mask is not None: 
         pads_right = (attention_mask[:, -1] == 0).any()
         if pads_right.item():
-            os.environ["UNSLOTH_KEEP_PADDING"] = '1'
+            keep_padding = True 
         else:
-            os.environ["UNSLOTH_KEEP_PADDING"] = '0'
+            keep_padding = False 
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training and os.environ.get("UNSLOTH_KEEP_PADDING", "0") != '1':    
+    elif self.training and not keep_padding:    
         attention_mask = None
         padding_mask = None
     else:
-        # if 0 in attention_mask:
-        #     padding_mask = attention_mask
-        # else:
         padding_mask = None
-
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
             attention_mask,
             (batch_size, seq_length),
