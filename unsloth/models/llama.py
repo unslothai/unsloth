@@ -771,18 +771,10 @@ def LlamaModel_fast_forward(
         inputs_embeds *= attention_mask.unsqueeze(0).transpose(0, 1).transpose(1, 2)
         if inputs_requires_grad: inputs_embeds.requires_grad_(True)
     pass
-    #Figure out if there is right padding
-    keep_padding = False 
-    if attention_mask is not None: 
-        pads_right = (attention_mask[:, -1] == 0).any()
-        if pads_right.item():
-            keep_padding = True 
-        else:
-            keep_padding = False 
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training and not keep_padding:    
+    elif self.training and not hasattr(self, "_needs_right_padding"):    
         attention_mask = None
         padding_mask = None
     else:
