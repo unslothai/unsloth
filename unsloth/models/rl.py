@@ -785,7 +785,34 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     init = init.replace("if peft_config is None:", "if False:")
     init = init.replace("if peft_config is not None:", "if False:")
     init = init.replace("get_peft_model(model, peft_config)", "model")
-
+    if RLTrainer_name == "OnlineDPOTrainer" or RLTrainer_name == "RewardTrainer":
+        pattern = re.compile(
+            r'(^(\s*)# Add tags for models that have been loaded with the correct transformers version)',
+            re.MULTILINE
+            )
+        if RLTrainer_name == "OnlineDPOTrainer":
+            replacement = (
+                r'\2# Check for nested model attribute before setting right padding\n'
+                r'\2if hasattr(self.model.model, "model"):\n'
+                r'\2    self.model.model.model._needs_right_padding = True\n'
+                r'\2else:\n'
+                r'\2    self.model.model._needs_right_padding = True\n'
+                r'\2# Check for nested model attribute before setting right padding\n'
+                r'\2if hasattr(self.reward_model, "model"):\n'
+                r'\2    self.reward_model.model._needs_right_padding = True\n'
+                r'\2print("Unsloth reward model type: ", type(self.reward_model.model))'
+                r'\1'
+            )
+        else:
+            replacement = (
+                    r'\2# Check for nested model attribute before setting right padding\n'
+                    r'\2if hasattr(self.model.model, "model"):\n'
+                    r'\2    self.model.model.model._needs_right_padding = True\n'
+                    r'\2else:\n'
+                    r'\2    self.model.model._needs_right_padding = True\n'
+                    r'\1'
+                )
+        init = pattern.sub(replacement, init, count=1)
     # Set use_vllm if not set
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches first match. .+? matches final match.
