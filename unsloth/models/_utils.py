@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.6.12"
+__version__ = "2025.7.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -183,6 +183,8 @@ except:
 try:
     from transformers.generation.utils import logger as transformers_generation_utils_logger
     transformers_generation_utils_logger.addFilter(HideLoggingMessage("Setting `pad_token_id` to `eos_token_id`"))
+    # "You have set `compile_config`
+    transformers_generation_utils_logger.addFilter(HideLoggingMessage("compile_config"))
     del transformers_generation_utils_logger
 except:
     pass
@@ -206,33 +208,18 @@ except:
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
 
-def extract_approx_params_from_config(config):
+def extract_quant_model_param_count(model):
     """
-    Extract approximate parameter count from model config's name_or_path
-    Returns int (param count) or None if not found.
+    Calculate quant model param count based on difference in param class. Returns int for param count.
     """
-    lowercase_b_families = ["gemma"] # gemma uses small 'b' : google/gemma-3-1b-it
-    model_name = getattr(config, "name_or_path", "")
-    import re
-    cleaned = re.sub(r"[-_]?bnb[-_]?4bit|[-_]?4bit|[-_]?8bit|[-_]?bnb", "", model_name, flags=re.IGNORECASE) # replace bnb and xbit
-    match_B = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*B", cleaned) # first prefer searching 'B'
-    if match_B:
-        # most model names would come in this flow
-        billions = float(match_B.group(1))
-        return int(1_000_000_000 * billions)
-    else:
-        if any(fam in cleaned.lower() for fam in lowercase_b_families):
-            match_b = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*b", cleaned)
-            if match_b:
-                billions = float(match_b.group(1))
-                return int(1_000_000_000 * billions)
+    count: int = 0
+    for name, p in model.named_parameters():
+        if p.__class__.__name__ == "Params4bit":
+            count += 2 * p.numel()
         else:
-            match_any = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*[bB]", cleaned)
-            if match_any:
-                billions = float(match_any.group(1))
-                return int(1_000_000_000 * billions)
-    return None
-
+            count += p.numel()
+    return count
+pass
 
 def get_model_param_count(model, trainable_only = False):
     """
@@ -248,7 +235,7 @@ def get_model_param_count(model, trainable_only = False):
     if (not trainable_only) and \
         hasattr(model, "config") and \
         hasattr(model.config, "quantization_config"):
-        approx = extract_approx_params_from_config(model.config)
+        approx = extract_quant_model_param_count(model)
         if approx is not None:
             s = approx
     return s
@@ -370,7 +357,7 @@ if is_openai_available():
         def _is_openai_available(): return False
         transformers.utils.is_openai_available = _is_openai_available
     pass
-pass 
+pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
@@ -1085,7 +1072,7 @@ pass
 
 
 def patch_gradient_accumulation_fix(Trainer):
-    # Fixes gradient accumulation 
+    # Fixes gradient accumulation
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
@@ -1159,10 +1146,10 @@ def patch_gradient_accumulation_fix(Trainer):
         "\2if num_items_in_batch is None:\n"\
         "\3loss = loss / self.args.gradient_accumulation_steps\n"\
         "\1self.accelerator.backward(loss, **kwargs)",
-        
+
         function,
     )
-    
+
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
 pass
@@ -1356,7 +1343,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
             )
             loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
         pass
-        
+
         if hasattr(model.config, "quantization_config"):
             raise ValueError(
                 "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"\
