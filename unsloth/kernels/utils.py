@@ -78,7 +78,7 @@ HAS_CUDA_STREAM = False
 # INTEL GPU specific logic
 if DEVICE_TYPE == "xpu":
     # TODO: Changed here after adding XPU BNB support
-    HAS_XPU_STREAM = False
+    HAS_XPU_STREAM = True
     def get_ptr(x: Optional[torch.Tensor]):
         raise RuntimeError("XPU BNB support is not implemented yet. This function should not be called.")
 else:

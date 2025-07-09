@@ -142,6 +142,12 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
 
+def get_device_num():
+    if DEVICE_TYPE == "xpu":
+        return torch.xpu.device_count()
+    else:
+        return torch.cuda.device_count()
+
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
     __slots__ = "text",
@@ -738,7 +744,7 @@ def get_statistics():
         pass
     pass
     try:
-        devices = torch.cuda.device_count()
+        devices = get_device_num()
         _get_statistics(f"{devices if devices <= 8 else 9}")
     except:
         pass
@@ -765,7 +771,7 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
 )
 exec(BitsAndBytesConfig__init__, globals())
 
-if torch.cuda.device_count() == 1:
+if get_device_num() == 1:
     from accelerate.utils.dataclasses import DistributedType
     def _prepare_backend(self, *args, **kwargs): return None, DistributedType.NO
     import accelerate.state
