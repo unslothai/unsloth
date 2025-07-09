@@ -85,6 +85,11 @@ from triton import __version__ as triton_version
 HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
+def clean_gpu_cache():
+    if DEVICE_TYPE == "xpu":
+        torch.xpu.empty_cache()
+    else:
+        torch.cuda.empty_cache()
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -1752,10 +1757,11 @@ class FastLlamaModel:
             if not is_vLLM_available():
                 print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
-            major_version, minor_version = torch.cuda.get_device_capability()
-            if major_version < 7:
-                print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
-                fast_inference = False
+            if DEVICE_TYPE == "cuda":
+                major_version, minor_version = torch.cuda.get_device_capability()
+                if major_version < 7:
+                    print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+                    fast_inference = False
             if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") == "0":
                 raise RuntimeError("Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!")
         pass
@@ -1779,8 +1785,8 @@ class FastLlamaModel:
             num_gpus = torch.xpu.device_count()
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
 
-            # TODO: After adding vLLM support for XPU, changed this
-            vllm_version = ""
+            try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except: vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 
@@ -2020,7 +2026,10 @@ class FastLlamaModel:
         import gc
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()"""
+            if DEVICE_TYPE == "xpu":
+                torch.xpu.empty_cache()
+            else:
+                torch.cuda.empty_cache()"""
 
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -2508,7 +2517,7 @@ class FastLlamaModel:
             # Remove old items to save VRAM
             for _ in range(3):
                 gc.collect()
-                torch.cuda.empty_cache()
+                clean_gpu_cache()
             pass
 
             if train_lm_head:
@@ -2519,7 +2528,7 @@ class FastLlamaModel:
             # Remove old items to save VRAM
             for _ in range(3):
                 gc.collect()
-                torch.cuda.empty_cache()
+                clean_gpu_cache()
             pass
         pass
 
@@ -2580,7 +2589,7 @@ class FastLlamaModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
         pass
 
         # Patch for fast inference
@@ -2796,7 +2805,7 @@ class FastLlamaModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
         pass
 
         # Patch for fast inference
