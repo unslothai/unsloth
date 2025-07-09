@@ -59,8 +59,10 @@ pass
 os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
 os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = "0"
 os.environ["HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY"] = "0"
-os.environ["HF_HUB_VERBOSITY"] = "info"
 os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = "64"
+# More verbose HF Hub info
+if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
+    os.environ["HF_HUB_VERBOSITY"] = "info"
 
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
