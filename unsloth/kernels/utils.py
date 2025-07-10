@@ -18,7 +18,7 @@ MAX_FUSED_SIZE : int = 65536
 next_power_of_2 = triton.next_power_of_2
 import functools
 from typing import Optional
-from unsloth import DEVICE_TYPE
+from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -89,10 +89,11 @@ else:
     get_ptr = bnb.functional.get_ptr
 
 
-if DEVICE_TYPE == "cuda" and torch.cuda.device_count() > 1:
-    torch_gpu_device = torch.cuda.device
-elif DEVICE_TYPE == "xpu" and torch.xpu.device_count() > 1:
-    torch_gpu_device = torch.xpu.device
+if DEVICE_COUNT > 1:
+    if DEVICE_TYPE == "cuda":
+        torch_gpu_device = torch.cuda.device
+    elif DEVICE_TYPE == "xpu":
+        torch_gpu_device = torch.xpu.device
 else:
     from contextlib import nullcontext
     def torch_gpu_device(device): return nullcontext()
@@ -121,7 +122,7 @@ global ABSMAX_BUFFERS
 if DEVICE_TYPE == "xpu":
     _XPU_STREAMS = {
         (index := torch.xpu.device(i).idx) : ctypes.c_void_p(torch._C._xpu_getCurrentRawStream(index))
-        for i in range(torch.xpu.device_count())
+        for i in range(DEVICE_COUNT)
     }
     XPU_STREAMS   = [None] * (max(_XPU_STREAMS.keys()) + 1)
     WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
@@ -134,7 +135,7 @@ else:
     # NVIDIA GPU Default Logic
     _CUDA_STREAMS = {
         (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
-        for i in range(torch.cuda.device_count())
+        for i in range(DEVICE_COUNT)
     }
     CUDA_STREAMS   = [None] * (max(_CUDA_STREAMS.keys()) + 1)
     WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
