@@ -275,7 +275,7 @@ def LlamaAttention_fast_forward_inference(
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, device = Qn.device)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
@@ -489,7 +489,7 @@ def LlamaAttention_fast_forward(
         #     cos, sin = rotary_emb.get_cached(kv_seq_len, device = Q.device)
         # else:
         #     cos, sin = rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
-        cos, sin = rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
+        cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     # Q, K = (
     #     fast_rope_embedding(Q, K, cos, sin)
@@ -913,7 +913,7 @@ def LlamaModel_fast_forward(
         # Also, transformers 4.45.0 supports granite but with the attention refactor (it always had the refactor)
         # unsloth's check for granite too has "version >= 4.45.0 (rightly so)".
         # so let granite always use the attention refactor implementation.
-        position_embeddings = self.rotary_emb.get_cached(seq_len = self.config.max_position_embeddings, device = hidden_states.device)
+        position_embeddings = self.rotary_emb.get_cached(self.config.max_position_embeddings, hidden_states.device.index)
     else:
         position_embeddings = None
 
@@ -1023,7 +1023,7 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         XX, XX2 = _XX[0], _XX[1]
         variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE}:0")
         temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE}:0")
-        temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
+        temp_gates, temp_ups = [temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)], [temp_mlp[1].to(torch.device(x)) for x in range(DEVICE_COUNT)]
 
         seq_len = past_key_values[0][0].shape[-2]
         if bsz != 1:
@@ -1041,8 +1041,9 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         next_decoder_cache = []
 
         for idx, decoder_layer in enumerate(self.model.layers):
-            X, residual, temp_gate, temp_up, position_ids = move_to_device(
-                decoder_layer._per_layer_device, X, residual, temp_gate, temp_up, position_ids
+            device_index = decoder_layer._per_layer_device.index
+            X, residual, position_ids = move_to_device(
+                device_index, X, residual, position_ids
             )
             residual.copy_(X) # residual = X
             X = fast_rms_layernorm_inference(
@@ -1073,8 +1074,8 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
             X = mlp_fast_forward_inference(
                 decoder_layer.mlp,
                 X,
-                temp_gate = temp_gate,
-                temp_up = temp_up,
+                temp_gate = temp_gates[device_index],
+                temp_up = temp_ups[device_index],
             )
             X += residual
 
@@ -1400,10 +1401,10 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         )
     pass
 
-    def get_cached(self, seq_len = None, device = None):
-        if device is None:
-            device = torch.cuda.current_device()
-        return self.multi_gpu_cos_cached[device.index], self.multi_gpu_sin_cached[device.index]
+    def get_cached(self, seq_len = None, device_index = None):
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
     pass
 
     def extend_rope_embedding(self, x, seq_len):
@@ -1516,10 +1517,10 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         )
     pass
 
-    def get_cached(self, seq_len = None, device = None):
-        if device is None:
-            device = torch.cuda.current_device()
-        return self.multi_gpu_cos_cached[device.index], self.multi_gpu_sin_cached[device.index]
+    def get_cached(self, seq_len = None, device_index = None):
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
     pass
 
     def extend_rope_embedding(self, x, seq_len):
@@ -1673,10 +1674,9 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         pass
     pass
 
-    def get_cached(self, seq_len = None, device = None):
-        if device is None:
-            device = torch.cuda.current_device()
-        device_index = device.index
+    def get_cached(self, seq_len = None, device_index = None):
+        if device_index is None:
+            device_index = torch.cuda.current_device()
         if seq_len is not None and seq_len < self.original_max_position_embeddings:
             return self.multi_gpu_short_cos_cached[device_index], self.multi_gpu_short_sin_cached[device_index]
         return self.multi_gpu_long_cos_cached[device_index], self.multi_gpu_long_sin_cached[device_index]

@@ -321,7 +321,7 @@ def CohereAttention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, device = Qn.device)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
@@ -398,7 +398,7 @@ def CohereModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
+    out_weights = [torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT)]
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -418,11 +418,12 @@ def CohereModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-        hidden_states, out_weight, position_ids = move_to_device(
-            decoder_layer._per_layer_device, hidden_states, out_weight, position_ids
+        device_index = decoder_layer._per_layer_device.index
+        hidden_states, position_ids = move_to_device(
+            device_index, hidden_states, position_ids
         )
         residual = hidden_states
-        hidden_states = fast_layernorm_inference(decoder_layer.input_layernorm, hidden_states, out_weight)
+        hidden_states = fast_layernorm_inference(decoder_layer.input_layernorm, hidden_states, out_weights[device_index])
         hidden_states_attention, present_key_value = CohereAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states = hidden_states,
@@ -439,7 +440,7 @@ def CohereModel_fast_forward_inference(
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_layernorm_inference(self.model.norm, hidden_states, out_weight)
+    hidden_states = fast_layernorm_inference(self.model.norm, hidden_states, out_weights[device_index])
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,

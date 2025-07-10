@@ -113,12 +113,13 @@ def Gemma2Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    device_index = Q.device.index
     if position_ids is None:
-        cos = self.rotary_emb.multi_gpu_cos_cached[Q.device.index]
-        sin = self.rotary_emb.multi_gpu_sin_cached[Q.device.index]
+        cos = self.rotary_emb.multi_gpu_cos_cached[device_index]
+        sin = self.rotary_emb.multi_gpu_sin_cached[device_index]
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, device_index)
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
@@ -307,7 +308,7 @@ def Gemma2Attention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos, sin = self.rotary_emb.get_cached(seq_len = kv_seq_len, device = Qn.device)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
@@ -387,7 +388,7 @@ def Gemma2Model_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
+    out_weights = [torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT)]
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -425,14 +426,15 @@ def Gemma2Model_fast_forward_inference(
 
         # For pipeline parallelism, we need to move all tensors to the same device
         # note that this movement is once per GPU in PP
-        hidden_states, out_weight, position_ids = move_to_device(
-            decoder_layer._per_layer_device, hidden_states, out_weight, position_ids
+        device_index = decoder_layer._per_layer_device.index
+        hidden_states, position_ids = move_to_device(
+            device_index, hidden_states, position_ids
         )
 
         use_sliding_window = idx % 2 == 0
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weights[device_index])
         hidden_states, present_key_value = Gemma2Attention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states = hidden_states,
@@ -442,18 +444,18 @@ def Gemma2Model_fast_forward_inference(
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             use_sliding_window = use_sliding_window,
         )
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weights[device_index])
         hidden_states += residual
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer. pre_feedforward_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer. pre_feedforward_layernorm, hidden_states, out_weights[device_index])
         hidden_states = fast_geglu_inference(decoder_layer.mlp, hidden_states)
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_feedforward_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_feedforward_layernorm, hidden_states, out_weights[device_index])
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference_gemma(self.model.norm, hidden_states, out_weight)
+    hidden_states = fast_rms_layernorm_inference_gemma(self.model.norm, hidden_states, out_weights[device_index])
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,

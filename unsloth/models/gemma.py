@@ -149,7 +149,7 @@ def GemmaModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
+    out_weights = [torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT)]
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -170,12 +170,13 @@ def GemmaModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-        hidden_states, out_weight, position_ids = move_to_device(
-            decoder_layer._per_layer_device, hidden_states, out_weight, position_ids
+        device_index = decoder_layer._per_layer_device.index
+        hidden_states, position_ids = move_to_device(
+            device_index, hidden_states, position_ids
         )
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weights[device_index])
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states = hidden_states,
@@ -187,13 +188,13 @@ def GemmaModel_fast_forward_inference(
         hidden_states += residual
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weights[device_index])
         hidden_states = fast_geglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference_gemma(self.model.norm, hidden_states, out_weight)
+    hidden_states = fast_rms_layernorm_inference_gemma(self.model.norm, hidden_states, out_weights[device_index])
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
@@ -271,15 +272,15 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         device_index = x.device.index
 
         return (
-            self.multi_gpu_cos_cached[device_index][:seq_len].to(dtype=x.dtype),
-            self.multi_gpu_sin_cached[device_index][:seq_len].to(dtype=x.dtype),
+            self.multi_gpu_cos_cached[device_index][:seq_len],
+            self.multi_gpu_sin_cached[device_index][:seq_len],
         )
     pass
 
-    def get_cached(self, seq_len = None, device = None):
-        if device is None:
-            device = torch.cuda.current_device()
-        return self.multi_gpu_cos_cached[device.index], self.multi_gpu_sin_cached[device.index]
+    def get_cached(self, seq_len = None, device_index = None):
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
     pass
 
     def extend_rope_embedding(self, x, seq_len):

@@ -786,6 +786,13 @@ def move_to_device(target_device, *tensors):
     Returns:
         tuple: The tensors on the target device (same objects if already on device, new if moved)
     """
+    if isinstance(target_device, int) or isinstance(target_device, str):
+        target_device = torch.device(target_device)
+    elif isinstance(target_device, torch.device):
+        pass
+    else:
+        raise ValueError(f"Invalid target device: {target_device}")
+    pass
     moved_tensors = []
     for tensor in tensors:
         if tensor.device != target_device:

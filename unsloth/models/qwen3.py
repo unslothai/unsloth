@@ -111,12 +111,13 @@ def Qwen3Attention_fast_forward(
         # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
+        device_index = Q.device.index
 
         if position_ids is None:
             # Useful for LongRoPE
-            cos, sin = rotary_emb.get_cached(kv_seq_len)
+            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
         else:
-            cos, sin = rotary_emb.get_cached(seq_len = kv_seq_len, device = Q.device)
+            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
@@ -297,7 +298,7 @@ def Qwen3Attention_fast_forward_inference(
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, device = Qn.device)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
