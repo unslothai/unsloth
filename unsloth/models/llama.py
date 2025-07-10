@@ -1294,9 +1294,8 @@ def PeftModel_fast_forward(
     logits_to_keep = 0,
     **kwargs,
 ):
-    is_classification =  "Classification" in str(type( self.base_model.model))
+    is_classification = "Classification" in str(type(self.base_model.model))
     if is_classification: 
-        #causal_mask = causal_mask,
         return self.base_model(
             input_ids = input_ids,
             attention_mask = attention_mask, 
@@ -1306,7 +1305,7 @@ def PeftModel_fast_forward(
             output_hidden_states = output_hidden_states, 
             return_dict = return_dict, 
             **kwargs,
-            )
+        )
     else:
         return self.base_model(
             input_ids = input_ids,
