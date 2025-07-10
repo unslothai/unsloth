@@ -398,7 +398,7 @@ def CohereModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weights = [torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT)]
+    out_weights = tuple(torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT))
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -418,7 +418,7 @@ def CohereModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-        device_index = decoder_layer._per_layer_device.index
+        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
         hidden_states, position_ids = move_to_device(
             device_index, hidden_states, position_ids
         )

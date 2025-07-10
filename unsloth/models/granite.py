@@ -399,9 +399,9 @@ def GraniteModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-
+        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
         hidden_states, position_ids = move_to_device(
-            decoder_layer._per_layer_device, hidden_states, position_ids
+            device_index, hidden_states, position_ids
         )
 
         residual = hidden_states

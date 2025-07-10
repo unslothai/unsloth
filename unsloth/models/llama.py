@@ -1023,7 +1023,7 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         XX, XX2 = _XX[0], _XX[1]
         variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE}:0")
         temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE}:0")
-        temp_gates, temp_ups = [temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)], [temp_mlp[1].to(torch.device(x)) for x in range(DEVICE_COUNT)]
+        temp_gates, temp_ups = tuple(temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)), tuple(temp_mlp[1].to(torch.device(x)) for x in range(DEVICE_COUNT))
 
         seq_len = past_key_values[0][0].shape[-2]
         if bsz != 1:
@@ -1041,7 +1041,7 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         next_decoder_cache = []
 
         for idx, decoder_layer in enumerate(self.model.layers):
-            device_index = decoder_layer._per_layer_device.index
+            device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
             X, residual, position_ids = move_to_device(
                 device_index, X, residual, position_ids
             )
