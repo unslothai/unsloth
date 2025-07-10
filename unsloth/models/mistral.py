@@ -99,7 +99,7 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and attention_mask is None):
+    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -191,15 +191,35 @@ def MistralForCausalLM_fast_forward(
     if causal_mask is None and past_key_values is None:
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
-        if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
-            causal_mask = xformers.attn_bias.LowerTriangularMask()
-        elif q_len <= sliding_window:
-            causal_mask = xformers.attn_bias.LowerTriangularMask()
-        else:
-            causal_mask = xformers.attn_bias.BlockDiagonalCausalMask\
-                .from_seqlens([q_len]*bsz)\
-                .make_local_attention(window_size = sliding_window)
-    pass
+
+        if HAS_XFORMERS and attention_mask is None:
+            if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
+                causal_mask = xformers.attn_bias.LowerTriangularMask()
+            elif q_len <= sliding_window:
+                causal_mask = xformers.attn_bias.LowerTriangularMask()
+            else:
+                causal_mask = xformers.attn_bias.BlockDiagonalCausalMask\
+                    .from_seqlens([q_len]*bsz)\
+                    .make_local_attention(window_size = sliding_window)
+        
+        elif not HAS_XFORMERS and attention_mask is None:
+            if sliding_window is None or sliding_window == "null" or sliding_window <= 0 or q_len <= sliding_window:
+                # Fully causal mask
+                mask = torch.full((q_len, q_len), -torch.inf, device=input_ids.device)
+                mask = torch.triu(mask, diagonal=1)
+                attention_mask = mask.expand(bsz, 1, q_len, q_len)
+            else:
+                # Sliding window attention
+                q_indices = torch.arange(q_len, device=input_ids.device).view(-1, 1)
+                k_indices = torch.arange(q_len, device=input_ids.device).view(1, -1)
+                
+                causal_bool_mask = k_indices <= q_indices
+                window_bool_mask = (q_indices - k_indices) < sliding_window
+                
+                mask = torch.where(causal_bool_mask & window_bool_mask, 0.0, -torch.inf)
+                attention_mask = mask[None, None, :, :].expand(bsz, 1, q_len, q_len)
+
+            attention_mask = attention_mask.to(dtype=_get_dtype(self.config.torch_dtype))
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
