@@ -1395,8 +1395,8 @@ class LlamaRotaryEmbedding(torch.nn.Module):
 
         device_index = x.device.index
         return (
-            self.multi_gpu_cos_cached[device_index][:seq_len].to(dtype = x.dtype),
-            self.multi_gpu_sin_cached[device_index][:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_cos_cached[device_index][:seq_len],
+            self.multi_gpu_sin_cached[device_index][:seq_len],
         )
     pass
 
@@ -1511,8 +1511,8 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
         device_index = x.device.index
         return (
-            self.multi_gpu_cos_cached[device_index][:seq_len].to(dtype = x.dtype),
-            self.multi_gpu_sin_cached[device_index][:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_cos_cached[device_index][:seq_len],
+            self.multi_gpu_sin_cached[device_index][:seq_len],
         )
     pass
 
@@ -1662,13 +1662,13 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 
         if seq_len is not None and seq_len < self.original_max_position_embeddings:
             return (
-                self.multi_gpu_short_cos_cached[device_index][:seq_len].to(dtype = x.dtype),
-                self.multi_gpu_short_sin_cached[device_index][:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_short_cos_cached[device_index][:seq_len],
+                self.multi_gpu_short_sin_cached[device_index][:seq_len],
             )
         else:
             return (
-                self.multi_gpu_long_cos_cached[device_index][:seq_len].to(dtype = x.dtype),
-                self.multi_gpu_long_sin_cached[device_index][:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_long_cos_cached[device_index][:seq_len],
+                self.multi_gpu_long_sin_cached[device_index][:seq_len],
             )
         pass
     pass
