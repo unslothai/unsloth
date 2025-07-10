@@ -170,12 +170,6 @@ def GemmaModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-
-        decoder_device = decoder_layer.self_attn.q_proj.weight.device
-        hidden_states, out_weight, position_ids = move_to_device(
-            decoder_device, hidden_states, out_weight, position_ids
-        )
-
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
@@ -236,7 +230,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         # Build here to make `torch.jit.trace` work.
         for device in range(torch.cuda.device_count()):
             self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device), dtype=torch.get_default_dtype())
-        
+
         # dummy so that patch_utils doesn't fail for now
         self.cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
         self.sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())

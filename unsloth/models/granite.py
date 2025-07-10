@@ -71,7 +71,7 @@ def GraniteAttention_fast_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -162,7 +162,7 @@ def GraniteAttention_fast_forward(
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
-    
+
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
@@ -256,7 +256,7 @@ def GraniteAttention_fast_forward_inference(
     use_sliding_window = False,
     position_embeddings : Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
 ):
-    
+
     assert position_embeddings is not None, f"Granite model requires position embeddings to be specified"
 
     Xn = hidden_states
@@ -326,7 +326,7 @@ def GraniteAttention_fast_forward_inference(
     torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
-    
+
     # New KV cache
     # Kn = torch.cat([K1, Kn], dim = 2)
     # Vn = torch.cat([V1, Vn], dim = 2)
@@ -349,7 +349,7 @@ def GraniteAttention_fast_forward_inference(
 
     Qn *= self.scaling
     A = torch_matmul(Qn, Kn.transpose(2, 3), out = self.attention[:,:,:,:cached_len])
-    
+
     # if attention_mask is not None: A += attention_mask # Must add attention_mask for batched
 
     A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)#.to(A.dtype)
@@ -399,11 +399,6 @@ def GraniteModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-
-        decoder_device = decoder_layer.self_attn.q_proj.weight.device
-        hidden_states, position_ids = move_to_device(
-            decoder_device, hidden_states, position_ids
-        )
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(decoder_layer.input_layernorm, hidden_states)
@@ -537,7 +532,7 @@ class FastGraniteModel(FastLlamaModel):
 
                 elif hasattr(module, "short_cos_cached") and \
                     (module.short_cos_cached.dtype != correct_dtype):
-                    
+
                     module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
                     module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
                 pass
@@ -552,4 +547,3 @@ class FastGraniteModel(FastLlamaModel):
         return model, tokenizer
     pass
 pass
-

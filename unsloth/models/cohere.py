@@ -78,7 +78,7 @@ def CohereAttention_fast_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -282,14 +282,14 @@ def CohereAttention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda:0")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda:0")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
-        
+
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
             self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = "cuda:0")
         else:
             self.temp_O = self.temp_QA[1][:,:,:hidden_size]
         pass
-        
+
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -339,7 +339,7 @@ def CohereAttention_fast_forward_inference(
     torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
-    
+
     # New KV cache
     # Kn = torch.cat([K1, Kn], dim = 2)
     # Vn = torch.cat([V1, Vn], dim = 2)
@@ -418,10 +418,6 @@ def CohereModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-        decoder_device = decoder_layer.self_attn.q_proj.weight.device
-        hidden_states, out_weight, position_ids = move_to_device(
-            decoder_device, hidden_states, out_weight, position_ids
-        )
         residual = hidden_states
         hidden_states = fast_layernorm_inference(decoder_layer.input_layernorm, hidden_states, out_weight)
         hidden_states_attention, present_key_value = CohereAttention_fast_forward_inference(
@@ -473,7 +469,7 @@ class FastCohereModel(FastLlamaModel):
         CohereForCausalLM    .forward = CausalLM_fast_forward(CohereModel_fast_forward_inference)
         PeftModelForCausalLM .forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(CohereForCausalLM)
-        
+
         import transformers.models.cohere.modeling_cohere
         transformers.models.cohere.modeling_cohere.CohereRotaryEmbedding = LlamaRotaryEmbedding
         return
