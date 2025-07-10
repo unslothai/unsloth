@@ -77,7 +77,7 @@ import contextlib
 import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
-from unsloth_zoo import DEVICE_TYPE
+from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -141,12 +141,6 @@ warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
-
-def get_device_num():
-    if DEVICE_TYPE == "xpu":
-        return torch.xpu.device_count()
-    else:
-        return torch.cuda.device_count()
 
 # Ignore logging messages
 class HideLoggingMessage(logging.Filter):
@@ -746,8 +740,7 @@ def get_statistics():
         pass
     pass
     try:
-        devices = get_device_num()
-        _get_statistics(f"{devices if devices <= 8 else 9}")
+        _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
     except:
         pass
     if disabled: enable_progress_bars()
@@ -773,13 +766,43 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
 )
 exec(BitsAndBytesConfig__init__, globals())
 
-if get_device_num() == 1:
+if DEVICE_COUNT == 1:
     from accelerate.utils.dataclasses import DistributedType
     def _prepare_backend(self, *args, **kwargs): return None, DistributedType.NO
     import accelerate.state
     accelerate.state.PartialState._prepare_backend = _prepare_backend
     accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
 pass
+
+# to move multiple tensors to the same device
+def move_to_device(target_device, *tensors):
+    """
+    Move multiple tensors to target device if they're not already there.
+
+    Args:
+        target_device: The target device to move tensors to
+        *tensors: Variable number of tensors to potentially move
+
+    Returns:
+        tuple: The tensors on the target device (same objects if already on device, new if moved)
+    """
+    if isinstance(target_device, int):
+        target_device = torch.device(target_device)
+    elif isinstance(target_device, str):
+        # if string we expect it to be a device name like "cuda:0"
+        target_device = torch.device(target_device)
+    elif isinstance(target_device, torch.device):
+        pass
+    else:
+        raise ValueError(f"Invalid target device: {target_device}")
+    pass
+    moved_tensors = []
+    for tensor in tensors:
+        if tensor.device != target_device:
+            moved_tensors.append(tensor.to(target_device))
+        else:
+            moved_tensors.append(tensor)
+    return tuple(moved_tensors) if len(moved_tensors) > 1 else moved_tensors[0]
 
 import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
