@@ -85,6 +85,11 @@ from triton import __version__ as triton_version
 HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
+def clean_gpu_cache():
+    if DEVICE_TYPE == "xpu":
+        torch.xpu.empty_cache()
+    else:
+        torch.cuda.empty_cache()
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -319,6 +324,13 @@ def LlamaAttention_fast_forward_inference(
     #     Knn, Vnn = Knn, Vnn
     # pass
 
+    # when qlen==vlen and attn_mask is None, we should use causal attention
+    Q_len = Qn.shape[-2]
+    K_len = Knn.shape[-2]
+    if attention_mask is None and Q_len == K_len:
+        is_causal = True
+    else:
+        is_causal = False
     # Attention
     if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
@@ -519,11 +531,18 @@ def LlamaAttention_fast_forward(
         V = V.transpose(1, 2)
         A = flash_attn_func(Q, K, V, causal = True)
     else:
+        # when qlen==vlen and attn_mask is None, we should use causal attention
+        Q_len = Q.shape[-2]
+        K_len = K.shape[-2]
+        if attention_mask is None and Q_len == K_len:
+            is_causal = True
+        else:
+            is_causal = False
         # Grouped query attention
         if SDPA_HAS_GQA:
             # Needs (batch_size, n_heads, seq_len, head_dim)
             # is_casual and attention_mask must not be both set!
-            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False, enable_gqa = n_groups != 1)
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = is_causal, enable_gqa = n_groups != 1)
             # Go back to (batch_size, seq_len, n_heads, head_dim)
             A = A.transpose(1, 2)#.contiguous()
         else:
@@ -538,7 +557,7 @@ def LlamaAttention_fast_forward(
             Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
             # Needs (batch_size, n_heads, seq_len, head_dim)
             # is_casual and attention_mask must not be both set!
-            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = is_causal)
             # Go back to (batch_size, seq_len, n_heads, head_dim)
             A = A.transpose(1, 2).contiguous()
         pass
@@ -1275,9 +1294,8 @@ def PeftModel_fast_forward(
     logits_to_keep = 0,
     **kwargs,
 ):
-    is_classification =  "Classification" in str(type( self.base_model.model))
+    is_classification = "Classification" in str(type(self.base_model.model))
     if is_classification: 
-        #causal_mask = causal_mask,
         return self.base_model(
             input_ids = input_ids,
             attention_mask = attention_mask, 
@@ -1287,7 +1305,7 @@ def PeftModel_fast_forward(
             output_hidden_states = output_hidden_states, 
             return_dict = return_dict, 
             **kwargs,
-            )
+        )
     else:
         return self.base_model(
             input_ids = input_ids,
@@ -1752,10 +1770,11 @@ class FastLlamaModel:
             if not is_vLLM_available():
                 print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
-            major_version, minor_version = torch.cuda.get_device_capability()
-            if major_version < 7:
-                print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
-                fast_inference = False
+            if DEVICE_TYPE == "cuda":
+                major_version, minor_version = torch.cuda.get_device_capability()
+                if major_version < 7:
+                    print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+                    fast_inference = False
             if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") == "0":
                 raise RuntimeError("Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!")
         pass
@@ -1779,8 +1798,8 @@ class FastLlamaModel:
             num_gpus = torch.xpu.device_count()
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
 
-            # TODO: After adding vLLM support for XPU, changed this
-            vllm_version = ""
+            try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except: vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 
@@ -2020,7 +2039,10 @@ class FastLlamaModel:
         import gc
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()"""
+            if DEVICE_TYPE == "xpu":
+                torch.xpu.empty_cache()
+            else:
+                torch.cuda.empty_cache()"""
 
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -2508,7 +2530,7 @@ class FastLlamaModel:
             # Remove old items to save VRAM
             for _ in range(3):
                 gc.collect()
-                torch.cuda.empty_cache()
+                clean_gpu_cache()
             pass
 
             if train_lm_head:
@@ -2519,7 +2541,7 @@ class FastLlamaModel:
             # Remove old items to save VRAM
             for _ in range(3):
                 gc.collect()
-                torch.cuda.empty_cache()
+                clean_gpu_cache()
             pass
         pass
 
@@ -2580,7 +2602,7 @@ class FastLlamaModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
         pass
 
         # Patch for fast inference
@@ -2695,10 +2717,21 @@ class FastLlamaModel:
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
+                # Determine MLP module name (falcon_h1 has feed_forward, llama style has mlp)
+                if hasattr(layer, "mlp"):
+                    mlp_module_name = "mlp"
+                elif hasattr(layer, "feed_forward"):
+                    mlp_module_name = "feed_forward"
+                else:
+                    logger.warning_once(f"Unsloth: No MLP module found in layer {idx} so skipping peft mlp patching")
+                    continue
+
+                mlp_module = getattr(layer, mlp_module_name)
+
                 # MLP patching
-                gate_proj = layer.mlp.gate_proj
-                up_proj   = layer.mlp.  up_proj
-                down_proj = layer.mlp.down_proj
+                gate_proj = mlp_module.gate_proj
+                up_proj   = mlp_module.  up_proj
+                down_proj = mlp_module.down_proj
 
                 if  hasattr(gate_proj, "lora_A") and \
                     hasattr(  up_proj, "lora_A") and \
@@ -2711,7 +2744,7 @@ class FastLlamaModel:
                     (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0):
 
                     # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    layer.mlp.forward = types.MethodType(_apply_lora_mlp, layer.mlp)
+                    mlp_module.forward = types.MethodType(_apply_lora_mlp, mlp_module)
                     n_mlp += 1
                 else:
                     logger.warning_once(
@@ -2796,7 +2829,7 @@ class FastLlamaModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
         pass
 
         # Patch for fast inference

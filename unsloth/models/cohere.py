@@ -128,7 +128,7 @@ def CohereAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and attention_mask is None):
+    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
