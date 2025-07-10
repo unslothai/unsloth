@@ -470,6 +470,7 @@ from ..kernels import (
 from .vision import FastBaseModel
 from transformers import (
     AutoModelForCausalLM,
+    AutoModelForSequenceClassification,
 )
 try:
     from transformers import AutoModelForImageTextToText
@@ -477,6 +478,7 @@ try:
 except:
     from transformers import AutoModelForVision2Seq
 pass
+
 
 DISABLE_COMPILE_MODEL_NAMES = [
     "aya-vision",
@@ -788,7 +790,6 @@ class FastModel(FastBaseModel):
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
-
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,

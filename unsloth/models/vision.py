@@ -18,6 +18,7 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
     AutoModelForCausalLM,
+    AutoModelForSequenceClassification,
 )
 try:
     from transformers import AutoModelForImageTextToText
@@ -31,6 +32,7 @@ from ..kernels import (
 from ._utils import __version__
 from ._utils import *
 from ..save import patch_saving_functions
+from .auto_sequence_classification import MllamaForSequenceClassification, LlavaNextForSequenceClassification
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
 from peft import PeftModelForCausalLM
 from transformers import set_seed as transformers_set_seed
@@ -38,6 +40,11 @@ from unsloth_zoo.peft_utils import (
     get_peft_regex,
     SKIP_QUANTIZATION_MODULES,
     requires_grad_for_gradient_checkpointing,
+)
+from transformers import (
+    AutoConfig,
+    MllamaConfig,
+    LlavaNextConfig,
 )
 from transformers.models.llama.modeling_llama import logger
 from transformers import __version__ as transformers_version
@@ -84,6 +91,54 @@ from unsloth_zoo.vllm_utils import (
     convert_lora_modules,
     return_lora_modules,
 )
+
+
+def patch_vision_models_for_sequence_classification():
+    """
+    Patch function to register both MllamaForSequenceClassification and LlavaNextForSequenceClassification 
+    with AutoModelForSequenceClassification
+    """
+    # Register the model classes
+    AutoModelForSequenceClassification.register(MllamaConfig, MllamaForSequenceClassification)
+    AutoModelForSequenceClassification.register(LlavaNextConfig, LlavaNextForSequenceClassification)
+    
+    # Also register in the config mapping if needed
+    from transformers.models.auto.modeling_auto import MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING
+    MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING.update({
+        MllamaConfig: MllamaForSequenceClassification,
+        LlavaNextConfig: LlavaNextForSequenceClassification
+    })
+    
+    print("✅ Successfully patched MllamaForSequenceClassification and LlavaNextForSequenceClassification!")
+
+# Legacy function for backward compatibility
+def patch_mllama_for_sequence_classification():
+    """
+    Legacy patch function - now calls the main patch function
+    """
+    patch_vision_models_for_sequence_classification()
+
+def create_config_for_classification(model_name: str, num_labels: int, **kwargs):
+    """
+    Create a proper config for sequence classification
+    """
+    # Load the original config
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    
+    # Add classification-specific parameters
+    config.num_labels = num_labels
+    config.problem_type = kwargs.get('problem_type', None)
+    config.classifier_dropout = kwargs.get('classifier_dropout', 0.1)
+    
+    return config
+
+def get_base_model(model):
+    # Get the first level module name from named_modules
+    for name, _ in model.named_modules():
+        base_name = name.split(".")[0]
+        if base_name:
+            return base_name
+
 
 def unsloth_base_fast_generate(
     self,
@@ -262,6 +317,7 @@ class FastBaseModel:
         whisper_task      = None,
         **kwargs,
     ):
+
         if model_types is None:
             raise RuntimeError(
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
@@ -371,7 +427,7 @@ class FastBaseModel:
                 correct_dtype = None
         pass
 
-        # Stop SDPA for some archs like Pixtral / Mistral3
+        # Stop SDPA for some archs like Pixtral / Mistral3 / SequenceClassification
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = "sdpa"
         if not supports_sdpa:
@@ -421,20 +477,42 @@ class FastBaseModel:
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
         if do_forced_float32: torch_dtype = torch.bfloat16
-
-        model = auto_model.from_pretrained(
-            model_name,
-            device_map              = device_map,
-            torch_dtype             = torch_dtype,
-            # quantization_config   = bnb_config,
-            token                   = token,
-            trust_remote_code       = trust_remote_code,
-            # attn_implementation   = attn_implementation,
-            **kwargs,
-        )
+        if auto_model.__name__.endswith("ForSequenceClassification"):
+            if not "num_labels" in kwargs:
+                raise ValueError(
+                    "Could not find 'num_labels' in model. "
+                    "Please ensure the model is properly configured for sequence classification "
+                    "with the correct number of output labels."
+                )
+            patch_mllama_for_sequence_classification()
+            # Create config with classification parameters
+            config = create_config_for_classification(model_name, **kwargs)
+            del kwargs["attn_implementation"]
+            del kwargs["num_labels"]
+            model = auto_model.from_pretrained(
+                model_name,
+                config = config,
+                device_map              = device_map,
+                torch_dtype             = torch_dtype,
+                # quantization_config   = bnb_config,
+                token                   = token,
+                trust_remote_code       = trust_remote_code,
+                # attn_implementation   = attn_implementation,
+                **kwargs,
+            )
+        else:
+            model = auto_model.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = torch_dtype,
+                # quantization_config   = bnb_config,
+                token                   = token,
+                trust_remote_code       = trust_remote_code,
+                # attn_implementation   = attn_implementation,
+                **kwargs,
+            )
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
-
         # Edit data-types
         if custom_datatype is not None:
             for jj, (name, module) in enumerate(model.named_modules()):
@@ -522,9 +600,17 @@ class FastBaseModel:
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
+        
         # Patch generate
         if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0":
-            if model.generate.__name__ != "unsloth_base_fast_generate":
+            if model.__class__.__name__.endswith("ForSequenceClassification"):
+                base_model_name = get_base_model(model)
+                base_model = getattr(model, base_model_name)
+                if base_model.generate.__name__ != "unsloth_base_fast_generate":
+                    base_model._old_generate = base_model.generate
+                    unsloth_base_fast_generate.__doc__ = base_model._old_generate.__doc__
+                    base_model.generate = types.MethodType(unsloth_base_fast_generate, model)
+            elif model.generate.__name__ != "unsloth_base_fast_generate":
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
