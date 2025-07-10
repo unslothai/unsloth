@@ -228,11 +228,11 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
-        self.multi_gpu_cos_cached = [None]*torch.cuda.device_count()
-        self.multi_gpu_sin_cached = [None]*torch.cuda.device_count()
+        self.multi_gpu_cos_cached = [None]*DEVICE_COUNT
+        self.multi_gpu_sin_cached = [None]*DEVICE_COUNT
 
         # Build here to make `torch.jit.trace` work.
-        for device in range(torch.cuda.device_count()):
+        for device in range(DEVICE_COUNT):
             self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device), dtype=torch.get_default_dtype())
 
         # dummy so that patch_utils doesn't fail for now
@@ -284,7 +284,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = math.ceil(seq_len / 8192) * 8192
-        for device in range(torch.cuda.device_count()):
+        for device in range(DEVICE_COUNT):
             self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device), dtype = x.dtype)
     pass
 pass

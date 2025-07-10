@@ -25,7 +25,7 @@ from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
-from unsloth import DEVICE_TYPE
+from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
@@ -1357,11 +1357,11 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
-        self.multi_gpu_cos_cached = [None]*torch.cuda.device_count()
-        self.multi_gpu_sin_cached = [None]*torch.cuda.device_count()
+        self.multi_gpu_cos_cached = [None]*NUM_GPUS
+        self.multi_gpu_sin_cached = [None]*NUM_GPUS
 
         # Build here to make `torch.jit.trace` work.
-        for device_idx in range(torch.cuda.device_count()):
+        for device_idx in range(NUM_GPUS):
             self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device_idx), dtype=torch.get_default_dtype())
 
         # dummy so that patch_utils doesn't fail for now
@@ -1409,7 +1409,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        for device_idx in range(torch.cuda.device_count()):
+        for device_idx in range(NUM_GPUS):
             self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 pass
@@ -1468,8 +1468,8 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
-        self.multi_gpu_cos_cached = [None]*torch.cuda.device_count()
-        self.multi_gpu_sin_cached = [None]*torch.cuda.device_count()
+        self.multi_gpu_cos_cached = [None]*NUM_GPUS
+        self.multi_gpu_sin_cached = [None]*NUM_GPUS
 
         # Normal Llama-3 RoPE
         inv_freq = 1.0 / (
@@ -1479,7 +1479,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Build here to make `torch.jit.trace` work.
-        for device_idx in range(torch.cuda.device_count()):
+        for device_idx in range(NUM_GPUS):
             self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device_idx), dtype=torch.get_default_dtype())
 
         # dummy so that patch_utils doesn't fail for now
@@ -1525,7 +1525,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        for device_idx in range(torch.cuda.device_count()):
+        for device_idx in range(NUM_GPUS):
             self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 
@@ -1589,10 +1589,10 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(original_max_position_embeddings, self.max_position_embeddings)
-        self.multi_gpu_short_cos_cached = [None]*torch.cuda.device_count()
-        self.multi_gpu_short_sin_cached = [None]*torch.cuda.device_count()
-        self.multi_gpu_long_cos_cached = [None]*torch.cuda.device_count()
-        self.multi_gpu_long_sin_cached = [None]*torch.cuda.device_count()
+        self.multi_gpu_short_cos_cached = [None]*NUM_GPUS
+        self.multi_gpu_short_sin_cached = [None]*NUM_GPUS
+        self.multi_gpu_long_cos_cached = [None]*NUM_GPUS
+        self.multi_gpu_long_sin_cached = [None]*NUM_GPUS
 
         # Long RoPE similar to RoPE except short sequences have 1 cos / sin
         # and long sequences have another cos / sin
@@ -1622,7 +1622,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         freqs = torch.outer(t, self.short_inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
 
-        for device_idx in range(torch.cuda.device_count()):
+        for device_idx in range(NUM_GPUS):
             device_obj = torch.device(device_idx)
             cos_cached = (emb.cos() * self.scaling_factor).to(dtype=dtype, device=device_obj, non_blocking=True)
             sin_cached = (emb.sin() * self.scaling_factor).to(dtype=dtype, device=device_obj, non_blocking=True)
@@ -1683,7 +1683,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        for device_idx in range(torch.cuda.device_count()):
+        for device_idx in range(NUM_GPUS):
             self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 pass
@@ -1839,7 +1839,6 @@ class FastLlamaModel:
             gpu_stats = torch.cuda.get_device_properties(0)
             gpu_version = torch.version.cuda
             gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-            num_gpus = torch.cuda.device_count()
 
             from importlib.metadata import version as importlib_version
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
@@ -1847,7 +1846,6 @@ class FastLlamaModel:
         elif DEVICE_TYPE == "xpu":
             gpu_stats = torch.xpu.get_device_properties(0)
             gpu_version = torch.version.xpu
-            num_gpus = torch.xpu.device_count()
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
 
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
@@ -1859,7 +1857,7 @@ class FastLlamaModel:
 
         statistics = \
         f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"\
-        f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {num_gpus}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
+        f"   {chr(92)}{chr(92)}   /|    {gpu_stats.name}. Num GPUs = {DEVICE_COUNT}. Max memory: {max_memory} GB. Platform: {platform_system}.\n"\
         f"O^O/ {chr(92)}_/ {chr(92)}    Torch: {torch.__version__}. {gpu_stats_snippet} Triton: {triton_version}\n"\
         f"{chr(92)}        /    Bfloat16 = {str(SUPPORTS_BFLOAT16).upper()}. FA [Xformers = {xformers_version}. FA2 = {HAS_FLASH_ATTENTION}]\n"\
         f' "-____-"     Free license: http://github.com/unslothai/unsloth'
