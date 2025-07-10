@@ -423,6 +423,12 @@ def Gemma2Model_fast_forward_inference(
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
 
+        # For pipeline parallelism, we need to move all tensors to the same device
+        # note that this movement is once per GPU in PP
+        hidden_states, out_weight, position_ids = move_to_device(
+            decoder_layer._per_layer_device, hidden_states, out_weight, position_ids
+        )
+
         use_sliding_window = idx % 2 == 0
 
         residual = hidden_states

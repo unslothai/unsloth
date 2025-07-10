@@ -773,6 +773,25 @@ if torch.cuda.device_count() == 1:
     accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
 pass
 
+# to move multiple tensors to the same device
+def move_to_device(target_device, *tensors):
+    """
+    Move multiple tensors to target device if they're not already there.
+
+    Args:
+        target_device: The target device to move tensors to
+        *tensors: Variable number of tensors to potentially move
+
+    Returns:
+        tuple: The tensors on the target device (same objects if already on device, new if moved)
+    """
+    moved_tensors = []
+    for tensor in tensors:
+        if tensor.device != target_device:
+            moved_tensors.append(tensor.to(target_device))
+        else:
+            moved_tensors.append(tensor)
+    return tuple(moved_tensors) if len(moved_tensors) > 1 else moved_tensors[0]
 
 import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
