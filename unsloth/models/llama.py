@@ -1357,11 +1357,11 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
-        self.multi_gpu_cos_cached = [None]*NUM_GPUS
-        self.multi_gpu_sin_cached = [None]*NUM_GPUS
+        self.multi_gpu_cos_cached = [None]*DEVICE_COUNT
+        self.multi_gpu_sin_cached = [None]*DEVICE_COUNT
 
         # Build here to make `torch.jit.trace` work.
-        for device_idx in range(NUM_GPUS):
+        for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device_idx), dtype=torch.get_default_dtype())
 
         # dummy so that patch_utils doesn't fail for now
@@ -1410,7 +1410,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        for device_idx in range(NUM_GPUS):
+        for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 pass
@@ -1469,8 +1469,8 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
-        self.multi_gpu_cos_cached = [None]*NUM_GPUS
-        self.multi_gpu_sin_cached = [None]*NUM_GPUS
+        self.multi_gpu_cos_cached = [None]*DEVICE_COUNT
+        self.multi_gpu_sin_cached = [None]*DEVICE_COUNT
 
         # Normal Llama-3 RoPE
         inv_freq = 1.0 / (
@@ -1480,7 +1480,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Build here to make `torch.jit.trace` work.
-        for device_idx in range(NUM_GPUS):
+        for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device_idx), dtype=torch.get_default_dtype())
 
         # dummy so that patch_utils doesn't fail for now
@@ -1526,7 +1526,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        for device_idx in range(NUM_GPUS):
+        for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 
@@ -1590,10 +1590,10 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(original_max_position_embeddings, self.max_position_embeddings)
-        self.multi_gpu_short_cos_cached = [None]*NUM_GPUS
-        self.multi_gpu_short_sin_cached = [None]*NUM_GPUS
-        self.multi_gpu_long_cos_cached = [None]*NUM_GPUS
-        self.multi_gpu_long_sin_cached = [None]*NUM_GPUS
+        self.multi_gpu_short_cos_cached = [None]*DEVICE_COUNT
+        self.multi_gpu_short_sin_cached = [None]*DEVICE_COUNT
+        self.multi_gpu_long_cos_cached = [None]*DEVICE_COUNT
+        self.multi_gpu_long_sin_cached = [None]*DEVICE_COUNT
 
         # Long RoPE similar to RoPE except short sequences have 1 cos / sin
         # and long sequences have another cos / sin
@@ -1623,7 +1623,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         freqs = torch.outer(t, self.short_inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
 
-        for device_idx in range(NUM_GPUS):
+        for device_idx in range(DEVICE_COUNT):
             device_obj = torch.device(device_idx)
             cos_cached = (emb.cos() * self.scaling_factor).to(dtype=dtype, device=device_obj, non_blocking=True)
             sin_cached = (emb.sin() * self.scaling_factor).to(dtype=dtype, device=device_obj, non_blocking=True)
@@ -1686,7 +1686,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
-        for device_idx in range(NUM_GPUS):
+        for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device_idx), dtype = x.dtype)
     pass
 pass
