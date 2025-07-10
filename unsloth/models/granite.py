@@ -1,3 +1,4 @@
+from typing import Callable, Optional, Any, T, Tuple
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -61,13 +62,13 @@ pass
 def GraniteAttention_fast_forward(
     self,
     hidden_states:        torch.Tensor,
-    causal_mask:          Optional[BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    bool = False,
-    use_cache:            bool = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    causal_mask:          Optional[BlockDiagonalCausalMask]          = None,
+    attention_mask:       Optional[torch.Tensor]                     = None,
+    position_ids:         Optional[torch.LongTensor]                 = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]]              = None,
+    output_attentions:    bool                                       = False,
+    use_cache:            bool                                       = False,
+    padding_mask:         Optional[torch.LongTensor]                 = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -173,16 +174,16 @@ pass
 def GraniteDecoderLayer_fast_forward(
     self,
     hidden_states:        torch.Tensor,
-    causal_mask:          Optional[BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    Optional[bool] = False,
-    use_cache:            Optional[bool] = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    causal_mask:          Optional[BlockDiagonalCausalMask]           = None,
+    attention_mask:       Optional[torch.Tensor]                      = None,
+    position_ids:         Optional[torch.LongTensor]                  = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]]               = None,
+    output_attentions:    Optional[bool]                              = False,
+    use_cache:            Optional[bool]                              = False,
+    padding_mask:         Optional[torch.LongTensor]                  = None,
     position_embeddings:  Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
-):
+) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     residual_multiplier = \
         self.residual_multiplier \
         if hasattr(self, "residual_multiplier") else \
@@ -250,12 +251,12 @@ def GraniteAttention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
-    position_ids,
-    do_prefill = False,
-    attention_mask = None,
-    use_sliding_window = False,
+    position_ids: torch.LongTensor,
+    do_prefill: bool                                                  = False,
+    attention_mask: Optional[torch.Tensor]                            = None,
+    use_sliding_window: bool                                          = False,
     position_embeddings : Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-):
+) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     
     assert position_embeddings is not None, f"Granite model requires position embeddings to be specified"
 
@@ -368,11 +369,11 @@ pass
 # @torch.inference_mode
 def GraniteModel_fast_forward_inference(
     self,
-    input_ids,
-    past_key_values,
-    position_ids,
-    attention_mask = None,
-):
+    input_ids: torch.LongTensor,
+    past_key_values: tuple[torch.Tensor, torch.Tensor],
+    position_ids: torch.LongTensor,
+    attention_mask: Optional[torch.Tensor] = None,
+) -> BaseModelOutputWithPast:
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -435,7 +436,7 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(self, config):
         super().__init__(config = config)
 
-def patched_init(original_init):
+def patched_init(original_init: Callable) -> None:
     def new_init(self, *args, **kwargs):
         # we can use self.residual_multiplier arg in GraniteDecoderLayer_fast_forward as mentioned here
         # https://github.com/huggingface/transformers/blob/e5fd865ebae062b7cf03a81b8c6affeb39f30bec/src/transformers/models/granite/modeling_granite.py#L243
@@ -450,7 +451,7 @@ def patched_init(original_init):
 class FastGraniteModel(FastLlamaModel):
 
     @staticmethod
-    def pre_patch():
+    def pre_patch() -> None:
         init_name, function = patch_linear_scaling(
             model_name         = "granite",
             rope_module        = GraniteRotaryEmbedding,
@@ -479,7 +480,7 @@ class FastGraniteModel(FastLlamaModel):
 
 
     @staticmethod
-    def post_patch(model, tokenizer):
+    def post_patch(model: GraniteModel, tokenizer) -> tuple[GraniteModel, Any]:
 
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2
@@ -547,4 +548,3 @@ class FastGraniteModel(FastLlamaModel):
         return model, tokenizer
     pass
 pass
-

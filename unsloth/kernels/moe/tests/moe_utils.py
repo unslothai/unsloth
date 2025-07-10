@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
+from typing import Any
 from dataclasses import dataclass, fields
 
 import torch
@@ -25,7 +26,19 @@ from grouped_gemm.reference.moe_ops import permute, unpermute
 
 def rebind_experts_to_shared_buffer(
     moe_block: Qwen3MoeSparseMoeBlock, config: Qwen3MoeConfig
-):
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Rebinds the expert weights of a MoE block to a shared buffer.
+    
+    Args:
+        moe_block (`Qwen3MoeSparseMoeBlock`):
+            The MoE block containing the experts.
+        config (`Qwen3MoeConfig`):
+            The configuration of the MoE block.
+    
+    Returns:
+        `tuple[torch.Tensor, torch.Tensor, torch.Tensor]`: A tuple containing the shared buffers for up projections, gate projections, and down projections.
+    """
     num_experts = config.num_experts
     hidden_size = config.hidden_size
     interm_size = config.moe_intermediate_size
@@ -58,6 +71,16 @@ def rebind_experts_to_shared_buffer(
 
 
 def get_expert_metadata(model_id: str):
+    """
+    Retrieves metadata for the experts in a MoE block from a Hugging Face model repository.
+    
+    Args:
+        model_id (`str`):
+            The identifier of the Hugging Face model repository.
+    
+    Returns:
+        `_safetensors.SafetensorsRepoMetadata`: Metadata for the experts in the MoE block.
+    """
     api = HfApi()
     metadata: _safetensors.SafetensorsRepoMetadata = api.get_safetensors_metadata(
         model_id
@@ -67,7 +90,21 @@ def get_expert_metadata(model_id: str):
 
 def clone_experts(
     moe_block: Qwen3MoeSparseMoeBlock, config: Qwen3MoeConfig, copy: bool = True
-):
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Clones the expert weights of a MoE block.
+    
+    Args:
+        moe_block (`Qwen3MoeSparseMoeBlock`):
+            The MoE block containing the experts.
+        config (`Qwen3MoeConfig`):
+            The configuration of the MoE block.
+        copy (`bool`, optional, default `True`):
+            Whether to copy the weights or just reference them.
+    
+    Returns:
+        `tuple[torch.Tensor, torch.Tensor, torch.Tensor]`: A tuple containing the cloned gate projections, up projections, and down projections.
+    """
     down_projs = torch.empty(
         config.num_experts, config.hidden_size, config.moe_intermediate_size
     )
@@ -86,6 +123,19 @@ def clone_experts(
 
 @dataclass
 class ForwardResult:
+    """
+    A data class to store the results of a forward pass through a MoE block.
+    
+    Args:
+        output (`torch.Tensor`):
+            The output of the forward pass.
+        router_logits (`torch.Tensor`):
+            The logits from the router.
+        X (`torch.Tensor`):
+            The input to the forward pass.
+        grouped_gemm_result (`GroupedGEMMResult`, optional):
+            The result of the grouped GEMM operation, if applicable.
+    """
     output: torch.Tensor
     router_logits: torch.Tensor
     X: torch.Tensor
@@ -93,8 +143,24 @@ class ForwardResult:
     grouped_gemm_result: GroupedGEMMResult = None
 
 
+
 @dataclass
 class BackwardResult:
+    """
+    A data class to store the results of a backward pass through a MoE block.
+    
+    Args:
+        X_grad (`torch.Tensor`):
+            The gradient of the input.
+        gate_grad (`torch.Tensor`):
+            The gradient of the gate.
+        gate_proj_grad (`torch.Tensor`):
+            The gradient of the gate projections.
+        up_proj_grad (`torch.Tensor`):
+            The gradient of the up projections.
+        down_proj_grad (`torch.Tensor`):
+            The gradient of the down projections.
+    """
     X_grad: torch.Tensor
     gate_grad: torch.Tensor
     gate_proj_grad: torch.Tensor
@@ -107,7 +173,20 @@ def check_down_proj_grad(
     grouped_gemm_block: Qwen3MoeGroupedGEMMBlock,
     atol: float,
     rtol: float,
-):
+) -> None:
+    """
+    Checks the gradients of the down projections in a MoE block.
+    
+    Args:
+        moe_block (`Qwen3MoeSparseMoeBlock`):
+            The MoE block containing the experts.
+        grouped_gemm_block (`Qwen3MoeGroupedGEMMBlock`):
+            The grouped GEMM block to compare against.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+    """
     for i, expert in enumerate(moe_block.experts):
         ref_grad = expert.down_proj.weight.grad
         assert ref_grad is not None
@@ -123,7 +202,20 @@ def check_gate_up_proj_grad(
     grouped_gemm_block: Qwen3MoeGroupedGEMMBlock,
     atol: float,
     rtol: float,
-):
+) -> None:
+    """
+    Checks the gradients of the gate and up projections in a MoE block.
+    
+    Args:
+        moe_block (`Qwen3MoeSparseMoeBlock`):
+            The MoE block containing the experts.
+        grouped_gemm_block (`Qwen3MoeGroupedGEMMBlock`):
+            The grouped GEMM block to compare against.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+    """
     moe_intermediate_size = grouped_gemm_block.moe_intermediate_size
     for i, expert in enumerate(moe_block.experts):
         ref_gate_proj_grad = expert.gate_proj.weight.grad
@@ -167,7 +259,20 @@ def check_gate_grad(
     grouped_gemm_block: Qwen3MoeGroupedGEMMBlock,
     atol: float,
     rtol: float,
-):
+) -> None:
+    """
+    Checks the gradients of the gate in a MoE block.
+    
+    Args:
+        moe_block (`Qwen3MoeSparseMoeBlock`):
+            The MoE block containing the experts.
+        grouped_gemm_block (`Qwen3MoeGroupedGEMMBlock`):
+            The grouped GEMM block to compare against.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+    """
     ref_grad = moe_block.gate.weight.grad
     assert ref_grad is not None
     test_grad = grouped_gemm_block.gate.grad
@@ -182,7 +287,20 @@ def check_wgrad(
     grouped_gemm_block: Qwen3MoeGroupedGEMMBlock,
     atol: float,
     rtol: float,
-):
+) -> None:
+    """
+    Checks the gradients of the weights in a MoE block.
+    
+    Args:
+        moe_block (`Qwen3MoeSparseMoeBlock`):
+            The MoE block containing the experts.
+        grouped_gemm_block (`Qwen3MoeGroupedGEMMBlock`):
+            The grouped GEMM block to compare against.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+    """
     check_down_proj_grad(moe_block, grouped_gemm_block, atol, rtol)
     check_gate_up_proj_grad(moe_block, grouped_gemm_block, atol, rtol)
     check_gate_grad(moe_block, grouped_gemm_block, atol, rtol)
@@ -195,7 +313,24 @@ def check_tensor_allclose(
     rtol: float,
     name: str,
     verbose: bool = False,
-):
+) -> None:
+    """
+    Checks if two tensors are all close within a given tolerance.
+    
+    Args:
+        X_ref (`torch.Tensor`):
+            The reference tensor.
+        X_test (`torch.Tensor`):
+            The tensor to test.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+        name (`str`):
+            The name of the tensor for error messages.
+        verbose (`bool`, optional, default `False`):
+            Whether to print the difference if the tensors are not all close.
+    """
     diff = (X_ref - X_test).abs().max()
     if verbose:
         print(f"{name} diff: {diff.detach().cpu().item():.6f}")
@@ -210,7 +345,22 @@ def check_expert_grads(
     atol: float,
     rtol: float,
     verbose: bool = False,
-):
+) -> None:
+    """
+    Checks the gradients of the experts in a MoE block.
+    
+    Args:
+        ref_result (`BackwardResult`):
+            The reference backward result.
+        test_result (`BackwardResult`):
+            The backward result to test.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+        verbose (`bool`, optional, default `False`):
+            Whether to print the difference if the gradients are not all close.
+    """
     fields_to_check = [f.name for f in fields(BackwardResult) if "proj" in f.name]
     assert len(fields_to_check) == 3
 
@@ -245,7 +395,22 @@ def check_grads(
     atol: float,
     rtol: float,
     verbose: bool = False,
-):
+) -> None:
+    """
+    Checks the gradients of the input and gate in a MoE block.
+    
+    Args:
+        ref_result (`BackwardResult`):
+            The reference backward result.
+        test_result (`BackwardResult`):
+            The backward result to test.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+        verbose (`bool`, optional, default `False`):
+            Whether to print the difference if the gradients are not all close.
+    """
     check_tensor_allclose(
         ref_result.X_grad, test_result.X_grad, atol, rtol, "X.grad", verbose
     )
@@ -261,7 +426,22 @@ def check_fwd(
     atol: float,
     rtol: float,
     verbose: bool = False,
-):
+) -> None:
+    """
+    Checks the forward pass results of a MoE block.
+    
+    Args:
+        ref_result (`ForwardResult`):
+            The reference forward result.
+        test_result (`ForwardResult`):
+            The forward result to test.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+        verbose (`bool`, optional, default `False`):
+            Whether to print the difference if the results are not all close.
+    """
     # First check hidden states (output)
     ref_output = ref_result.output
     test_output = test_result.output
@@ -290,7 +470,24 @@ def check_grouped_gemm_results(
     atol: float,
     rtol: float,
     verbose: bool = False,
-):
+) -> None:
+    """
+    Checks the results of a grouped GEMM operation.
+    
+    Args:
+        grouped_result (`GroupedGEMMResult`):
+            The reference grouped GEMM result.
+        fused_result (`GroupedGEMMResult`):
+            The grouped GEMM result to test.
+        permute_y (`bool`):
+            Whether the output should be permuted.
+        atol (`float`):
+            The absolute tolerance for the comparison.
+        rtol (`float`):
+            The relative tolerance for the comparison.
+        verbose (`bool`, optional, default `False`):
+            Whether to print the difference if the results are not all close.
+    """
     for field in fields(GroupedGEMMResult):
         ref_value = getattr(grouped_result, field.name)
         test_value = getattr(fused_result, field.name)
@@ -309,7 +506,21 @@ def check_grouped_gemm_results(
         )
 
 
-def run_forward(model: nn.Module, X: torch.Tensor, is_grouped_gemm: bool = False):
+def run_forward(model: nn.Module, X: torch.Tensor, is_grouped_gemm: bool = False) -> ForwardResult:
+    """
+    Runs a forward pass through a MoE block.
+    
+    Args:
+        model (`nn.Module`):
+            The MoE block to run.
+        X (`torch.Tensor`):
+            The input to the forward pass.
+        is_grouped_gemm (`bool`, optional, default `False`):
+            Whether to use grouped GEMM.
+    
+    Returns:
+        `ForwardResult`: The result of the forward pass.
+    """
     X = X.detach().clone().requires_grad_(True)
     output, router_logits = model(X)
     if is_grouped_gemm:
@@ -326,7 +537,23 @@ def run_forward(model: nn.Module, X: torch.Tensor, is_grouped_gemm: bool = False
 
 def run_backward(
     model: nn.Module, grad_output: torch.Tensor, output: torch.Tensor, X: torch.Tensor
-):
+) -> BackwardResult:
+    """
+    Runs a backward pass through a MoE block.
+    
+    Args:
+        model (`nn.Module`):
+            The MoE block to run.
+        grad_output (`torch.Tensor`):
+            The gradient of the output.
+        output (`torch.Tensor`):
+            The output of the forward pass.
+        X (`torch.Tensor`):
+            The input to the forward pass.
+    
+    Returns:
+        `BackwardResult`: The result of the backward pass.
+    """
     output.backward(grad_output)
     assert X.grad is not None
     for name, param in model.named_parameters():
@@ -373,10 +600,10 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         gate: torch.Tensor,
         gate_up_proj: torch.Tensor,
         down_proj: torch.Tensor,
-        permute_x: bool = False,
-        permute_y: bool = False,
-        autotune: bool = True,
-        kernel_config_fwd: KernelConfigForward = None,
+        permute_x: bool                               = False,
+        permute_y: bool                               = False,
+        autotune: bool                                = True,
+        kernel_config_fwd: KernelConfigForward        = None,
         kernel_config_bwd_dW: KernelConfigBackward_dW = None,
         kernel_config_bwd_dX: KernelConfigBackward_dX = None,
     ):
@@ -398,13 +625,35 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
     def from_hf(
         cls,
         moe_block: Qwen3MoeSparseMoeBlock,
-        permute_x: bool = False,
-        permute_y: bool = False,
-        autotune: bool = True,
-        kernel_config_fwd: KernelConfigForward = None,
+        permute_x: bool                               = False,
+        permute_y: bool                               = False,
+        autotune: bool                                = True,
+        kernel_config_fwd: KernelConfigForward        = None,
         kernel_config_bwd_dW: KernelConfigBackward_dW = None,
         kernel_config_bwd_dX: KernelConfigBackward_dX = None,
-    ):
+    ) -> Qwen3MoeFusedGroupedGEMMBlock:
+        """
+        Creates a `Qwen3MoeFusedGroupedGEMMBlock` from a Hugging Face model.
+        
+        Args:
+            moe_block (`Qwen3MoeSparseMoeBlock`):
+                The MoE block containing the experts.
+            permute_x (`bool`, optional, default `False`):
+                Whether to permute the input.
+            permute_y (`bool`, optional, default `False`):
+                Whether to permute the output.
+            autotune (`bool`, optional, default `True`):
+                Whether to autotune the kernel.
+            kernel_config_fwd (`KernelConfigForward`, optional):
+                The forward kernel configuration.
+            kernel_config_bwd_dW (`KernelConfigBackward_dW`, optional):
+                The backward kernel configuration for the weights.
+            kernel_config_bwd_dX (`KernelConfigBackward_dX`, optional):
+                The backward kernel configuration for the input.
+        
+        Returns:
+            `Qwen3MoeFusedGroupedGEMMBlock`: The created block.
+        """
         config: Qwen3MoeConfig = moe_block.experts[0].config
         gate, gate_up_proj, down_proj = Qwen3MoeGroupedGEMMBlock.extract_hf_weights(
             moe_block
@@ -423,6 +672,18 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         )
 
     def forward(self, hidden_states: torch.Tensor, debug: bool = False) -> torch.Tensor:
+        """
+        Runs a forward pass through the MoE block.
+        
+        Args:
+            hidden_states (`torch.Tensor`):
+                The input to the forward pass.
+            debug (`bool`, optional, default `False`):
+                Whether to run in debug mode.
+        
+        Returns:
+            `GroupedGEMMResult`: The result of the forward pass.
+        """
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         num_tokens = batch_size * sequence_length
         total_tokens = num_tokens * self.top_k

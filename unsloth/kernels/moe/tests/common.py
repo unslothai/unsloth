@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
+from typing import Any, Optional
 import itertools
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -18,18 +19,27 @@ from grouped_gemm.kernels.tuning import (
 )
 
 
-def print_delimiter(char="-", length=80):
+def print_delimiter(char: str="-", length: int=80) -> None:
+    """
+    Prints a delimiter line of specified length and character.
+    """
     print(char * length)
 
 
 @contextmanager
-def delimiter_context():
+def delimiter_context() -> None:
+    """
+    Context manager that prints a delimiter line before and after the execution of a block of code.
+    """
     print_delimiter()
     yield
     print_delimiter()
 
 
-def make_inputs(M, N, K, E, topk, dtype, requires_grad=False):
+def make_inputs(M: int, N: int, K: int, E: int, topk: int, dtype: torch.dtype, requires_grad: bool=False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Generates random input tensors for testing purposes.
+    """
     X1 = (
         torch.randn((M, K), device="cuda", dtype=dtype, requires_grad=requires_grad)
         / 10
@@ -62,30 +72,47 @@ def make_inputs(M, N, K, E, topk, dtype, requires_grad=False):
 
 @dataclass(kw_only=True)
 class DataConfig:
+    """
+    Data configuration class containing sequence length, data type, and device information.
+    """
     seq_len: int
     dtype: torch.dtype
     device: str = "cuda"
-    bs: int = 1
+
+    bs: int     = 1
+
 
 
 @dataclass(kw_only=True)
 class ModelConfig:
+    """
+    Model configuration class containing model parameters such as hidden size, number of experts, and activation functions.
+    """
     hidden_size: int
     intermediate_size: int
     num_experts: int
     topk: int
     use_sigmoid: bool
     renormalize: bool
-    pre_mul: bool = False
+    pre_mul: bool  = False
+
     post_mul: bool = field(init=False)
 
+
     def __post_init__(self):
+        """
+        Post-initialization method to set additional model configuration parameters.
+        """
         self.post_mul = not self.pre_mul
 
 
 @dataclass(kw_only=True)
 class GroupedGEMMTestConfig:
+    """
+    Test configuration class combining data and model configurations for grouped GEMM operations.
+    """
     name: str = "test"
+
     data_config: DataConfig
     model_config: ModelConfig
 
@@ -98,14 +125,20 @@ TOLERANCE = {
 
 
 # from https://github.com/triton-lang/triton/blob/main/bench/triton_bench/testing.py
-def assert_equal(ref, tri):
+def assert_equal(ref, tri) -> None:
+    """
+    Asserts that two values or tensors are equal.
+    """
     if isinstance(ref, torch.Tensor):
         assert torch.all(ref == tri), f"tensors not equal {ref} != {tri}"
     else:
         assert ref == tri, f"ref not equal to tri {ref} != {tri}"
 
 
-def assert_close(ref, tri, maxtol=None, rmstol=None, description="--", verbose=True):
+def assert_close(ref: torch.Tensor, tri: torch.Tensor, maxtol: Optional[float]=None, rmstol: Optional[float]=None, description: str="--", verbose: bool=True) -> None:
+    """
+    Asserts that two tensors are close within a specified tolerance.
+    """
     if tri.dtype.itemsize == 1:
         ref_as_type = ref.to(tri.dtype)
         if ref.dtype == tri.dtype:
@@ -176,18 +209,24 @@ def assert_close(ref, tri, maxtol=None, rmstol=None, description="--", verbose=T
     assert rms_err <= rmstol
 
 
-def assert_indx_equal(ref, tri):
+def assert_indx_equal(ref: torch.Tensor, tri: torch.Tensor) -> None:
+    """
+    Asserts that two tensors are equal up to the length of the first tensor.
+    """
     assert_equal(ref, tri[: len(ref)])
     assert torch.all(tri[len(ref) :] == -1)
 
 
 def get_kernel_test_configs(
-    BLOCK_SIZE_M=32,
-    BLOCK_SIZE_N=32,
-    BLOCK_SIZE_K=32,
-    num_warps=4,
-    num_stages=2,
+    BLOCK_SIZE_M: int = 32,
+    BLOCK_SIZE_N: int = 32,
+    BLOCK_SIZE_K: int = 32,
+    num_warps: int    = 4,
+    num_stages: int   = 2,
 ) -> list[KernelConfig]:
+    """
+    Generates a list of kernel configurations for testing.
+    """
     configs_fwd = []
     configs_bwd_dX = []
     configs_bwd_dW = []
@@ -251,7 +290,10 @@ def remove_feature_flags(
     permute_y: bool = True,
     tma_loads: bool = True,
     tma_store: bool = True,
-):
+) -> None:
+    """
+    Removes specific feature flags from a list of kernel configurations.
+    """
     pruned_configs = []
     for config in kernel_configs:
         # Remove permute flags first:

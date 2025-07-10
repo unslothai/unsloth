@@ -4,8 +4,25 @@ _IS_GEMMA_3_BASE_REGISTERED = False
 _IS_GEMMA_3_INSTRUCT_REGISTERED = False
 
 class GemmaModelInfo(ModelInfo):
+    """
+    A class that provides information about Gemma models. This class is used to construct model names based on various parameters such as base name, version, size, quantization type, and instruction tag.
+    """
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(cls, base_name: str, version: str, size: str, quant_type: QuantType, instruct_tag: str) -> str:
+        """
+        Constructs a model name based on the provided parameters.
+        
+        Args:
+            base_name (str): The base name of the model.
+            version (str): The version of the model.
+            size (str): The size of the model.
+            quant_type (QuantType): The quantization type of the model.
+            instruct_tag (str): The instruction tag of the model.
+            key (str): The key used for model name construction.
+        
+        Returns:
+            str: The constructed model name.
+        """
         key = f"{base_name}-{version}-{size}B"
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
@@ -33,21 +50,39 @@ GemmaMeta3Instruct = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],
 )
 
-def register_gemma_3_base_models(include_original_model: bool = False):
+def register_gemma_3_base_models(include_original_model: bool = False) -> None:
+    """
+    Registers Gemma 3 base models in the model registry. This function ensures that the models are only registered once.
+    
+    Args:
+        include_original_model (bool, optional): Whether to include the original model in the registration. Defaults to False.
+    """
     global _IS_GEMMA_3_BASE_REGISTERED
     if _IS_GEMMA_3_BASE_REGISTERED:
         return
     _register_models(GemmaMeta3Base, include_original_model=include_original_model)
     _IS_GEMMA_3_BASE_REGISTERED = True
 
-def register_gemma_3_instruct_models(include_original_model: bool = False):
+def register_gemma_3_instruct_models(include_original_model: bool = False) -> None:
+    """
+    Registers Gemma 3 instruction-tuned models in the model registry. This function ensures that the models are only registered once.
+    
+    Args:
+        include_original_model (bool, optional): Whether to include the original model in the registration. Defaults to False.
+    """
     global _IS_GEMMA_3_INSTRUCT_REGISTERED
     if _IS_GEMMA_3_INSTRUCT_REGISTERED:
         return
     _register_models(GemmaMeta3Instruct, include_original_model=include_original_model)
     _IS_GEMMA_3_INSTRUCT_REGISTERED = True
 
-def register_gemma_models(include_original_model: bool = False):
+def register_gemma_models(include_original_model: bool = False) -> None:
+    """
+    Registers all Gemma models (both base and instruction-tuned) in the model registry.
+    
+    Args:
+        include_original_model (bool, optional): Whether to include the original model in the registration. Defaults to False.
+    """
     register_gemma_3_base_models(include_original_model=include_original_model)
     register_gemma_3_instruct_models(include_original_model=include_original_model)
 

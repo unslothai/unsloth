@@ -68,6 +68,14 @@ except:
 pass
 
 class UnslothTrainingArguments(TrainingArguments):
+    """
+    UnslothTrainingArguments is a dataclass that extends the base TrainingArguments class to provide additional configuration options for training models with Unsloth optimizations.
+    
+    Args:
+        embedding_learning_rate (`Optional[float]`):
+            Optional different learning rate for embeddings and lm_head.
+            If not specified, defaults to the same learning rate as other parameters.
+    """
     def __init__(self, embedding_learning_rate: float = None, *args, **kwargs):
         embedding_learning_rate = embedding_learning_rate
         super().__init__(*args, **kwargs)
@@ -75,11 +83,27 @@ pass
 
 
 def _create_unsloth_optimizer(
-    model,
-    optimizer_cls,
-    optimizer_kwargs,
-    embedding_lr = 5e-5,
-):
+    model: torch.nn.Module,
+    optimizer_cls: type,
+    optimizer_kwargs: dict,
+    embedding_lr: float = 5e-5,
+) -> torch.optim.Optimizer:
+    """
+    Creates an optimizer with different learning rates for embeddings and other parameters.
+    
+    Args:
+        model (`torch.nn.Module`):
+            The model to optimize
+        optimizer_cls (`type`):
+            The optimizer class to use (e.g., AdamW)
+        optimizer_kwargs (`dict`):
+            Keyword arguments for the optimizer
+        embedding_lr (`float`, defaults to 5e-5):
+            Learning rate for embedding layers
+    
+    Returns:
+        `torch.optim.Optimizer`: An optimizer with separate learning rates for embeddings and other parameters
+    """
     lr = optimizer_kwargs["lr"]
     weight_decay = optimizer_kwargs.get("weight_decay", 0.0)
 
@@ -119,7 +143,23 @@ pass
 
 
 class UnslothTrainer(SFTTrainer):
-    def create_optimizer(self):
+    """
+    UnslothTrainer is a specialized trainer class that extends SFTTrainer to provide optimized training for models using Unsloth's parameter-efficient fine-tuning techniques.
+    
+    Key features:
+        - Custom optimizer creation with different learning rates for embeddings
+        - Integration with Unsloth's training optimizations
+        - Support for backward compatibility with different TRL versions
+    """
+    def create_optimizer(self) -> torch.optim.Optimizer:
+        """
+        Creates an optimizer with separate learning rates for embeddings and other parameters when embedding_learning_rate is specified.
+        
+        If embedding_learning_rate is None, falls back to the default SFTTrainer optimizer creation.
+        
+        Returns:
+            `torch.optim.Optimizer`: The configured optimizer for the model
+        """
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
         if embedding_learning_rate is None: return super().create_optimizer()
 
@@ -138,7 +178,22 @@ pass
 
 # From `trl>=0.13.0`, they changed how to pass several params to the trainer
 # We need to patch to make the transition smooth
-def _backwards_compatible_trainer(trainer_class, config_class):
+def _backwards_compatible_trainer(trainer_class: type, config_class: type) -> function:
+    """
+    A decorator that modifies a trainer class to maintain backward compatibility with different versions of the TRL library.
+    
+    This function handles parameter changes between TRL versions, particularly for version 0.13.0 and newer, where
+    parameters were moved from TrainingArguments to specific config classes.
+    
+    Args:
+        trainer_class (`type`):
+            The trainer class to modify
+        config_class (`type`):
+            The config class associated with the trainer
+    
+    Returns:
+        function: A wrapped __init__ method that handles parameter compatibility
+    """
     original_init = trainer_class.__init__
     
     @wraps(original_init)
@@ -212,7 +267,16 @@ def _backwards_compatible_trainer(trainer_class, config_class):
 pass
 
 
-def _patch_trl_trainer():
+def _patch_trl_trainer() -> None:
+    """
+    Applies backward compatibility patches to TRL trainer classes to ensure they work with Unsloth's training optimizations.
+    
+    This function identifies all trainer classes in the TRL library and modifies them to handle parameter changes between
+    TRL versions, particularly for version 0.13.0 and newer.
+    
+    Returns:
+        None: The function modifies TRL trainer classes in place.
+    """
     import trl
     if hasattr(trl, "__UNSLOTH_BACKWARDS_COMPATIBLE__"): return
     if Version(trl.__version__) <= Version("0.11.0"): return
