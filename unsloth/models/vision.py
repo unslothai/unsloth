@@ -222,6 +222,8 @@ def unsloth_base_fast_generate(
             kwargs["compile_config"] = _compile_config
     pass
 
+    print(args)
+    print(kwargs)
     try:
         with torch.inference_mode(), autocaster:
             output = self._old_generate(*args, **kwargs)
