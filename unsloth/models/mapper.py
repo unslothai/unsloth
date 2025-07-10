@@ -899,6 +899,11 @@ __INT_TO_FLOAT_MAPPER = \
         "google/gemma-3n-E2B",
         "unsloth/gemma-3n-E2B-unsloth-bnb-4bit",
     ),
+    "unsloth/Devstral-Small-2507-unsloth-bnb-4bit" : (
+        "unsloth/Devstral-Small-2507",
+        "mistralai/Devstral-Small-2507",
+        "unsloth/Devstral-Small-2507-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
