@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.class
+unsloth_compiled_cache/
 
 # C extensions
 *.so
