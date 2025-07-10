@@ -79,7 +79,7 @@ def get_device_count():
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
     else:
-        return 0
+        return 1
 pass
 
 DEVICE_COUNT : int = get_device_count()
