@@ -268,9 +268,11 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
+        device_index = x.device.index
+
         return (
-            self.multi_gpu_cos_cached[x.device.index][:seq_len].to(dtype=x.dtype),
-            self.multi_gpu_sin_cached[x.device.index][:seq_len].to(dtype=x.dtype),
+            self.multi_gpu_cos_cached[device_index][:seq_len].to(dtype=x.dtype),
+            self.multi_gpu_sin_cached[device_index][:seq_len].to(dtype=x.dtype),
         )
     pass
 

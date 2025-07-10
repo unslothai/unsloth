@@ -1393,16 +1393,17 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
+        device_index = x.device.index
         return (
-            self.multi_gpu_cos_cached[x.device.index][:seq_len].to(dtype = x.dtype),
-            self.multi_gpu_sin_cached[x.device.index][:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_cos_cached[device_index][:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_sin_cached[device_index][:seq_len].to(dtype = x.dtype),
         )
     pass
 
     def get_cached(self, seq_len = None, device = None):
         if device is None:
             device = torch.cuda.current_device()
-        return self.multi_gpu_cos_cached[device.index if hasattr(device, 'index') else device], self.multi_gpu_sin_cached[device.index if hasattr(device, 'index') else device]
+        return self.multi_gpu_cos_cached[device.index], self.multi_gpu_sin_cached[device.index]
     pass
 
     def extend_rope_embedding(self, x, seq_len):
@@ -1508,17 +1509,17 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
-
+        device_index = x.device.index
         return (
-            self.multi_gpu_cos_cached[x.device.index][:seq_len].to(dtype = x.dtype),
-            self.multi_gpu_sin_cached[x.device.index][:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_cos_cached[device_index][:seq_len].to(dtype = x.dtype),
+            self.multi_gpu_sin_cached[device_index][:seq_len].to(dtype = x.dtype),
         )
     pass
 
     def get_cached(self, seq_len = None, device = None):
         if device is None:
             device = torch.cuda.current_device()
-        return self.multi_gpu_cos_cached[device.index if hasattr(device, 'index') else device], self.multi_gpu_sin_cached[device.index if hasattr(device, 'index') else device]
+        return self.multi_gpu_cos_cached[device.index], self.multi_gpu_sin_cached[device.index]
     pass
 
     def extend_rope_embedding(self, x, seq_len):
@@ -1657,15 +1658,17 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
+        device_index = x.device.index
+
         if seq_len is not None and seq_len < self.original_max_position_embeddings:
             return (
-                self.multi_gpu_short_cos_cached[x.device.index][:seq_len].to(dtype = x.dtype),
-                self.multi_gpu_short_sin_cached[x.device.index][:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_short_cos_cached[device_index][:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_short_sin_cached[device_index][:seq_len].to(dtype = x.dtype),
             )
         else:
             return (
-                self.multi_gpu_long_cos_cached[x.device.index][:seq_len].to(dtype = x.dtype),
-                self.multi_gpu_long_sin_cached[x.device.index][:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_long_cos_cached[device_index][:seq_len].to(dtype = x.dtype),
+                self.multi_gpu_long_sin_cached[device_index][:seq_len].to(dtype = x.dtype),
             )
         pass
     pass
@@ -1673,7 +1676,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
     def get_cached(self, seq_len = None, device = None):
         if device is None:
             device = torch.cuda.current_device()
-        device_index = device.index if hasattr(device, 'index') else device
+        device_index = device.index
         if seq_len is not None and seq_len < self.original_max_position_embeddings:
             return self.multi_gpu_short_cos_cached[device_index], self.multi_gpu_short_sin_cached[device_index]
         return self.multi_gpu_long_cos_cached[device_index], self.multi_gpu_long_sin_cached[device_index]
