@@ -1,5 +1,7 @@
 # Unsloth Blackwell Compatibility
 
+For RTX 5060, RTX 5070, RTX 5080, RTX 5090 GPUs and also B200, B40, GB100, GB102, GB20* and GPUs listed in https://en.wikipedia.org/wiki/Blackwell_(microarchitecture)
+
 ## Overview
 
 `Blackwell` (`sm100+`) requires all dependent libraries to be compiled with `cuda 12.8`.

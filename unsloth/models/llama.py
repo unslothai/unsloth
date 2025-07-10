@@ -86,6 +86,11 @@ from triton import __version__ as triton_version
 HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
+def clean_gpu_cache():
+    if DEVICE_TYPE == "xpu":
+        torch.xpu.empty_cache()
+    else:
+        torch.cuda.empty_cache()
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
@@ -153,12 +158,13 @@ def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **
                 )
             else:
                 attention_mask = attention_mask[:,[-1]]
-                logger.warning_once(
-                    f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
-                    "defined in its base modeling class. Compiled forward passes will be sub-optimal. If you're "
-                    "writing code, see Llama for an example implementation. If you're a user, please report this "
-                    "issue on GitHub."
-                )
+                if transformers_version <= Version("4.52.4"):
+                    logger.warning_once(
+                        f"{self.__class__.__name__} has no `_prepare_4d_causal_attention_mask_with_cache_position` method "
+                        "defined in its base modeling class. Compiled forward passes will be sub-optimal. If you're "
+                        "writing code, see Llama for an example implementation. If you're a user, please report this "
+                        "issue on GitHub."
+                    )
 
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
@@ -319,6 +325,13 @@ def LlamaAttention_fast_forward_inference(
     #     Knn, Vnn = Knn, Vnn
     # pass
 
+    # when qlen==vlen and attn_mask is None, we should use causal attention
+    Q_len = Qn.shape[-2]
+    K_len = Knn.shape[-2]
+    if attention_mask is None and Q_len == K_len:
+        is_causal = True
+    else:
+        is_causal = False
     # Attention
     if bsz == 1:
         Qn *= self.scalar # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
@@ -520,11 +533,18 @@ def LlamaAttention_fast_forward(
         V = V.transpose(1, 2)
         A = flash_attn_func(Q, K, V, causal = True)
     else:
+        # when qlen==vlen and attn_mask is None, we should use causal attention
+        Q_len = Q.shape[-2]
+        K_len = K.shape[-2]
+        if attention_mask is None and Q_len == K_len:
+            is_causal = True
+        else:
+            is_causal = False
         # Grouped query attention
         if SDPA_HAS_GQA:
             # Needs (batch_size, n_heads, seq_len, head_dim)
             # is_casual and attention_mask must not be both set!
-            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False, enable_gqa = n_groups != 1)
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = is_causal, enable_gqa = n_groups != 1)
             # Go back to (batch_size, seq_len, n_heads, head_dim)
             A = A.transpose(1, 2)#.contiguous()
         else:
@@ -539,7 +559,7 @@ def LlamaAttention_fast_forward(
             Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
             # Needs (batch_size, n_heads, seq_len, head_dim)
             # is_casual and attention_mask must not be both set!
-            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+            A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = is_causal)
             # Go back to (batch_size, seq_len, n_heads, head_dim)
             A = A.transpose(1, 2).contiguous()
         pass
@@ -1802,10 +1822,11 @@ class FastLlamaModel:
             if not is_vLLM_available():
                 print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
                 fast_inference = False
-            major_version, minor_version = torch.cuda.get_device_capability()
-            if major_version < 7:
-                print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
-                fast_inference = False
+            if DEVICE_TYPE == "cuda":
+                major_version, minor_version = torch.cuda.get_device_capability()
+                if major_version < 7:
+                    print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+                    fast_inference = False
             if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") == "0":
                 raise RuntimeError("Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!")
         pass
@@ -1829,8 +1850,8 @@ class FastLlamaModel:
             num_gpus = torch.xpu.device_count()
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
 
-            # TODO: After adding vLLM support for XPU, changed this
-            vllm_version = ""
+            try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except: vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 
@@ -2070,7 +2091,10 @@ class FastLlamaModel:
         import gc
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()"""
+            if DEVICE_TYPE == "xpu":
+                torch.xpu.empty_cache()
+            else:
+                torch.cuda.empty_cache()"""
 
         debug_info = debug_info.split('\n')
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -2558,7 +2582,7 @@ class FastLlamaModel:
             # Remove old items to save VRAM
             for _ in range(3):
                 gc.collect()
-                torch.cuda.empty_cache()
+                clean_gpu_cache()
             pass
 
             if train_lm_head:
@@ -2569,7 +2593,7 @@ class FastLlamaModel:
             # Remove old items to save VRAM
             for _ in range(3):
                 gc.collect()
-                torch.cuda.empty_cache()
+                clean_gpu_cache()
             pass
         pass
 
@@ -2630,7 +2654,7 @@ class FastLlamaModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
         pass
 
         # Patch for fast inference
@@ -2846,7 +2870,7 @@ class FastLlamaModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
         pass
 
         # Patch for fast inference

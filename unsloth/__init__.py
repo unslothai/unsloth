@@ -50,24 +50,6 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
 
-# Hugging Face Hub faster downloads
-if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-pass
-
-# XET is slower in Colab - investigate why
-keynames = "\n" + "\n".join(os.environ.keys())
-if "HF_XET_HIGH_PERFORMANCE" not in os.environ:
-    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
-pass
-# Disable XET cache sine it eats too much space
-if "HF_XET_CHUNK_CACHE_SIZE_BYTES" not in os.environ:
-    os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = "0"
-pass
-if "\nCOLAB_" in keynames:
-    os.environ["HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY"] = "0"
-pass
-
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
@@ -229,12 +211,11 @@ elif DEVICE_TYPE == "xpu":
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.4.1"):
-        pass
-        # print(
-        #     "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
-        #     "To disable this, set `os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'`"
-        # )
+    if Version(unsloth_zoo_version) < Version("2025.7.1"):
+        print(
+            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
+            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
+        )
         # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
         #     try:
         #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
