@@ -22,7 +22,7 @@ critical_modules = ['trl', 'transformers', 'peft']
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
 # This check is critical because Unsloth optimizes these libraries by modifying
-# their code at import time. If they're imported first, the original (slower, 
+# their code at import time. If they're imported first, the original (slower,
 # more memory-intensive) implementations will be used instead of Unsloth's
 # optimized versions, potentially causing OOM errors or slower training.
 
@@ -72,6 +72,17 @@ def get_device_type():
     raise NotImplementedError("Unsloth currently only works on NVIDIA GPUs and Intel GPUs.")
 pass
 DEVICE_TYPE : str = get_device_type()
+
+def get_device_count():
+    if DEVICE_TYPE == "cuda":
+        return torch.cuda.device_count()
+    elif DEVICE_TYPE == "xpu":
+        return torch.xpu.device_count()
+    else:
+        return 0
+pass
+
+DEVICE_COUNT : int = get_device_count()
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
