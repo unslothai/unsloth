@@ -58,11 +58,11 @@ exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2025.7.2",
+    "unsloth_zoo>=2025.7.4",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3",
-    "datasets>=3.4.1",
+    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0",
+    "datasets>=3.4.1,<4.0.0",
     "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
@@ -304,11 +304,11 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.7.2",
+    "unsloth_zoo>=2025.7.4",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3",
-    "datasets>=3.4.1",
+    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0",
+    "datasets>=3.4.1,<4.0.0",
     "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
