@@ -458,26 +458,33 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Edit GA / bsz and weight_decay
     replacements = {
-        "output_dir"                  : None,
-        "logging_nan_inf_filter"      : False,
-        "per_device_train_batch_size" : 4,
-        "gradient_accumulation_steps" : 2,
-        "weight_decay"                : 0.01,
-        "warmup_ratio"                : 0.1,
-        "seed"                        : 3407,
-        "optim"                       : "adamw_8bit",
-        "learning_rate"               : 5e-05,
-        "per_device_eval_batch_size"  : 4,
-        "eval_accumulation_steps"     : 2,
-        "torch_empty_cache_steps"     : 250,
-        "logging_steps"               : 1,
-        "max_seq_length"              : None,
-        "num_generations"             : 8,
-        "top_k"                       : None,
-        "vllm_mode"                   : "colocate",
-        "generation_kwargs"           : {},
-        "bf16"                        : False,
-        "fp16"                        : False,
+        "output_dir"                    : None,
+        "logging_nan_inf_filter"        : False,
+        "per_device_train_batch_size"   : 4,
+        "gradient_accumulation_steps"   : 2,
+        "weight_decay"                  : 0.01,
+        "warmup_ratio"                  : 0.1,
+        "seed"                          : 3407,
+        "optim"                         : "adamw_8bit",
+        "learning_rate"                 : 5e-05,
+        "per_device_eval_batch_size"    : 4,
+        "eval_accumulation_steps"       : 2,
+        "torch_empty_cache_steps"       : 250,
+        "logging_steps"                 : 1,
+        "max_seq_length"                : None,
+        "num_generations"               : 8,
+        "top_k"                         : None,
+        "vllm_mode"                     : "colocate",
+        "generation_kwargs"             : {},
+        "bf16"                          : False,
+        "fp16"                          : False,
+        "include_tokens_per_second"     : False,
+        "include_num_input_tokens_seen" : False,
+        "auto_find_batch_size"          : True, # Auto /2 batch size
+        "dataloader_persistent_workers" : True, # Keeps dataloader in RAM
+        "dataloader_prefetch_factor"    : 2,
+        "dataloader_pin_memory"         : True,
+        "dataloader_num_workers"        : 0, # Default is 0 means 1
     }
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
@@ -526,7 +533,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         num_proc_check = \
         "if dataset_num_proc is None:\n"\
         "    from multiprocessing import cpu_count\n"\
-        "    dataset_num_proc = cpu_count()\n"
+        "    dataset_num_proc = min(cpu_count()*2, 2)\n"
         extra_args += num_proc_check
     pass
 
