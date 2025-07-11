@@ -84,7 +84,7 @@ def Gemma2Attention_fast_forward(
     padding_mask:         Optional[torch.LongTensor] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -113,12 +113,13 @@ def Gemma2Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    device_index = Q.device.index
     if position_ids is None:
-        cos = self.rotary_emb.cos_cached
-        sin = self.rotary_emb.sin_cached
+        cos = self.rotary_emb.multi_gpu_cos_cached[device_index]
+        sin = self.rotary_emb.multi_gpu_sin_cached[device_index]
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, device_index)
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
@@ -281,7 +282,7 @@ def Gemma2Attention_fast_forward_inference(
         # Only for Gemma2
         self.temp_O  = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = device)
-        
+
         # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
         # Gemma 9b should use 256 and not 224 (hs / nah). 27b uses the below
         # We default to using the config file itself
@@ -307,8 +308,9 @@ def Gemma2Attention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos = self.rotary_emb.cos_cached[position_ids].unsqueeze(1)
-    sin = self.rotary_emb.sin_cached[position_ids].unsqueeze(1)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    cos = cos[position_ids].unsqueeze(1)
+    sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
 
     RH_Q = self.RH_Q
@@ -324,7 +326,7 @@ def Gemma2Attention_fast_forward_inference(
     torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
-    
+
     # New KV cache
     # Kn = torch.cat([K1, Kn], dim = 2)
     # Vn = torch.cat([V1, Vn], dim = 2)
@@ -386,7 +388,7 @@ def Gemma2Model_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
+    out_weights = tuple(torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT))
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -422,10 +424,17 @@ def Gemma2Model_fast_forward_inference(
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
 
+        # For pipeline parallelism, we need to move all tensors to the same device
+        # note that this movement is once per GPU in PP
+        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
+        hidden_states, position_ids = move_to_device(
+            device_index, hidden_states, position_ids
+        )
+
         use_sliding_window = idx % 2 == 0
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weights[device_index])
         hidden_states, present_key_value = Gemma2Attention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states = hidden_states,
@@ -435,18 +444,18 @@ def Gemma2Model_fast_forward_inference(
             do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             use_sliding_window = use_sliding_window,
         )
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weights[device_index])
         hidden_states += residual
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer. pre_feedforward_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer. pre_feedforward_layernorm, hidden_states, out_weights[device_index])
         hidden_states = fast_geglu_inference(decoder_layer.mlp, hidden_states)
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_feedforward_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_feedforward_layernorm, hidden_states, out_weights[device_index])
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference_gemma(self.model.norm, hidden_states, out_weight)
+    hidden_states = fast_rms_layernorm_inference_gemma(self.model.norm, hidden_states, out_weights[device_index])
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
@@ -479,7 +488,7 @@ class FastGemma2Model(FastLlamaModel):
         Gemma2ForCausalLM    .forward = CausalLM_fast_forward(Gemma2Model_fast_forward_inference)
         PeftModelForCausalLM .forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(Gemma2ForCausalLM)
-        
+
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
