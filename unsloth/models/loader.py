@@ -129,6 +129,15 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+
+                # Pass vLLM/inference parameters
+                fast_inference             = fast_inference,
+                gpu_memory_utilization     = gpu_memory_utilization,
+                float8_kv_cache            = float8_kv_cache,
+                random_state               = random_state,
+                max_lora_rank              = max_lora_rank,
+                disable_log_stats          = disable_log_stats,
+
                 *args, **kwargs,
             )
         pass
@@ -149,7 +158,7 @@ class FastLanguageModel(FastLlamaModel):
                 )
             pass
         pass
-        
+
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
@@ -230,7 +239,7 @@ class FastLanguageModel(FastLlamaModel):
                     f"This includes Llama 3.1. The minimum required version is 4.43.2\n"\
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
-                ) 
+                )
             # Create a combined error message showing both failures
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -307,7 +316,7 @@ class FastLanguageModel(FastLlamaModel):
                     "To update flash-attn, do the below:\n"\
                     '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
                 )
-            
+
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
@@ -354,6 +363,15 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+
+                # Pass vLLM/inference parameters
+                fast_inference             = fast_inference,
+                gpu_memory_utilization     = gpu_memory_utilization,
+                float8_kv_cache            = float8_kv_cache,
+                random_state               = random_state,
+                max_lora_rank              = max_lora_rank,
+                disable_log_stats          = disable_log_stats,
+
                 *args, **kwargs,
             )
         pass
@@ -374,7 +392,7 @@ class FastLanguageModel(FastLlamaModel):
                 fast_inference = False
             pass
             from unsloth_zoo.vllm_utils import (
-                patch_vllm, 
+                patch_vllm,
                 vllm_dynamic_quant_supported,
             )
             patch_vllm()
@@ -412,7 +430,7 @@ class FastLanguageModel(FastLlamaModel):
             disable_log_stats = disable_log_stats,
             *args, **kwargs,
         )
-        
+
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
@@ -509,6 +527,15 @@ class FastModel(FastBaseModel):
         whisper_language           = None,
         whisper_task               = None,
         unsloth_force_compile      = False,
+
+        # Add the missing vLLM/inference parameters
+        fast_inference             = False, # uses vLLM
+        gpu_memory_utilization     = 0.5,
+        float8_kv_cache            = False,
+        random_state               = 3407,
+        max_lora_rank              = 64,
+        disable_log_stats          = True,
+
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -581,7 +608,7 @@ class FastModel(FastBaseModel):
                 "float16;torch.float16;torch.float16;"\
                 "if name.endswith(('.conv')): module;"\
                 "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
-            
+
             if transformers_version < Version("4.53.0"):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
         else:
@@ -674,7 +701,7 @@ class FastModel(FastBaseModel):
                     f"This includes Llama 3.1. The minimum required version is 4.43.2\n"\
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
-                ) 
+                )
             # Create a combined error message showing both failures
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -690,7 +717,7 @@ class FastModel(FastBaseModel):
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
-            
+
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -806,7 +833,16 @@ class FastModel(FastBaseModel):
             use_gradient_checkpointing = use_gradient_checkpointing,
             supports_sdpa     = supports_sdpa,
             whisper_language  = whisper_language,
-            whisper_task      = whisper_task,            
+            whisper_task      = whisper_task,
+
+            # Pass vLLM/inference parameters
+            fast_inference         = fast_inference,
+            gpu_memory_utilization = gpu_memory_utilization,
+            float8_kv_cache        = float8_kv_cache,
+            random_state           = random_state,
+            max_lora_rank          = max_lora_rank,
+            disable_log_stats      = disable_log_stats,
+
             *args, **kwargs,
         )
 

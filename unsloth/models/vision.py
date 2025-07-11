@@ -268,7 +268,7 @@ class FastBaseModel:
         disable_log_stats = False,
         unsloth_vllm_standby = False,
         **kwargs,
-    ):  
+    ):
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
             raise RuntimeError("Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!")
         pass
@@ -277,6 +277,9 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
             )
+
+        if not any(x in model_types for x in ["mllama", "gemma3"]):
+            raise RuntimeError("Unsloth: We only support fast inference for Llama 3.2 and Gemma 3 models!")
 
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
