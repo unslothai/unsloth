@@ -1967,6 +1967,7 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
+        raise_handler = RaiseUninitialized()
         if num_labels is not None:
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
@@ -2030,6 +2031,7 @@ class FastLlamaModel:
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
         pass
+        raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
