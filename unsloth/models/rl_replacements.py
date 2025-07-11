@@ -373,7 +373,11 @@ def grpo_trainer_compute_loss(function_name, function):
         _input_ids = input_ids
         _logits_to_keep = logits_to_keep
 
-        get_logps_func = lambda model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False: self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep) if hasattr(self, "_get_per_token_logps") else self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy)['logps']
+        get_logps_func = \
+            lambda model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False: \
+            self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep) \
+            if hasattr(self, "_get_per_token_logps") else \
+            self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy)['logps']
 
         per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep)
 
