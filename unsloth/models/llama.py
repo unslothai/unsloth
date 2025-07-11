@@ -1967,6 +1967,7 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
+        raise_handler = RaiseUninitialized()
         if num_labels is not None:
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
@@ -2030,6 +2031,7 @@ class FastLlamaModel:
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
         pass
+        raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
@@ -2540,11 +2542,8 @@ class FastLlamaModel:
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
         pass
 
-        #does not get lora yet, so get name from model, not base model
-
-        is_classification =  "Classification" in str(type(model))
-        # Get LoRA
-        #
+        #d oes not get lora yet, so get name from model, not base model
+        is_classification = "Classification" in str(type(model))
 
         arguments = dict(
             r                   = r,
@@ -2696,16 +2695,16 @@ class FastLlamaModel:
         # Get activation function
         model_type = model.config.model_type
 
-        if   model_type == "llama":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "mistral": apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "qwen2":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu_approx
-        elif model_type == "gemma2":  apply_lora_mlp = apply_lora_mlp_geglu_approx
-        elif model_type == "cohere":  apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "granite": apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "qwen3":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "falcon_h1":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "qwen3moe":   apply_lora_mlp = apply_lora_mlp_swiglu
+        if   model_type == "llama":     apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "mistral":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen2":     apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "gemma":     apply_lora_mlp = apply_lora_mlp_geglu_approx
+        elif model_type == "gemma2":    apply_lora_mlp = apply_lora_mlp_geglu_approx
+        elif model_type == "cohere":    apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "granite":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen3":     apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "falcon_h1": apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen3moe":  apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
         pass
