@@ -482,9 +482,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "include_num_input_tokens_seen" : False,
         "auto_find_batch_size"          : True, # Auto /2 batch size
         "dataloader_persistent_workers" : True, # Keeps dataloader in RAM
-        "dataloader_prefetch_factor"    : 2,
         "dataloader_pin_memory"         : True,
-        "dataloader_num_workers"        : 0, # Default is 0 means 1
+        # "dataloader_prefetch_factor"    : 2, # Might fail so disable for now
+        # "dataloader_num_workers"        : 2, # Default is 0 means 1
     }
     for k, v in replacements.items():
         x = f"{k}( = [^,\n]{{1,}})?,\n"
