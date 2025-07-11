@@ -2222,7 +2222,7 @@ class FastLlamaModel:
         bias                = "none",
         layers_to_transform = None,
         layers_pattern      = None,
-        use_gradient_checkpointing = True,
+        use_gradient_checkpointing = "unsloth",
         random_state        = 3407,
         max_seq_length      = 2048, # not used anymore
         use_rslora          = False,
@@ -2679,7 +2679,7 @@ class FastLlamaModel:
     @staticmethod
     def patch_peft_model(
         model,
-        use_gradient_checkpointing = True,
+        use_gradient_checkpointing = "unsloth",
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
             return FastBaseModel.patch_peft_model(
