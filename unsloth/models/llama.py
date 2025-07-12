@@ -2768,40 +2768,35 @@ class FastLlamaModel:
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
-                # Determine MLP module name (falcon_h1 has feed_forward, llama style has mlp)
-                if hasattr(layer, "mlp"):
-                    mlp_module_name = "mlp"
-                elif hasattr(layer, "feed_forward"):
-                    mlp_module_name = "feed_forward"
-                else:
-                    logger.warning_once(f"Unsloth: No MLP module found in layer {idx} so skipping peft mlp patching")
-                    continue
+                if model_type != "falcon_h1":
+                    # LoRAMLP.apply doesn't have functionality for gate and down mutlipliers yet.
+                    # Don't patch falcon h1 for the time being.
 
-                mlp_module = getattr(layer, mlp_module_name)
+                    # MLP patching
+                    mlp_module = layer.mlp
+                    gate_proj = mlp_module.gate_proj
+                    up_proj   = mlp_module.  up_proj
+                    down_proj = mlp_module.down_proj
 
-                # MLP patching
-                gate_proj = mlp_module.gate_proj
-                up_proj   = mlp_module.  up_proj
-                down_proj = mlp_module.down_proj
+                    if hasattr(gate_proj, "lora_A") and \
+                        hasattr(  up_proj, "lora_A") and \
+                        hasattr(down_proj, "lora_A") and \
+                        (getattr(gate_proj, "base_layer", gate_proj).bias is None) and \
+                        (getattr(  up_proj, "base_layer",   up_proj).bias is None) and \
+                        (getattr(down_proj, "base_layer", down_proj).bias is None) and \
+                        (len(getattr(gate_proj, "lora_magnitude_vector", []) or []) == 0) and \
+                        (len(getattr(  up_proj, "lora_magnitude_vector", []) or []) == 0) and \
+                        (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0):
 
-                if  hasattr(gate_proj, "lora_A") and \
-                    hasattr(  up_proj, "lora_A") and \
-                    hasattr(down_proj, "lora_A") and \
-                    (getattr(gate_proj, "base_layer", gate_proj).bias is None) and \
-                    (getattr(  up_proj, "base_layer",   up_proj).bias is None) and \
-                    (getattr(down_proj, "base_layer", down_proj).bias is None) and \
-                    (len(getattr(gate_proj, "lora_magnitude_vector", []) or []) == 0) and \
-                    (len(getattr(  up_proj, "lora_magnitude_vector", []) or []) == 0) and \
-                    (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0):
-
-                    # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    mlp_module.forward = types.MethodType(_apply_lora_mlp, mlp_module)
-                    n_mlp += 1
-                else:
-                    logger.warning_once(
-                        "Not an error, but Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
-                        "are not enabled or a bias term (like in Qwen) is used."
-                    )
+                        # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
+                        mlp_module.forward = types.MethodType(_apply_lora_mlp, mlp_module)
+                        n_mlp += 1
+                    else:
+                        logger.warning_once(
+                            "Not an error, but Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
+                            "are not enabled or a bias term (like in Qwen) is used."
+                        )
+                    pass
                 pass
 
                 # QKV attention patching
