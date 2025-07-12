@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.1"
+__version__ = "2025.7.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -66,6 +66,7 @@ __all__ = [
     "unsloth_compile_transformers",
     "patch_fast_lora",
     "validate_loftq_config",
+    "RaiseUninitialized",
 ]
 
 import torch
@@ -77,7 +78,7 @@ import contextlib
 import re
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
-from unsloth_zoo import DEVICE_TYPE
+from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -183,6 +184,8 @@ except:
 try:
     from transformers.generation.utils import logger as transformers_generation_utils_logger
     transformers_generation_utils_logger.addFilter(HideLoggingMessage("Setting `pad_token_id` to `eos_token_id`"))
+    # "You have set `compile_config`
+    transformers_generation_utils_logger.addFilter(HideLoggingMessage("compile_config"))
     del transformers_generation_utils_logger
 except:
     pass
@@ -202,6 +205,28 @@ try:
     del hub_logger
 except:
     pass
+
+# Errors out on
+# Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
+from transformers.modeling_utils import logger as transformers_logger
+class _RaiseUninitialized(logging.Handler):
+    def __init__(self):
+        super().__init__()
+    def emit(self, record):
+        if "some weights of" in str(record).lower():
+            raise Exception(
+                f"Unsloth: Critical error since some weights are not initialized.\n"\
+                f"Please try updating Unsloth, transformers and timm via:\n"\
+                f"`pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo transformers timm`\n"\
+                f"".str(record))
+pass
+class RaiseUninitialized:
+    def __init__(self):
+        self.error_handler = _RaiseUninitialized()
+        transformers_logger.addHandler(self.error_handler)
+    def remove(self):
+        transformers_logger.removeHandler(self.error_handler)
+pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
@@ -738,8 +763,7 @@ def get_statistics():
         pass
     pass
     try:
-        devices = torch.cuda.device_count()
-        _get_statistics(f"{devices if devices <= 8 else 9}")
+        _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
     except:
         pass
     if disabled: enable_progress_bars()
@@ -765,13 +789,43 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
 )
 exec(BitsAndBytesConfig__init__, globals())
 
-if torch.cuda.device_count() == 1:
+if DEVICE_COUNT == 1:
     from accelerate.utils.dataclasses import DistributedType
     def _prepare_backend(self, *args, **kwargs): return None, DistributedType.NO
     import accelerate.state
     accelerate.state.PartialState._prepare_backend = _prepare_backend
     accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
 pass
+
+# to move multiple tensors to the same device
+def move_to_device(target_device, *tensors):
+    """
+    Move multiple tensors to target device if they're not already there.
+
+    Args:
+        target_device: The target device to move tensors to
+        *tensors: Variable number of tensors to potentially move
+
+    Returns:
+        tuple: The tensors on the target device (same objects if already on device, new if moved)
+    """
+    if isinstance(target_device, int):
+        target_device = torch.device(target_device)
+    elif isinstance(target_device, str):
+        # if string we expect it to be a device name like "cuda:0"
+        target_device = torch.device(target_device)
+    elif isinstance(target_device, torch.device):
+        pass
+    else:
+        raise ValueError(f"Invalid target device: {target_device}")
+    pass
+    moved_tensors = []
+    for tensor in tensors:
+        if tensor.device != target_device:
+            moved_tensors.append(tensor.to(target_device))
+        else:
+            moved_tensors.append(tensor)
+    return tuple(moved_tensors) if len(moved_tensors) > 1 else moved_tensors[0]
 
 import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__

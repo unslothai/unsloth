@@ -43,6 +43,9 @@ except:
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
+from transformers.utils import (
+    is_torchdynamo_compiling,
+)
 # For Pytorch 2.1.1
 try:
     from transformers.models.falcon_h1.modeling_falcon_h1 import (
@@ -69,7 +72,7 @@ def FalconH1Attention_fast_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -110,12 +113,13 @@ def FalconH1Attention_fast_forward(
         # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
+        device_index = Q.device.index
 
         if position_ids is None:
             # Useful for LongRoPE
-            cos, sin = rotary_emb.get_cached(kv_seq_len)
+            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
         else:
-            cos, sin = rotary_emb(V, seq_len = kv_seq_len)
+            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
@@ -245,14 +249,14 @@ def FalconH1Attention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
-        
+
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
             self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:,:,:hidden_size]
         pass
-        
+
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = device)
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -280,7 +284,7 @@ def FalconH1Attention_fast_forward_inference(
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
@@ -298,7 +302,7 @@ def FalconH1Attention_fast_forward_inference(
     RH_K[:,:,:,:h].neg_() #torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
-    
+
     # New KV cache
     # Kn = torch.cat([K1, Kn], dim = 2)
     # Vn = torch.cat([V1, Vn], dim = 2)
@@ -518,7 +522,7 @@ def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconH1At
                 attention_mask = attention_mask,
                 do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             )
-            attention_hidden_states = attention_hidden_states * decoder_layer.attention_out_multiplier
+            attention_hidden_states = attention_hidden_states * decoder_layer.attn_out_multiplier
             mamba_hidden_states = decoder_layer.mamba(
                 hidden_states=X,
                 cache_params=present_key_value,
@@ -580,7 +584,7 @@ def _fast_prepare_inputs_for_generation(
     **kwargs,):
     # Overwitten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
     empty_past_kv = past_key_values is None
-    
+
     # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
     # Exception 1: when passing input_embeds, input_ids may be missing entries
     # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
@@ -594,15 +598,17 @@ def _fast_prepare_inputs_for_generation(
             input_ids = input_ids[:, -cache_position.shape[0] :]
         elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
             input_ids = input_ids[:, cache_position]
-    else:
-        past_key_values = FalconHybridMambaAttentionDynamicCache(
-            self.config,
-            input_ids.shape[0],
-            self.dtype,
-            devices=[
-                self.model.layers[i].mamba.conv1d.weight.device for i in range(self.config.num_hidden_layers)
-            ],
-        )
+    pass
+    # TODO: Wire up Cache to work for inference.
+    # else:
+    #     past_key_values = FalconHybridMambaAttentionDynamicCache(
+    #         self.config,
+    #         input_ids.shape[0],
+    #         self.dtype,
+    #         devices=[
+    #             self.model.layers[i].mamba.conv1d.weight.device for i in range(self.config.num_hidden_layers)
+    #         ],
+    #     )
 
     if attention_mask is not None and position_ids is None:
         # create position_ids on the fly for batch generation

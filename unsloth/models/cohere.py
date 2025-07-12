@@ -78,7 +78,7 @@ def CohereAttention_fast_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -128,7 +128,7 @@ def CohereAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and attention_mask is None):
+    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
         # Xformers memory efficient attention
         # Also has Flash Attention v2 dispatching
         Q = Q.transpose(1, 2)
@@ -254,6 +254,7 @@ def CohereAttention_fast_forward_inference(
     do_prefill = False,
     attention_mask = None,
 ):
+
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -281,14 +282,14 @@ def CohereAttention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = "cuda:0")
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = "cuda:0")
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
-        
+
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
             self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = "cuda:0")
         else:
             self.temp_O = self.temp_QA[1][:,:,:hidden_size]
         pass
-        
+
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = "cuda:0")
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -320,7 +321,7 @@ def CohereAttention_fast_forward_inference(
 
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
@@ -338,7 +339,7 @@ def CohereAttention_fast_forward_inference(
     torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
-    
+
     # New KV cache
     # Kn = torch.cat([K1, Kn], dim = 2)
     # Vn = torch.cat([V1, Vn], dim = 2)
@@ -397,7 +398,7 @@ def CohereModel_fast_forward_inference(
     position_ids,
     attention_mask = None,
 ):
-    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
+    out_weights = tuple(torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT))
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -417,8 +418,12 @@ def CohereModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
+        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
+        hidden_states, position_ids = move_to_device(
+            device_index, hidden_states, position_ids
+        )
         residual = hidden_states
-        hidden_states = fast_layernorm_inference(decoder_layer.input_layernorm, hidden_states, out_weight)
+        hidden_states = fast_layernorm_inference(decoder_layer.input_layernorm, hidden_states, out_weights[device_index])
         hidden_states_attention, present_key_value = CohereAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states = hidden_states,
@@ -435,7 +440,7 @@ def CohereModel_fast_forward_inference(
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_layernorm_inference(self.model.norm, hidden_states, out_weight)
+    hidden_states = fast_layernorm_inference(self.model.norm, hidden_states, out_weights[device_index])
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
@@ -468,7 +473,7 @@ class FastCohereModel(FastLlamaModel):
         CohereForCausalLM    .forward = CausalLM_fast_forward(CohereModel_fast_forward_inference)
         PeftModelForCausalLM .forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(CohereForCausalLM)
-        
+
         import transformers.models.cohere.modeling_cohere
         transformers.models.cohere.modeling_cohere.CohereRotaryEmbedding = LlamaRotaryEmbedding
         return
