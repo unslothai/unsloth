@@ -244,14 +244,20 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             blocksize  = quant_state.blocksize
             offset     = quant_state.offset
             state2     = quant_state.state2
-            absmax2    = state2.absmax
-            code2      = state2.code
-            blocksize2 = state2.blocksize
+            # Check if double quantization is still needed
+            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
+                               state2 is not None)
+            if has_nested_quant:
+                absmax2    = state2.absmax
+                code2      = state2.code
+                blocksize2 = state2.blocksize
         else:
             # Old quant_state as a list of lists
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
+            has_nested_quant = (state2 is not None)
+            if has_nested_quant:
+                absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
         global XPU_STREAMS
         device = W.device
@@ -288,13 +294,17 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
-        with torch_gpu_device(device):
-            cdequantize_blockwise_fp32(
-                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
-                ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), XPU_STREAM
-            )
-            out_absmax += offset
+        if has_nested_quant:
+            with torch_gpu_device(device):
+                cdequantize_blockwise_fp32(
+                    get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
+                    ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), XPU_STREAM
+                )
+                out_absmax += offset
+        else:
+            out_absmax[:] = absmax
 
+        with torch_gpu_device(device):
             # Dequantize W
             fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
                  cdequantize_blockwise_bf16_nf4
@@ -319,14 +329,20 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             blocksize  = quant_state.blocksize
             offset     = quant_state.offset
             state2     = quant_state.state2
-            absmax2    = state2.absmax
-            code2      = state2.code
-            blocksize2 = state2.blocksize
+            # Check if double quantization is still needed
+            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
+                               state2 is not None)
+            if has_nested_quant:
+                absmax2    = state2.absmax
+                code2      = state2.code
+                blocksize2 = state2.blocksize
         else:
             # Old quant_state as a list of lists
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
+            has_nested_quant = (state2 is not None)
+            if has_nested_quant:
+                absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
         global CUDA_STREAMS
         device = W.device
@@ -364,13 +380,17 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
 
         # NF4 dequantization of statistics
         ptr_out_absmax = get_ptr(out_absmax)
-        with torch_gpu_device(device):
-            cdequantize_blockwise_fp32(
-                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
-                ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), CUDA_STREAM
-            )
-            out_absmax += offset
+        if has_nested_quant:
+            with torch_gpu_device(device):
+                cdequantize_blockwise_fp32(
+                    get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
+                    ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), CUDA_STREAM
+                )
+                out_absmax += offset
+        else:
+            out_absmax[:] = absmax
 
+        with torch_gpu_device(device):
             # Dequantize W
             fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
                  cdequantize_blockwise_bf16_nf4
@@ -394,14 +414,20 @@ else:
             blocksize  = quant_state.blocksize
             offset     = quant_state.offset
             state2     = quant_state.state2
-            absmax2    = state2.absmax
-            code2      = state2.code
-            blocksize2 = state2.blocksize
+            # Check if double quantization is still needed
+            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
+                               state2 is not None)
+            if has_nested_quant:
+                absmax2    = state2.absmax
+                code2      = state2.code
+                blocksize2 = state2.blocksize
         else:
             # Old quant_state as a list of lists
             absmax, shape, dtype, blocksize, compressed_stats, _, _ = quant_state
             offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
+            has_nested_quant = (state2 is not None)
+            if has_nested_quant:
+                absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
 
         n_elements_absmax = absmax.numel()
@@ -417,11 +443,12 @@ else:
 
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
-        cdequantize_blockwise_fp32(
-            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
-            ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax),
-        )
-        out_absmax += offset
+        if has_nested_quant:
+            cdequantize_blockwise_fp32(
+                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
+                ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax),
+            )
+            out_absmax += offset
 
         fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
              cdequantize_blockwise_bf16_nf4
@@ -453,13 +480,19 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             stats      = quant_state.code
             offset     = quant_state.offset
             state2     = quant_state.state2
-            absmax2    = state2.absmax
-            code2      = state2.code
-            blocksize2 = state2.blocksize
+            # Check if double quantization is still needed
+            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
+                               state2 is not None)
+            if has_nested_quant:
+                absmax2    = state2.absmax
+                code2      = state2.code
+                blocksize2 = state2.blocksize
         else:
             absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
+            has_nested_quant = (state2 is not None)
+            if has_nested_quant:
+                absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
         global XPU_STREAMS
         device = W.device
@@ -488,15 +521,17 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
-        with torch_gpu_device(device):
-            cdequantize_blockwise_fp32(
-                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
-                ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), XPU_STREAM,
-            )
-            df += offset
-            absmax = df
+        if has_nested_quant:
+            df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+            with torch_gpu_device(device):
+                cdequantize_blockwise_fp32(
+                    get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
+                    ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), XPU_STREAM,
+                )
+                df += offset
+                absmax = df
 
+        with torch_gpu_device(device):
             fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
                 cgemm_4bit_inference_naive_bf16
 
@@ -524,13 +559,19 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             stats      = quant_state.code
             offset     = quant_state.offset
             state2     = quant_state.state2
-            absmax2    = state2.absmax
-            code2      = state2.code
-            blocksize2 = state2.blocksize
+            # Check if double quantization is still needed
+            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
+                               state2 is not None)
+            if has_nested_quant:
+                absmax2    = state2.absmax
+                code2      = state2.code
+                blocksize2 = state2.blocksize
         else:
             absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
+            has_nested_quant = (state2 is not None)
+            if has_nested_quant:
+                absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
         global CUDA_STREAMS
         device = W.device
@@ -559,15 +600,17 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
-        with torch_gpu_device(device):
-            cdequantize_blockwise_fp32(
-                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
-                ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), CUDA_STREAM,
-            )
-            df += offset
-            absmax = df
+        if has_nested_quant:
+            df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+            with torch_gpu_device(device):
+                cdequantize_blockwise_fp32(
+                    get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
+                    ctypes_c_int(blocksize2), ctypes_c_int(df.numel()), CUDA_STREAM,
+                )
+                df += offset
+                absmax = df
 
+        with torch_gpu_device(device):
             fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
                 cgemm_4bit_inference_naive_bf16
 
@@ -595,13 +638,19 @@ else:
             stats      = quant_state.code
             offset     = quant_state.offset
             state2     = quant_state.state2
-            absmax2    = state2.absmax
-            code2      = state2.code
-            blocksize2 = state2.blocksize
+            # Check if double quantization is still needed
+            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
+                               state2 is not None)
+            if has_nested_quant:
+                absmax2    = state2.absmax
+                code2      = state2.code
+                blocksize2 = state2.blocksize
         else:
             absmax, shape, dtype, blocksize, compressed_stats, quant_type, stats = quant_state
             offset, state2 = compressed_stats
-            absmax2, code2, blocksize2, _, _, _, _ = state2
+            has_nested_quant = (state2 is not None)
+            if has_nested_quant:
+                absmax2, code2, blocksize2, _, _, _, _ = state2
         pass
         # assert(dtype == X.dtype)
         bout = shape[0]
@@ -626,13 +675,14 @@ else:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
-        cdequantize_blockwise_fp32(
-            get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
-            ctypes_c_int(blocksize2), ctypes_c_int(df.numel()),
-        )
-        df += offset
-        absmax = df
+        if has_nested_quant:
+            df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+            cdequantize_blockwise_fp32(
+                get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
+                ctypes_c_int(blocksize2), ctypes_c_int(df.numel()),
+            )
+            df += offset
+            absmax = df
 
         fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
             cgemm_4bit_inference_naive_bf16
