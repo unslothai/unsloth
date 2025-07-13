@@ -1191,13 +1191,17 @@ def save_to_gguf(
     # convert.py is deprecated!
     use_fast_convert = False
     if use_fast_convert:
-        command = f"python llama.cpp/convert.py {model_directory} "\
-            f"--outfile {final_location} --vocab-type {vocab_type} "\
-            f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
+        command = [
+            "python", "llama.cpp/convert.py", model_directory,
+                "--outfile", final_location, "--vocab-type", vocab_type,
+                "--outtype", first_conversion, "--concurrency", str(n_cpus), "--pad-vocab"
+        ]
     else:
-        command = f"python {convert_location} {model_directory} "\
-            f"--outfile {final_location} "\
-            f"--outtype {first_conversion}"
+        command = [
+            "python", convert_location, model_directory,
+                "--outfile", final_location,
+                "--outtype", first_conversion
+        ]
     pass
 
     try_execute([command,], force_complete = True)
@@ -1239,8 +1243,10 @@ def save_to_gguf(
             print(f"Unsloth: [2] Converting GGUF 16bit into {quant_method}. This might take 20 minutes...")
             final_location = str((Path(model_directory) / f"unsloth.{quant_method.upper()}.gguf").absolute())
 
-            command = f"./{quantize_location} {full_precision_location} "\
-                f"{final_location} {quant_method} {n_cpus}"
+            command = [
+                quantize_location, full_precision_location,
+                final_location, quant_method, str(n_cpus)
+            ]
 
             try_execute([command,], force_complete = True)
 
@@ -2145,7 +2151,7 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     print(f"Unsloth: Converting auto-saved LoRA adapters at {lora_directory_push} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_push} {output_file} llama"
+    command = ["python3", "llama.cpp/convert-lora-to-ggml.py", lora_directory_push, output_file, "llama"]
 
     try:
         with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
@@ -2206,7 +2212,7 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     print(f"Unsloth: Converting auto-saved LoRA adapters at {save_directory} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
+    command = ["python3", "llama.cpp/convert-lora-to-ggml.py", save_directory, output_file, "llama"]
 
     try:
         with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
