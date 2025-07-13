@@ -804,15 +804,15 @@ pass
 
 
 def install_python_non_blocking(packages = []):
-    full_command = ["pip", "install"] + packages
+    full_command = [sys.executable, "-m", "pip", "install"] + packages
     run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
 
 
-def try_execute(commands, force_complete = False):
+def try_execute(commands, force_complete = False, shell = True):
     for command in commands:
-        with subprocess.Popen(command, shell = True, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
+        with subprocess.Popen(command, shell = shell, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1) as sp:
             for line in sp.stdout:
                 line = line.decode("utf-8", errors = "replace")
                 if "undefined reference" in line:
@@ -1192,19 +1192,19 @@ def save_to_gguf(
     use_fast_convert = False
     if use_fast_convert:
         command = [
-            "python", "llama.cpp/convert.py", model_directory,
+            sys.executable, "llama.cpp/convert.py", model_directory,
                 "--outfile", final_location, "--vocab-type", vocab_type,
                 "--outtype", first_conversion, "--concurrency", str(n_cpus), "--pad-vocab"
         ]
     else:
         command = [
-            "python", convert_location, model_directory,
+            sys.executable, convert_location, model_directory,
                 "--outfile", final_location,
                 "--outtype", first_conversion
         ]
     pass
 
-    try_execute([command,], force_complete = True)
+    try_execute([command,], force_complete = True, shell = False)
 
     # Check if quantization succeeded!
     if not os.path.isfile(final_location):
@@ -1248,7 +1248,7 @@ def save_to_gguf(
                 final_location, quant_method, str(n_cpus)
             ]
 
-            try_execute([command,], force_complete = True)
+            try_execute([command,], force_complete = True, shell = False)
 
             # Check if quantization succeeded!
             if not os.path.isfile(final_location):
@@ -2151,10 +2151,10 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     print(f"Unsloth: Converting auto-saved LoRA adapters at {lora_directory_push} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = ["python3", "llama.cpp/convert-lora-to-ggml.py", lora_directory_push, output_file, "llama"]
+    command = [sys.executable, "llama.cpp/convert-lora-to-ggml.py", lora_directory_push, output_file, "llama"]
 
     try:
-        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
             for line in sp.stdout:
                 print(line, end="", flush=True)
             for line in sp.stderr:
@@ -2212,10 +2212,10 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     print(f"Unsloth: Converting auto-saved LoRA adapters at {save_directory} to GGML format.")
     print(f"The output file will be {output_file}")
 
-    command = ["python3", "llama.cpp/convert-lora-to-ggml.py", save_directory, output_file, "llama"]
+    command = [sys.executable, "llama.cpp/convert-lora-to-ggml.py", save_directory, output_file, "llama"]
 
     try:
-        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
             for line in sp.stdout:
                 print(line, end="", flush=True)
             for line in sp.stderr:
