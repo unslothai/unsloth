@@ -554,7 +554,7 @@ class FastBaseModel:
         r                          = 16,
         target_modules             = None,
         lora_alpha                 = 16,
-        lora_dropout               = 0,
+        lora_dropout               = 0.0,
         bias                       = "none",
         finetune_vision_layers     = True,
         finetune_language_layers   = True,
