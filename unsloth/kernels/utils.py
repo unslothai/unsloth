@@ -245,8 +245,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             offset     = quant_state.offset
             state2     = quant_state.state2
             # Check if double quantization is still needed
-            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
-                               state2 is not None)
+            has_nested_quant = (state2 is not None)
             if has_nested_quant:
                 absmax2    = state2.absmax
                 code2      = state2.code
@@ -330,8 +329,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             offset     = quant_state.offset
             state2     = quant_state.state2
             # Check if double quantization is still needed
-            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
-                               state2 is not None)
+            has_nested_quant = (state2 is not None)
             if has_nested_quant:
                 absmax2    = state2.absmax
                 code2      = state2.code
@@ -415,8 +413,7 @@ else:
             offset     = quant_state.offset
             state2     = quant_state.state2
             # Check if double quantization is still needed
-            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
-                               state2 is not None)
+            has_nested_quant = (state2 is not None)
             if has_nested_quant:
                 absmax2    = state2.absmax
                 code2      = state2.code
@@ -481,8 +478,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             offset     = quant_state.offset
             state2     = quant_state.state2
             # Check if double quantization is still needed
-            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
-                               state2 is not None)
+            has_nested_quant = (state2 is not None)
             if has_nested_quant:
                 absmax2    = state2.absmax
                 code2      = state2.code
@@ -560,8 +556,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             offset     = quant_state.offset
             state2     = quant_state.state2
             # Check if double quantization is still needed
-            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
-                               state2 is not None)
+            has_nested_quant = (state2 is not None)
             if has_nested_quant:
                 absmax2    = state2.absmax
                 code2      = state2.code
@@ -639,8 +634,7 @@ else:
             offset     = quant_state.offset
             state2     = quant_state.state2
             # Check if double quantization is still needed
-            has_nested_quant = (hasattr(quant_state, 'nested') and quant_state.nested and
-                               state2 is not None)
+            has_nested_quant = (state2 is not None)
             if has_nested_quant:
                 absmax2    = state2.absmax
                 code2      = state2.code
