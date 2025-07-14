@@ -241,12 +241,12 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-            absmax     = quant_state.absmax
-            shape      = quant_state.shape
-            dtype      = quant_state.dtype
-            blocksize  = quant_state.blocksize
-            offset     = quant_state.offset
-            state2     = quant_state.state2
+            absmax    = quant_state.absmax
+            shape     = quant_state.shape
+            dtype     = quant_state.dtype
+            blocksize = quant_state.blocksize
+            offset    = quant_state.offset
+            state2    = quant_state.state2
             is_double_quantized = state2 is not None
             if is_double_quantized:
                 absmax2    = state2.absmax
@@ -324,12 +324,12 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-            absmax     = quant_state.absmax
-            shape      = quant_state.shape
-            dtype      = quant_state.dtype
-            blocksize  = quant_state.blocksize
-            offset     = quant_state.offset
-            state2     = quant_state.state2
+            absmax    = quant_state.absmax
+            shape     = quant_state.shape
+            dtype     = quant_state.dtype
+            blocksize = quant_state.blocksize
+            offset    = quant_state.offset
+            state2    = quant_state.state2
             is_double_quantized = state2 is not None
             if is_double_quantized:
                 absmax2    = state2.absmax
@@ -380,6 +380,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
         # NF4 dequantization of statistics
         with torch_gpu_device(device):
             if is_double_quantized:
+                ptr_out_absmax = get_ptr(out_absmax)
                 cdequantize_blockwise_fp32(
                     get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), ptr_out_absmax,
                     ctypes_c_int(blocksize2), ctypes_c_int(n_elements_absmax), CUDA_STREAM
@@ -405,12 +406,12 @@ else:
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-            absmax     = quant_state.absmax
-            shape      = quant_state.shape
-            dtype      = quant_state.dtype
-            blocksize  = quant_state.blocksize
-            offset     = quant_state.offset
-            state2     = quant_state.state2
+            absmax    = quant_state.absmax
+            shape     = quant_state.shape
+            dtype     = quant_state.dtype
+            blocksize = quant_state.blocksize
+            offset    = quant_state.offset
+            state2    = quant_state.state2
             is_double_quantized = state2 is not None
             if is_double_quantized:
                 absmax2    = state2.absmax
@@ -470,13 +471,13 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         is_double_quantized = True
         if type(quant_state) is not list:
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-            absmax     = quant_state.absmax
-            shape      = quant_state.shape
-            dtype      = quant_state.dtype
-            blocksize  = quant_state.blocksize
-            stats      = quant_state.code
-            offset     = quant_state.offset
-            state2     = quant_state.state2
+            absmax    = quant_state.absmax
+            shape     = quant_state.shape
+            dtype     = quant_state.dtype
+            blocksize = quant_state.blocksize
+            stats     = quant_state.code
+            offset    = quant_state.offset
+            state2    = quant_state.state2
             is_double_quantized = state2 is not None
             if is_double_quantized:
                 absmax2    = state2.absmax
@@ -547,13 +548,13 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
 
         if type(quant_state) is not list:
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
-            absmax     = quant_state.absmax
-            shape      = quant_state.shape
-            dtype      = quant_state.dtype
-            blocksize  = quant_state.blocksize
-            stats      = quant_state.code
-            offset     = quant_state.offset
-            state2     = quant_state.state2
+            absmax    = quant_state.absmax
+            shape     = quant_state.shape
+            dtype     = quant_state.dtype
+            blocksize = quant_state.blocksize
+            stats     = quant_state.code
+            offset    = quant_state.offset
+            state2    = quant_state.state2
             is_double_quantized = state2 is not None
             if is_double_quantized:
                 absmax2    = state2.absmax
