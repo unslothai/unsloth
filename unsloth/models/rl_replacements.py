@@ -1,6 +1,3 @@
-from typing import Any
-
-
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,6 +24,7 @@ import os
 import re
 import torch
 import inspect
+from typing import Any
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from unsloth import DEVICE_TYPE

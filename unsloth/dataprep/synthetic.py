@@ -1,6 +1,3 @@
-from typing import Optional
-
-
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,6 +15,7 @@ from typing import Optional
 __all__ = [
     "SyntheticDataKit",
 ]
+from typing import Optional
 import subprocess
 import time
 import os
@@ -54,6 +52,8 @@ class SyntheticDataKit:
             Level of conservativeness for the generation process.
         token (`str`, *optional*):
             Authentication token for private models.
+        **kwargs:
+            Additional keyword arguments to pass to the vLLM engine.
     """
     def __init__(
         self,
@@ -213,12 +213,7 @@ class SyntheticDataKit:
 
     @staticmethod
     def check_vllm_status() -> bool:
-        """
-        Check if the vLLM server is running and accessible.
-        
-        Returns:
-            `bool`: True if the server is running and accessible, False otherwise.
-        """
+        """Check if the vLLM server is running and accessible"""
         try:
             response = requests.get("http://localhost:8000/metrics")
             if response.status_code == 200:
@@ -229,12 +224,7 @@ class SyntheticDataKit:
     pass
 
     def cleanup(self) -> None:
-        """
-        Clean up resources by terminating the vLLM server and releasing GPU memory.
-        
-        This method attempts to gracefully terminate the server process, falling back to a forceful kill if necessary.
-        It also clears the CUDA cache and garbage collects to free up memory.
-        """
+        """Clean up resources by terminating the vLLM server and releasing GPU memory"""
         if not hasattr(self, "vllm_process"): return
 
         vllm_process = self.vllm_process
@@ -266,9 +256,9 @@ class SyntheticDataKit:
         delete_vllm(llm = None)
     pass
 
-    def __enter__(self) -> SyntheticDataKit: return self
-    def __exit__(self, *exc) -> None: self.cleanup()
-    def __del__(self) -> None: self.cleanup()
+    def __enter__(self): return self
+    def __exit__(self, *exc): self.cleanup()
+    def __del__(self): self.cleanup()
 
     def chunk_data(self, filename: str = None) -> list[str]:
         """
@@ -324,16 +314,16 @@ class SyntheticDataKit:
 
     def prepare_qa_generation(
         self,
-        output_folder: str         = "data",
-        max_generation_tokens: int = 512,
-        temperature: float         = 0.7,
-        top_p: float               = 0.95,
-        overlap: int               = 64,
-        default_num_pairs: int = 25,
-        cleanup_threshold: float   = 1.0,
-        cleanup_batch_size: int    = 4,
-        cleanup_temperature: float = 0.3,
-    ) -> None:
+        output_folder         : str = "data",
+        max_generation_tokens : int = 512,
+        temperature           : float = 0.7,
+        top_p                 : float = 0.95,
+        overlap               : int = 64,
+        default_num_pairs     : int = 25,
+        cleanup_threshold     : float = 1.0,
+        cleanup_batch_size    : int = 4,
+        cleanup_temperature   : float = 0.3,
+    ):
         """
         Prepare the configuration for question-answer generation.
         

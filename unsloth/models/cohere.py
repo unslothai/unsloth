@@ -1,4 +1,3 @@
-from typing import Tuple, Any, Optional, T
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Tuple, Any, Optional, T
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Tuple, Any, Optional
 from .llama import *
 from ._utils import __version__
 try:
@@ -184,14 +184,14 @@ pass
 def CohereDecoderLayer_fast_forward(
     self,
     hidden_states:        torch.Tensor,
-    causal_mask:          Optional[BlockDiagonalCausalMask]          = None,
-    attention_mask:       Optional[torch.Tensor]                     = None,
-    position_ids:         Optional[torch.LongTensor]                 = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]]              = None,
-    output_attentions:    Optional[bool]                             = False,
-    use_cache:            Optional[bool]                             = False,
-    padding_mask:         Optional[torch.LongTensor]                 = None,
-    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    causal_mask:          Optional[BlockDiagonalCausalMask] = None,
+    attention_mask:       Optional[torch.Tensor] = None,
+    position_ids:         Optional[torch.LongTensor] = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:    Optional[bool] = False,
+    use_cache:            Optional[bool] = False,
+    padding_mask:         Optional[torch.LongTensor] = None,
+    position_embeddings:  Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
@@ -249,11 +249,11 @@ torch_matmul = torch.matmul
 
 def CohereAttention_fast_forward_inference(
     self,
-    hidden_states:  torch.Tensor,
-    past_key_value: Optional[Tuple[torch.Tensor]],
-    position_ids: torch.LongTensor,
-    do_prefill: bool                       = False,
-    attention_mask: Optional[torch.Tensor] = None,
+    hidden_states  :  torch.Tensor,
+    past_key_value : Optional[Tuple[torch.Tensor]],
+    position_ids   : torch.LongTensor,
+    do_prefill     : bool = False,
+    attention_mask : Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
@@ -393,10 +393,10 @@ pass
 # @torch.inference_mode
 def CohereModel_fast_forward_inference(
     self,
-    input_ids: torch.LongTensor,
-    past_key_values: list[tuple[torch.Tensor, torch.Tensor]],
-    position_ids: torch.LongTensor,
-    attention_mask: Optional[torch.Tensor] = None,
+    input_ids       : torch.LongTensor,
+    past_key_values : list[tuple[torch.Tensor, torch.Tensor]],
+    position_ids    : torch.LongTensor,
+    attention_mask  : Optional[torch.Tensor] = None,
 ) -> BaseModelOutputWithPast:
     out_weights = tuple(torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT))
     input_ids = input_ids[:,:self.max_seq_length]
@@ -454,7 +454,7 @@ pass
 class FastCohereModel(FastLlamaModel):
 
     @staticmethod
-    def pre_patch() -> None:
+    def pre_patch():
         init_name, function = patch_linear_scaling(
             model_name         = "cohere",
             rope_module        = LlamaRotaryEmbedding,

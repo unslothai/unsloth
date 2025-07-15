@@ -1,4 +1,3 @@
-from typing import Union, Optional, Tuple, Callable
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Union, Optional, Tuple, Callable
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Union, Optional, Tuple, Callable
 from .llama import *
 import os
 from ._utils import __version__
@@ -51,7 +51,7 @@ def MistralAttention_fast_forward(
     padding_mask:        Optional[torch.LongTensor]                  = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+):
 
     # Clear inference
     if hasattr(self, "paged_attention"):
@@ -367,7 +367,7 @@ pass
 class FastMistralModel(FastLlamaModel):
 
     @staticmethod
-    def pre_patch() -> None:
+    def pre_patch():
         init_name, function = patch_linear_scaling(
             model_name         = "mistral",
             rope_module        = LlamaRotaryEmbedding,

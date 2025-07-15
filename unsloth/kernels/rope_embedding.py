@@ -1,4 +1,3 @@
-from typing import Optional
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Optional
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 import triton
 import triton.language as tl
 import torch
@@ -20,15 +20,15 @@ from .utils import calculate_settings, torch_gpu_device
 ROPE_GROUP_SIZE : int = 4
 
 def _rope_embedding(
-    Q: torch.Tensor,     Q_row_stride: int,
-    cos: torch.Tensor, cos_row_stride: int,
-    sin: torch.Tensor, sin_row_stride: int,
-    seqlen: int,
+    Q,     Q_row_stride,
+    cos, cos_row_stride,
+    sin, sin_row_stride,
+    seqlen,
     head_dim      : tl.constexpr,
     n_heads       : tl.constexpr,
     BACKWARD_PASS : tl.constexpr,
     BLOCK_SIZE    : tl.constexpr,
-) -> None:
+):
     """
         Calculates the RoPE Embedding quickly
         RoPE is Q * cos + rotate_half(Q) * sin
@@ -77,15 +77,9 @@ _rope_embedding = triton.heuristics(
 
 
 class Fast_RoPE_Embedding(torch.autograd.Function):
-    """
-    Fast RoPE embedding implementation using Triton for accelerated computation.
-    
-    This class implements the RoPE (Rotary Positional Encoding) operation efficiently using
-    Triton GPU kernels. It's designed to be used as a PyTorch autograd function for
-    both forward and backward passes.
-    """
+    """Fast RoPE embedding implementation using Triton GPU kernels for accelerated computation.""" 
     @staticmethod
-    def forward(ctx: torch.autograd.function._ContextMethodMixin, Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    def forward(ctx, Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of Fast RoPE embedding.
         
@@ -140,7 +134,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
     pass
 
     @staticmethod
-    def backward(ctx: torch.autograd.function._ContextMethodMixin, dY: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+    def backward(ctx, dY):
         """
         Backward pass of Fast RoPE embedding.
         
@@ -184,21 +178,7 @@ pass
 # [TODO] Unsure why RoPE Embedding is not torch.compiling properly
 @torch.compiler.disable
 def fast_rope_embedding(Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Applies Fast RoPE embedding to query and key tensors.
-    
-    This function applies the rotary positional encoding to both query and key tensors
-    using the optimized Triton implementation.
-    
-    Args:
-        Q: Query tensor of shape (batch_size, n_heads, seq_len, head_dim)
-        K: Key tensor of same shape as Q
-        cos: Cosine values for RoPE of shape (seq_len, head_dim//2)
-        sin: Sine values for RoPE of shape (seq_len, head_dim//2)
-    
-    Returns:
-        Tuple of (Q_rotated, K_rotated) with RoPE applied
-    """
+    """Applies Fast RoPE embedding to query and key tensors using the optimized Triton implementation."""
     Q = Fast_RoPE_Embedding.apply(Q.transpose(1, 2), cos, sin).transpose(1, 2)
     K = Fast_RoPE_Embedding.apply(K.transpose(1, 2), cos, sin).transpose(1, 2)
     return Q, K
@@ -206,21 +186,9 @@ pass
 
 
 class Slow_RoPE_Embedding(torch.autograd.Function):
-    """
-    Reference implementation of RoPE embedding using standard PyTorch operations.
-    
-    This class implements the RoPE (Rotary Positional Encoding) operation using
-    standard PyTorch operations. It's slower than the Triton-based implementation
-    but serves as a reference for correctness.
-    
-    Args:
-        Q: Query tensor of shape (batch_size, seq_len, n_heads, head_dim)
-        cos: Cosine values for RoPE of shape (seq_len, head_dim//2)
-        sin: Sine values for RoPE of shape (seq_len, head_dim//2)
-        position_ids: Optional tensor of position indices
-    """
+    """Reference implementation of RoPE embedding using standard PyTorch operations (serves as a reference for correctness)."""
     @staticmethod
-    def forward(ctx: torch.autograd.function._ContextMethodMixin, Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(ctx, Q: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: Optional[torch.Tensor]) -> torch.Tensor:
         """
         Forward pass of Slow RoPE embedding.
         
@@ -253,7 +221,7 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
     pass
 
     @staticmethod
-    def backward(ctx: torch.autograd.function._ContextMethodMixin, dY: torch.Tensor) -> tuple[torch.Tensor, None, None, None]:
+    def backward(ctx, dY):
         """
         Backward pass of Slow RoPE embedding.
         
@@ -279,22 +247,7 @@ pass
 
 
 def inplace_rope_embedding(Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: Optional[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Applies RoPE embedding in-place to query and key tensors.
-    
-    This function applies the rotary positional encoding to both query and key tensors
-    using the standard PyTorch implementation.
-    
-    Args:
-        Q: Query tensor of shape (batch_size, n_heads, seq_len, head_dim)
-        K: Key tensor of same shape as Q
-        cos: Cosine values for RoPE of shape (seq_len, head_dim//2)
-        sin: Sine values for RoPE of shape (seq_len, head_dim//2)
-        position_ids: Optional tensor of position indices
-    
-    Returns:
-        Tuple of (Q_rotated, K_rotated) with RoPE applied
-    """
+    """Applies RoPE embedding in-place to query and key tensors using the standard PyTorch implementation."""
     Q = Slow_RoPE_Embedding.apply(Q, cos, sin, position_ids)
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
     return Q, K

@@ -1,4 +1,3 @@
-from typing import List, Optional, Tuple, Any, T
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import List, Optional, Tuple, Any, T
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import List, Optional, Tuple, Any
 from .llama import *
 from ._utils import __version__
 from .gemma import (
@@ -84,7 +84,7 @@ def Gemma2Attention_fast_forward(
     use_cache:            bool                              = False,
     padding_mask:         Optional[torch.LongTensor]        = None,
     *args, **kwargs,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+):
 
     # Clear inference
     if hasattr(self, "paged_attention"):

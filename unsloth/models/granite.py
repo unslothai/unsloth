@@ -1,4 +1,3 @@
-from typing import Callable, Optional, Any, T, Tuple
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Callable, Optional, Any, T, Tuple
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Callable, Optional, Tuple
 from .llama import *
 import os
 from ._utils import __version__
@@ -440,7 +440,7 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(self, config):
         super().__init__(config = config)
 
-def patched_init(original_init: Callable) -> None:
+def patched_init(original_init: Callable):
     def new_init(self, *args, **kwargs):
         # we can use self.residual_multiplier arg in GraniteDecoderLayer_fast_forward as mentioned here
         # https://github.com/huggingface/transformers/blob/e5fd865ebae062b7cf03a81b8c6affeb39f30bec/src/transformers/models/granite/modeling_granite.py#L243
@@ -455,7 +455,7 @@ def patched_init(original_init: Callable) -> None:
 class FastGraniteModel(FastLlamaModel):
 
     @staticmethod
-    def pre_patch() -> None:
+    def pre_patch():
         init_name, function = patch_linear_scaling(
             model_name         = "granite",
             rope_module        = GraniteRotaryEmbedding,
@@ -484,7 +484,7 @@ class FastGraniteModel(FastLlamaModel):
 
 
     @staticmethod
-    def post_patch(model: GraniteModel, tokenizer) -> tuple[GraniteModel, Any]:
+    def post_patch(model, tokenizer):
 
         # Torch.compile fails on embedding matrix??
         # Workaround randomnly fixes it for torch versions < 2.2

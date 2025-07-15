@@ -1,4 +1,3 @@
-from typing import Optional, Any
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Optional, Any
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional, Any
 import triton
 import ctypes
 MAX_FUSED_SIZE : int = 65536
@@ -64,17 +64,7 @@ pass
 
 
 def calculate_settings(n : int) -> tuple[int, int]:
-    """
-    Calculate the optimal Triton block size and number of warps for a given tensor size.
-    
-    Args:
-        n (`int`): The size of the tensor dimension to process.
-    
-    Returns:
-        Tuple[int, int]: A tuple containing:
-        - `BLOCK_SIZE` (`int`): The calculated block size (power of 2)
-        - `num_warps` (`int`): The number of warps to use based on block size
-    """
+    """Calculate the optimal Triton block size and number of warps for a given tensor size"""
     BLOCK_SIZE : int = next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:
         raise RuntimeError(f"Cannot launch Triton kernel since n = {n} exceeds "\
@@ -121,15 +111,6 @@ pass
 
 c_void_p = ctypes.c_void_p
 def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
-    """
-    Get the CUDA stream associated with a tensor's device.
-    
-    Args:
-        tensor (`torch.Tensor`): The tensor whose device's CUDA stream will be retrieved.
-    
-    Returns:
-        `ctypes.c_void_p`: A pointer to the CUDA stream associated with the tensor's device.
-    """
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
 
 pass
@@ -205,33 +186,11 @@ torch_float16 = torch.float16
 torch_float32 = torch.float32
 
 def QUANT_STATE(W: torch.Tensor) -> Optional[Any]:
-    """
-    Retrieve the quantization state from a tensor if it exists.
-    
-    Args:
-        W (`torch.Tensor`): The tensor to check for quantization state.
-    
-    Returns:
-        Optional[Any]: The quantization state if present, otherwise None.
-    """
+    """Retrieve the quantization state from a tensor if it exists"""
     return getattr(W, "quant_state", None)
 
 def get_lora_parameters(proj) -> tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor], Optional[float]]:
-    """
-    Extract LoRA parameters from a projection layer.
-    
-    Args:
-        proj: The projection layer containing LoRA parameters.
-    
-    Returns:
-        tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor], Optional[float]]:
-        A tuple containing:
-        - W (`torch.Tensor`): The base weight matrix
-        - quant_state (Optional[Any]): Quantization state if applicable
-        - A (`Optional[torch.Tensor]`): LoRA A matrix
-        - B (`Optional[torch.Tensor]`): LoRA B matrix
-        - scaling (`Optional[float]`): Scaling factor for LoRA weights
-    """
+    """Extract LoRA parameters from a projection layer"""
     # For DPO or disabled adapters
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
@@ -256,22 +215,7 @@ pass
 
 
 def get_lora_parameters_bias(proj) -> tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor], Optional[float], Optional[torch.Tensor]]:
-    """
-    Extract LoRA parameters and bias from a projection layer.
-    
-    Args:
-        proj: The projection layer containing LoRA parameters and bias.
-    
-    Returns:
-        tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor], Optional[float], Optional[torch.Tensor]]:
-        A tuple containing:
-        - W (`torch.Tensor`): The base weight matrix
-        - quant_state (Optional[Any]): Quantization state if applicable
-        - A (`Optional[torch.Tensor]`): LoRA A matrix
-        - B (`Optional[torch.Tensor]`): LoRA B matrix
-        - scaling (`Optional[float]`): Scaling factor for LoRA weights
-        - bias (`Optional[torch.Tensor]`): Bias term if present
-    """
+    """Extract LoRA parameters and bias from a projection layer"""
     # For DPO or disabled adapters
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
@@ -753,18 +697,7 @@ pass
 
 
 def fast_linear_forward(proj, X: torch.Tensor, temp_lora: Optional[torch.Tensor] = None, out: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """
-    Perform fast linear forward pass with optional LoRA and quantization support.
-    
-    Args:
-        proj: The projection layer containing weights and optional LoRA parameters
-        X (`torch.Tensor`): Input tensor of shape (batch_size, seq_len, in_dim)
-        temp_lora (`Optional[torch.Tensor]`): Optional temporary buffer for LoRA computation
-        out (`Optional[torch.Tensor]`): Optional output tensor
-    
-    Returns:
-        `torch.Tensor`: Output tensor of shape (batch_size, seq_len, out_dim)
-    """
+    """Perform fast linear forward pass with optional LoRA and quantization support"""
 
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
@@ -808,21 +741,7 @@ pass
 
 
 def matmul_lora(X: torch.Tensor, W: torch.Tensor, W_quant: Optional[Any], A: Optional[torch.Tensor], B: Optional[torch.Tensor], s: Optional[float], out: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """
-    Perform matrix multiplication with optional LoRA and quantization support.
-    
-    Args:
-        X (`torch.Tensor`): Input tensor
-        W (`torch.Tensor`): Base weight matrix
-        W_quant (`Optional[Any]`): Quantization state for W
-        A (`Optional[torch.Tensor]`): LoRA A matrix
-        B (`Optional[torch.Tensor]`): LoRA B matrix
-        s (`Optional[float]`): Scaling factor for LoRA weights
-        out (`Optional[torch.Tensor]`): Optional output tensor
-    
-    Returns:
-        `torch.Tensor`: Result of matrix multiplication with optional LoRA applied
-    """
+    """Perform matrix multiplication with optional LoRA and quantization support"""
     dtype = X.dtype
     W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
 

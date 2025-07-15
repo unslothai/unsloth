@@ -1,4 +1,3 @@
-from typing import Any, Optional
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Any, Optional
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any, Optional, Tuple
 from .llama import *
 import os
 from ._utils import __version__
@@ -419,7 +419,7 @@ class FastQwen3Model(FastLlamaModel):
     """
 
     @staticmethod
-    def pre_patch() -> None:
+    def pre_patch():
         """
         Applies performance patches to Qwen3 model components for optimized execution.
         

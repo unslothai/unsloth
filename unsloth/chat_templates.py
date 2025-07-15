@@ -1,6 +1,3 @@
-from typing import Union, Optional
-
-
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +27,7 @@ __all__ = [
     "test_construct_chat_template",
 ]
 
+from typing import Union, Optional
 from transformers import StoppingCriteria, StoppingCriteriaList
 from torch import LongTensor, FloatTensor
 from transformers.models.llama.modeling_llama import logger
@@ -1194,20 +1192,7 @@ DEFAULT_SYSTEM_MESSAGE["qwen3"] = None # No default system message for Qwen-3
 pass
 
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None) -> None:
-    """
-    Replaces the {system_message} placeholder in a chat template with either a provided system message or the default one for the template type.
-    
-    Args:
-        template (`str`):
-            The chat template string containing {system_message} placeholder
-        type_chat_template (`str`):
-            Name of the predefined template type (e.g. 'zephyr', 'llama')
-        system_message (`str`, *optional*):
-            Custom system message to use instead of the default
-    
-    Returns:
-        `tuple[str, Optional[str]]`: Modified template and the system message used (None if no system message was set)
-    """
+    """Replaces {system_message} placeholder in template with provided or default system message."""
     system_message_pattern = r"\{system_message\}"
     
     # For predefined templates, check if default system message exists
@@ -1244,10 +1229,10 @@ pass
 
 
 def get_chat_template(
-    tokenizer: PreTrainedTokenizer,
-    chat_template: str            = "chatml",
-    mapping: dict[str, str]       = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
-    map_eos_token: bool           = True,
+    tokenizer     : PreTrainedTokenizer,
+    chat_template : str = "chatml",
+    mapping       : Dict[str, str] = {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"},
+    map_eos_token : bool = True,
     system_message: Optional[str] = None,
 ) -> PreTrainedTokenizer:
     """
@@ -1258,7 +1243,7 @@ def get_chat_template(
             Tokenizer to configure with the chat template
         chat_template (`str` or `tuple`):
             Either a template name (e.g. 'chatml') or tuple of (template, eos_token)
-        mapping (`dict[str, str]`):
+        mapping (`Dict[str, str]`):
             Mapping dictionary for role/content fields (default role->role etc)
         map_eos_token (`bool`):
             Whether to map the template's EOS token to the tokenizer's EOS
@@ -1497,18 +1482,7 @@ pass
 
 
 def remove_special_tokens(tokenizer: PreTrainedTokenizer, prompt: str) -> str:
-    """
-    Removes special tokens (like BOS) from the beginning of a prompt string.
-    
-    Args:
-        tokenizer (`PreTrainedTokenizer`):
-            Tokenizer containing special token definitions
-        prompt (`str`):
-            Input prompt string to process
-    
-    Returns:
-        `str`: Prompt with leading special tokens removed
-    """
+    """Removes special tokens (like BOS) from the beginning of a prompt string."""
     # Removes double BOS token
     if prompt.startswith(tokenizer.bos_token):
         prompt = prompt[len(tokenizer.bos_token):]
@@ -1517,21 +1491,8 @@ def remove_special_tokens(tokenizer: PreTrainedTokenizer, prompt: str) -> str:
 pass
 
 
-def _parse_combined_prompt(combined_prompt: str, dataset: Dataset) -> tuple[list[str], list[Union[str, tuple[tuple[int, int], str]]]]:
-    """
-    Parses a combined prompt string containing both required {...} and optional [[...]] fields.
-    
-    Args:
-        combined_prompt (`str`):
-            Prompt string containing both required and optional fields
-        dataset (`Dataset`):
-            Dataset to validate column names against
-    
-    Returns:
-        `tuple[list[str], list[Union[str, tuple[tuple[int, int], str]]]]`:
-            Tuple of (required columns, parsed prompt segments) where segments are
-            either strings or (span, content) tuples for optional parts
-    """
+def _parse_combined_prompt(combined_prompt: str, dataset: Dataset) -> Tuple[List[str], List[Union[str, Tuple[Tuple[int, int], str]]]]:
+    """Parses combined prompt with required {...} and optional [[...]] fields."""
     # Find {...}
     possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
     dataset_columns = set(dataset.column_names)
@@ -1579,21 +1540,8 @@ def _parse_combined_prompt(combined_prompt: str, dataset: Dataset) -> tuple[list
 pass
 
 
-def _create_formatter(possible_columns: list[str], final_optional_prompts: list[Union[str, tuple[tuple[int, int], str]]], user_column_name: str) -> str:
-    """
-    Creates a Python function string that formats examples according to the parsed prompt structure.
-    
-    Args:
-        possible_columns (`list[str]`):
-            List of column names found in the prompt
-        final_optional_prompts (`list[Union[str, tuple[tuple[int, int], str]]]`):
-            Parsed prompt segments from _parse_combined_prompt
-        user_column_name (`str`):
-            Name of the output column for formatted prompts
-    
-    Returns:
-        `str`: Python function string that processes examples into formatted prompts
-    """
+def _create_formatter(possible_columns: List[str], final_optional_prompts: List[Union[str, Tuple[Tuple[int, int], str]]], user_column_name: str) -> str:
+    """Creates a Python function string that formats examples according to the parsed prompt structure."""
     # Start final prompt!
     function = ["def __combined_prompt_processor__(examples):"]
     columns = list(set(possible_columns))
@@ -1635,13 +1583,13 @@ pass
 
 
 def to_sharegpt(
-    dataset: Dataset,
-    merged_prompt: str          = "",
-    merged_column_name: str     = "instruction",
-    output_column_name: str     = "output",
-    remove_unused_columns: bool = True,
-    conversation_extension: int = 1,
-    random_state: int           = 3407,
+    dataset                : Dataset,
+    merged_prompt          : str = "",
+    merged_column_name     : str = "instruction",
+    output_column_name     : str = "output",
+    remove_unused_columns  : bool = True,
+    conversation_extension : int = 1,
+    random_state           : int = 3407,
 ) -> Dataset:
     """
     Converts a dataset to ShareGPT style.
@@ -1728,18 +1676,18 @@ def to_sharegpt(
 pass
 
 
-def get_ollama_eos_tokens(tokenizer: PreTrainedTokenizer, extra_eos_tokens: list[str] = []) -> list[str]:
+def get_ollama_eos_tokens(tokenizer: PreTrainedTokenizer, extra_eos_tokens: List[str] = []) -> List[str]:
     """
     Extracts potential end-of-sequence tokens from a tokenizer's vocabulary for use with Ollama.
     
     Args:
         tokenizer (`PreTrainedTokenizer`):
             Tokenizer to analyze for EOS tokens
-        extra_eos_tokens (`list[str]`):
+        extra_eos_tokens (`List[str]`):
             Additional tokens to include as potential EOS markers
     
     Returns:
-        `list[str]`: List of potential EOS tokens filtered from vocabulary
+        `List[str]`: List of potential EOS tokens filtered from vocabulary
     """
     added_tokens_decoder = tokenizer.added_tokens_decoder.values()
     added_tokens_decoder = [str(x) for x in added_tokens_decoder]
@@ -1810,8 +1758,8 @@ chat_template: str                    = """<|begin_of_text|><|start_header_id|>s
 default_system_message: str = \
     "Below are some instructions that describe some tasks. Write responses that appropriately complete each request.",
 
-extra_eos_tokens: Optional[list[str]] = None,
-) -> tuple[str, str, str, str]:
+extra_eos_tokens: Optional[List[str]] = None,
+) -> Tuple[str, str, str, str]:
     """
     Creates a Ollama modelfile and a HF Jinja template from a custom
     template. You must provide 2x examples of an input & output.
@@ -2109,15 +2057,7 @@ pass
 
 
 def test_construct_chat_template() -> None:
-    """
-    Tests that a constructed chat template produces the same output as a reference implementation.
-    
-    Args:
-        None
-    
-    Returns:
-        `None`
-    """
+    """Tests that a constructed chat template produces the same output as a reference implementation."""
     token = "hf_"
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct", token = token)
@@ -2164,10 +2104,10 @@ pass
 
 def apply_chat_template( \
 
-dataset: Dataset,
-tokenizer: PreTrainedTokenizer        = None,
+dataset                : Dataset,
+tokenizer              : PreTrainedTokenizer = None,
 
-chat_template: str                    = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+chat_template          : str = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 {SYSTEM}<|eot_id|><|start_header_id|>user<|end_header_id|>
 
@@ -2179,10 +2119,10 @@ chat_template: str                    = """<|begin_of_text|><|start_header_id|>s
 
 {OUTPUT}<|eot_id|>""",
     
-default_system_message: str = \
+default_system_message : str = \
     "Below are some instructions that describe some tasks. Write responses that appropriately complete each request.",
   
-extra_eos_tokens: Optional[list[str]] = None,
+extra_eos_tokens       : Optional[List[str]] = None,
   
 ) -> Dataset:
     """
@@ -2219,18 +2159,7 @@ pass
 
 
 def create_stopping_criteria(tokenizer: PreTrainedTokenizer, stop_word: str = "eos_token") -> StoppingCriteriaList:
-    """
-    Creates stopping criteria for text generation based on a specified stop word.
-    
-    Args:
-        tokenizer (`PreTrainedTokenizer`):
-            Tokenizer used for text generation
-        stop_word (`str`):
-            Word or token that should stop generation (default 'eos_token')
-    
-    Returns:
-        `StoppingCriteriaList`: Configured stopping criteria for generation
-    """
+    """Creates stopping criteria for text generation based on a specified stop word."""
     class StoppingCriteriaSub(StoppingCriteria):
         __slots__ = "stop_token", "single_match", "length",
 
@@ -2263,15 +2192,7 @@ pass
 
 
 def test_chat_templates() -> None:
-    """
-    Tests various chat templates against reference implementations to ensure correctness.
-    
-    Args:
-        None
-    
-    Returns:
-        `None`
-    """
+    """Tests various chat templates against reference implementations to ensure correctness."""
     messages = [
         {"role": "system","content": " You are a friendly chatbot.",},
         {"role": "user", "content": "What is 2+2?"},
@@ -2376,10 +2297,7 @@ pass
 
 
 def test_hf_gguf_equivalence(tokenizer: PreTrainedTokenizer, gguf_model: str = "./model-unsloth.F16.gguf") -> bool:
-    """
-        Carefully checks the output of GGUF's tokenization and HF.
-        Can catch all tokenization bugs.
-    """
+    """Carefully checks the output of GGUF's tokenization and HF. Can catch all tokenization bugs."""
     import subprocess
     import re
     messages = [

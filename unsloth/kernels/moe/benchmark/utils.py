@@ -22,7 +22,7 @@ SEED = 42
 
 def create_merged_results(
     df: pd.DataFrame, mode: str, seqlen: int, dtype: torch.dtype, autotune: bool
-) -> pd.DataFrame:
+):
     """
     Merges test configuration parameters with kernel result data in a DataFrame.
     
@@ -62,7 +62,7 @@ def post_process_results(
     seqlen: int,
     dtype: torch.dtype,
     autotune: bool,
-) -> pd.DataFrame:
+):
     """
     Converts a list of kernel results into a processed DataFrame with merged test configuration information.
     
@@ -92,7 +92,7 @@ def save_results(
     seqlen: int,
     dtype: torch.dtype,
     autotune: bool,
-) -> None:
+):
     """
     Saves the results DataFrame to a CSV file in a structured directory format.
     
@@ -122,7 +122,7 @@ def save_results(
     df.to_csv(save_path, index=False)
 
 
-def create_kernel_configs(args: argparse.Namespace, permute_x: bool, permute_y: bool) -> list[KernelConfigForward | KernelConfigBackward_dW | KernelConfigBackward_dX]:
+def create_kernel_configs(args: argparse.Namespace, permute_x: bool, permute_y: bool):
     """
     Generates a list of kernel configurations based on the provided arguments and pruning rules.
     
@@ -225,7 +225,7 @@ def create_kernel_configs(args: argparse.Namespace, permute_x: bool, permute_y: 
     return pruned_configs
 
 
-def power_of_two_range(start: int, end: int) -> list[int]:
+def power_of_two_range(start, end):
     """
     Generates a list of power-of-two values between start and end (inclusive).
     
@@ -243,7 +243,7 @@ def power_of_two_range(start: int, end: int) -> list[int]:
     return [2**i for i in range(int(start), int(end) + 1)]
 
 
-def multiples_of_range(start: int, end: int, step: int=1) -> list[int]:
+def multiples_of_range(start, end, step=1):
     """
     Generates a list of values that are multiples of the step parameter between start and end.
     
@@ -261,11 +261,11 @@ def multiples_of_range(start: int, end: int, step: int=1) -> list[int]:
     return list(range(start, end + step, step))
 
 
-def map_key_to_args(key: str, mode: str):
+def map_key_to_args(key, mode):
     pass
 
 
-def save_autotune_results(autotune_cache: dict, mode: str, ref_time: float, fused_time: float, results_dir: str) -> None:
+def save_autotune_results(autotune_cache, mode, ref_time, fused_time, results_dir):
     """
     Saves autotuning results to a JSON file in a structured directory format.
     
@@ -306,7 +306,7 @@ def save_autotune_results(autotune_cache: dict, mode: str, ref_time: float, fuse
             json.dump(result, f)
 
 
-def get_autotuner(mode: str):
+def get_autotuner(mode):
     """
     Retrieves the appropriate autotuned kernel function based on the execution mode.
     
@@ -340,7 +340,7 @@ def get_autotuner(mode: str):
         raise ValueError(f"Invalid mode: {mode}")
 
 
-def postprocess_autotune_results(autotuner, mode: str, ref_time: float, fused_time: float, results_dir: str) -> None:
+def postprocess_autotune_results(autotuner, mode, ref_time, fused_time, results_dir):
     """
     Prints and saves autotuning results for a given execution mode.
     

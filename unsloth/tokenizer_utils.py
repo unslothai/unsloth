@@ -1,4 +1,3 @@
-from typing import Optional
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Optional
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 from transformers import AutoTokenizer
 from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast

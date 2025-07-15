@@ -1,4 +1,3 @@
-from typing import Any, Optional
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Any, Optional
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 import triton
 import triton.language as tl
 import torch
@@ -44,7 +44,7 @@ def _cross_entropy_forward(
     SOFTCAP           : tl.constexpr,
     DO_LOGIT_SCALING  : tl.constexpr,
     LOGIT_SCALE       : tl.constexpr,
-) -> None:
+):
     """
         Cross Entropy Loss = 1/n sum [ -yi log(Pi) ]
         Pi = exp(xi) / sum(exp(xi))
@@ -119,7 +119,7 @@ def _chunked_cross_entropy_forward(
     SOFTCAP           : tl.constexpr,
     DO_LOGIT_SCALING  : tl.constexpr,
     LOGIT_SCALE       : tl.constexpr,
-) -> None:
+):
     """
         256K vocab divided in 4 chunks
 
@@ -203,7 +203,7 @@ def _cross_entropy_backward(
     SOFTCAP           : tl.constexpr,
     DO_LOGIT_SCALING  : tl.constexpr,
     LOGIT_SCALE       : tl.constexpr,
-) -> None:
+):
     """
         CE_i = -y log(P) = y * (log[sum(exp(x))] - x)
         dC/dx = d/dx (y * log[sum(exp(x))] - x * y)
@@ -380,7 +380,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 
 
     @staticmethod
-    def backward(ctx, dlosses: torch.Tensor) -> tuple[torch.Tensor, None, None, None]:
+    def backward(ctx, dlosses: torch.Tensor):
         """
         Computes the backward pass (gradient) of the cross entropy loss.
         
@@ -424,11 +424,11 @@ pass
 
 
 def fast_cross_entropy_loss(
-    logits: torch.Tensor,
-    labels: torch.Tensor,
-    logit_softcapping: float = 0,
-    logit_scaling: float     = 0,
-    n_items: Optional[int]   = None,
+    logits            : torch.Tensor,
+    labels            : torch.Tensor,
+    logit_softcapping : float = 0,
+    logit_scaling     : float = 0,
+    n_items           : Optional[int] = None,
 ) -> torch.Tensor:
     """
     Computes fast cross entropy loss using optimized Triton kernels.
@@ -476,13 +476,7 @@ if (Version(torch.__version__) < Version("2.4.0")) and \
 pass
 
 # Patch CE Losses in transformers
-def patch_loss_functions(torch_compile: bool = True) -> None:
-    """
-    Patches the loss functions in the transformers library to use the fast cross entropy implementation.
-    
-    Args:
-        torch_compile (`bool`):
-            Whether to enable torch.compile optimization for the patched loss functions
-    """
+def patch_loss_functions(torch_compile: bool = True):
+    """Patches loss functions in transformers library to use fast cross entropy implementation."""
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
 pass

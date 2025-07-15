@@ -1,4 +1,3 @@
-from typing import Type, Optional, T, Any
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +12,7 @@ from typing import Type, Optional, T, Any
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Type, Optional, Any
 from .llama import *
 from .llama import (
     LlamaRotaryEmbedding,
@@ -42,7 +42,7 @@ class FastQwen2Model(FastLlamaModel):
     """
 
     @staticmethod
-    def pre_patch() -> None:
+    def pre_patch():
         """
         Performs necessary patches to Qwen2 model components before loading. This includes:
         - Patching linear scaling for rotary embeddings
