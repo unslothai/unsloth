@@ -2232,6 +2232,7 @@ class FastLlamaModel:
         init_lora_weights   = True,
         loftq_config        = {},
         temporary_location  = "_unsloth_temporary_saved_buffers",
+        use_qat             = False,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
@@ -2597,6 +2598,40 @@ class FastLlamaModel:
         pass
 
         model = _get_peft_model(model, lora_config)
+
+        # QAT + LoRA
+        # ==========
+        # On a high level, this means fake quantizing the base (frozen) model during LoRA training.
+        # Fake quantization refers to simulating quantization numerics in high precision (e.g. bf16).
+        # This helps mitigate quantization degradations when the model is quantized after training.
+        #
+        # For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
+        # TODO: Make quantization schemes configurable instead of hardcoded
+        if use_qat:
+            from torchao.quantization.qat import FakeQuantizeConfig
+            from torchao.quantization.qat.linear import FakeQuantizedLinear
+            def swap_linears(mod: torch.nn.Module):
+                """
+                Swap the base_layer of all HF peft's lora.Linear from
+                `torch.nn.Linear` to `torchao.quantization.qat.linear.FakeQuantizedLinear`, which applies
+                fake quantization during training. This is expected to be used recursively as follows:
+
+                    model.apply(swap_linears)
+                """
+                for name, child in mod.named_children():
+                    if type(child) == torch.nn.Linear:
+                        activation_config = FakeQuantizeConfig(torch.int8, "per_token", is_symmetric=False)
+                        weight_config = FakeQuantizeConfig(torch.int4, group_size=32)
+                        new_child = FakeQuantizedLinear.from_linear(
+                            child,
+                            activation_config,
+                            weight_config,
+                        )
+                        setattr(mod, name, new_child)
+                    pass
+                pass
+            model.apply(swap_linears)
+        pass
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
