@@ -387,7 +387,8 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name = None
         pass
 
-        fast_inference = fast_inference_setup(model_name, model_config)
+        if fast_inference:
+            fast_inference = fast_inference_setup(model_name, model_config)
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
