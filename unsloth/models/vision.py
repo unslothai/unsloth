@@ -278,8 +278,8 @@ class FastBaseModel:
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
             )
 
-        if not any(x in model_types for x in ["mllama", "gemma3"]):
-            raise RuntimeError("Unsloth: We only support fast inference for Llama 3.2 and Gemma 3 models!")
+        # if not any(x in model_types for x in ["mllama", "gemma3"]):
+        #     raise RuntimeError("Unsloth: We only support fast inference for Llama 3.2 and Gemma 3 models!")
 
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
@@ -459,6 +459,8 @@ class FastBaseModel:
                 token = token,
                 attn_implementation = "sdpa",
             )
+            from ._utils import fast_inference_setup
+            fast_inference = fast_inference_setup(model_name, model_config)
 
             allowed_args = inspect.getfullargspec(load_vllm).args
             load_vllm_kwargs = dict(
@@ -473,6 +475,7 @@ class FastBaseModel:
                 disable_log_stats      = disable_log_stats,
                 use_bitsandbytes       = load_in_4bit,
                 unsloth_vllm_standby   = unsloth_vllm_standby,
+                is_vision_model        = True,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -483,8 +486,8 @@ class FastBaseModel:
             llm = load_vllm(**load_vllm_kwargs)
 
             # Convert to HF format
-            _, quant_state_dict = get_vllm_state_dict(llm, config = model_config)
-            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config)
+            _, quant_state_dict = get_vllm_state_dict(llm, config = model_config, is_vision_model = True)
+            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config, is_vision_model = True)
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)

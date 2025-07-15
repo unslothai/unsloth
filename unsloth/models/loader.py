@@ -76,6 +76,7 @@ from ._utils import (
     patch_compiled_autograd,
     process_vision_info,
     unsloth_compile_transformers,
+    fast_inference_setup,
 )
 
 global FORCE_FLOAT32
@@ -386,27 +387,7 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name = None
         pass
 
-        if fast_inference:
-            if not is_vLLM_available():
-                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
-                fast_inference = False
-            pass
-            from unsloth_zoo.vllm_utils import (
-                patch_vllm,
-                vllm_dynamic_quant_supported,
-            )
-            patch_vllm()
-            if model_name.endswith("unsloth-bnb-4bit"):
-                if not vllm_dynamic_quant_supported(model_name, model_config):
-                    # Instead use -bnb-4bit variant
-                    print(
-                        f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
-                        f"we do not yet support fast inference for {model_name}"
-                    )
-                    model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
-                pass
-            pass
-        pass
+        fast_inference = fast_inference_setup(model_name, model_config)
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,

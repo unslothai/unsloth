@@ -1382,3 +1382,26 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
     pass
 
     return loftq_config
+
+def fast_inference_setup(model_name, model_config):
+    fast_inference = True
+    if not is_vLLM_available():
+        print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
+        fast_inference = False
+    pass
+    from unsloth_zoo.vllm_utils import (
+        patch_vllm,
+        vllm_dynamic_quant_supported,
+    )
+    patch_vllm()
+    if model_name.endswith("unsloth-bnb-4bit"):
+        if not vllm_dynamic_quant_supported(model_name, model_config):
+            # Instead use -bnb-4bit variant
+            print(
+                f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
+                f"we do not yet support fast inference for {model_name}"
+            )
+            model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
+        pass
+    pass
+    return fast_inference
