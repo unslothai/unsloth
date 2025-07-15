@@ -188,7 +188,7 @@ def GemmaModel_fast_forward_inference(
     Returns:
         `BaseModelOutputWithPast`: Model output containing the last hidden state, past key values, hidden states, and attentions.
     """
-    out_weight = torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = "cuda:0")
+    out_weights = tuple(torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT))
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(self.config.torch_dtype)
@@ -209,8 +209,13 @@ def GemmaModel_fast_forward_inference(
 
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
+        device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
+        hidden_states, position_ids = move_to_device(
+            device_index, hidden_states, position_ids
+        )
+
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.input_layernorm, hidden_states, out_weights[device_index])
         hidden_states, present_key_value = LlamaAttention_fast_forward_inference(
             decoder_layer.self_attn,
             hidden_states = hidden_states,
@@ -222,13 +227,13 @@ def GemmaModel_fast_forward_inference(
         hidden_states += residual
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weight)
+        hidden_states = fast_rms_layernorm_inference_gemma(decoder_layer.post_attention_layernorm, hidden_states, out_weights[device_index])
         hidden_states = fast_geglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
         next_decoder_cache.append(present_key_value)
     pass
-    hidden_states = fast_rms_layernorm_inference_gemma(self.model.norm, hidden_states, out_weight)
+    hidden_states = fast_rms_layernorm_inference_gemma(self.model.norm, hidden_states, out_weights[device_index])
 
     return BaseModelOutputWithPast(
         last_hidden_state = hidden_states,
@@ -273,9 +278,16 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
+        self.multi_gpu_cos_cached = [None]*DEVICE_COUNT
+        self.multi_gpu_sin_cached = [None]*DEVICE_COUNT
 
         # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(seq_len=self.current_rope_size, device=device, dtype=torch.get_default_dtype())
+        for device in range(DEVICE_COUNT):
+            self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device), dtype=torch.get_default_dtype())
+
+        # dummy so that patch_utils doesn't fail for now
+        self.cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len: int, device: str, dtype: torch.dtype) -> None:
@@ -302,10 +314,11 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device = "cuda", non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = "cuda", non_blocking = True)#, dtype = dtype)
-        self.register_buffer("cos_cached", cos, persistent = False)
-        self.register_buffer("sin_cached", sin, persistent = False)
+        cos = emb.cos().to(device = device, non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = device, non_blocking = True)#, dtype = dtype)
+        self.multi_gpu_cos_cached[device.index] = cos
+        self.multi_gpu_sin_cached[device.index] = sin
+        return cos, sin
     pass
 
     def forward(self, x: torch.Tensor, position_ids: Optional[torch.Tensor]=None, seq_len: Optional[int]=None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -321,16 +334,18 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
             tuple[torch.Tensor, torch.Tensor]: A tuple containing the cosine and sine embeddings.
         """
         # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.current_rope_size:
+        if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
 
+        device_index = x.device.index
+
         return (
-            self.cos_cached[:seq_len].to(dtype=x.dtype),
-            self.sin_cached[:seq_len].to(dtype=x.dtype),
+            self.multi_gpu_cos_cached[device_index][:seq_len],
+            self.multi_gpu_sin_cached[device_index][:seq_len],
         )
     pass
 
-    def get_cached(self, seq_len: Optional[int] = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def get_cached(self, seq_len: Optional[int] = None, device_index: Optional[int] = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Retrieves the cached cosine and sine embeddings.
         
@@ -340,7 +355,9 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         Returns:
             tuple[torch.Tensor, torch.Tensor]: A tuple containing the cached cosine and sine embeddings.
         """
-        return self.cos_cached, self.sin_cached
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
     pass
 
     def extend_rope_embedding(self, x: torch.Tensor, seq_len: int) -> None:
@@ -354,7 +371,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         if seq_len <= self.current_rope_size: return
         # Iteratively grow by increments of 8192
         self.current_rope_size = math.ceil(seq_len / 8192) * 8192
-        self._set_cos_sin_cache(self.current_rope_size, device = "cuda", dtype = x.dtype)
+        for device in range(DEVICE_COUNT):
+            self._set_cos_sin_cache(self.current_rope_size, device = torch.device(device), dtype = x.dtype)
     pass
 pass
 
@@ -371,7 +389,7 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
         super().__init__(dim = dim, max_position_embeddings = max_position_embeddings, base = base, device = device, config = config)
     pass
 
-    def _set_cos_sin_cache(self, seq_len: int, device: str, dtype: torch.dtype) -> None:
+    def _set_cos_sin_cache(self, seq_len: int, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Sets the cosine and sine caches for linearly scaled positional embeddings.
         
@@ -380,7 +398,7 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
             device (`str`): Device to place the embeddings on.
             dtype (`torch.dtype`): Data type for the embeddings.
         """
-# Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
+        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
 
@@ -396,10 +414,11 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
 
         emb = torch.cat((radians_new, radians_new), dim = -1)
         # We must do RoPE in float32!
-        cos = emb.cos().to(device = "cuda", non_blocking = True)#, dtype = dtype)
-        sin = emb.sin().to(device = "cuda", non_blocking = True)#, dtype = dtype)
-        self.register_buffer("cos_cached", cos, persistent = False)
-        self.register_buffer("sin_cached", sin, persistent = False)
+        cos = emb.cos().to(device = device, non_blocking = True)#, dtype = dtype)
+        sin = emb.sin().to(device = device, non_blocking = True)#, dtype = dtype)
+        self.multi_gpu_cos_cached[device.index] = cos
+        self.multi_gpu_sin_cached[device.index] = sin
+        return cos, sin
     pass
 pass
 
