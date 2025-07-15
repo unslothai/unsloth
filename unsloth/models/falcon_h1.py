@@ -43,6 +43,9 @@ except:
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
+from transformers.utils import (
+    is_torchdynamo_compiling,
+)
 # For Pytorch 2.1.1
 try:
     from transformers.models.falcon_h1.modeling_falcon_h1 import (
@@ -519,7 +522,7 @@ def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconH1At
                 attention_mask = attention_mask,
                 do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
             )
-            attention_hidden_states = attention_hidden_states * decoder_layer.attention_out_multiplier
+            attention_hidden_states = attention_hidden_states * decoder_layer.attn_out_multiplier
             mamba_hidden_states = decoder_layer.mamba(
                 hidden_states=X,
                 cache_params=present_key_value,
@@ -595,15 +598,17 @@ def _fast_prepare_inputs_for_generation(
             input_ids = input_ids[:, -cache_position.shape[0] :]
         elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
             input_ids = input_ids[:, cache_position]
-    else:
-        past_key_values = FalconHybridMambaAttentionDynamicCache(
-            self.config,
-            input_ids.shape[0],
-            self.dtype,
-            devices=[
-                self.model.layers[i].mamba.conv1d.weight.device for i in range(self.config.num_hidden_layers)
-            ],
-        )
+    pass
+    # TODO: Wire up Cache to work for inference.
+    # else:
+    #     past_key_values = FalconHybridMambaAttentionDynamicCache(
+    #         self.config,
+    #         input_ids.shape[0],
+    #         self.dtype,
+    #         devices=[
+    #             self.model.layers[i].mamba.conv1d.weight.device for i in range(self.config.num_hidden_layers)
+    #         ],
+    #     )
 
     if attention_mask is not None and position_ids is None:
         # create position_ids on the fly for batch generation
