@@ -133,15 +133,21 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = -1,
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
+    group_mixed_image_text: Optional[bool] = field(
+        default = False,
+        metadata = {{'help' : 'When training a VLM and you have some examples with images and some without, ie text only'}}
+    )
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
+        group_mixed_image_text = False,
         **kwargs,
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        self.group_mixed_image_text = group_mixed_image_text
 pass
 
 {RLTrainer_extras}
