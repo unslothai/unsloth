@@ -470,7 +470,7 @@ class FastBaseModel:
                 max_seq_length         = max_seq_length,
                 dtype                  = dtype,
                 float8_kv_cache        = float8_kv_cache,
-                enable_lora            = False,
+                enable_lora            = True,
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
                 use_bitsandbytes       = load_in_4bit,
@@ -706,6 +706,13 @@ class FastBaseModel:
                 torch.xpu.empty_cache()
         pass
         patch_saving_functions(model, vision = True)
+
+        if hasattr(model, "vllm_engine"):
+            # Also saving and loading LoRA
+            from unsloth_zoo.vllm_utils import save_lora, load_lora
+            model.save_lora = functools.partial(save_lora, model)
+            model.load_lora = functools.partial(load_lora, model)
+        pass
 
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
