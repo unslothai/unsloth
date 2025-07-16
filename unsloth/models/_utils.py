@@ -67,6 +67,8 @@ __all__ = [
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
+    "fast_inference_setup",
+    "patch_peft_fast_inference",
 ]
 
 import torch
@@ -1428,3 +1430,16 @@ def fast_inference_setup(model_name, model_config):
         pass
     pass
     return fast_inference
+
+def patch_peft_fast_inference(model):
+    vllm_engine = getattr(model.model, "vllm_engine", None)
+    if vllm_engine is not None:
+        model.vllm_engine = model.model.vllm_engine
+        model.fast_generate = model.model.fast_generate
+        model.fast_generate_batches = model.model.fast_generate_batches
+
+        # Also saving and loading LoRA
+        from unsloth_zoo.vllm_utils import save_lora, load_lora
+        model.save_lora = functools.partial(save_lora, model)
+        model.load_lora = functools.partial(load_lora, model)
+    pass

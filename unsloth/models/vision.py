@@ -462,7 +462,6 @@ class FastBaseModel:
             )
 
             if fast_inference:
-                from ._utils import fast_inference_setup
                 fast_inference = fast_inference_setup(model_name, model_config)
 
             allowed_args = inspect.getfullargspec(load_vllm).args
@@ -712,13 +711,7 @@ class FastBaseModel:
                 torch.xpu.empty_cache()
         pass
         patch_saving_functions(model, vision = True)
-
-        if hasattr(model, "vllm_engine"):
-            # Also saving and loading LoRA
-            from unsloth_zoo.vllm_utils import save_lora, load_lora
-            model.save_lora = functools.partial(save_lora, model)
-            model.load_lora = functools.partial(load_lora, model)
-        pass
+        patch_peft_fast_inference(model)
 
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
