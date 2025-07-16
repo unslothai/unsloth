@@ -102,7 +102,7 @@ pass
 
 class Fast_Layernorm(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, X, W, b, eps):
+    def forward(ctx, X: torch.Tensor, W: torch.Tensor, b: torch.Tensor, eps: float) -> torch.Tensor:
         shape = X.shape
         dim = shape[-1]
         X = X.view(-1, dim)
@@ -133,7 +133,7 @@ class Fast_Layernorm(torch.autograd.Function):
     pass
 
     @staticmethod
-    def backward(ctx, dY):
+    def backward(ctx, dY: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         shape = dY.shape
         dim = shape[-1]
         dY = dY.view(-1, dim)

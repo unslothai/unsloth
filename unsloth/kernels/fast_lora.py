@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
 import torch
 from .utils import (
     fast_dequantize,
@@ -26,12 +27,20 @@ from .utils import (
 
 class LoRA_MLP(torch.autograd.Function):
     """
-    ### LoRA weights
-    G = G + Ag @ Bg
-    U = U + Au @ Bu
-    W = W + Aw @ Bw
+    Implements LoRA (Low-Rank Adaptation) for MLP layers with efficient forward and backward passes.
+    
+    This class applies LoRA decomposition to the gate, up, and down projections of an MLP layer,
+    enabling efficient fine-tuning with reduced memory footprint. It supports various activation
+    functions including SwiGLU and GeGLU.
+    
+    Mathematical formulation:
+    
+    ### LoRA weights:
+    G = G + Ag @ Bg  (gate projection)
+    U = U + Au @ Bu  (up projection)  
+    W = W + Aw @ Bw  (down projection)
 
-    ### SwiGLU(X)
+    ### SwiGLU(X):
     e = X @ G
     f = e * sigmoid(e)
     g = X @ U
@@ -40,7 +49,6 @@ class LoRA_MLP(torch.autograd.Function):
 
     ### Backpropagation chain rule
     See our blog post for more details
-
     df = sigmoid(e) * (1 - f) + f
     dC/dW = h.T @ dY
     dC/dU = X.T @ (D @ W.T * f)
@@ -64,12 +72,12 @@ class LoRA_MLP(torch.autograd.Function):
     """
     @staticmethod
     @torch_amp_custom_fwd
-    def forward(ctx, X : torch.Tensor,
+    def forward(ctx, X,
                 gateW, gateW_quant, gateA, gateB, gateS,
-                  upW,   upW_quant, upA,   upB,   upS,
+                  upW,   upW_quant,   upA,   upB,   upS,
                 downW, downW_quant, downA, downB, downS,
                 _forward_function, _backward_function,
-                inplace = True,):
+                inplace: bool = True,):
         dtype = X.dtype
 
         e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
@@ -174,7 +182,20 @@ pass
 
 
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
-def apply_lora_mlp_swiglu(self, X, inplace = True):
+def apply_lora_mlp_swiglu(self, X: torch.Tensor, inplace: bool = True) -> torch.Tensor:
+    """
+    Apply LoRA-adapted MLP layer with SwiGLU activation function.
+
+    Args:
+        self: The MLP module containing gate_proj, up_proj, and down_proj layers
+        X (`torch.Tensor`):
+            Input tensor of shape (batch_size, seq_len, hidden_dim)
+        inplace (`bool`, *optional*):
+            Whether to perform operations in-place to save memory. Defaults to True.
+    
+    Returns:
+        `torch.Tensor`: Output tensor of shape (batch_size, seq_len, hidden_dim)
+    """
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -189,7 +210,20 @@ pass
 
 
 from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
-def apply_lora_mlp_geglu_exact(self, X, inplace = True):
+def apply_lora_mlp_geglu_exact(self, X: torch.Tensor, inplace: bool = True) -> torch.Tensor:
+    """
+    Apply LoRA-adapted MLP layer with exact GeGLU activation function.
+        
+    Args:
+        self: The MLP module containing gate_proj, up_proj, and down_proj layers
+        X (`torch.Tensor`):
+            Input tensor of shape (batch_size, seq_len, hidden_dim)
+        inplace (`bool`, *optional*):
+            Whether to perform operations in-place to save memory. Defaults to True.
+    
+    Returns:
+        `torch.Tensor`: Output tensor of shape (batch_size, seq_len, hidden_dim)
+    """
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -204,7 +238,18 @@ pass
 
 
 from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
-def apply_lora_mlp_geglu_approx(self, X):
+def apply_lora_mlp_geglu_approx(self, X: torch.Tensor) -> torch.Tensor:
+    """
+    Apply LoRA-adapted MLP layer with approximate GeGLU activation function.
+    
+    Args:
+        self: The MLP module containing gate_proj, up_proj, and down_proj layers
+        X (`torch.Tensor`):
+            Input tensor of shape (batch_size, seq_len, hidden_dim)
+    
+    Returns:
+        `torch.Tensor`: Output tensor of shape (batch_size, seq_len, hidden_dim)
+    """
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW,     upW_quant,   upA,   upB,   upS = get_lora_parameters(self.  up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -219,6 +264,13 @@ pass
 
 class LoRA_QKV(torch.autograd.Function):
     """
+    Implements LoRA (Low-Rank Adaptation) for Query, Key, and Value projections in attention layers.
+    
+    This class applies LoRA decomposition to the Q, K, and V projections simultaneously,
+    enabling efficient fine-tuning of attention mechanisms with reduced memory overhead.
+    
+    Mathematical formulation:
+    
     ### LoRA weights
     Wq = Wq + Aq @ Bq
     Wk = Wk + Ak @ Bk
@@ -249,11 +301,11 @@ class LoRA_QKV(torch.autograd.Function):
     """
     @staticmethod
     @torch_amp_custom_fwd
-    def forward(ctx, X : torch.Tensor,
+    def forward(ctx, X,
                 QW, QW_quant, QA, QB, QS,
                 KW, KW_quant, KA, KB, KS,
                 VW, VW_quant, VA, VB, VS,
-                inplace = True):
+                inplace: bool = True):
         dtype = X.dtype
 
         Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
@@ -359,7 +411,24 @@ class LoRA_QKV(torch.autograd.Function):
 pass
 
 
-def apply_lora_qkv(self, X, inplace = True):
+def apply_lora_qkv(self, X: torch.Tensor, inplace: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Apply LoRA-adapted Query, Key, and Value projections for attention layers.
+
+    Args:
+        self: The attention module containing q_proj, k_proj, and v_proj layers
+        X (`torch.Tensor`):
+            Input tensor of shape (batch_size, seq_len, hidden_dim)
+        inplace (`bool`, *optional*):
+            Whether to perform operations in-place to save memory. Defaults to True.
+    
+    Returns:
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]: 
+            A tuple containing:
+            - Q: Query tensor of shape (batch_size, seq_len, hidden_dim)
+            - K: Key tensor of shape (batch_size, seq_len, hidden_dim)
+            - V: Value tensor of shape (batch_size, seq_len, hidden_dim)
+    """
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
@@ -375,6 +444,13 @@ pass
 
 class LoRA_W(torch.autograd.Function):
     """
+    Implements LoRA (Low-Rank Adaptation) for a single weight matrix projection.
+    
+    This class applies LoRA decomposition to a single linear transformation, providing
+    a general-purpose building block for LoRA adaptation of any linear layer.
+    
+    Mathematical formulation:
+    
     ### LoRA weights
     Wq = Wq + Aq @ Bq
     Wk = Wk + Ak @ Bk
@@ -402,7 +478,7 @@ class LoRA_W(torch.autograd.Function):
     """
     @staticmethod
     @torch_amp_custom_fwd
-    def forward(ctx, X : torch.Tensor,
+    def forward(ctx, X,
                 W, W_quant, A, B, S):
         dtype = X.dtype
         XW = matmul_lora(X, W, W_quant, A, B, S)
@@ -452,7 +528,8 @@ class LoRA_W(torch.autograd.Function):
 pass
 
 
-def apply_lora_o(self, X):
+def apply_lora_o(self, X: torch.Tensor) -> torch.Tensor:
+    """Apply LoRA-adapted output projection for attention layers"""
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
     O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
     return O
@@ -462,6 +539,7 @@ pass
 IDENTITY_DROPOUT = torch.nn.Identity
 @torch._disable_dynamo
 def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    """Fast forward pass implementation for LoRA-adapted layers."""
     raise NotImplementedError(
         "Unsloth: Currently not supported yet - reshaping done incorrectly"
     )

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 from ._utils import (
     is_bfloat16_supported,
     is_vLLM_available,
@@ -84,32 +85,105 @@ FORCE_FLOAT32 = [
 ]
 
 class FastLanguageModel(FastLlamaModel):
+    """
+    Factory class for loading optimized language models with Unsloth acceleration.
+    
+    This class automatically dispatches to the appropriate optimized model implementation
+    based on the model type. It provides hardware-accelerated implementations for popular
+    model architectures while falling back to general optimization for unsupported models.
+    
+    Natively Supported Models:
+        - Llama family (including Llama 3.1/3.2 with RoPE scaling)
+        - Mistral/Mixtral models  
+        - Gemma and Gemma 2
+        - Qwen2 and Qwen3 (including MoE variants)
+        
+    Partial/Experimental Support:
+        - Cohere models (temporarily disabled)
+        - Granite models (temporarily disabled)
+        
+    For unsupported model architectures:
+        - Falls back to FastModel.from_pretrained() with general optimizations
+        - Still benefits from Unsloth's memory optimizations and training improvements
+        - May not achieve the same speedups as natively supported models
+    """
+    
     @staticmethod
     def from_pretrained(
-        model_name                 = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length             = 2048,
-        dtype                      = None,
-        load_in_4bit               = True,
-        load_in_8bit               = False,
-        full_finetuning            = False,
-        token                      = None,
-        device_map                 = "sequential",
-        rope_scaling               = None,
-        fix_tokenizer              = True,
-        trust_remote_code          = False,
-        use_gradient_checkpointing = "unsloth",
-        resize_model_vocab         = None,
-        revision                   = None,
-        use_exact_model_name       = False,
+        model_name: str                   = "unsloth/Llama-3.2-1B-Instruct",
+        max_seq_length: int               = 2048,
+        dtype: Optional[torch.dtype]      = None,
+        load_in_4bit: bool                = True,
+        load_in_8bit: bool                = False,
+        full_finetuning: bool             = False,
+        token: Optional[str]              = None,
+        device_map: str                   = "sequential",
+        rope_scaling: Optional[dict]      = None,
+        fix_tokenizer: bool               = True,
+        trust_remote_code: bool           = False,
+        use_gradient_checkpointing: str   = "unsloth",
+        resize_model_vocab: Optional[int] = None,
+        revision: Optional[str]           = None,
+        use_exact_model_name: bool        = False,
 
-        fast_inference             = False, # uses vLLM
-        gpu_memory_utilization     = 0.5,
-        float8_kv_cache            = False,
-        random_state               = 3407,
-        max_lora_rank              = 64,
-        disable_log_stats          = True,
+        fast_inference: bool              = False, # uses vLLM
+        gpu_memory_utilization: float     = 0.5,
+        float8_kv_cache: bool             = False,
+        random_state: int                 = 3407,
+        max_lora_rank: int                = 64,
+        disable_log_stats: bool           = True,
         *args, **kwargs,
-    ):
+    ) -> tuple[PeftModel, PreTrainedTokenizer]:
+        """
+        Load a pretrained model with Unsloth optimizations.
+        
+        This method automatically detects the model architecture and applies the appropriate
+        optimizations. For natively supported models (Llama, Mistral, Gemma, Qwen2/3), it
+        uses custom kernels and memory-efficient implementations. For other models, it falls
+        back to general optimizations.
+        
+        Native Support Behavior:
+            - Custom CUDA kernels for attention and MLP layers
+            - Optimized RoPE implementations
+            - Memory-efficient LoRA patching
+            - Support for advanced features like RoPE scaling
+            
+        Fallback Behavior (Unsupported Models):
+            - Uses FastModel with general PyTorch optimizations
+            - Still benefits from gradient checkpointing and memory management
+            - May not support all advanced features (e.g., custom RoPE scaling)
+            - Shows warning about potentially slower performance
+            
+        Args:
+            model_name (`str`): Model identifier from HuggingFace Hub
+            max_seq_length (`int`): Maximum sequence length
+            dtype (`Optional[torch.dtype]`): Data type (auto-selected if None)
+            load_in_4bit (`bool`): Enable 4-bit quantization
+            load_in_8bit (`bool`): Enable 8-bit quantization
+            full_finetuning (`bool`): Enable full model finetuning (disables LoRA)
+            token (`Optional[str]`): HuggingFace API token
+            device_map (`str`): Device mapping strategy
+            rope_scaling (`Optional[dict]`): RoPE scaling configuration
+            fix_tokenizer (`bool`): Fix common tokenizer issues
+            trust_remote_code (`bool`): Trust remote code execution
+            use_gradient_checkpointing (`str`): Gradient checkpointing mode
+            resize_model_vocab (`Optional[int]`): Resize vocabulary size
+            revision (`Optional[str]`): Model revision
+            use_exact_model_name (`bool`): Use exact model name without modifications
+            fast_inference (`bool`): Enable vLLM-based fast inference
+            gpu_memory_utilization (`float`): GPU memory utilization for vLLM
+            float8_kv_cache (`bool`): Use float8 KV cache
+            random_state (`int`): Random seed
+            max_lora_rank (`int`): Maximum LoRA rank for vLLM
+            disable_log_stats (`bool`): Disable logging statistics
+            
+        Returns:
+            tuple[PeftModel, PreTrainedTokenizer]: Model and tokenizer
+            
+        Raises:
+            ImportError: If required dependencies are missing for specific models
+            RuntimeError: If model configuration conflicts are detected
+        """
         if load_in_8bit or full_finetuning:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
@@ -486,31 +560,101 @@ DISABLE_COMPILE_MODEL_NAMES = [
 
 
 class FastModel(FastBaseModel):
+    """
+    General-purpose model loader with Unsloth optimizations for any transformer architecture.
+    
+    This class provides a fallback implementation that works with any HuggingFace transformer
+    model, applying general optimizations without model-specific kernels. It's used when
+    FastLanguageModel encounters an unsupported model architecture.
+    
+    Key Features:
+        - Automatic torch.compile optimization with custom settings
+        - Memory-efficient gradient checkpointing
+        - Support for 4-bit/8-bit quantization
+        - General attention and MLP optimizations
+        - Compatible with any AutoModelForCausalLM-compatible model
+        
+    Limitations vs Native Support:
+        - No custom CUDA kernels (uses PyTorch operations)
+        - May not support model-specific features (e.g., custom RoPE)
+        - Performance gains are model-dependent
+        - Some features marked with [TODO] No effect
+    """
+    
     @staticmethod
     def from_pretrained(
-        model_name                 = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
-        max_seq_length             = 2048,
-        dtype                      = None,
-        load_in_4bit               = True,
-        load_in_8bit               = False,
-        full_finetuning            = False,
-        token                      = None,
-        device_map                 = "sequential",
-        rope_scaling               = None, # [TODO] No effect
-        fix_tokenizer              = True, # [TODO] No effect
-        trust_remote_code          = False,
-        use_gradient_checkpointing = "unsloth",
-        resize_model_vocab         = None, # [TODO] No effect
-        revision                   = None,
-        return_logits              = False, # Return logits
-        fullgraph                  = True, # No graph breaks
-        use_exact_model_name       = False,
-        auto_model                 = None,
-        whisper_language           = None,
-        whisper_task               = None,
-        unsloth_force_compile      = False,
+        model_name: str                   = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
+        max_seq_length: int               = 2048,
+        dtype: Optional[torch.dtype]      = None,
+        load_in_4bit: bool                = True,
+        load_in_8bit: bool                = False,
+        full_finetuning: bool             = False,
+        token: Optional[str]              = None,
+        device_map: str                   = "sequential",
+        rope_scaling: Optional[dict]      = None, # [TODO] No effect
+        fix_tokenizer: bool               = True, # [TODO] No effect
+        trust_remote_code: bool           = False,
+        use_gradient_checkpointing: str   = "unsloth",
+        resize_model_vocab: Optional[int] = None, # [TODO] No effect
+        revision: Optional[str]           = None,
+        return_logits: bool               = False, # Return logits
+        fullgraph: bool                   = True, # No graph breaks
+        use_exact_model_name: bool        = False,
+        auto_model: Optional[type]        = None,
+        whisper_language: Optional[str]   = None,
+        whisper_task: Optional[str]       = None,
+        unsloth_force_compile: bool       = False,
         *args, **kwargs,
-    ):
+    ) -> tuple[PeftModel, PreTrainedTokenizer]:
+        """
+        Load any transformer model with general Unsloth optimizations.
+        
+        This method applies torch.compile and other general optimizations to any
+        HuggingFace transformer model. It automatically detects model capabilities
+        and applies the best available optimizations without model-specific kernels.
+        
+        Optimization Strategy:
+            - Uses torch.compile with custom optimization passes
+            - Applies memory-efficient attention implementations (SDPA)
+            - Enables gradient checkpointing for memory savings
+            - Supports quantization via bitsandbytes
+            - Automatically detects and handles vision models
+            
+        Special Model Handling:
+            - Vision models: Automatically uses AutoModelForVision2Seq
+            - Whisper models: Supports language/task specification
+            - Models with custom requirements: Sets appropriate environment flags
+            
+        Args:
+            model_name (`str`): Model identifier from HuggingFace Hub
+            max_seq_length (`int`): Maximum sequence length
+            dtype (`Optional[torch.dtype]`): Data type (auto-selected if None)
+            load_in_4bit (`bool`): Enable 4-bit quantization
+            load_in_8bit (`bool`): Enable 8-bit quantization
+            full_finetuning (`bool`): Enable full model finetuning
+            token (`Optional[str]`): HuggingFace API token
+            device_map (`str`): Device mapping strategy
+            rope_scaling (`Optional[dict]`): RoPE scaling config (no effect in FastModel)
+            fix_tokenizer (`bool`): Fix tokenizer issues (no effect in FastModel)
+            trust_remote_code (`bool`): Trust remote code execution
+            use_gradient_checkpointing (`str`): Gradient checkpointing mode
+            resize_model_vocab (`Optional[int]`): Resize vocab (limited support)
+            revision (`Optional[str]`): Model revision
+            return_logits (`bool`): Return raw logits instead of loss
+            fullgraph (`bool`): Enable fullgraph compilation (no graph breaks)
+            use_exact_model_name (`bool`): Use exact model name
+            auto_model (`Optional[type]`): Custom auto model class
+            whisper_language (`Optional[str]`): Language for Whisper models
+            whisper_task (`Optional[str]`): Task for Whisper models
+            unsloth_force_compile (`bool`): Force torch.compile even if disabled
+            
+        Returns:
+            tuple[PeftModel, PreTrainedTokenizer]: Optimized model and tokenizer
+            
+        Note:
+            Parameters marked with [TODO] No effect are placeholders for compatibility
+            but don't have implementations in the general FastModel path.
+        """
         if token is None: token = get_token()
         if whisper_language is not None: assert(type(whisper_language) is str)
         if whisper_task is not None: assert(type(whisper_task) is str)
@@ -860,7 +1004,32 @@ class FastModel(FastBaseModel):
 pass
 
 class FastVisionModel(FastModel):
+    """
+    Specialized model loader for vision-language models (VLMs).
+    
+    This class inherits all functionality from FastModel and serves as a 
+    semantic alias for loading vision-language models like LLaVA, CLIP-based
+    models, and other multimodal architectures. It uses the same general
+    optimization approach as FastModel.
+    
+    Examples of supported models:
+        - LLaVA variants
+        - Pixtral
+        - Qwen-VL
+        - Any AutoModelForVision2Seq compatible model
+    """
     pass
 
 class FastTextModel(FastModel):
+    """
+    Specialized model loader for text-only language models.
+    
+    This class inherits all functionality from FastModel and serves as a
+    semantic alias for loading pure text generation models. It provides
+    the same optimizations as FastModel but with clearer intent for
+    text-only use cases.
+    
+    Use this when you explicitly want to load text-only models and want
+    to distinguish them from vision-language models in your codebase.
+    """
     pass

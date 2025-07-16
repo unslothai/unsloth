@@ -19,7 +19,17 @@ from .utils import calculate_settings, torch_gpu_device
 
 
 @triton.jit
-def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
+def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,) -> None:
+    """
+    Triton kernel to compute the SwiGLU activation function.
+    
+    The SwiGLU (Swish-Gated Linear Unit) operation computes:
+        f = e * sigmoid(e)  # Swish activation
+        h = f * g           # Gated output
+    
+    This is commonly used in transformer MLP blocks where e and g are 
+    projections of the input, and the gating mechanism helps with gradient flow.
+    """
     block_idx = tl.program_id(0)
     offsets = block_idx*BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
@@ -38,7 +48,8 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE : tl.constexpr,):
 pass
 
 
-def swiglu_fg_kernel(e, g):
+def swiglu_fg_kernel(e: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    """Compute the SwiGLU activation function using Triton"""
     batch, seq_len, hd = e.shape
     n_elements = e.numel()
     h = torch.empty((batch, seq_len, hd), dtype = e.dtype, device = e.device)
@@ -50,7 +61,7 @@ pass
 
 
 @triton.jit
-def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,):
+def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE : tl.constexpr,) -> None:
     """
     e = e.float()
     se = 1.0 / (1.0 + torch.exp(-e))
@@ -92,6 +103,20 @@ pass
 
 
 def swiglu_DWf_DW_dfg_kernel(DW, e, g):
+    """
+    Compute the SwiGLU activation function and its derivatives using Triton.
+    
+    Args:
+        DW (`torch.Tensor`):
+            Input tensor DW.
+        e (`torch.Tensor`):
+            Input tensor e.
+        g (`torch.Tensor`):
+            Input tensor g.
+    
+    Returns:
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Output tensors DW, e, g.
+    """
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)

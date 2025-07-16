@@ -29,12 +29,25 @@ BAD_MAPPINGS = \
 }
 
 def __get_model_name(
-    model_name,
-    load_in_4bit = True,
-    INT_TO_FLOAT_MAPPER  = None,
-    FLOAT_TO_INT_MAPPER  = None,
-    MAP_TO_UNSLOTH_16bit = None,
-):
+    model_name: str,
+    load_in_4bit: bool                          = True,
+    INT_TO_FLOAT_MAPPER: dict[str, str] | None  = None,
+    FLOAT_TO_INT_MAPPER: dict[str, str] | None  = None,
+    MAP_TO_UNSLOTH_16bit: dict[str, str] | None = None,
+) -> str | None:
+    """
+    Internal function to determine the appropriate model name based on loading configuration and available transformers version.
+    
+    Args:
+        model_name (`str`): The original model name requested.
+        load_in_4bit (`bool`, defaults to `True`): Whether to load the model in 4-bit precision.
+        INT_TO_FLOAT_MAPPER (`dict[str, str]` or None): Mapping from integer to float model names.
+        FLOAT_TO_INT_MAPPER (`dict[str, str]` or None): Mapping from float to integer model names.
+        MAP_TO_UNSLOTH_16bit (`dict[str, str]` or None): Mapping to Unsloth 16-bit model names.
+    
+    Returns:
+        `str` or None: The adjusted model name based on the loading configuration, or None if no adjustment is needed.
+    """
     model_name = str(model_name)
     lower_model_name = model_name.lower()
 
@@ -83,7 +96,18 @@ def __get_model_name(
 pass
 
 
-def _get_new_mapper():
+def _get_new_mapper() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """
+    Fetches and executes the latest model mapper from the Unsloth GitHub repository.
+    
+    Returns:
+        `tuple[dict[str, str], dict[str, str], dict[str, str]]`: A tuple containing three dictionaries:
+        - New integer to float model name mapper
+        - New float to integer model name mapper
+        - New mapping to Unsloth 16-bit model names
+    
+        If the request fails, returns empty dictionaries.
+    """
     try:
         import requests
         new_mapper = "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
@@ -102,7 +126,17 @@ def _get_new_mapper():
 pass
 
 
-def get_model_name(model_name, load_in_4bit = True):
+def get_model_name(model_name: str, load_in_4bit: bool = True) -> str:
+    """
+    Determines the appropriate model name based on loading configuration and available transformers version.
+    
+    Args:
+        model_name (`str`): The original model name requested.
+        load_in_4bit (`bool`, defaults to `True`): Whether to load the model in 4-bit precision.
+    
+    Returns:
+        `str`: The adjusted model name based on the loading configuration. If no adjustment is needed, returns the original model name.
+    """
     new_model_name = __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,

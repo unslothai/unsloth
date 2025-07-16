@@ -1,3 +1,4 @@
+from typing import Optional
 import argparse
 import time
 from contextlib import nullcontext
@@ -46,7 +47,7 @@ def run_benchmark_forward(
     seqlen: int,
     dtype: torch.dtype,
     autotune: bool,
-    kernel_config_fwd: KernelConfigForward = None,
+    kernel_config_fwd: Optional[KernelConfigForward] = None,
     bs: int = 1,
 ):
     torch.manual_seed(
@@ -89,7 +90,7 @@ def run_benchmark_backward(
     config: AutoConfig,
     seqlen: int,
     dtype: torch.dtype,
-    bs=1,
+    bs: int = 1,
 ):
     torch.manual_seed(
         SEED
@@ -131,17 +132,17 @@ def run_benchmark_backward(
 
 def setup_model(
     config: Qwen3MoeConfig | Llama4TextConfig,
-    dtype,
-    permute_x,
-    permute_y,
-    autotune,
-    kernel_config_fwd,
-    kernel_config_bwd_dW,
-    kernel_config_bwd_dX,
-    dX_only=False,
-    dW_only=False,
-    overlap_router_shared=False,
-    device="cuda",
+    dtype: torch.dtype,
+    permute_x: bool,
+    permute_y: bool,
+    autotune: bool,
+    kernel_config_fwd: Optional[KernelConfigForward],
+    kernel_config_bwd_dW: Optional[KernelConfigBackward_dW],
+    kernel_config_bwd_dX: Optional[KernelConfigBackward_dX],
+    dX_only: bool               = False,
+    dW_only: bool               = False,
+    overlap_router_shared: bool = False,
+    device: str                 = "cuda",
 ):
     if isinstance(config, Qwen3MoeConfig):
         ref_model = Qwen3MoeSparseMoeBlock(config).to(device, dtype)
@@ -188,11 +189,11 @@ def run_benchmark(
     permute_x: bool,
     permute_y: bool,
     autotune: bool,
-    kernel_config_fwd: KernelConfigForward = None,
+    kernel_config_fwd: KernelConfigForward        = None,
     kernel_config_bwd_dW: KernelConfigBackward_dW = None,
     kernel_config_bwd_dX: KernelConfigBackward_dX = None,
-    overlap_router_shared: bool = False,
-    results_dir: str = None,
+    overlap_router_shared: bool                   = False,
+    results_dir: str                              = None,
 ):
     if autotune:
         autotuner = get_autotuner(mode)

@@ -1,30 +1,55 @@
+from typing import Optional
 from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register_models
 
 _IS_QWEN_2_5_REGISTERED = False
 _IS_QWEN_2_5_VL_REGISTERED = False
 _IS_QWEN_QWQ_REGISTERED = False
 class QwenModelInfo(ModelInfo):
+    """
+    QwenModelInfo class for constructing model names for Qwen models. This class is used to register Qwen models in the model registry.
+    """
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(cls, base_name: str, version: str, size: str, quant_type: QuantType, instruct_tag: Optional[str]) -> str:
+        """
+        Constructs the model name for Qwen models based on the provided parameters.
+        """
         key = f"{base_name}{version}-{size}B"
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 class QwenVLModelInfo(ModelInfo):
+    """
+    QwenVLModelInfo class for constructing model names for QwenVL models. This class is used to register QwenVL models in the model registry.
+    """
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(cls, base_name: str, version: str, size: str, quant_type: QuantType, instruct_tag: Optional[str]) -> str:
+        """
+        Constructs the model name for QwenVL models based on the provided parameters.
+        """
         key = f"{base_name}{version}-VL-{size}B"
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 class QwenQwQModelInfo(ModelInfo):
+    """
+    QwenQwQModelInfo class for constructing model names for QwenQwQ models. This class is used to register QwenQwQ models in the model registry.
+    """
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(cls, base_name: str, version: str, size: str, quant_type: QuantType, instruct_tag: Optional[str]) -> str:
+        """
+        Constructs the model name for QwenQwQ models based on the provided parameters.
+        """
         key = f"{base_name}-{size}B"
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
     
 class QwenQVQPreviewModelInfo(ModelInfo):
+    """
+    QwenQVQPreviewModelInfo class for constructing model names for QwenQVQ Preview models. This class is used to register QwenQVQ Preview models in the model registry.
+    """
     @classmethod
-    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+    def construct_model_name(cls, base_name: str, version: str, size: str, quant_type: QuantType, instruct_tag: Optional[str]) -> str:
+        """
+        Constructs the model name for QwenQVQ Preview models based on the provided parameters.
+        """
         key = f"{base_name}-{size}B-Preview"
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
     
@@ -76,21 +101,30 @@ QwenQVQPreviewMeta = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BNB],
 )
 
-def register_qwen_2_5_models(include_original_model: bool = False):
+def register_qwen_2_5_models(include_original_model: bool = False) -> None:
+    """
+    Registers Qwen 2.5 models in the model registry.
+    """
     global _IS_QWEN_2_5_REGISTERED
     if _IS_QWEN_2_5_REGISTERED:
         return
     _register_models(Qwen_2_5_Meta, include_original_model=include_original_model)
     _IS_QWEN_2_5_REGISTERED = True
 
-def register_qwen_2_5_vl_models(include_original_model: bool = False):
+def register_qwen_2_5_vl_models(include_original_model: bool = False) -> None:
+    """
+    Registers Qwen 2.5 VL models in the model registry.
+    """
     global _IS_QWEN_2_5_VL_REGISTERED
     if _IS_QWEN_2_5_VL_REGISTERED:
         return
     _register_models(Qwen_2_5_VLMeta, include_original_model=include_original_model)
     _IS_QWEN_2_5_VL_REGISTERED = True
 
-def register_qwen_qwq_models(include_original_model: bool = False):
+def register_qwen_qwq_models(include_original_model: bool = False) -> None:
+    """
+    Registers Qwen QwQ models in the model registry.
+    """
     global _IS_QWEN_QWQ_REGISTERED
     if _IS_QWEN_QWQ_REGISTERED:
         return
@@ -98,7 +132,10 @@ def register_qwen_qwq_models(include_original_model: bool = False):
     _register_models(QwenQVQPreviewMeta, include_original_model=include_original_model)
     _IS_QWEN_QWQ_REGISTERED = True
 
-def register_qwen_models(include_original_model: bool = False):
+def register_qwen_models(include_original_model: bool = False) -> None:
+    """
+    Registers all Qwen models (2.5, 2.5 VL, QwQ) in the model registry.
+    """
     register_qwen_2_5_models(include_original_model=include_original_model)
     register_qwen_2_5_vl_models(include_original_model=include_original_model)
     register_qwen_qwq_models(include_original_model=include_original_model)

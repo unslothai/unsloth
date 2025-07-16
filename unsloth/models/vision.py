@@ -51,7 +51,7 @@ import os
 import gc
 import math
 import functools
-from typing import Optional, Tuple, List, Union
+from typing import Optional, Tuple, List, Union, Dict
 import re, inspect, sys
 import contextlib
 import types
@@ -89,7 +89,7 @@ def unsloth_base_fast_generate(
     self,
     *args,
     **kwargs,
-):
+) -> torch.Tensor:
     if len(args) != 0:
         input_ids = args[0]
     elif "input_ids" in kwargs:
@@ -244,24 +244,24 @@ class FastBaseModel:
 
     @staticmethod
     def from_pretrained(
-        model_name        = "unsloth/Llama-3.2-1B-Instruct",
-        max_seq_length    = 2048,
-        dtype             = None,
-        load_in_4bit      = True,
-        load_in_8bit      = False,
-        full_finetuning   = False,
-        token             = None,
-        device_map        = "sequential",
-        trust_remote_code = False,
-        model_types       = None,
-        tokenizer_name    = None,
-        auto_model        = AutoModelForVision2Seq,
-        use_gradient_checkpointing = "unsloth",
-        supports_sdpa     = True,
-        whisper_language  = None,
-        whisper_task      = None,
+        model_name: str                              = "unsloth/Llama-3.2-1B-Instruct",
+        max_seq_length: int                          = 2048,
+        dtype: Optional[torch.dtype]                 = None,
+        load_in_4bit: bool                           = True,
+        load_in_8bit: bool                           = False,
+        full_finetuning: bool                        = False,
+        token: Optional[str]                         = None,
+        device_map: str                              = "sequential",
+        trust_remote_code: bool                      = False,
+        model_types: List[str]                       = None,
+        tokenizer_name: Optional[str]                = None,
+        auto_model: type                             = AutoModelForVision2Seq,
+        use_gradient_checkpointing: Union[str, bool] = "unsloth",
+        supports_sdpa: bool                          = True,
+        whisper_language: Optional[str]              = None,
+        whisper_task: Optional[str]                  = None,
         **kwargs,
-    ):
+    ) -> Tuple[Union[AutoModelForCausalLM, AutoModelForVision2Seq], Union[AutoTokenizer, AutoProcessor]]:
         if model_types is None:
             raise RuntimeError(
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
@@ -550,29 +550,29 @@ class FastBaseModel:
 
     @staticmethod
     def get_peft_model(
-        model,
-        r                          = 16,
-        target_modules             = None,
-        lora_alpha                 = 16,
-        lora_dropout               = 0.0,
-        bias                       = "none",
-        finetune_vision_layers     = True,
-        finetune_language_layers   = True,
-        finetune_attention_modules = True,
-        finetune_mlp_modules       = True,
-        layers_to_transform        = None,
-        layers_pattern             = None,
-        use_gradient_checkpointing = "unsloth",
-        random_state               = 3407,
-        max_seq_length             = 2048, # not used anymore
-        use_rslora                 = False,
-        modules_to_save            = None,
-        init_lora_weights          = True,
-        loftq_config               = {},
-        task_type                  = TaskType.CAUSAL_LM,
-        temporary_location         = "_unsloth_temporary_saved_buffers",
+        model: Union[AutoModelForCausalLM, AutoModelForVision2Seq],
+        r: int                                          = 16,
+        target_modules: Optional[Union[List[str], str]] = None,
+        lora_alpha: int                                 = 16,
+        lora_dropout: float                             = 0.0,
+        bias: str                                       = "none",
+        finetune_vision_layers: bool                    = True,
+        finetune_language_layers: bool                  = True,
+        finetune_attention_modules: bool                = True,
+        finetune_mlp_modules: bool                      = True,
+        layers_to_transform: Optional[List[int]]        = None,
+        layers_pattern: Optional[str]                   = None,
+        use_gradient_checkpointing: Union[bool, str]    = "unsloth",
+        random_state: int                               = 3407,
+        max_seq_length: int                             = 2048, # not used anymore
+        use_rslora: bool                                = False,
+        modules_to_save: Optional[List[str]]            = None,
+        init_lora_weights: bool                         = True,
+        loftq_config: Dict                              = {},
+        task_type: TaskType                             = TaskType.CAUSAL_LM,
+        temporary_location: str                         = "_unsloth_temporary_saved_buffers",
         **kwargs
-    ):
+    ) -> PeftModelForCausalLM:
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             return model
@@ -656,10 +656,10 @@ class FastBaseModel:
 
     @staticmethod
     def post_patch_model(
-        model,
-        use_gradient_checkpointing = True,
-        trust_remote_code = False,
-    ):
+        model: PeftModelForCausalLM,
+        use_gradient_checkpointing: bool = True,
+        trust_remote_code: bool          = False,
+    ) -> PeftModelForCausalLM:
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         float32_mixed_precision = True
@@ -718,7 +718,7 @@ class FastBaseModel:
 
 
     @staticmethod
-    def for_inference(model):
+    def for_inference(model: PeftModelForCausalLM) -> PeftModelForCausalLM:
         if not hasattr(model, "parameters"):
             raise TypeError("Unsloth: I think you're passing a tokenizer, not the model to for_inference!")
 
@@ -760,7 +760,7 @@ class FastBaseModel:
 
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model: PeftModelForCausalLM, use_gradient_checkpointing: bool = True) -> PeftModelForCausalLM:
         if not hasattr(model, "parameters"):
             raise TypeError("Unsloth: I think you're passing a tokenizer, not the model to for_training!")
 

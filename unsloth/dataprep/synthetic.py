@@ -15,6 +15,7 @@
 __all__ = [
     "SyntheticDataKit",
 ]
+from typing import Optional
 import subprocess
 import time
 import os
@@ -35,14 +36,33 @@ from .synthetic_configs import (
 )
 
 class SyntheticDataKit:
+    """
+    A class that provides tools for generating synthetic data using a pretrained language model.
+    
+    Args:
+        model_name (`str`):
+            Name or path of the pretrained model.
+        max_seq_length (`int`):
+            Maximum sequence length for the model.
+        gpu_memory_utilization (`float`):
+            Fraction of GPU memory to use for the model.
+        float8_kv_cache (`bool`):
+            Whether to use float8 precision for the KV cache.
+        conservativeness (`float`):
+            Level of conservativeness for the generation process.
+        token (`str`, *optional*):
+            Authentication token for private models.
+        **kwargs:
+            Additional keyword arguments to pass to the vLLM engine.
+    """
     def __init__(
         self,
-        model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
-        max_seq_length = 2048,
-        gpu_memory_utilization = 0.98,
-        float8_kv_cache = False,
-        conservativeness = 1.0,
-        token = None,
+        model_name: str               = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
+        max_seq_length: int           = 2048,
+        gpu_memory_utilization: float = 0.98,
+        float8_kv_cache: bool         = False,
+        conservativeness: float       = 1.0,
+        token: Optional[str]          = None,
         **kwargs,
     ):
         assert(type(model_name) is str)
@@ -150,14 +170,36 @@ class SyntheticDataKit:
 
     @staticmethod
     def from_pretrained(
-        model_name = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
-        max_seq_length = 2048,
-        gpu_memory_utilization = 0.9,
-        float8_kv_cache = False,
-        conservativeness = 1.0,
-        token = None,
+        model_name: str               = "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
+        max_seq_length: int           = 2048,
+        gpu_memory_utilization: float = 0.9,
+        float8_kv_cache: bool         = False,
+        conservativeness: float       = 1.0,
+        token: Optional[str]          = None,
         **kwargs,
-    ):
+    ) -> SyntheticDataKit:
+        """
+        Load a pretrained SyntheticDataKit instance.
+        
+        Args:
+            model_name (`str`):
+                Name or path of the pretrained model.
+            max_seq_length (`int`):
+                Maximum sequence length for the model.
+            gpu_memory_utilization (`float`):
+                Fraction of GPU memory to use for the model.
+            float8_kv_cache (`bool`):
+                Whether to use float8 precision for the KV cache.
+            conservativeness (`float`):
+                Level of conservativeness for the generation process.
+            token (`str`, *optional*):
+                Authentication token for private models.
+            **kwargs:
+                Additional keyword arguments to pass to the SyntheticDataKit constructor.
+        
+        Returns:
+            `SyntheticDataKit`: A new instance of SyntheticDataKit with the specified configuration.
+        """
         return SyntheticDataKit(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -170,7 +212,8 @@ class SyntheticDataKit:
     pass
 
     @staticmethod
-    def check_vllm_status():
+    def check_vllm_status() -> bool:
+        """Check if the vLLM server is running and accessible"""
         try:
             response = requests.get("http://localhost:8000/metrics")
             if response.status_code == 200:
@@ -180,7 +223,8 @@ class SyntheticDataKit:
         pass
     pass
 
-    def cleanup(self):
+    def cleanup(self) -> None:
+        """Clean up resources by terminating the vLLM server and releasing GPU memory"""
         if not hasattr(self, "vllm_process"): return
 
         vllm_process = self.vllm_process
@@ -216,7 +260,21 @@ class SyntheticDataKit:
     def __exit__(self, *exc): self.cleanup()
     def __del__(self): self.cleanup()
 
-    def chunk_data(self, filename = None):
+    def chunk_data(self, filename: str = None) -> list[str]:
+        """
+        Split a text file into chunks suitable for question-answer generation.
+        
+        The chunk length is calculated as the model's max context length minus twice the 
+        max generation tokens and an additional 128-token buffer to reduce errors:
+        chunk_length = max_seq_length - (max_generation_tokens * 2) - 128
+        
+        Args:
+            filename (`str`):
+                Path to the input text file.
+        
+        Returns:
+            `list[str]`: List of paths to the generated chunk files.
+        """
         # Chunks data by max tokens and generation length
         assert(filename is not None)
         assert(os.path.exists(filename))
@@ -256,16 +314,39 @@ class SyntheticDataKit:
 
     def prepare_qa_generation(
         self,
-        output_folder = "data",
-        max_generation_tokens = 512,
-        temperature = 0.7,
-        top_p = 0.95,
-        overlap = 64,
-        default_num_pairs = 25,
-        cleanup_threshold = 1.0,
-        cleanup_batch_size = 4,
-        cleanup_temperature = 0.3,
+        output_folder         : str = "data",
+        max_generation_tokens : int = 512,
+        temperature           : float = 0.7,
+        top_p                 : float = 0.95,
+        overlap               : int = 64,
+        default_num_pairs     : int = 25,
+        cleanup_threshold     : float = 1.0,
+        cleanup_batch_size    : int = 4,
+        cleanup_temperature   : float = 0.3,
     ):
+        """
+        Prepare the configuration for question-answer generation.
+        
+        Args:
+            output_folder (`str`):
+                Directory where generated data will be saved.
+            max_generation_tokens (`int`):
+                Maximum number of tokens to generate for each question-answer pair.
+            temperature (`float`):
+                Sampling temperature for generation.
+            top_p (`float`):
+                Nucleus sampling parameter.
+            overlap (`int`):
+                Number of tokens to overlap between chunks.
+            default_num_pairs (`int`):
+                Default number of question-answer pairs to generate per chunk.
+            cleanup_threshold (`float`):
+                Threshold for filtering low-quality generated pairs.
+            cleanup_batch_size (`int`):
+                Batch size for the cleanup process.
+            cleanup_temperature (`float`):
+                Temperature for the cleanup generation process.
+        """
         assert(hasattr(self, "model_name"))
         assert(hasattr(self, "max_seq_length"))
         assert(max_generation_tokens < self.max_seq_length)

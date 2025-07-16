@@ -52,7 +52,7 @@ def vLLMSamplingParams(**kwargs):
     return sampling_params
 pass
 
-def PatchRL(FastLanguageModel):
+def PatchRL(FastLanguageModel: type) -> None:
 
     from trl.models.utils import unwrap_model_for_generation
     from contextlib import contextmanager
@@ -160,7 +160,7 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
 pass
 '''
 
-def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
+def _patch_trl_rl_trainers(trainer_file: str = "grpo_trainer") -> str:
     # Patch for vLLM and Unsloth PEFT
     import trl
     import trl.trainer
@@ -686,7 +686,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 pass
 
 
-def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
+def patch_functions(RLTrainer: type, trainer_file: str, RLTrainer_name: str, all_imports: list[str], imports: list[str]) -> str:
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
 
@@ -878,7 +878,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 pass
 
 
-def patch_trl_rl_trainers():
+def patch_trl_rl_trainers() -> None:
     # Patch all TRL modules if they have vLLM or PEFT
     import trl.trainer
     all_trainers = dir(trl.trainer)
@@ -889,7 +889,7 @@ def patch_trl_rl_trainers():
 pass
 
 
-def PatchFastRL(algorithm = None, FastLanguageModel = None):
+def PatchFastRL(algorithm: Optional[str] = None, FastLanguageModel: Optional[type] = None) -> None:
     if FastLanguageModel is not None: PatchRL(FastLanguageModel)
     patch_trl_rl_trainers()
     if type(algorithm) is str and algorithm.islower():

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
 import torch
 from functools import lru_cache
 from transformers.models.llama.modeling_llama import logger
@@ -146,7 +147,8 @@ pass
 torch_matmul = torch.matmul
 torch_tanh   = torch.tanh
 torch_nn_functional_softmax = torch.nn.functional.softmax
-def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, q_len):
+def slow_inference_attention_softcapping(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, causal_mask: torch.Tensor, self, bsz: int, q_len: int) -> torch.Tensor:
+    """Performs attention computation with logit softcapping for inference."""
     n_heads    = self.config.num_attention_heads
     head_dim   = self.head_dim
     n_kv_heads = self.config.num_key_value_heads

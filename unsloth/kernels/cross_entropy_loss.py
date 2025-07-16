@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 import triton
 import triton.language as tl
 import torch
@@ -280,8 +281,36 @@ _cross_entropy_backward = triton.heuristics(
 
 MAX_FUSED_SIZE = 65536 # 2**16
 class Fast_CrossEntropyLoss(torch.autograd.Function):
+    """
+    Implements a fast cross entropy loss function using Triton for GPU acceleration.
+    
+    This class provides an optimized implementation of cross entropy loss calculation
+    and its gradient computation using Triton JIT compiler for improved performance
+    on GPU hardware.
+    """
     @staticmethod
-    def forward(ctx, logits, labels, logit_softcapping : float = 0, logit_scaling : float = 0):
+    def forward(ctx, logits: torch.Tensor, labels: torch.Tensor, logit_softcapping : float = 0, logit_scaling : float = 0) -> torch.Tensor:
+        """
+        Computes the forward pass of the cross entropy loss.
+        
+        For large vocabularies (>65336=2**16), performs chunked loss calculation to keep memory 
+        usage in check by dividing the vocabulary into manageable chunks and processing 
+        them separately before combining results.
+        
+        Args:
+            ctx: Context object for saving values for backward pass
+            logits (`torch.Tensor`):
+                Input tensor of shape (batch_size, vocab_size) containing raw model outputs
+            labels (`torch.Tensor`):
+                Ground truth labels of shape (batch_size,) containing class indices
+            logit_softcapping (`float`):
+                Optional value for logit softcapping (for Gemma 2)
+            logit_scaling (`float`):
+                Optional scaling factor for logits (for Cohere)
+        
+        Returns:
+            `torch.Tensor`: Computed loss value
+        """
         n_rows : int
         vocab_size : int
         n_rows, vocab_size = logits.shape
@@ -351,7 +380,19 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
 
 
     @staticmethod
-    def backward(ctx, dlosses):
+    def backward(ctx, dlosses: torch.Tensor):
+        """
+        Computes the backward pass (gradient) of the cross entropy loss.
+        
+        Args:
+            ctx: Context object containing saved values from forward pass
+            dlosses (`torch.Tensor`):
+                Gradients of the loss with respect to the output
+        
+        Returns:
+            tuple[torch.Tensor, None, None, None]:
+                Gradients with respect to input logits and None for other inputs
+        """
         logits, logsumexp, labels = ctx.saved_tensors
         n_rows : int
         vocab_size : int
@@ -383,18 +424,38 @@ pass
 
 
 def fast_cross_entropy_loss(
-    logits,
-    labels,
-    logit_softcapping = 0,
-    logit_scaling = 0,
-    n_items = None,
-):
+    logits            : torch.Tensor,
+    labels            : torch.Tensor,
+    logit_softcapping : float = 0,
+    logit_scaling     : float = 0,
+    n_items           : Optional[int] = None,
+) -> torch.Tensor:
     """
-    Arguments:
-        logits: (batch, seq_len, vocab_size)
-        labels: (batch, seq_len,)
+    Computes fast cross entropy loss using optimized Triton kernels.
+    
+    This function provides an accelerated implementation of cross entropy loss calculation
+    with support for logit softcapping (Gemma 2) and logit scaling (Cohere). The loss
+    is automatically normalized by the number of non-padding tokens.
+    
+    Args:
+        logits (`torch.Tensor`):
+            Input logits tensor of shape (batch, seq_len, vocab_size) containing raw model outputs
+        labels (`torch.Tensor`):
+            Ground truth labels of shape (batch, seq_len) containing class indices.
+            Padding tokens should be marked with -100 and will be excluded from loss calculation.
+        logit_softcapping (`float`, *optional*):
+            Softcapping value for Gemma 2 models. When > 0, applies: softcap * tanh(logits / softcap).
+            Defaults to 0 (no softcapping).
+        logit_scaling (`float`, *optional*):
+            Scaling factor for Cohere models. When > 0, applies: scale * logits.
+            Defaults to 0 (no scaling).
+        n_items (`int`, *optional*):
+            Number of non-padding tokens for normalization. If None, automatically computed
+            by counting labels != -100. Defaults to None.
+    
     Returns:
-        losses: float
+        `torch.Tensor`: Cross entropy loss value (scalar tensor), normalized by the number 
+            of non-padding tokens
     """
     batch, seq_len, d = logits.shape
     assert(labels.shape == (batch, seq_len))
@@ -415,6 +476,7 @@ if (Version(torch.__version__) < Version("2.4.0")) and \
 pass
 
 # Patch CE Losses in transformers
-def patch_loss_functions(torch_compile = True):
+def patch_loss_functions(torch_compile: bool = True):
+    """Patches loss functions in transformers library to use fast cross entropy implementation."""
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
 pass

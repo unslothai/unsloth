@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Any
 import triton
 import triton.language as tl
 import torch
@@ -22,7 +23,7 @@ def _rms_layernorm_forward(
     Y, Y_row_stride,
     X, X_row_stride,
     W, W_row_stride,
-    r, r_row_stride : tl.constexpr,
+    r, r_row_stride: tl.constexpr,
     n_cols     : tl.constexpr,
     eps        : tl.constexpr,
     BLOCK_SIZE : tl.constexpr,

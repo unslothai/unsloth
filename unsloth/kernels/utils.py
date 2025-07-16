@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional, Any
 import triton
 import ctypes
 MAX_FUSED_SIZE : int = 65536
@@ -61,7 +62,9 @@ else:
     pass
 pass
 
-def calculate_settings(n : int) -> (int, int,):
+
+def calculate_settings(n : int) -> tuple[int, int]:
+    """Calculate the optimal Triton block size and number of warps for a given tensor size"""
     BLOCK_SIZE : int = next_power_of_2(n)
     if BLOCK_SIZE > MAX_FUSED_SIZE:
         raise RuntimeError(f"Cannot launch Triton kernel since n = {n} exceeds "\
@@ -109,6 +112,7 @@ pass
 c_void_p = ctypes.c_void_p
 def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
+
 pass
 
 # Get array of CUDA streams and other buffers
@@ -181,9 +185,12 @@ torch_empty   = torch.empty
 torch_float16 = torch.float16
 torch_float32 = torch.float32
 
-def QUANT_STATE(W): return getattr(W, "quant_state", None)
+def QUANT_STATE(W: torch.Tensor) -> Optional[Any]:
+    """Retrieve the quantization state from a tensor if it exists"""
+    return getattr(W, "quant_state", None)
 
-def get_lora_parameters(proj):
+def get_lora_parameters(proj) -> tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor], Optional[float]]:
+    """Extract LoRA parameters from a projection layer"""
     # For DPO or disabled adapters
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
@@ -207,7 +214,8 @@ def get_lora_parameters(proj):
 pass
 
 
-def get_lora_parameters_bias(proj):
+def get_lora_parameters_bias(proj) -> tuple[torch.Tensor, Optional[Any], Optional[torch.Tensor], Optional[torch.Tensor], Optional[float], Optional[torch.Tensor]]:
+    """Extract LoRA parameters and bias from a projection layer"""
     # For DPO or disabled adapters
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
@@ -688,7 +696,8 @@ else:
 pass
 
 
-def fast_linear_forward(proj, X, temp_lora = None, out = None):
+def fast_linear_forward(proj, X: torch.Tensor, temp_lora: Optional[torch.Tensor] = None, out: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Perform fast linear forward pass with optional LoRA and quantization support"""
 
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
@@ -731,7 +740,8 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
 pass
 
 
-def matmul_lora(X, W, W_quant, A, B, s, out = None):
+def matmul_lora(X: torch.Tensor, W: torch.Tensor, W_quant: Optional[Any], A: Optional[torch.Tensor], B: Optional[torch.Tensor], s: Optional[float], out: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Perform matrix multiplication with optional LoRA and quantization support"""
     dtype = X.dtype
     W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
 

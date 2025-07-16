@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Tuple, Any, Optional
 from .llama import *
 from ._utils import __version__
 try:
@@ -52,7 +53,7 @@ except:
 pass
 
 
-def fast_layernorm_inference(self, X, out_weight = None):
+def fast_layernorm_inference(self, X: torch.Tensor, out_weight: Optional[torch.Tensor] = None) -> torch.Tensor:
     XX = X.to(torch.float32, copy = True)
     XX -= X.mean(-1, keepdim = True)
     variance = XX.square().mean(-1, keepdim = True)
@@ -68,13 +69,13 @@ pass
 def CohereAttention_fast_forward(
     self,
     hidden_states:        torch.Tensor,
-    causal_mask:          Optional[BlockDiagonalCausalMask] = None,
-    attention_mask:       Optional[torch.Tensor] = None,
-    position_ids:         Optional[torch.LongTensor] = None,
-    past_key_value:       Optional[Tuple[torch.Tensor]] = None,
-    output_attentions:    bool = False,
-    use_cache:            bool = False,
-    padding_mask:         Optional[torch.LongTensor] = None,
+    causal_mask:          Optional[BlockDiagonalCausalMask]          = None,
+    attention_mask:       Optional[torch.Tensor]                     = None,
+    position_ids:         Optional[torch.LongTensor]                 = None,
+    past_key_value:       Optional[Tuple[torch.Tensor]]              = None,
+    output_attentions:    bool                                       = False,
+    use_cache:            bool                                       = False,
+    padding_mask:         Optional[torch.LongTensor]                 = None,
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -190,9 +191,9 @@ def CohereDecoderLayer_fast_forward(
     output_attentions:    Optional[bool] = False,
     use_cache:            Optional[bool] = False,
     padding_mask:         Optional[torch.LongTensor] = None,
-    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    position_embeddings:  Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
-):
+) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     if use_cache and hasattr(self, "_flag_for_generation"): #past_key_value is not None:
         out_weight = torch.empty(self.input_layernorm.weight.shape, dtype = torch.float32, device = "cuda:0")
 
@@ -248,13 +249,12 @@ torch_matmul = torch.matmul
 
 def CohereAttention_fast_forward_inference(
     self,
-    hidden_states:  torch.Tensor,
-    past_key_value: Optional[Tuple[torch.Tensor]],
-    position_ids,
-    do_prefill = False,
-    attention_mask = None,
-):
-
+    hidden_states  :  torch.Tensor,
+    past_key_value : Optional[Tuple[torch.Tensor]],
+    position_ids   : torch.LongTensor,
+    do_prefill     : bool = False,
+    attention_mask : Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
     K1, V1 = past_key_value
@@ -393,11 +393,11 @@ pass
 # @torch.inference_mode
 def CohereModel_fast_forward_inference(
     self,
-    input_ids,
-    past_key_values,
-    position_ids,
-    attention_mask = None,
-):
+    input_ids       : torch.LongTensor,
+    past_key_values : list[tuple[torch.Tensor, torch.Tensor]],
+    position_ids    : torch.LongTensor,
+    attention_mask  : Optional[torch.Tensor] = None,
+) -> BaseModelOutputWithPast:
     out_weights = tuple(torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT))
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)

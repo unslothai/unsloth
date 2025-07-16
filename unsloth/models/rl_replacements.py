@@ -24,6 +24,7 @@ import os
 import re
 import torch
 import inspect
+from typing import Any
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
 from unsloth import DEVICE_TYPE
@@ -43,7 +44,7 @@ torch_compile_options = {
 }
 
 # Check untrained tokens
-def sft_trainer_fix_untrained_tokens(call_args, extra_args):
+def sft_trainer_fix_untrained_tokens(call_args: dict[str, Any], extra_args) -> str:
     if "model" in call_args and "train_dataset" in call_args:
         fix_tokenizer = \
         "IGNORED_TOKENIZER_NAMES = os.environ.get('UNSLOTH_IGNORED_TOKENIZER_NAMES', '').split('\\n')\n"\
@@ -59,7 +60,7 @@ RL_EXTRA_ARGS["sft_trainer"].append(sft_trainer_fix_untrained_tokens)
 
 
 # Remove DPO columns which might randomnly be tokenized
-def dpo_trainer_fix_columns(call_args, extra_args):
+def dpo_trainer_fix_columns(call_args: dict[str, Any], extra_args) -> str:
     if "model" in call_args and "train_dataset" in call_args:
         fix_dpo = \
         "if hasattr(train_dataset, 'column_names'):\n"\
@@ -77,7 +78,7 @@ RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_fix_columns)
 
 
 # Fix tokenizer double BOS
-def sft_trainer_prepare_dataset(function_name, function):
+def sft_trainer_prepare_dataset(function_name: str, function: str) -> str:
     if  function_name != "_prepare_non_packed_dataloader" and \
         function_name != "_prepare_dataset": return function
 
@@ -150,7 +151,7 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_prepare_dataset)
 
 # Ignore mean_token_accuracy since it needs logits
 # We override it directly with our version
-def sft_trainer_compute_loss(function_name, function):
+def sft_trainer_compute_loss(function_name: str, function: str) -> str:
     if  function_name != "compute_loss": return function
 
     def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
@@ -170,7 +171,7 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
 # Autocast precision for GRPO
-def grpo_trainer__prepare_inputs(function_name, function):
+def grpo_trainer__prepare_inputs(function_name: str, function: str) -> str:
     if  function_name != "_prepare_inputs": return function
 
     import re
@@ -236,7 +237,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
 # Remove _move_model_to_vllm
-def grpo_trainer__move_model_to_vllm(function_name, function):
+def grpo_trainer__move_model_to_vllm(function_name: str, function: str) -> str:
     if  function_name != "_move_model_to_vllm": return function
 
     def _move_model_to_vllm(self, *args, **kwargs): return None
@@ -248,7 +249,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 
 
 # Edit _get_per_token_logps to handle mixed precision
-def grpo_trainer__get_per_token_logps(function_name, function):
+def grpo_trainer__get_per_token_logps(function_name: str, function: str) -> str:
     if function_name != "_get_per_token_logps": return function
 
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
@@ -355,7 +356,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 
 # Edit _get_per_token_logps to handle mixed precision
-def grpo_trainer_compute_loss(function_name, function):
+def grpo_trainer_compute_loss(function_name: str, function: str) -> str:
     if  function_name != "compute_loss": return function
 
     def compute_loss(self, model, inputs, return_outputs = False, num_items_in_batch = None):
@@ -491,7 +492,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_compute_loss)
 
 # https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py#L356
 # TRL warns if batch size is not a multiple of num_generations -> fix this.
-def grpo_trainer_fix_batch_size(RLTrainer_source, RLConfig_source):
+def grpo_trainer_fix_batch_size(RLTrainer_source: str, RLConfig_source: str) -> str:
     if "divisible by the number of generations" not in RLTrainer_source: return ""
     if "num_generations" not in RLConfig_source: return ""
 
@@ -507,7 +508,7 @@ RL_CONFIG_CHANGES["grpo_trainer"].append(grpo_trainer_fix_batch_size)
 
 
 # Add other reward function names
-def grpo_trainer_metrics(RLTrainer_source, RLConfig_source):
+def grpo_trainer_metrics(RLTrainer_source: str, RLConfig_source: str) -> str:
     if "reward_funcs" not in RLTrainer_source: return ""
 
     # For new TRL we have /mean and /std

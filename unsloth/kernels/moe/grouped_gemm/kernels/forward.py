@@ -22,13 +22,13 @@ from grouped_gemm.kernels.autotuning import (
 # Only account for the case when X is in expert order and we are permuting Y when fusing mul -- this precondition is checked in the interface
 @triton.jit
 def _grouped_gemm_forward_kernel(
-    x_ptr,
-    w_ptr,
-    y_ptr,
+    x_ptr: tl.tensor,
+    w_ptr: tl.tensor,
+    y_ptr: tl.tensor,
     # Variable depending on routed probs
-    m_sizes_ptr,
-    gather_indices_ptr,
-    topk_weights_ptr,
+    m_sizes_ptr: tl.tensor,
+    gather_indices_ptr: tl.tensor,
+    topk_weights_ptr: tl.tensor,
     # Constant problem shapes
     NUM_EXPERTS: tl.constexpr,
     NUM_TOKENS: tl.constexpr,
@@ -40,17 +40,90 @@ def _grouped_gemm_forward_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
-    PERMUTE_X: tl.constexpr = False,
-    PERMUTE_Y: tl.constexpr = False,
-    FUSE_MUL_PRE: tl.constexpr = False,
-    FUSE_MUL_POST: tl.constexpr = False,
+    PERMUTE_X: tl.constexpr      = False,
+    PERMUTE_Y: tl.constexpr      = False,
+    FUSE_MUL_PRE: tl.constexpr   = False,
+    FUSE_MUL_POST: tl.constexpr  = False,
     USE_FAST_ACCUM: tl.constexpr = False,
     USE_TMA_LOAD_W: tl.constexpr = False,
     USE_TMA_LOAD_X: tl.constexpr = False,
-    USE_TMA_STORE: tl.constexpr = False,
-    acc_dtype: tl.constexpr = tl.float32,
-    FLATTEN: tl.constexpr = True,
+    USE_TMA_STORE: tl.constexpr  = False,
+    acc_dtype: tl.constexpr      = tl.float32,
+    FLATTEN: tl.constexpr        = True,
 ) -> None:
+    """
+    Computes grouped GEMM (General Matrix Multiply) forward pass for MoE models.
+    
+    This kernel performs the forward pass computation Y = X @ W^T for multiple experts
+    in parallel, where each expert processes a different subset of tokens. It supports
+    various optimization strategies including permutation, weight multiplication fusion,
+    and TMA (Tensor Memory Accelerator).
+    
+    Mathematical operation:
+        Y = X @ W^T
+    where:
+        - X is the input tensor [NUM_TOKENS * TOPK, K]
+        - W is the weight matrix for each expert [NUM_EXPERTS, N, K]  
+        - Y is the output tensor [NUM_TOKENS * TOPK, N]
+    
+    Args:
+        x_ptr (`tl.tensor`):
+            Pointer to input tensor with shape [NUM_TOKENS * TOPK, K]
+        w_ptr (`tl.tensor`):
+            Pointer to weight matrices for all experts with shape [NUM_EXPERTS, N, K]
+        y_ptr (`tl.tensor`):
+            Pointer to output tensor with shape [NUM_TOKENS * TOPK, N]
+        m_sizes_ptr (`tl.tensor`):
+            Pointer to array containing number of tokens per expert
+        gather_indices_ptr (`tl.tensor`):
+            Pointer to indices for gathering tokens in permuted order
+        topk_weights_ptr (`tl.tensor`):
+            Pointer to top-k routing weights for weighted output
+        NUM_EXPERTS (`tl.constexpr`):
+            Total number of experts
+        NUM_TOKENS (`tl.constexpr`):
+            Total number of input tokens
+        TOPK (`tl.constexpr`):
+            Number of experts selected per token
+        N (`tl.constexpr`):
+            Output dimension (rows of W and columns of Y)
+        K (`tl.constexpr`):
+            Input dimension (columns of X and W)
+        NUM_SMS (`tl.constexpr`):
+            Number of streaming multiprocessors for work distribution
+        BLOCK_SIZE_M (`tl.constexpr`):
+            Block size for M dimension tiling
+        BLOCK_SIZE_N (`tl.constexpr`):
+            Block size for N dimension tiling
+        BLOCK_SIZE_K (`tl.constexpr`):
+            Block size for K dimension tiling
+        PERMUTE_X (`tl.constexpr`, optional):
+            If True, permute input X from token to expert order. Defaults to False.
+        PERMUTE_Y (`tl.constexpr`, optional):
+            If True, permute output Y from expert to token order. Defaults to False.
+        FUSE_MUL_PRE (`tl.constexpr`, optional):
+            If True, multiply by routing weights before GEMM. Defaults to False.
+        FUSE_MUL_POST (`tl.constexpr`, optional):
+            If True, multiply by routing weights after GEMM. Defaults to False.
+        USE_FAST_ACCUM (`tl.constexpr`, optional):
+            If True, use fast accumulation (currently unused). Defaults to False.
+        USE_TMA_LOAD_W (`tl.constexpr`, optional):
+            If True, use TMA for loading weight matrix. Defaults to False.
+        USE_TMA_LOAD_X (`tl.constexpr`, optional):
+            If True, use TMA for loading input X. Defaults to False.
+        USE_TMA_STORE (`tl.constexpr`, optional):
+            If True, use TMA for storing output Y. Defaults to False.
+        acc_dtype (`tl.constexpr`, optional):
+            Data type for accumulator. Defaults to tl.float32.
+        FLATTEN (`tl.constexpr`, optional):
+            If True, flatten the expert loop for better performance. Defaults to True.
+    
+    Notes:
+        - K must be divisible by BLOCK_SIZE_K
+        - PERMUTE_X and PERMUTE_Y are mutually exclusive in practice
+        - FUSE_MUL_PRE and FUSE_MUL_POST apply routing weights at different stages
+        - TMA usage has restrictions with permutation operations
+    """
     tl.static_assert(K % BLOCK_SIZE_K == 0)
 
     TOTAL_TOKENS: tl.constexpr = NUM_TOKENS * TOPK
