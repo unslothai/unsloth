@@ -973,6 +973,36 @@ else:
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ),
+    "unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit" : (
+        "unsloth/Mistral-Small-3.2-24B-Instruct-2506",
+        "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        "unsloth/Mistral-Small-3.2-24B-Instruct-2506-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E4B-it",
+        "google/gemma-3n-E4B-it",
+        "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E2B-it",
+        "google/gemma-3n-E2B-it",
+        "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E4B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E4B",
+        "google/gemma-3n-E4B",
+        "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
+    ),
+    "unsloth/gemma-3n-E2B-unsloth-bnb-4bit" : (
+        "unsloth/gemma-3n-E2B",
+        "google/gemma-3n-E2B",
+        "unsloth/gemma-3n-E2B-unsloth-bnb-4bit",
+    ),
+    "unsloth/Devstral-Small-2507-unsloth-bnb-4bit" : (
+        "unsloth/Devstral-Small-2507",
+        "mistralai/Devstral-Small-2507",
+        "unsloth/Devstral-Small-2507-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}

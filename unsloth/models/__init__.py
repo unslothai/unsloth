@@ -24,3 +24,8 @@ if not devices.has_mps:
     from .dpo     import PatchDPOTrainer, PatchKTOTrainer
     from ._utils  import is_bfloat16_supported, is_vLLM_available, __version__
     from .rl      import PatchFastRL, vLLMSamplingParams
+    try:
+        from .falcon_h1 import FastFalconH1Model
+    except:
+        # transformers_version < 4.53.0 does not have falcon_h1 so silenty skip it for now
+        pass

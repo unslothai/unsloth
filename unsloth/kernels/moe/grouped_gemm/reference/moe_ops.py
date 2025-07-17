@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GNU Affero General Public License v3.0
+# Copyright 2023-present the Unsloth team. All rights reserved.
 
 import torch
 import torch.nn.functional as F

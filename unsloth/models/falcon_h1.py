@@ -22,38 +22,44 @@ from .llama import (
     _LlamaModel_fast_forward_inference,
 )
 try:
-    from transformers.models.qwen3.modeling_qwen3 import (
-        Qwen3Attention,
-        Qwen3DecoderLayer,
-        Qwen3Model,
-        Qwen3ForCausalLM,
+    from transformers.models.falcon_h1.modeling_falcon_h1 import (
+        FalconH1Attention,
+        FalconH1DecoderLayer,
+        FalconH1Model,
+        FalconH1ForCausalLM,
+        FalconHybridMambaAttentionDynamicCache,
     )
 except:
+    from transformers import __version__ as transformers_version
     transformers_version = Version(transformers_version)
-    if not transformers_version >= Version("4.50.3"): #TODO: Update when transformers is updated
+    if not transformers_version >= Version("4.53.0"): #TODO: Update when transformers is updated
         raise ImportError(
-            f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3 and Qwen3Moe.\n"\
-            f"The minimum required version is 4.50.3.\n"\
-            f'Try `pip install --upgrade "transformers>=4.50.3"`\n'\
+            f"Unsloth: Your transformers version of {transformers_version} does not support FalconH1.\n"\
+            f"The minimum required version is 4.53.0.\n"\
+            f'Try `pip install --upgrade "transformers>=4.53.0"`\n'\
             f"to obtain the latest transformers build, then restart this session."\
         )
     pass
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
+from transformers.utils import (
+    is_torchdynamo_compiling,
+)
 # For Pytorch 2.1.1
 try:
-    from transformers.models.qwen3.modeling_qwen3 import (
-        Qwen3SdpaAttention,
-        Qwen3FlashAttention2,
+    from transformers.models.falcon_h1.modeling_falcon_h1 import (
+        FalconH1Attention,
     )
 except:
-    Qwen3SdpaAttention   = Qwen3Attention
-    Qwen3FlashAttention2 = Qwen3Attention
+    # if we are on a old version of transformers technically it should fail in the try except above
+    # but if somehow we make it here, we need to raise an error since FalconH1Attention is not available
+    # or renamed
+    raise ImportError("Unsloth: Could not import FalconH1Attention from transformers.models.falcon_h1.modeling_falcon_h1.")
 pass
 
 
-def Qwen3Attention_fast_forward(
+def FalconH1Attention_fast_forward(
     self,
     hidden_states:       torch.Tensor,
     causal_mask:         Optional[BlockDiagonalCausalMask] = None,
@@ -91,12 +97,8 @@ def Qwen3Attention_fast_forward(
     K = K.view(bsz, q_len, n_kv_heads, head_dim)#.transpose(1, 2) # we will transpose after normalisation
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
 
-    #Qwen3 has QKNorm. This seems to be the only difference from Qwen2.
-    # Note that using fast_layernorm_compiled causes issues as the dimensions don't match up.
-    # I tried to add a compiled version of the new norm but the numbers don't match up with Transformers
-    # TODO: Check on the differences here.
-    Q = fast_rms_layernorm(self.q_norm, Q)
-    K = fast_rms_layernorm(self.k_norm, K)
+    # Falcon H1 multiplies key states by a multiplier
+    K = K * self.config.key_multiplier
 
     Q = Q.transpose(1, 2)
     K = K.transpose(1, 2)
@@ -127,15 +129,13 @@ def Qwen3Attention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
+    if (not HAS_FLASH_ATTENTION and attention_mask is None):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
         K_M = V_M = bsz * kv_seq_len
         Q_M = bsz * q_len
-
-        has_swa = isinstance(causal_mask, xformers.attn_bias.BlockDiagonalCausalMask)
 
         # Group query attention
         K = K  .view(bsz, kv_seq_len, n_kv_heads,        1, head_dim)
@@ -145,21 +145,9 @@ def Qwen3Attention_fast_forward(
         if hidden_states.requires_grad:
             K = K.reshape(bsz, kv_seq_len, n_heads, head_dim)
             V = V.reshape(bsz, kv_seq_len, n_heads, head_dim)
-
-            if has_swa:
-                Q = Q.view(1, Q_M, n_heads, head_dim)
-                K = K.view(1, K_M, n_heads, head_dim)
-                V = V.view(1, V_M, n_heads, head_dim)
-            pass
         else:
             # Xformers does support the forward pass though
             Q = Q.view(bsz, q_len, n_kv_heads, n_groups, head_dim)
-
-            if has_swa:
-                Q = Q.view(1, Q_M, n_kv_heads, n_groups, head_dim)
-                K = K.view(1, K_M, n_kv_heads, n_groups, head_dim)
-                V = V.view(1, V_M, n_kv_heads, n_groups, head_dim)
-            pass
         pass
 
         A = xformers_attention(Q, K, V, attn_bias = causal_mask)
@@ -197,7 +185,7 @@ def Qwen3Attention_fast_forward(
 pass
 
 torch_matmul = torch.matmul
-def Qwen3Attention_fast_forward_inference(
+def FalconH1Attention_fast_forward_inference(
     self,
     hidden_states:  torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
@@ -281,13 +269,11 @@ def Qwen3Attention_fast_forward_inference(
 
     Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
     Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Kn = Kn * self.config.key_multiplier
     Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads,    head_dim)#.transpose(1, 2) # we will transpose after normalisation
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim)#.transpose(1, 2) # we will transpose after normalisation
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
-
-    Qn = fast_rms_layernorm_inference(self.q_norm, Qn)
-    Kn = fast_rms_layernorm_inference(self.k_norm, Kn)
 
     Qn = Qn.transpose(1, 2)
     Kn = Kn.transpose(1, 2)
@@ -368,43 +354,331 @@ def Qwen3Attention_fast_forward_inference(
     return A, (Kn, Vn)
 pass
 
-class FastQwen3Model(FastLlamaModel):
+# https://github.com/huggingface/transformers/blob/main/src/transformers/models/falcon_h1/modeling_falcon_h1.py
+def FalconH1DecoderLayer_fast_forward(
+    self,
+    hidden_states:       torch.Tensor,
+    causal_mask          = None,
+    attention_mask:      Optional[torch.Tensor] = None,
+    mamba_attention_mask:      Optional[torch.Tensor] = None,
+    position_ids:        Optional[torch.LongTensor] = None,
+    cache_position:        Optional[torch.LongTensor] = None,
+    past_key_value:      Optional[Tuple[torch.Tensor]] = None,
+    output_attentions:   Optional[bool] = False,
+    use_cache:           Optional[bool] = False,
+    padding_mask:        Optional[torch.LongTensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    *args, **kwargs,
+) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+    """
+    Args:
+        hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+        attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
+            `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+        output_attentions (`bool`, *optional*):
+            Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+            returned tensors for more detail.
+        use_cache (`bool`, *optional*):
+            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+            (see `past_key_values`).
+        past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+    """
+    if use_cache and hasattr(self, "_flag_for_generation"):
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
+        attention_hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states       = hidden_states,
+            causal_mask         = causal_mask,
+            attention_mask      = attention_mask,
+            position_ids        = position_ids,
+            past_key_value      = past_key_value,
+            output_attentions   = output_attentions,
+            use_cache           = use_cache,
+            padding_mask        = padding_mask,
+            position_embeddings = position_embeddings,
+        )
+        attention_hidden_states = attention_hidden_states * self.attn_out_multiplier
+
+        mamba_hidden_states = self.mamba(
+            hidden_states=hidden_states,
+            cache_params=past_key_value,
+            cache_position=cache_position,
+            attention_mask=mamba_attention_mask,
+        )
+        mamba_hidden_states = mamba_hidden_states * self.ssm_out_multiplier
+
+        hidden_states = mamba_hidden_states + attention_hidden_states
+
+        hidden_states += residual
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
+        hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
+        hidden_states += residual
+    else:
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states)
+
+        mamba_hidden_states = self.mamba(
+            hidden_states=hidden_states,
+            cache_params=past_key_value,
+            cache_position=cache_position,
+            attention_mask=mamba_attention_mask,
+        )
+        mamba_hidden_states = mamba_hidden_states * self.ssm_out_multiplier
+
+        attention_hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states       = hidden_states,
+            causal_mask         = causal_mask,
+            attention_mask      = attention_mask,
+            position_ids        = position_ids,
+            past_key_value      = past_key_value,
+            output_attentions   = output_attentions,
+            use_cache           = use_cache,
+            padding_mask        = padding_mask,
+            position_embeddings = position_embeddings,
+        )
+        attention_hidden_states = attention_hidden_states * self.attn_out_multiplier
+
+        hidden_states = mamba_hidden_states + attention_hidden_states
+
+        # residual connection after attention + Mamba
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = fast_rms_layernorm(self.pre_ff_layernorm, hidden_states)
+        hidden_states = self.feed_forward(hidden_states)
+        hidden_states = residual + hidden_states
+    pass
+
+    outputs = (hidden_states,)
+    if output_attentions: outputs += (self_attn_weights,)
+    if use_cache: outputs += (present_key_value,)
+    return outputs
+pass
+
+def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconH1Attention_fast_forward_inference, mlp_fast_forward_inference=fast_swiglu_inference):
+    # This makes the attention and MLP customisable.
+    # Now for models like qwen3 or cohere which use custom attention operations, we can use this function
+    def FalconH1Model_fast_forward_inference_custom(
+        self,
+        input_ids,
+        past_key_values,
+        position_ids,
+        cache_position = None,
+        attention_mask = None,
+        mamba_attention_mask = None,
+    ):
+        input_ids = input_ids[:,:self.max_seq_length]
+        bsz, q_len = input_ids.shape
+        hd = self.config.hidden_size
+        mlp_size = self.config.intermediate_size
+        gate_multiplier, down_multiplier = self.config.mlp_multipliers
+
+        X = self.model.embed_tokens(input_ids)
+        X = X * self.config.embedding_multiplier
+
+        X = X.to(_get_dtype(self.config.torch_dtype))
+        bsz, q_len, hd = X.shape
+        assert(q_len == 1)
+        # Get saved buffers to reduce memory movement
+        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
+        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = "cuda:0")
+        XX, XX2 = _XX[0], _XX[1]
+        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = "cuda:0")
+        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
+        temp_gate, temp_up = temp_mlp[0], temp_mlp[1]
+        seq_len = past_key_values[0][0].shape[-2]
+        if bsz != 1:
+            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                attention_mask,
+                (bsz, q_len),
+                X,
+                seq_len,
+                sliding_window = getattr(self.config, "sliding_window", None),
+            )
+        else:
+            attention_mask = None
+        pass
+
+        next_decoder_cache = []
+
+        for idx, decoder_layer in enumerate(self.model.layers):
+            residual.copy_(X) # residual = X
+            X = fast_rms_layernorm_inference(
+                decoder_layer.input_layernorm,
+                X,
+                XX = XX,
+                XX2 = XX2,
+                variance = variance,
+            )
+            attention_hidden_states, present_key_value = attention_fast_forward_inference(
+                decoder_layer.self_attn,
+                hidden_states = X * decoder_layer.attention_in_multiplier,
+                past_key_value = past_key_values[idx],
+                position_ids = position_ids,
+                attention_mask = attention_mask,
+                do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+            )
+            attention_hidden_states = attention_hidden_states * decoder_layer.attn_out_multiplier
+            mamba_hidden_states = decoder_layer.mamba(
+                hidden_states=X,
+                cache_params=present_key_value,
+                cache_position=cache_position,
+                attention_mask=mamba_attention_mask,
+            )
+            mamba_hidden_states = mamba_hidden_states * decoder_layer.ssm_out_multiplier
+            X = mamba_hidden_states + attention_hidden_states
+
+            X += residual
+
+            residual.copy_(X) # residual = X
+            X = fast_rms_layernorm_inference(
+                decoder_layer.pre_ff_layernorm,
+                X,
+                XX = XX,
+                XX2 = XX2,
+                variance = variance,
+            )
+            X = mlp_fast_forward_inference(
+                decoder_layer.feed_forward,
+                X,
+                temp_gate = temp_gate,
+                temp_up = temp_up,
+                gate_multiplier = gate_multiplier,
+                down_multiplier = down_multiplier
+            )
+            X += residual
+
+            next_decoder_cache.append(present_key_value)
+        pass
+        X = fast_rms_layernorm_inference(
+            self.model.final_layernorm,
+            X,
+            XX = XX,
+            XX2 = XX2,
+            variance = variance,
+        )
+
+        return BaseModelOutputWithPast(
+            last_hidden_state = X,
+            past_key_values = next_decoder_cache,
+            hidden_states = [],
+            attentions = [],
+        )
+    pass
+    return FalconH1Model_fast_forward_inference_custom
+
+#Separate prepare_inputs_for_generation for Hybrid FalconH1
+def _fast_prepare_inputs_for_generation(
+    self,
+    input_ids,
+    past_key_values=None,
+    attention_mask=None,
+    inputs_embeds=None,
+    cache_position=None,
+    position_ids=None,
+    use_cache=True,
+    **kwargs,):
+    # Overwitten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
+    empty_past_kv = past_key_values is None
+
+    # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
+    # Exception 1: when passing input_embeds, input_ids may be missing entries
+    # Exception 2: some generation methods do special slicing of input_ids, so we don't need to do it here
+    # Exception 3: with synced GPUs cache_position may go out of bounds, but we only want dummy token in that case.
+    #              (we can't check exception 3 while compiling)
+    if not empty_past_kv:
+        if (
+            inputs_embeds is not None  # Exception 1
+            or (is_torchdynamo_compiling() or cache_position[-1] >= input_ids.shape[1])  # Exception 3
+        ):
+            input_ids = input_ids[:, -cache_position.shape[0] :]
+        elif input_ids.shape[1] != cache_position.shape[0]:  # Default case (the "else", a no op, is Exception 2)
+            input_ids = input_ids[:, cache_position]
+    pass
+    # TODO: Wire up Cache to work for inference.
+    # else:
+    #     past_key_values = FalconHybridMambaAttentionDynamicCache(
+    #         self.config,
+    #         input_ids.shape[0],
+    #         self.dtype,
+    #         devices=[
+    #             self.model.layers[i].mamba.conv1d.weight.device for i in range(self.config.num_hidden_layers)
+    #         ],
+    #     )
+
+    if attention_mask is not None and position_ids is None:
+        # create position_ids on the fly for batch generation
+        position_ids = attention_mask.long().cumsum(-1) - 1
+        position_ids.masked_fill_(attention_mask == 0, 1)
+        if not empty_past_kv:
+            position_ids = position_ids[:, -input_ids.shape[1] :]
+
+    # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+    if inputs_embeds is not None and empty_past_kv:
+        model_inputs = {"inputs_embeds": inputs_embeds}
+    else:
+        model_inputs = {"input_ids": input_ids.contiguous()}  # `contiguous()` needed for compilation use cases
+
+    model_inputs.update(
+        {
+            "position_ids": position_ids,
+            "past_key_values": past_key_values,
+            "use_cache": use_cache,
+            "attention_mask": attention_mask,
+            "logits_to_keep": self.config.num_logits_to_keep,
+            "cache_position": cache_position,
+        }
+    )
+    return model_inputs
+pass
+
+
+def fix_prepare_inputs_for_generation(module):
+    # Fix prepare_inputs_for_generation
+    if hasattr(module, "prepare_inputs_for_generation"):
+            module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
+    pass
+pass
+
+class FastFalconH1Model(FastLlamaModel):
 
     @staticmethod
     def pre_patch():
         init_name, function = patch_linear_scaling(
-            model_name         = "Qwen3",
+            model_name         = "FalconH1",
             rope_module        = LlamaRotaryEmbedding,
             scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
-            attention_module   = Qwen3Attention,
+            attention_module   = FalconH1Attention,
         )
         if init_name is not None:
             exec(function, globals())
-            Qwen3Attention.__init__  = eval(init_name)
+            FalconH1Attention.__init__  = eval(init_name)
         pass
-        Qwen3Attention      .forward = Qwen3Attention_fast_forward
-        Qwen3SdpaAttention  .forward = Qwen3Attention_fast_forward
-        Qwen3FlashAttention2.forward = Qwen3Attention_fast_forward
-        Qwen3DecoderLayer   .forward = LlamaDecoderLayer_fast_forward
-        Qwen3Model          .forward = LlamaModel_fast_forward
-        Qwen3ForCausalLM    .forward = CausalLM_fast_forward(_LlamaModel_fast_forward_inference(Qwen3Attention_fast_forward_inference))
+        FalconH1Attention      .forward = FalconH1Attention_fast_forward
+        FalconH1DecoderLayer   .forward = FalconH1DecoderLayer_fast_forward
+        FalconH1Model          .forward = LlamaModel_fast_forward
+        FalconH1ForCausalLM    .forward = CausalLM_fast_forward(_FalconH1_fast_forward_inference(FalconH1Attention_fast_forward_inference))
         PeftModelForCausalLM.forward = PeftModel_fast_forward
-        fix_prepare_inputs_for_generation(Qwen3ForCausalLM)
+        fix_prepare_inputs_for_generation(FalconH1ForCausalLM)
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
-        import transformers.models.qwen3.modeling_qwen3
-        transformers.models.qwen3.modeling_qwen3.Qwen3RotaryEmbedding = LlamaRotaryEmbedding
+        import transformers.models.falcon_h1.modeling_falcon_h1
+        transformers.models.falcon_h1.modeling_falcon_h1.FalconH1RotaryEmbedding = LlamaRotaryEmbedding
         return
     pass
 
 
     @staticmethod
     def from_pretrained(  #TODO: Change after release
-        model_name        = "Qwen/Qwen3-7B",
+        model_name        = "Qwen/FalconH1-7B",
         max_seq_length    = 4096,
         dtype             = None,
         load_in_4bit      = True,
@@ -426,7 +700,7 @@ class FastQwen3Model(FastLlamaModel):
             device_map        = device_map,
             rope_scaling      = rope_scaling,
             fix_tokenizer     = fix_tokenizer,
-            model_patcher     = FastQwen3Model,
+            model_patcher     = FastFalconH1Model,
             tokenizer_name    = tokenizer_name,
             trust_remote_code = trust_remote_code,
             **kwargs,

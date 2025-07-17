@@ -23,7 +23,7 @@ critical_modules = ['trl', 'transformers', 'peft']
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
 # This check is critical because Unsloth optimizes these libraries by modifying
-# their code at import time. If they're imported first, the original (slower, 
+# their code at import time. If they're imported first, the original (slower,
 # more memory-intensive) implementations will be used instead of Unsloth's
 # optimized versions, potentially causing OOM errors or slower training.
 
@@ -51,20 +51,6 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
 
-# Hugging Face Hub faster downloads
-if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-pass
-
-# XET is slower in Colab - investigate why
-keynames = "\n" + "\n".join(os.environ.keys())
-if "HF_XET_HIGH_PERFORMANCE" not in os.environ:
-    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
-pass
-if "\nCOLAB_" in keynames:
-    os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = "0"
-pass
-
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
@@ -90,9 +76,20 @@ def get_device_type():
 pass
 DEVICE_TYPE : str = get_device_type()
 
+def get_device_count():
+    if DEVICE_TYPE == "cuda":
+        return torch.cuda.device_count()
+    elif DEVICE_TYPE == "xpu":
+        return torch.xpu.device_count()
+    else:
+        return 1
+pass
+
+DEVICE_COUNT : int = get_device_count()
+
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
@@ -233,12 +230,11 @@ if not devices.has_mps:
     # Check for unsloth_zoo
     try:
         unsloth_zoo_version = importlib_version("unsloth_zoo")
-        if Version(unsloth_zoo_version) < Version("2025.4.1"):
-            pass
-            # print(
-            #     "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
-            #     "To disable this, set `os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'`"
-            # )
+        if Version(unsloth_zoo_version) < Version("2025.7.1"):
+            print(
+                "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
+                "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
+            )
             # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
             #     try:
             #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")

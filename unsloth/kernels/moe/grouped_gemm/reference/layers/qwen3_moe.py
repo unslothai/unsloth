@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GNU Affero General Public License v3.0
+# Copyright 2023-present the Unsloth team. All rights reserved.
+
 from dataclasses import dataclass
 from typing import Tuple
 
@@ -25,7 +28,7 @@ from grouped_gemm.reference.moe_ops import (
 """
 Reference implementation of HF Qwen3 MoE block using grouped gemm.
 
-The Qwen3MoeGroupedGEMMBlock is a reference torch-native implemention.
+The Qwen3MoeGroupedGEMMBlock is a reference torch-native implementation.
 Qwen3MoeFusedGroupedGEMMBlock is a version using the triton grouped gemm kernel.
 
 NOTE: This is NOT to be used for production as it contains many extra checks and saves all intermediate results for debugging.

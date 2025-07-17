@@ -18,7 +18,7 @@ import torch
 from .utils import (
     calculate_settings,
     triton_tanh,
-    torch_cuda_device,
+    torch_gpu_device,
 )
 
 
@@ -48,7 +48,7 @@ def geglu_exact_forward_kernel(gate, up):
     device = gate.device
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    with torch_cuda_device(device):
+    with torch_gpu_device(device):
         _exact_forward_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE = 1024,)
     return out
 pass
@@ -105,7 +105,7 @@ def geglu_exact_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    with torch_cuda_device(e.device):
+    with torch_gpu_device(e.device):
         _exact_backward_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
     return DW, e, g
 pass
@@ -143,7 +143,7 @@ def geglu_approx_forward_kernel(gate, up):
     device = gate.device
     out = torch.empty((batch, seq_len, hd), dtype = gate.dtype, device = device)
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    with torch_cuda_device(device):
+    with torch_gpu_device(device):
         _approx_forward_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE = 1024,)
     return out
 pass
@@ -207,7 +207,7 @@ def geglu_approx_backward_kernel(DW, e, g):
     batch_seq_len, hd = e.shape
     n_elements = e.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    with torch_cuda_device(e.device):
+    with torch_gpu_device(e.device):
         _approx_backward_kernel[grid](DW, e, g, n_elements, BLOCK_SIZE = 1024,)
     return DW, e, g
 pass

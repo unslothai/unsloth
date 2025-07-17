@@ -1,0 +1,37 @@
+name: 'Inactive Issue Pinger'
+
+on:
+  schedule:
+    - cron: '30 5 * * *' # Runs at 5:30 UTC every day
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - uses: actions/stale@v9
+        with:
+          # The message to post on stale issues.
+          # This message will ping the issue author.
+          # Note: The stale bot action does not currently support a direct placeholder for the last commenter.
+          # As a workaround, this message encourages any participant to reply.
+          stale-issue-message: >
+            Is this issue still important to you?
+            Apologies in advance we might have missed this issue as well.
+            For faster response times, please post on our Reddit server - https://www.reddit.com/r/unsloth or our Discord - https://discord.com/invite/unsloth 
+
+          # The number of days of inactivity before an issue is considered stale.
+          days-before-issue-stale: 9999
+
+          # Set to -1 to never close stale issues.
+          days-before-issue-close: -1
+
+          # A label to apply to stale issues.
+          stale-issue-label: 'inactive'
+
+          # The number of operations to perform per run to avoid rate limiting.
+          operations-per-run: 500
+
+          enable-statistics: false
