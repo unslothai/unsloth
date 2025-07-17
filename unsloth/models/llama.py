@@ -1967,6 +1967,7 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
+        raise_handler = RaiseUninitialized()
         if num_labels is not None:
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
@@ -2030,6 +2031,7 @@ class FastLlamaModel:
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
         pass
+        raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
@@ -2218,11 +2220,11 @@ class FastLlamaModel:
         target_modules      = ["q_proj", "k_proj", "v_proj", "o_proj",
                                "gate_proj", "up_proj", "down_proj"],
         lora_alpha          = 16,
-        lora_dropout        = 0,
+        lora_dropout        = 0.0,
         bias                = "none",
         layers_to_transform = None,
         layers_pattern      = None,
-        use_gradient_checkpointing = True,
+        use_gradient_checkpointing = "unsloth",
         random_state        = 3407,
         max_seq_length      = 2048, # not used anymore
         use_rslora          = False,
@@ -2540,11 +2542,8 @@ class FastLlamaModel:
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
         pass
 
-        #does not get lora yet, so get name from model, not base model
-
-        is_classification =  "Classification" in str(type(model))
-        # Get LoRA
-        #
+        #d oes not get lora yet, so get name from model, not base model
+        is_classification = "Classification" in str(type(model))
 
         arguments = dict(
             r                   = r,
@@ -2679,7 +2678,7 @@ class FastLlamaModel:
     @staticmethod
     def patch_peft_model(
         model,
-        use_gradient_checkpointing = True,
+        use_gradient_checkpointing = "unsloth",
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
             return FastBaseModel.patch_peft_model(
@@ -2696,16 +2695,16 @@ class FastLlamaModel:
         # Get activation function
         model_type = model.config.model_type
 
-        if   model_type == "llama":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "mistral": apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "qwen2":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "gemma":   apply_lora_mlp = apply_lora_mlp_geglu_approx
-        elif model_type == "gemma2":  apply_lora_mlp = apply_lora_mlp_geglu_approx
-        elif model_type == "cohere":  apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "granite": apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "qwen3":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "falcon_h1":   apply_lora_mlp = apply_lora_mlp_swiglu
-        elif model_type == "qwen3moe":   apply_lora_mlp = apply_lora_mlp_swiglu
+        if   model_type == "llama":     apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "mistral":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen2":     apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "gemma":     apply_lora_mlp = apply_lora_mlp_geglu_approx
+        elif model_type == "gemma2":    apply_lora_mlp = apply_lora_mlp_geglu_approx
+        elif model_type == "cohere":    apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "granite":   apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen3":     apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "falcon_h1": apply_lora_mlp = apply_lora_mlp_swiglu
+        elif model_type == "qwen3moe":  apply_lora_mlp = apply_lora_mlp_swiglu
         else:
             raise NotImplementedError(f"Unsloth: {model_type} is not yet implemented!")
         pass
@@ -2769,40 +2768,35 @@ class FastLlamaModel:
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
 
-                # Determine MLP module name (falcon_h1 has feed_forward, llama style has mlp)
-                if hasattr(layer, "mlp"):
-                    mlp_module_name = "mlp"
-                elif hasattr(layer, "feed_forward"):
-                    mlp_module_name = "feed_forward"
-                else:
-                    logger.warning_once(f"Unsloth: No MLP module found in layer {idx} so skipping peft mlp patching")
-                    continue
+                if model_type != "falcon_h1":
+                    # LoRAMLP.apply doesn't have functionality for gate and down mutlipliers yet.
+                    # Don't patch falcon h1 for the time being.
 
-                mlp_module = getattr(layer, mlp_module_name)
+                    # MLP patching
+                    mlp_module = layer.mlp
+                    gate_proj = mlp_module.gate_proj
+                    up_proj   = mlp_module.  up_proj
+                    down_proj = mlp_module.down_proj
 
-                # MLP patching
-                gate_proj = mlp_module.gate_proj
-                up_proj   = mlp_module.  up_proj
-                down_proj = mlp_module.down_proj
+                    if hasattr(gate_proj, "lora_A") and \
+                        hasattr(  up_proj, "lora_A") and \
+                        hasattr(down_proj, "lora_A") and \
+                        (getattr(gate_proj, "base_layer", gate_proj).bias is None) and \
+                        (getattr(  up_proj, "base_layer",   up_proj).bias is None) and \
+                        (getattr(down_proj, "base_layer", down_proj).bias is None) and \
+                        (len(getattr(gate_proj, "lora_magnitude_vector", []) or []) == 0) and \
+                        (len(getattr(  up_proj, "lora_magnitude_vector", []) or []) == 0) and \
+                        (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0):
 
-                if  hasattr(gate_proj, "lora_A") and \
-                    hasattr(  up_proj, "lora_A") and \
-                    hasattr(down_proj, "lora_A") and \
-                    (getattr(gate_proj, "base_layer", gate_proj).bias is None) and \
-                    (getattr(  up_proj, "base_layer",   up_proj).bias is None) and \
-                    (getattr(down_proj, "base_layer", down_proj).bias is None) and \
-                    (len(getattr(gate_proj, "lora_magnitude_vector", []) or []) == 0) and \
-                    (len(getattr(  up_proj, "lora_magnitude_vector", []) or []) == 0) and \
-                    (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0):
-
-                    # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
-                    mlp_module.forward = types.MethodType(_apply_lora_mlp, mlp_module)
-                    n_mlp += 1
-                else:
-                    logger.warning_once(
-                        "Not an error, but Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
-                        "are not enabled or a bias term (like in Qwen) is used."
-                    )
+                        # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
+                        mlp_module.forward = types.MethodType(_apply_lora_mlp, mlp_module)
+                        n_mlp += 1
+                    else:
+                        logger.warning_once(
+                            "Not an error, but Unsloth cannot patch MLP layers with our manual autograd engine since either LoRA adapters\n"\
+                            "are not enabled or a bias term (like in Qwen) is used."
+                        )
+                    pass
                 pass
 
                 # QKV attention patching

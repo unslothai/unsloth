@@ -420,6 +420,7 @@ class FastBaseModel:
         torch_dtype = dtype
         if do_forced_float32: torch_dtype = torch.bfloat16
 
+        raise_handler = RaiseUninitialized()
         model = auto_model.from_pretrained(
             model_name,
             device_map              = device_map,
@@ -430,6 +431,7 @@ class FastBaseModel:
             # attn_implementation   = attn_implementation,
             **kwargs,
         )
+        raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
@@ -552,7 +554,7 @@ class FastBaseModel:
         r                          = 16,
         target_modules             = None,
         lora_alpha                 = 16,
-        lora_dropout               = 0,
+        lora_dropout               = 0.0,
         bias                       = "none",
         finetune_vision_layers     = True,
         finetune_language_layers   = True,
@@ -753,6 +755,8 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         # Must enable returning logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
+        # Turn off skip guards and set stance to default
+        torch.compiler.set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
     pass
 
@@ -799,6 +803,8 @@ class FastBaseModel:
         pass
         # Can re-enable not returning logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        # Turn off skip guards and set stance to default
+        torch.compiler.set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
     pass
 pass
