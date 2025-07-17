@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.3"
+__version__ = "2025.7.4"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -66,6 +66,7 @@ __all__ = [
     "unsloth_compile_transformers",
     "patch_fast_lora",
     "validate_loftq_config",
+    "RaiseUninitialized",
 ]
 
 import torch
@@ -189,6 +190,14 @@ try:
 except:
     pass
 
+# The following generation flags are not valid and may be ignored:
+try:
+    from transformers.generation.configuration_utils import logger as configuration_logger
+    configuration_logger.addFilter(HideLoggingMessage("following generation flags"))
+    del configuration_logger
+except:
+    pass
+
 # Gemma3 It is strongly recommended to train Gemma3 models with the `eager`
 try:
     from transformers.models.gemma3.modeling_gemma3 import logger as gemma3_logger
@@ -204,6 +213,28 @@ try:
     del hub_logger
 except:
     pass
+
+# Errors out on
+# Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
+from transformers.modeling_utils import logger as transformers_logger
+class _RaiseUninitialized(logging.Handler):
+    def __init__(self):
+        super().__init__()
+    def emit(self, record):
+        if "some weights of" in str(record).lower():
+            raise Exception(
+                f"Unsloth: Critical error since some weights are not initialized.\n"\
+                f"Please try updating Unsloth, transformers and timm via:\n"\
+                f"`pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo transformers timm`\n"\
+                f"".str(record))
+pass
+class RaiseUninitialized:
+    def __init__(self):
+        self.error_handler = _RaiseUninitialized()
+        transformers_logger.addHandler(self.error_handler)
+    def remove(self):
+        transformers_logger.removeHandler(self.error_handler)
+pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
