@@ -257,6 +257,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         removed_comments = re.sub(r"\#[^\n]{1,}", "", replace_part)
         splits = removed_comments.split("\n")
         print("##########")
+        print("#", spacing, "#")
         print(splits)
         print(sum(re.match(rf"{spacing}[^\s]", x) is not None for x in splits))
         if sum(re.match(rf"^{spacing}[^\s]", x) is not None for x in splits) == 2 and len(spacing) == 8:
