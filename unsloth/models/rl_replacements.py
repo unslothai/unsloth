@@ -249,7 +249,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     found = re.findall(
         r"(\n([\s]{1,})if self\.max_prompt_length is not None:.*?"\
         r"\2if self\.use_vllm:)",
-        a,
+        function,
         flags = re.DOTALL | re.MULTILINE,
     )
     if len(found) != 0:
