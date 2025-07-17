@@ -190,6 +190,14 @@ try:
 except:
     pass
 
+# The following generation flags are not valid and may be ignored:
+try:
+    from transformers.generation.configuration_utils import logger as configuration_logger
+    configuration_logger.addFilter(HideLoggingMessage("following generation flags"))
+    del configuration_logger
+except:
+    pass
+
 # Gemma3 It is strongly recommended to train Gemma3 models with the `eager`
 try:
     from transformers.models.gemma3.modeling_gemma3 import logger as gemma3_logger
