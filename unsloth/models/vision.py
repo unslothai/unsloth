@@ -755,6 +755,11 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         # Must enable returning logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
+        try:
+            # Turn off skip guards
+            torch.compiler.set_stance(skip_guard_eval_unsafe = False)
+        except:
+            pass
         return model
     pass
 
