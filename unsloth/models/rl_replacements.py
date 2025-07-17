@@ -235,6 +235,60 @@ pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
+# Fix incorrect special tokens handling and truncation in older TRL versions
+def grpo_trainer__generate_and_score_completions(function_name, function):
+    if  function_name != "_prepare_inputs": return function
+
+    # TRL 0.19.0 did skip_special_tokens = True which should be False
+    function = function.replace(
+        "prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False",
+        "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
+    )
+
+    # Always between max_prompt_length and use_vllm
+    found = re.findall(
+        r"(\n([\s]{1,})if self\.max_prompt_length is not None:.*?"\
+        r"\2if self\.use_vllm:)",
+        a,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    if len(found) != 0:
+        replace_part, spacing = found[0]
+        removed_comments = re.sub(r"\#[^\n]{1,}", "", replace_part)
+        splits = removed_comments.split("\n")
+        if sum(re.search(rf"^{spacing}[^\s]", x) is not None for x in splits) == 2 and \
+            len(spacing) == 8:
+            replace_part
+
+        new_replacement = spacing + """if self.max_prompt_length is not None:
+            # If max_prompt_length is set, we trim the prompt to keep only the last `max_prompt_length` tokens.
+            # Then we decode those tokens back into text. We manually remove leading pad tokens from the decoded text,
+            # because we can't use `skip_special_tokens=True` (some special tokens are still needed for generation).
+            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
+            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+            prompts_text = self.processing_class.batch_decode(
+                prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
+            )
+            pad_token = self.processing_class.pad_token
+            def strip_leading_tokens(text):
+                while text.startswith(pad_token):
+                    text = text.removeprefix(pad_token)
+                return text
+
+            if pad_token is not None:
+                prompts_text = [
+                    strip_leading_tokens(text) for text in prompts_text
+                ]
+
+        # Generate completions using either vLLM or regular generation
+        if self.use_vllm:"""
+        function = function.replace(replace_part, new_replacement)
+    pass
+    return function
+pass
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
+
+
 # Remove _move_model_to_vllm
 def grpo_trainer__move_model_to_vllm(function_name, function):
     if  function_name != "_move_model_to_vllm": return function
