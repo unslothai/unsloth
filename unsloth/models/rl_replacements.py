@@ -237,7 +237,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 # Fix incorrect special tokens handling and truncation in older TRL versions
 def grpo_trainer__generate_and_score_completions(function_name, function):
-    if  function_name != "_prepare_inputs": return function
+    if  function_name != "_generate_and_score_completions": return function
 
     # TRL 0.19.0 did skip_special_tokens = True which should be False
     function = function.replace(
