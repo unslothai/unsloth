@@ -247,7 +247,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     # Always between max_prompt_length and use_vllm
     found = re.findall(
-        r"\n(([\s]{1,})if self\.max_prompt_length is not None:.*?"\
+        r"\n(([ ]{8,})if self\.max_prompt_length is not None:.*?"\
         r"\2if self\.use_vllm:)",
         function,
         flags = re.DOTALL | re.MULTILINE,
@@ -259,7 +259,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         print(splits)
         print(len(spacing))
         print(sum(re.match(rf"{spacing}[^\s]", x) is not None for x in splits))
-        if sum(re.match(rf"{spacing}[^\s]", x) is not None for x in splits) == 2 and len(spacing) == 8:
+        if sum(re.match(rf"{spacing}[^\s]", x) is not None for x in splits) == 2 and len(spacing) >= 8:
 
             new_replacement = \
             f"""\n{spacing}if self.max_prompt_length is not None:
