@@ -94,6 +94,25 @@ DeepseekR1DistillQwenMeta = ModelMeta(
     },
 )
         
+class DeepseekCoderModelInfo(ModelInfo):
+    @classmethod
+    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+        key = f"{base_name}-{version}" if version else base_name
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
+
+DeepseekCoderMeta = ModelMeta(
+    org="deepseek-ai",
+    base_name="deepseek-coder",
+    instruct_tags=[None],
+    model_version="1.3b-instruct",
+    model_sizes=[""],
+    model_info_cls=DeepseekCoderModelInfo,
+    is_multimodal=False,
+    quant_types=[QuantType.NONE, QuantType.BF16, QuantType.BNB],
+)
+
+_IS_DEEPSEEK_CODER_REGISTERED = False
+
 def register_deepseek_v3_models(include_original_model: bool = False):
     global _IS_DEEPSEEK_V3_REGISTERED
     if _IS_DEEPSEEK_V3_REGISTERED:
@@ -136,6 +155,13 @@ def register_deepseek_r1_distill_qwen_models(include_original_model: bool = Fals
     _register_models(DeepseekR1DistillQwenMeta, include_original_model=include_original_model)
     _IS_DEEPSEEK_R1_DISTILL_QWEN_REGISTERED = True
 
+def register_deepseek_coder_models(include_original_model: bool = False):
+    global _IS_DEEPSEEK_CODER_REGISTERED
+    if _IS_DEEPSEEK_CODER_REGISTERED:
+        return
+    _register_models(DeepseekCoderMeta, include_original_model=include_original_model)
+    _IS_DEEPSEEK_CODER_REGISTERED = True
+
 def register_deepseek_models(include_original_model: bool = False):
     register_deepseek_v3_models(include_original_model=include_original_model)
     register_deepseek_v3_0324_models(include_original_model=include_original_model)
@@ -143,6 +169,7 @@ def register_deepseek_models(include_original_model: bool = False):
     register_deepseek_r1_zero_models(include_original_model=include_original_model)
     register_deepseek_r1_distill_llama_models(include_original_model=include_original_model)
     register_deepseek_r1_distill_qwen_models(include_original_model=include_original_model)
+    register_deepseek_coder_models(include_original_model=include_original_model)
 
 def _list_deepseek_r1_distill_models():
     from unsloth.utils.hf_hub import ModelInfo as HfModelInfo
