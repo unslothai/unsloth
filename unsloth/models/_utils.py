@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.3"
+__version__ = "2025.7.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -196,6 +196,14 @@ try:
     # "You have set `compile_config`
     transformers_generation_utils_logger.addFilter(HideLoggingMessage("compile_config"))
     del transformers_generation_utils_logger
+except:
+    pass
+
+# The following generation flags are not valid and may be ignored:
+try:
+    from transformers.generation.configuration_utils import logger as configuration_logger
+    configuration_logger.addFilter(HideLoggingMessage("following generation flags"))
+    del configuration_logger
 except:
     pass
 
