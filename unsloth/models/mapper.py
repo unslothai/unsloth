@@ -904,6 +904,10 @@ __INT_TO_FLOAT_MAPPER = \
         "mistralai/Devstral-Small-2507",
         "unsloth/Devstral-Small-2507-bnb-4bit",
     ),
+    "unsloth/deepseek-coder-1.3b-instruct-bnb-4bit" : (
+        "unsloth/deepseek-coder-1.3b-instruct",
+        "deepseek-ai/deepseek-coder-1.3b-instruct",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
