@@ -33,9 +33,10 @@ import argparse
 import os
 
 
+from unsloth.devices import has_mps
+
 def run(args):
     import torch
-    from unsloth import FastLanguageModel
     from datasets import load_dataset
     from transformers.utils import strtobool
     from trl import SFTTrainer, SFTConfig
@@ -43,29 +44,39 @@ def run(args):
     from unsloth import is_bfloat16_supported
     import logging
     logging.getLogger('hf-to-gguf').setLevel(logging.WARNING)
+    if has_mps:
+        from unsloth.mlx import mlx_utils
+        from unsloth.mlx import lora as mlx_lora
+        import gc
 
+    if not has_mps:
+        from unsloth import FastLanguageModel
     # Load model and tokenizer
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model_name,
-        max_seq_length=args.max_seq_length,
-        dtype=args.dtype,
-        load_in_4bit=args.load_in_4bit,
-    )
-
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=args.model_name,
+            max_seq_length=args.max_seq_length,
+            dtype=args.dtype,
+            load_in_4bit=args.load_in_4bit,
+        )
+    else:
+        print("Loading pretrained model")
+        model, tokenizer, config = mlx_utils.load_pretrained(args.model_name,dtype=args.dtype,load_in_4bit=args.load_in_4bit)
+       
     # Configure PEFT model
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=args.r,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        bias=args.bias,
-        use_gradient_checkpointing=args.use_gradient_checkpointing,
-        random_state=args.random_state,
-        use_rslora=args.use_rslora,
-        loftq_config=args.loftq_config,
-    )
+    if not has_mps:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.r,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            bias=args.bias,
+            use_gradient_checkpointing=args.use_gradient_checkpointing,
+            random_state=args.random_state,
+            use_rslora=args.use_rslora,
+            loftq_config=args.loftq_config,
+        )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
@@ -121,15 +132,20 @@ def run(args):
     )
 
     # Initialize trainer
-    trainer = SFTTrainer(
-        model=model,
-        processing_class=tokenizer,
-        train_dataset=dataset,
-        args=training_args,
-    )
+    if not has_mps:
+        trainer = SFTTrainer(
+            model=model,
+            processing_class=tokenizer,
+            train_dataset=dataset,
+            args=training_args,
+        )
 
     # Train model
-    trainer_stats = trainer.train()
+        trainer_stats = trainer.train()
+    else:
+        datasets = dataset.train_test_split(test_size=0.1)
+        mlx_lora.train_model(args,model,tokenizer, datasets["train"], datasets["test"])
+
 
     # Save model
     if args.save_model:
@@ -159,9 +175,16 @@ def run(args):
                         quantization_method=quantization_method,
                     )
         else:
-            model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
-            if args.push_model:
-                model.push_to_hub_merged(args.save_path, tokenizer, args.hub_token)
+            if has_mps:
+                del model
+                gc.collect()
+                mlx_utils.save_merged_model(args)
+                if args.push_model:
+                    mlx_utils.push_to_hub(args,config["_name_or_path"],config["model_type"])
+            else:
+                model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
+                if args.push_model:
+                    model.push_to_hub_merged(args.save_path, tokenizer, args.hub_token)
     else:
         print("Warning: The model is not saved!")
 
@@ -210,6 +233,7 @@ if __name__ == "__main__":
 
     # Saving and pushing arguments
     save_group = parser.add_argument_group('💾 Save Model Options')
+    save_group.add_argument('--adapter_file', type=str, default="adapters.safetensors", help="Adapters file name")
     save_group.add_argument('--output_dir', type=str, default="outputs", help="Output directory")
     save_group.add_argument('--save_model', action='store_true', help="Save the model after training")
     save_group.add_argument('--save_method', type=str, default="merged_16bit", choices=["merged_16bit", "merged_4bit", "lora"], help="Save method for the model, default is 'merged_16bit'")

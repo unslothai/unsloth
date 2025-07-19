@@ -77,53 +77,62 @@ import numpy as np
 import contextlib
 import re
 import warnings, subprocess, re, inspect, psutil, os, math
-from unsloth_zoo.utils import Version
+from unsloth import devices
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
-from unsloth_zoo.tokenizer_utils import (
-    patch_tokenizer as _patch_tokenizer,
-)
-from unsloth_zoo.patching_utils import (
-    patch_compiling_bitsandbytes,
-    patch_layernorm,
-    patch_torch_compile,
-    patch_model_and_tokenizer,
-    patch_compiled_autograd,
-)
-from unsloth_zoo.gradient_checkpointing import (
-    Unsloth_Offloaded_Gradient_Checkpointer,
-    unsloth_offloaded_gradient_checkpoint,
-    patch_unsloth_gradient_checkpointing,
-    unpatch_unsloth_gradient_checkpointing,
+if not devices.has_mps:
+    from unsloth_zoo.utils import Version
 
-    Unsloth_Gradient_Checkpointer,
-    unsloth_gradient_checkpoint,
-    patch_gradient_checkpointing,
-    unpatch_gradient_checkpointing,
+    from unsloth_zoo.tokenizer_utils import (
+        patch_tokenizer as _patch_tokenizer,
+    )
+else:
+    from packaging.version import Version
 
-    patch_unsloth_smart_gradient_checkpointing,
-    unpatch_unsloth_smart_gradient_checkpointing,
-)
-from unsloth_zoo.loss_utils import (
-    HAS_CUT_CROSS_ENTROPY,
-    fused_linear_cross_entropy,
-    _unsloth_get_batch_samples,
-)
-from unsloth_zoo.vision_utils import (
-    process_vision_info,
-)
-from unsloth_zoo.compiler import (
-    get_transformers_model_type,
-    unsloth_compile_transformers as _unsloth_compile_transformers,
-)
-from unsloth_zoo.training_utils import (
-    prepare_model_for_training,
-)
-from unsloth_zoo.temporary_patches import (
-    TEMPORARY_PATCHES,
-)
-for temporary_patch in TEMPORARY_PATCHES:
-    temporary_patch()
+if not devices.has_mps:
+    from unsloth_zoo.patching_utils import (
+        patch_compiling_bitsandbytes,
+        patch_layernorm,
+        patch_torch_compile,
+        patch_model_and_tokenizer,
+        patch_compiled_autograd,
+    )
+    from unsloth_zoo.gradient_checkpointing import (
+        Unsloth_Offloaded_Gradient_Checkpointer,
+        unsloth_offloaded_gradient_checkpoint,
+        patch_unsloth_gradient_checkpointing,
+        unpatch_unsloth_gradient_checkpointing,
+
+        Unsloth_Gradient_Checkpointer,
+        unsloth_gradient_checkpoint,
+        patch_gradient_checkpointing,
+        unpatch_gradient_checkpointing,
+
+        patch_unsloth_smart_gradient_checkpointing,
+        unpatch_unsloth_smart_gradient_checkpointing,
+    )
+
+if not devices.has_mps:
+    from unsloth_zoo.loss_utils import (
+        HAS_CUT_CROSS_ENTROPY,
+        fused_linear_cross_entropy,
+        _unsloth_get_batch_samples,
+    )
+    from unsloth_zoo.vision_utils import (
+        process_vision_info,
+    )
+    from unsloth_zoo.compiler import (
+        get_transformers_model_type,
+        unsloth_compile_transformers as _unsloth_compile_transformers,
+    )
+    from unsloth_zoo.training_utils import (
+        prepare_model_for_training,
+    )
+    from unsloth_zoo.temporary_patches import (
+        TEMPORARY_PATCHES,
+    )
+    for temporary_patch in TEMPORARY_PATCHES:
+        temporary_patch()
 
 # =============================================
 # Disable some warnings which can get annoying
@@ -392,9 +401,10 @@ pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-if DEVICE_TYPE == "cuda":
-    import bitsandbytes as bnb
-
+if not devices.has_mps:
+    if DEVICE_TYPE == "cuda":
+        import bitsandbytes as bnb
+        
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
@@ -569,7 +579,8 @@ UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
 import functools
-from torch._inductor.runtime.hints import DeviceProperties
+if not devices.has_mps:
+    from torch._inductor.runtime.hints import DeviceProperties
 
 @functools.lru_cache(None)
 def is_big_gpu(index) -> bool:
@@ -588,11 +599,12 @@ def is_big_gpu(index) -> bool:
 
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
-patch_torch_compile(
-    debug = UNSLOTH_COMPILE_DEBUG,
-    O3 = UNSLOTH_COMPILE_MAXIMUM,
-    ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
-)
+if not devices.has_mps:
+    patch_torch_compile(
+        debug = UNSLOTH_COMPILE_DEBUG,
+        O3 = UNSLOTH_COMPILE_MAXIMUM,
+        ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
+    )
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
