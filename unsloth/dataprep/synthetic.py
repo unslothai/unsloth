@@ -84,6 +84,7 @@ class SyntheticDataKit:
             if   dtype_val == torch.float16:  dtype_val = "float16"
             elif dtype_val == torch.bfloat16: dtype_val = "bfloat16"
             elif dtype_val == torch.float32:  dtype_val = "float32"
+            engine_args["dtype"] = dtype_val
             # Convert torch.bfloat16, torch.float16, etc. to valid CLI string
             if hasattr(dtype_val, "name"):
                 engine_args["dtype"] = dtype_val.name
