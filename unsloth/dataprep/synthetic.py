@@ -78,7 +78,6 @@ class SyntheticDataKit:
             use_bitsandbytes       = False,
             **kwargs,
         )
-        print(engine_args)
         if "dtype" in engine_args:
             dtype_val = engine_args["dtype"]
             if   dtype_val == torch.float16:  dtype_val = "float16"
@@ -118,7 +117,6 @@ class SyntheticDataKit:
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass
-        print(subprocess_commands)
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
