@@ -434,6 +434,10 @@ class FastBaseModel:
         torch_dtype = dtype
         if do_forced_float32: torch_dtype = torch.bfloat16
 
+        is_vlm = (auto_model is AutoModelForVision2Seq)
+        is_whisper = (whisper_language is not None and whisper_task is not None)
+        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
+
         raise_handler = RaiseUninitialized()
         if not fast_inference:
             model = auto_model.from_pretrained(
@@ -477,7 +481,7 @@ class FastBaseModel:
                 disable_log_stats      = disable_log_stats,
                 use_bitsandbytes       = load_in_4bit,
                 unsloth_vllm_standby   = unsloth_vllm_standby,
-                is_vision_model        = True,
+                is_vision_model        = is_vlm,
             )
             for allowed_arg in allowed_args:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
@@ -515,9 +519,6 @@ class FastBaseModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        is_vlm = (auto_model is AutoModelForVision2Seq)
-        is_whisper = (whisper_language is not None and whisper_task is not None)
-        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
         if (whisper_language and whisper_task) or auto_model.__name__.endswith("ForConditionalGeneration"):
            tokenizer = auto_processor.from_pretrained(
                 tokenizer_name,
