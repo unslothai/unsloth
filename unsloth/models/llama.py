@@ -2022,7 +2022,6 @@ class FastLlamaModel:
             pass
 
             # Load vLLM first
-            print(load_vllm_kwargs)
             llm = load_vllm(**load_vllm_kwargs)
 
             # Convert to HF format
