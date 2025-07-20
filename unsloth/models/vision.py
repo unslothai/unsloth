@@ -278,8 +278,32 @@ class FastBaseModel:
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
             )
 
-        # if not any(x in model_types for x in ["mllama", "gemma3"]):
-        #     raise RuntimeError("Unsloth: We only support fast inference for Llama 3.2 and Gemma 3 models!")
+        is_vlm = (auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText])
+        is_whisper = (whisper_language is not None and whisper_task is not None)
+        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
+
+        model_type_arch = model_types[0]
+        if model_type_arch == "siglip":
+            for model_type_arch in model_types:
+                if model_type_arch != "siglip": break
+
+        vllm_enable_lora = True
+
+
+        if is_vlm and fast_inference:
+            supported = {"qwen2_5_vl", "gemma3", "mllama"}
+            if not any(arch in supported for arch in model_types):
+                raise RuntimeError(
+                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3, and MLLama among vision models. "
+                    f"Found architectures: {', '.join(model_types)}!"
+                )
+
+        if "mllama" in model_types:
+            # mllama is still only in vllm v0 https://arc.net/l/quote/llwkfgmu
+            # https://docs.vllm.ai/en/stable/models/supported_models.html#text-generation_1
+            # vLLM V0 does not support LoRA on multi modal models.
+            # TODO: Update this once vLLM V1 supports Llama 3.2 aka mllama
+            vllm_enable_lora = False
 
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
@@ -310,11 +334,6 @@ class FastBaseModel:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
-
-        model_type_arch = model_types[0]
-        if model_type_arch == "siglip":
-            for model_type_arch in model_types:
-                if model_type_arch != "siglip": break
 
         statistics = \
         f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
@@ -434,10 +453,6 @@ class FastBaseModel:
         torch_dtype = dtype
         if do_forced_float32: torch_dtype = torch.bfloat16
 
-        is_vlm = (auto_model is AutoModelForVision2Seq)
-        is_whisper = (whisper_language is not None and whisper_task is not None)
-        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
-
         raise_handler = RaiseUninitialized()
         if not fast_inference:
             model = auto_model.from_pretrained(
@@ -476,7 +491,7 @@ class FastBaseModel:
                 max_seq_length         = max_seq_length,
                 dtype                  = dtype,
                 float8_kv_cache        = float8_kv_cache,
-                enable_lora            = True,
+                enable_lora            = vllm_enable_lora,
                 max_lora_rank          = max_lora_rank,
                 disable_log_stats      = disable_log_stats,
                 use_bitsandbytes       = load_in_4bit,
@@ -670,6 +685,22 @@ class FastBaseModel:
         else:
             assert(type(target_modules) in (list, tuple,))
         pass
+
+        if hasattr(model, "vllm_engine"):
+            if model.vllm_engine.processor.lora_config is None:
+                # If vLLM is being used but lora is not enabled, throw an error
+                raise RuntimeError("Unsloth: LoRA is not enabled for this model!")
+            if finetune_vision_layers:
+                # vLLM does not support LoRA on vision layers
+                # https://github.com/vllm-project/vllm/blob/main/vllm/lora/models.py#L471-L477
+                # TODO: Update this once vLLM V1 supports LoRA on vision layers (possibly not happening)
+                raise RuntimeError("Unsloth: Finetuning vision layers is not supported for fast_inference!")
+            if model.config.model_type == "mllama":
+                # mllama is still only in vllm v0 https://arc.net/l/quote/llwkfgmu
+                # https://docs.vllm.ai/en/stable/models/supported_models.html#text-generation_1
+                # vLLM V0 does not support LoRA on multi modal models.
+                # TODO: Update this once vLLM V1 supports Llama 3.2 aka mllama
+                raise RuntimeError("Unsloth: LoRA finetuning for Llama 3.2 aka mllama models is not supported with fast_inference!")
 
         # Clear deleted GPU items
         for _ in range(3):
