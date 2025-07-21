@@ -687,7 +687,7 @@ class FastBaseModel:
         pass
 
         if hasattr(model, "vllm_engine"):
-            if model.vllm_engine.processor.lora_config is None:
+            if model.vllm_engine.llm_engine.vllm_config.lora_config is None:
                 # If vLLM is being used but lora is not enabled, throw an error
                 # Ref https://github.com/vllm-project/vllm/blob/51ba839555a5d122eadd91e9c16463ac288f5fa1/vllm/v1/engine/processor.py#L148-L151
                 raise RuntimeError("Unsloth: LoRA is not enabled for this model!")
