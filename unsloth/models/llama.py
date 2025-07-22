@@ -86,16 +86,13 @@ from triton import __version__ as triton_version
 HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
-def clean_gpu_cache():
-    if DEVICE_TYPE == "xpu":
-        torch.xpu.empty_cache()
-    else:
-        torch.cuda.empty_cache()
-
 if DEVICE_TYPE == "xpu":
+    clean_gpu_cache = torch.xpu.empty_cache
     get_current_device = torch.xpu.current_device
 else:
+    clean_gpu_cache = torch.cuda.empty_cache
     get_current_device = torch.cuda.current_device
+pass
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
