@@ -322,6 +322,7 @@ for model_name in model_architectures:
         r"\n        self.rope_scaling = rope_scaling\n",
         config,
     )
+    print(config)
 
     # Just for Mistral Nemo
     if model_name == "mistral":
