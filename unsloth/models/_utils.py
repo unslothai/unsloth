@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.6"
+__version__ = "2025.7.7"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -297,6 +297,12 @@ def patch_mistral_nemo_config(config):
     return config
 pass
 
+try:
+    # Some Config files use layer_type_validation
+    # for eg Gemma-2, so we must import it to stop errors.
+    from transformers.configuration_utils import layer_type_validation
+except:
+    pass
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
