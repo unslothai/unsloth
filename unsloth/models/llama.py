@@ -92,11 +92,10 @@ def clean_gpu_cache():
     else:
         torch.cuda.empty_cache()
 
-def get_current_device():
-    if DEVICE_TYPE == "xpu":
-        return torch.xpu.current_device()
-    else:
-        return torch.cuda.current_device()
+if DEVICE_TYPE == "xpu":
+    get_current_device = torch.xpu.current_device
+else:
+    get_current_device = torch.cuda.current_device
 
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
