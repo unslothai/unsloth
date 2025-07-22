@@ -92,6 +92,11 @@ def clean_gpu_cache():
     else:
         torch.cuda.empty_cache()
 
+if DEVICE_TYPE == "xpu":
+    get_current_device = torch.xpu.current_device
+else:
+    get_current_device = torch.cuda.current_device
+
 def original_apply_qkv(self, X):
     Q = self.q_proj(X)
     K = self.k_proj(X)
@@ -1365,8 +1370,8 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device_idx), dtype=torch.get_default_dtype())
 
         # dummy so that patch_utils doesn't fail for now
-        self.cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
-        self.sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.cos_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
+        self.sin_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -1402,7 +1407,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
 
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
-            device_index = torch.cuda.current_device()
+            device_index = get_current_device()
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
     pass
 
@@ -1484,8 +1489,8 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             self._set_cos_sin_cache(seq_len=self.current_rope_size, device=torch.device(device_idx), dtype=torch.get_default_dtype())
 
         # dummy so that patch_utils doesn't fail for now
-        self.cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
-        self.sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.cos_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
+        self.sin_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -1518,7 +1523,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
 
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
-            device_index = torch.cuda.current_device()
+            device_index = get_current_device()
         return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
     pass
 
@@ -1631,10 +1636,10 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             self.multi_gpu_short_sin_cached[device_idx] = sin_cached
 
         # dummy so that patch_utils doesn't fail for now
-        self.short_cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
-        self.short_sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
-        self.long_cos_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
-        self.long_sin_cached = torch.empty(1, device=torch.cuda.current_device(), dtype=torch.get_default_dtype())
+        self.short_cos_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
+        self.short_sin_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
+        self.long_cos_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
+        self.long_sin_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
@@ -1675,7 +1680,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 
     def get_cached(self, seq_len = None, device_index = None):
         if device_index is None:
-            device_index = torch.cuda.current_device()
+            device_index = get_current_device()
         if seq_len is not None and seq_len < self.original_max_position_embeddings:
             return self.multi_gpu_short_cos_cached[device_index], self.multi_gpu_short_sin_cached[device_index]
         return self.multi_gpu_long_cos_cached[device_index], self.multi_gpu_long_sin_cached[device_index]
