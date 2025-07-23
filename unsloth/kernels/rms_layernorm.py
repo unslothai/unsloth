@@ -19,9 +19,9 @@ from .utils import calculate_settings, torch_gpu_device
 
 @triton.jit
 def _rms_layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W, W_row_stride,
+    Y, Y_row_stride : tl.constexpr,
+    X, X_row_stride : tl.constexpr,
+    W, W_row_stride : tl.constexpr,
     r, r_row_stride : tl.constexpr,
     n_cols     : tl.constexpr,
     eps        : tl.constexpr,
@@ -54,10 +54,10 @@ pass
 
 
 def _rms_layernorm_backward(
-    dY, dY_row_stride,
-    dX, dX_row_stride,
-    X,   X_row_stride,
-    W,   W_row_stride,
+    dY, dY_row_stride : tl.constexpr,
+    dX, dX_row_stride : tl.constexpr,
+    X,   X_row_stride : tl.constexpr,
+    W,   W_row_stride : tl.constexpr,
     r,   r_row_stride : tl.constexpr,
     # dW, dW_row_stride,
     n_cols     : tl.constexpr,
@@ -106,9 +106,9 @@ _rms_layernorm_backward = triton.heuristics(
 
 @triton.jit
 def _gemma_rms_layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W, W_row_stride,
+    Y, Y_row_stride : tl.constexpr,
+    X, X_row_stride : tl.constexpr,
+    W, W_row_stride : tl.constexpr,
     r, r_row_stride : tl.constexpr,
     n_cols     : tl.constexpr,
     eps        : tl.constexpr,
