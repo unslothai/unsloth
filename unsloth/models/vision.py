@@ -85,6 +85,12 @@ from unsloth_zoo.vllm_utils import (
     return_lora_modules,
 )
 
+try:
+    torch_compiler_set_stance = torch.compiler.set_stance
+except:
+    torch_compiler_set_stance = None
+pass
+
 def unsloth_base_fast_generate(
     self,
     *args,
@@ -756,7 +762,8 @@ class FastBaseModel:
         # Must enable returning logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         # Turn off skip guards and set stance to default
-        torch.compiler.set_stance(stance = "default", skip_guard_eval_unsafe = False)
+        if torch_compiler_set_stance is not None:
+            torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
     pass
 
@@ -804,7 +811,8 @@ class FastBaseModel:
         # Can re-enable not returning logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
         # Turn off skip guards and set stance to default
-        torch.compiler.set_stance(stance = "default", skip_guard_eval_unsafe = False)
+        if torch_compiler_set_stance is not None:
+            torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
     pass
 pass
