@@ -369,25 +369,22 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
-            if not is_vLLM_available():
-                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
+            try:
+                from unsloth_zoo.vllm_utils import (
+                    patch_vllm, 
+                    vllm_dynamic_quant_supported,
+                )
+                patch_vllm()
+                if model_name.endswith("unsloth-bnb-4bit"):
+                    if not vllm_dynamic_quant_supported(model_name, model_config):
+                        print(
+                            f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
+                            f"we do not yet support fast inference for {model_name}"
+                        )
+                        model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
+            except ImportError:
+                print("Unsloth: vLLM is not installed or not compatible. Falling back to standard inference.")
                 fast_inference = False
-            pass
-            from unsloth_zoo.vllm_utils import (
-                patch_vllm, 
-                vllm_dynamic_quant_supported,
-            )
-            patch_vllm()
-            if model_name.endswith("unsloth-bnb-4bit"):
-                if not vllm_dynamic_quant_supported(model_name, model_config):
-                    # Instead use -bnb-4bit variant
-                    print(
-                        f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
-                        f"we do not yet support fast inference for {model_name}"
-                    )
-                    model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
-                pass
-            pass
         pass
 
         model, tokenizer = dispatch_model.from_pretrained(
@@ -793,6 +790,64 @@ class FastModel(FastBaseModel):
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+
+        if not fast_inference:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = dtype,
+                token                   = token,
+                max_position_embeddings = max_seq_length,
+                trust_remote_code       = trust_remote_code,
+                attn_implementation     = "eager",
+                **kwargs,
+            )
+            model.fast_generate = model.generate
+            model.fast_generate_batches = None
+            model._use_fast_inference = False
+        else:
+            try:
+                from unsloth_zoo.vllm_utils import (
+                    load_vllm,
+                    get_vllm_state_dict,
+                    convert_vllm_to_huggingface,
+                    generate_batches,
+                )
+                allowed_args = inspect.getfullargspec(load_vllm).args
+                load_vllm_kwargs = dict(
+                    model_name             = model_name,
+                    config                 = model_config,
+                    gpu_memory_utilization = gpu_memory_utilization,
+                    max_seq_length         = max_seq_length,
+                    dtype                  = dtype,
+                    float8_kv_cache        = float8_kv_cache,
+                    enable_lora            = True,
+                    max_lora_rank          = max_lora_rank,
+                    disable_log_stats      = disable_log_stats,
+                    use_bitsandbytes       = load_in_4bit,
+                )
+                for allowed_arg in allowed_args:
+                    if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
+                        load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
+
+                # Load vLLM first
+                llm = load_vllm(**load_vllm_kwargs)
+                model._use_fast_inference = True
+            except ImportError:
+                print("Unsloth: vLLM is not installed or not compatible. Falling back to standard inference.")
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    device_map              = device_map,
+                    torch_dtype             = dtype,
+                    token                   = token,
+                    max_position_embeddings = max_seq_length,
+                    trust_remote_code       = trust_remote_code,
+                    attn_implementation     = "eager",
+                    **kwargs,
+                )
+                model.fast_generate = model.generate
+                model.fast_generate_batches = None
+                model._use_fast_inference = False
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
