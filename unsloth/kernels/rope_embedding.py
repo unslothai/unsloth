@@ -19,9 +19,9 @@ from .utils import calculate_settings, torch_gpu_device
 ROPE_GROUP_SIZE : int = 4
 
 def _rope_embedding(
-    Q,     Q_row_stride,
-    cos, cos_row_stride,
-    sin, sin_row_stride,
+    Q,     Q_row_stride: tl.constexpr,
+    cos, cos_row_stride: tl.constexpr,
+    sin, sin_row_stride: tl.constexpr,
     seqlen,
     head_dim      : tl.constexpr,
     n_heads       : tl.constexpr,
