@@ -107,7 +107,7 @@ _cross_entropy_forward = triton.heuristics(
 
 def _chunked_cross_entropy_forward(
     logits_ptr        ,
-    logits_row_stride ,
+    logits_row_stride : tl.constexpr,
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
@@ -191,9 +191,9 @@ _chunked_cross_entropy_forward = triton.heuristics(
 
 def _cross_entropy_backward(
     logits_ptr        ,
-    logits_row_stride ,
+    logits_row_stride : tl.constexpr,
     dloss_ptr         ,
-    dloss_row_stride  ,
+    dloss_row_stride  : tl.constexpr,
     logsumexp_ptr     ,
     labels_ptr        ,
     VOCAB_SIZE        : tl.constexpr,
