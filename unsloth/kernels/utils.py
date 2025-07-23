@@ -124,7 +124,7 @@ if DEVICE_TYPE == "xpu":
         (index := torch.xpu.device(i).idx) : ctypes.c_void_p(torch._C._xpu_getCurrentRawStream(index))
         for i in range(DEVICE_COUNT)
     }
-    XPU_STREAMS   = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    XPU_STREAMS    = [None] * (max(_XPU_STREAMS.keys()) + 1)
     WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
     ABSMAX_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
     for k, v in _XPU_STREAMS.items():
@@ -143,7 +143,7 @@ else:
     for k, v in _CUDA_STREAMS.items(): CUDA_STREAMS[k] = v
     CUDA_STREAMS = tuple(CUDA_STREAMS)
     del _CUDA_STREAMS
-
+pass
 
 # Bitsandbytes operations
 ctypes_c_int   = ctypes.c_int
@@ -172,12 +172,16 @@ else:
     cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
     cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
     cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+pass
 
 torch_mm = torch.mm
 torch_mv = torch.mv
 torch_matmul = torch.matmul
 torch_addmm  = torch.addmm
 torch_empty  = torch.empty
+torch_float32  = torch.float32
+torch_float16  = torch.float16
+torch_bfloat16 = torch.bfloat16
 
 def QUANT_STATE(W): return getattr(W, "quant_state", None)
 
@@ -283,7 +287,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             else:
                 assert(out.shape == shape)
                 assert(out.dtype == dtype)
-            out_absmax = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+            out_absmax = torch_empty(n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False)
         pass
 
         # NF4 dequantization of statistics
@@ -296,7 +300,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             out_absmax += offset
 
             # Dequantize W
-            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
+            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch_float16 else \
                  cdequantize_blockwise_bf16_nf4
             fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
                ctypes_c_int(blocksize), ctypes_c_int(out.numel()), XPU_STREAM,)
@@ -346,7 +350,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
             if WEIGHT_BUFFER is None:
                 WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(size, dtype = dtype, device = device, requires_grad = False)
-                ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+                ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch_empty(n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False)
 
             if size > WEIGHT_BUFFER.numel(): WEIGHT_BUFFER.resize_(size)
             if n_elements_absmax > ABSMAX_BUFFER.numel(): ABSMAX_BUFFER.resize_(n_elements_absmax)
@@ -359,7 +363,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             else:
                 assert(out.shape == shape)
                 assert(out.dtype == dtype)
-            out_absmax = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+            out_absmax = torch_empty(n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False)
         pass
 
         # NF4 dequantization of statistics
@@ -372,7 +376,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             out_absmax += offset
 
             # Dequantize W
-            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
+            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch_float16 else \
                  cdequantize_blockwise_bf16_nf4
             fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
                ctypes_c_int(blocksize), ctypes_c_int(out.numel()), CUDA_STREAM,)
@@ -413,7 +417,7 @@ else:
         else:
             assert(out.shape == shape)
             assert(out.dtype == dtype)
-        out_absmax = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+        out_absmax = torch_empty(n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False)
 
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
@@ -423,7 +427,7 @@ else:
         )
         out_absmax += offset
 
-        fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
+        fx = cdequantize_blockwise_fp16_nf4 if dtype == torch_float16 else \
              cdequantize_blockwise_bf16_nf4
         fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
            ctypes_c_int(blocksize), ctypes_c_int(out.numel()),)
@@ -488,7 +492,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
@@ -497,7 +501,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             df += offset
             absmax = df
 
-            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
+            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch_float16 else \
                 cgemm_4bit_inference_naive_bf16
 
             blocksize = ctypes_c_int32(blocksize)
@@ -559,7 +563,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
@@ -568,8 +572,8 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             df += offset
             absmax = df
 
-            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
-                cgemm_4bit_inference_naive_bf16
+            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch_float16 else \
+                 cgemm_4bit_inference_naive_bf16
 
             blocksize = ctypes_c_int32(blocksize)
             fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
@@ -580,7 +584,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
     pass
 else:
     def fast_gemv(X, W, quant_state, out = None):
-        if quant_state is None: return torch.matmul(X, W, out = out)
+        if quant_state is None: return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
         # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
         _, q_len, hd = X.shape
@@ -626,7 +630,7 @@ else:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         cdequantize_blockwise_fp32(
             get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
             ctypes_c_int(blocksize2), ctypes_c_int(df.numel()),
@@ -634,8 +638,8 @@ else:
         df += offset
         absmax = df
 
-        fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
-            cgemm_4bit_inference_naive_bf16
+        fx = cgemm_4bit_inference_naive_fp16 if dtype == torch_float16 else \
+             cgemm_4bit_inference_naive_bf16
 
         blocksize = ctypes_c_int32(blocksize)
         fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.7"
+__version__ = "2025.7.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -431,7 +431,7 @@ if DEVICE_TYPE == "cuda":
                         "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
                         "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
                         "To update flash-attn, do the below:\n"\
-                        '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
+                        '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
                     )
             except:
                 print(
