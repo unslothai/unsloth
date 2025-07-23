@@ -301,7 +301,6 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
             logsumexp = torch.empty(n_rows, dtype = torch.float32, device = device)
 
-            print("logits.stride(0)", logits.stride(0))
             with torch_gpu_device(device):
                 _cross_entropy_forward[(n_rows,)](
                     logits, logits.stride(0),
@@ -364,8 +363,6 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         div, mod = divmod(vocab_size, BLOCK_SIZE)
         n_blocks : int = div + (mod != 0)
 
-        print("logits.stride(0) dY", logits.stride(0))
-        print("dlosses.stride(0) dY", dlosses.stride(0))
         with torch_gpu_device(dlosses.device):
             _cross_entropy_backward[(n_rows, n_blocks,)](
                 logits,   logits.stride(0),
