@@ -69,6 +69,7 @@ __all__ = [
     "RaiseUninitialized",
     "fast_inference_setup",
     "patch_peft_fast_inference",
+    "error_out_no_vllm",
 ]
 
 import torch
@@ -1419,7 +1420,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
 def fast_inference_setup(model_name, model_config):
     fast_inference = True
     if not is_vLLM_available():
-        print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
+        logger.warning_once("Unsloth: vLLM is not installed! Will use Unsloth inference!")
         fast_inference = False
     pass
     from unsloth_zoo.vllm_utils import (
@@ -1430,7 +1431,7 @@ def fast_inference_setup(model_name, model_config):
     if model_name.endswith("unsloth-bnb-4bit"):
         if not vllm_dynamic_quant_supported(model_name, model_config):
             # Instead use -bnb-4bit variant
-            print(
+            logger.warning_once(
                 f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
                 f"we do not yet support fast inference for {model_name}"
             )
@@ -1450,4 +1451,9 @@ def patch_peft_fast_inference(model):
         from unsloth_zoo.vllm_utils import save_lora, load_lora
         model.save_lora = functools.partial(save_lora, model)
         model.load_lora = functools.partial(load_lora, model)
+    else:
+        error_out_no_vllm()
     pass
+
+def error_out_no_vllm(*args, **kwargs):
+    raise NotImplementedError("vLLM is not yet supported for fast inference for this model! Please use `.generate` instead")

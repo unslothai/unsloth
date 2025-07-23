@@ -264,7 +264,7 @@ class FastBaseModel:
         gpu_memory_utilization = 0.5,
         float8_kv_cache   = False,
         random_state      = 3407,
-        max_lora_rank     = 16,
+        max_lora_rank     = 64,
         disable_log_stats = False,
         unsloth_vllm_standby = False,
         **kwargs,
@@ -466,7 +466,7 @@ class FastBaseModel:
                 **kwargs,
             )
             model.fast_generate = model.generate
-            model.fast_generate_batches = None
+            model.fast_generate_batches = error_out_no_vllm
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
