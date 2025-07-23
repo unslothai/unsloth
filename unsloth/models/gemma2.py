@@ -59,18 +59,6 @@ pass
 if HAS_FLASH_ATTENTION_SOFTCAPPING:
     from flash_attn import flash_attn_func
 
-# [TODO] We must randomnly use torch.compile?
-# Gemma 2 uses double RMS Layernorms, so the backward passes should not overwrite the gradients!
-@torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
-def fast_rms_layernorm_gemma2_compiled(layernorm, X, gemma = True):
-    old_dtype = X.dtype
-    X = X.float()
-    X = X * torch.rsqrt(X.square().mean(-1, keepdim = True) + layernorm.eps) * \
-        (1.0 + layernorm.weight.float())
-    return X.to(old_dtype)
-pass
-
-
 # Logit softcapping
 def Gemma2Attention_fast_forward(
     self,
