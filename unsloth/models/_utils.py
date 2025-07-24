@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.5"
+__version__ = "2025.7.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -306,6 +306,12 @@ def patch_mistral_nemo_config(config):
     return config
 pass
 
+try:
+    # Some Config files use layer_type_validation
+    # for eg Gemma-2, so we must import it to stop errors.
+    from transformers.configuration_utils import layer_type_validation
+except:
+    pass
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
@@ -435,7 +441,7 @@ if DEVICE_TYPE == "cuda":
                         "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
                         "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
                         "To update flash-attn, do the below:\n"\
-                        '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
+                        '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
                     )
             except:
                 print(
