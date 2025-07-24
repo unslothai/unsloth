@@ -1457,8 +1457,6 @@ def patch_peft_fast_inference(model):
         from unsloth_zoo.vllm_utils import save_lora, load_lora
         model.save_lora = functools.partial(save_lora, model)
         model.load_lora = functools.partial(load_lora, model)
-    else:
-        error_out_no_vllm()
     pass
 
 def error_out_no_vllm(*args, **kwargs):
