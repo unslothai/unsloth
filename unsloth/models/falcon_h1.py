@@ -51,7 +51,7 @@ try:
     from transformers.models.falcon_h1.modeling_falcon_h1 import (
         FalconH1Attention,
     )
-except:
+except ModuleNotFoundError:
     # if we are on a old version of transformers technically it should fail in the try except above
     # but if somehow we make it here, we need to raise an error since FalconH1Attention is not available
     # or renamed
