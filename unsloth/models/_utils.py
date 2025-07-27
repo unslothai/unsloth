@@ -839,6 +839,9 @@ def move_to_device(target_device, *tensors):
             moved_tensors.append(tensor.to(target_device))
         else:
             moved_tensors.append(tensor)
+    for i in range(DEVICE_COUNT):
+        torch.cuda.synchronize(i)
+    pass
     return tuple(moved_tensors) if len(moved_tensors) > 1 else moved_tensors[0]
 
 import transformers.utils.quantization_config
