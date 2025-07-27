@@ -499,6 +499,9 @@ def LlamaAttention_fast_forward(
     #     else inplace_rope_embedding(Q, K, cos, sin, position_ids)
     # )
     Q, K = fast_rope_embedding(Q, K, cos, sin)
+    for i in range(DEVICE_COUNT):
+        torch.cuda.synchronize(i)
+    pass
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
