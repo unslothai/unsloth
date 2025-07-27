@@ -1370,10 +1370,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.cos_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
         self.sin_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
 
-
-        for i in range(DEVICE_COUNT):
-            torch.cuda.synchronize(f'cuda:{i}')
-        pass
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):

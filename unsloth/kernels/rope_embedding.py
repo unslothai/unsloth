@@ -16,6 +16,7 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings, torch_gpu_device
+from .. import DEVICE_COUNT
 ROPE_GROUP_SIZE : int = 4
 
 def _rope_embedding(
@@ -155,6 +156,9 @@ pass
 def fast_rope_embedding(Q, K, cos, sin):
     Q = Fast_RoPE_Embedding.apply(Q.transpose(1, 2), cos, sin).transpose(1, 2)
     K = Fast_RoPE_Embedding.apply(K.transpose(1, 2), cos, sin).transpose(1, 2)
+    for i in range(DEVICE_COUNT):
+        torch.cuda.synchronize(f'cuda:{i}')
+    pass
     return Q, K
 pass
 
