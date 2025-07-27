@@ -156,9 +156,7 @@ pass
 def fast_rope_embedding(Q, K, cos, sin):
     Q = Fast_RoPE_Embedding.apply(Q.transpose(1, 2), cos, sin).transpose(1, 2)
     K = Fast_RoPE_Embedding.apply(K.transpose(1, 2), cos, sin).transpose(1, 2)
-    for i in range(DEVICE_COUNT):
-        torch.cuda.synchronize(f'cuda:{i}')
-    pass
+    torch.cuda.current_stream(Q.device).synchronize()
     return Q, K
 pass
 
