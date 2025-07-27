@@ -1369,7 +1369,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         # dummy so that patch_utils doesn't fail for now
         self.cos_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
         self.sin_cached = torch.empty(1, device=get_current_device(), dtype=torch.get_default_dtype())
-
     pass
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):

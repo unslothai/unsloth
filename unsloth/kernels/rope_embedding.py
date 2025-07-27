@@ -16,7 +16,6 @@ import triton
 import triton.language as tl
 import torch
 from .utils import calculate_settings, torch_gpu_device
-from .. import DEVICE_COUNT
 ROPE_GROUP_SIZE : int = 4
 
 def _rope_embedding(
