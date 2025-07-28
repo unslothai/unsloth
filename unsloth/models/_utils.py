@@ -225,8 +225,8 @@ class _RaiseUninitialized(logging.Handler):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
-                f"`pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo transformers timm`\n"\
-                f"".str(record))
+                f"`pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo transformers timm`\n"
+            )
 pass
 class RaiseUninitialized:
     def __init__(self):
