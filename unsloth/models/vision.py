@@ -608,7 +608,7 @@ class FastBaseModel:
                 finetune_mlp_modules       = finetune_mlp_modules,
             )
         else:
-            assert(type(target_modules) in (list, tuple,))
+            assert(type(target_modules) in (list, tuple, str,))
         pass
 
         # Clear deleted GPU items
