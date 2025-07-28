@@ -858,7 +858,7 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             # Patch it as well!
-            model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing)
+            model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing,trust_remote_code  = trust_remote_code)
         pass
         return model, tokenizer
     pass
