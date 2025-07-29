@@ -221,7 +221,7 @@ class _RaiseUninitialized(logging.Handler):
     def __init__(self):
         super().__init__()
     def emit(self, record):
-        if "some weights of" in str(record).lower():
+        if "some weights of" in str(record).lower() and "gemma" in str(record).lower():
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
