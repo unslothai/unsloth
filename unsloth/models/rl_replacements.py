@@ -350,7 +350,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     if function_name != "_get_per_token_logps_and_entropies": return function
 
     # Just copy over from _get_per_token_logps replacement function above. For now this returns None anyway
-    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None, compute_entropy = False):
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None, compute_entropy = False, *args, **kwargs):
         if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return {"logps": None, "entropies": None} # Unsloth efficient GRPO
         # Otherwise, calculate normally:
