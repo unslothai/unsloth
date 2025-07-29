@@ -190,7 +190,8 @@ def MistralForCausalLM_fast_forward(
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
 
-        if HAS_XFORMERS and attention_mask is None:
+        if HAS_XFORMERS:
+            # Always create causal mask for xformers
             if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
                 causal_mask = xformers.attn_bias.LowerTriangularMask()
             elif q_len <= sliding_window:
@@ -200,12 +201,13 @@ def MistralForCausalLM_fast_forward(
                     .from_seqlens([q_len]*bsz)\
                     .make_local_attention(window_size = sliding_window)
 
-        elif not HAS_XFORMERS and attention_mask is None:
+            # If attention_mask exists, it will be handled in the attention forward
+
+        else:
+            # Not using xformers - need to create attention masks
             if sliding_window is None or sliding_window == "null" or sliding_window <= 0 or q_len <= sliding_window:
                 # Fully causal mask
-                mask = torch.full((q_len, q_len), -torch.inf, device=input_ids.device)
-                mask = torch.triu(mask, diagonal=1)
-                attention_mask = mask.expand(bsz, 1, q_len, q_len)
+                causal_mask_values = torch.triu(torch.full((q_len, q_len), -torch.inf, device=input_ids.device), diagonal=1)
             else:
                 # Sliding window attention
                 q_indices = torch.arange(q_len, device=input_ids.device).view(-1, 1)
@@ -214,8 +216,19 @@ def MistralForCausalLM_fast_forward(
                 causal_bool_mask = k_indices <= q_indices
                 window_bool_mask = (q_indices - k_indices) < sliding_window
 
-                mask = torch.where(causal_bool_mask & window_bool_mask, 0.0, -torch.inf)
-                attention_mask = mask[None, None, :, :].expand(bsz, 1, q_len, q_len)
+                causal_mask_values = torch.where(causal_bool_mask & window_bool_mask, 0.0, -torch.inf)
+
+            # Combine with existing attention_mask if present
+            if attention_mask is None:
+                attention_mask = causal_mask_values[None, None, :, :].expand(bsz, 1, q_len, q_len)
+            else:
+                # attention_mask should be [bsz, 1, q_len, q_len] or broadcastable
+                # Add causal mask to existing attention mask
+                if attention_mask.dim() == 2:
+                    # [bsz, seq_len] -> [bsz, 1, 1, seq_len]
+                    attention_mask = attention_mask[:, None, None, :]
+                    attention_mask = attention_mask.expand(bsz, 1, q_len, q_len)
+                attention_mask = attention_mask + causal_mask_values[None, None, :, :]
 
             attention_mask = attention_mask.to(dtype=_get_dtype(self.config.torch_dtype))
 

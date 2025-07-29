@@ -499,6 +499,8 @@ def LlamaAttention_fast_forward(
     #     else inplace_rope_embedding(Q, K, cos, sin, position_ids)
     # )
     Q, K = fast_rope_embedding(Q, K, cos, sin)
+    # synchronize before cat to avoid race condition
+    torch.cuda.current_stream(Q.device).synchronize()
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -780,7 +782,7 @@ def LlamaModel_fast_forward(
     # Fix up attention mask by setting elements to 0
     # Specifically for DPO
     if getattr(self, "_has_no_labels", False) is True and (attention_mask is not None) and (past_key_values is None) and \
-        (not train_embed_tokens):
+        (not train_embed_tokens) and self.training:
         # Careful for inference the attention_mask is size (1, kv_seq_len)
         # Whilst the input_embeds is size (1, 1, 4096)
         inputs_requires_grad = inputs_embeds.requires_grad
@@ -865,21 +867,21 @@ def LlamaModel_fast_forward(
 
             # https://github.com/pytorch/pytorch/issues/103749
             # Need to convert to float and not using bool
-            attention_mask = (1.0 - attention_mask.float()) * torch.finfo(inputs_embeds.dtype).min
+            # attention_mask = (1.0 - attention_mask.float()) * torch.finfo(inputs_embeds.dtype).min
             dynamic_SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
                 sliding_window = self.config.sliding_window,
-            )[0][0]
+            )
             dynamic_GA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
                 sliding_window = None,
-            )[0][0]
+            )
             use_static_mask = False
 
         elif not hasattr(self, "SWA_mask"):
@@ -953,7 +955,7 @@ def LlamaModel_fast_forward(
         else:
             layer_outputs = decoder_layer(
                 hidden_states,
-                causal_mask=mask,
+                causal_mask         = mask,
                 attention_mask      = attention_mask,
                 position_ids        = position_ids,
                 past_key_value      = past_key_value,
