@@ -58,7 +58,7 @@ exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2025.7.10",
+    "unsloth_zoo>=2025.7.11",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0",
@@ -72,7 +72,7 @@ huggingface = [
     "trl>=0.7.9,!=0.9.0,!=0.9.1,!=0.9.2,!=0.9.3,!=0.15.0,!=0.19.0",
     "peft>=0.7.1,!=0.11.0",
     "protobuf",
-    "huggingface_hub",
+    "huggingface_hub>=0.34.0",
     "hf_transfer",
     "diffusers",
     "torchvision",
@@ -304,7 +304,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.7.10",
+    "unsloth_zoo>=2025.7.11",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0",
@@ -315,7 +315,7 @@ colab-new = [
     "wheel>=0.42.0",
     "numpy",
     "protobuf",
-    "huggingface_hub",
+    "huggingface_hub>=0.34.0",
     "hf_transfer",
     "bitsandbytes>=0.43.3",
     "unsloth[triton]",

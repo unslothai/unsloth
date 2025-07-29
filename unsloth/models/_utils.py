@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.9"
+__version__ = "2025.7.10"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -221,12 +221,16 @@ class _RaiseUninitialized(logging.Handler):
     def __init__(self):
         super().__init__()
     def emit(self, record):
-        if "some weights of" in str(record).lower():
+        record_lower = str(record).lower()
+        if ("some weights of" in record_lower) and \
+            ("score.weight" not in record_lower) and \
+            ("classifier.weight" not in record_lower):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
                 f"`pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo transformers timm`\n"\
-                f"".str(record))
+                f"{str(record)}"
+            )
 pass
 class RaiseUninitialized:
     def __init__(self):
