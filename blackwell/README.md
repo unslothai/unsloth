@@ -169,6 +169,40 @@ The installation order is important, since we want the overwrite bundled depende
 If you are using mamba as your package just replace conda with mamba for all commands shown above.
 
 
+## WSL-Specific Notes
+
+If you're using WSL (Windows Subsystem for Linux) and encounter issues during xformers compilation, follow these additional steps:
+
+1. **Increase WSL Memory Limit**
+   Create or edit the WSL configuration file:
+   ```bash
+   # Create or edit .wslconfig in your Windows user directory
+   # (typically C:\Users\YourUsername\.wslconfig)
+   
+   # Add these lines to the file
+   [wsl2]
+   memory=16GB  # Minimum 16GB recommended for xformers compilation
+   processors=4  # Adjust based on your CPU cores
+   swap=2GB
+   localhostForwarding=true
+   ```
+   After making these changes, restart WSL:
+   ```powershell
+   wsl --shutdown
+   ```
+
+2. **Install xformers**
+   Use the following command to install xformers with optimized compilation for WSL:
+   ```bash
+   # Set CUDA architecture for Blackwell GPUs
+   export TORCH_CUDA_ARCH_LIST="12.0"
+   
+   # Install xformers from source with optimized build flags
+   pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+   ```
+   
+   The `--no-build-isolation` flag helps avoid potential build issues in WSL environments.
+
 ## Post Installation notes:
 
 After installation, your environment should look similar to `blackwell.requirements.txt`.
