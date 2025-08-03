@@ -85,6 +85,12 @@ from unsloth_zoo.vllm_utils import (
     return_lora_modules,
 )
 
+try:
+    torch_compiler_set_stance = torch.compiler.set_stance
+except:
+    torch_compiler_set_stance = None
+pass
+
 def unsloth_base_fast_generate(
     self,
     *args,
@@ -554,7 +560,7 @@ class FastBaseModel:
         r                          = 16,
         target_modules             = None,
         lora_alpha                 = 16,
-        lora_dropout               = 0,
+        lora_dropout               = 0.0,
         bias                       = "none",
         finetune_vision_layers     = True,
         finetune_language_layers   = True,
@@ -602,7 +608,7 @@ class FastBaseModel:
                 finetune_mlp_modules       = finetune_mlp_modules,
             )
         else:
-            assert(type(target_modules) in (list, tuple,))
+            assert(type(target_modules) in (list, tuple, str,))
         pass
 
         # Clear deleted GPU items
@@ -755,6 +761,9 @@ class FastBaseModel:
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         # Must enable returning logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
+        # Turn off skip guards and set stance to default
+        if torch_compiler_set_stance is not None:
+            torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
     pass
 
@@ -801,6 +810,9 @@ class FastBaseModel:
         pass
         # Can re-enable not returning logits
         os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
+        # Turn off skip guards and set stance to default
+        if torch_compiler_set_stance is not None:
+            torch_compiler_set_stance(stance = "default", skip_guard_eval_unsafe = False)
         return model
     pass
 pass

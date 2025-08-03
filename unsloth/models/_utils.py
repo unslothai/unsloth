@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.3"
+__version__ = "2025.8.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -190,6 +190,14 @@ try:
 except:
     pass
 
+# The following generation flags are not valid and may be ignored:
+try:
+    from transformers.generation.configuration_utils import logger as configuration_logger
+    configuration_logger.addFilter(HideLoggingMessage("following generation flags"))
+    del configuration_logger
+except:
+    pass
+
 # Gemma3 It is strongly recommended to train Gemma3 models with the `eager`
 try:
     from transformers.models.gemma3.modeling_gemma3 import logger as gemma3_logger
@@ -213,12 +221,16 @@ class _RaiseUninitialized(logging.Handler):
     def __init__(self):
         super().__init__()
     def emit(self, record):
-        if "some weights of" in str(record).lower():
+        record_lower = str(record).lower()
+        if ("some weights of" in record_lower) and \
+            ("score.weight" not in record_lower) and \
+            ("classifier.weight" not in record_lower):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
                 f"`pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo transformers timm`\n"\
-                f"".str(record))
+                f"{str(record)}"
+            )
 pass
 class RaiseUninitialized:
     def __init__(self):
@@ -289,6 +301,12 @@ def patch_mistral_nemo_config(config):
     return config
 pass
 
+try:
+    # Some Config files use layer_type_validation
+    # for eg Gemma-2, so we must import it to stop errors.
+    from transformers.configuration_utils import layer_type_validation
+except:
+    pass
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
@@ -417,7 +435,7 @@ if DEVICE_TYPE == "cuda":
                         "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
                         "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
                         "To update flash-attn, do the below:\n"\
-                        '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
+                        '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
                     )
             except:
                 print(

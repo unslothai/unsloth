@@ -235,6 +235,59 @@ pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
 
 
+# Fix incorrect special tokens handling and truncation in older TRL versions
+def grpo_trainer__generate_and_score_completions(function_name, function):
+    if  function_name != "_generate_and_score_completions": return function
+
+    # TRL 0.19.0 did skip_special_tokens = True which should be False
+    function = function.replace(
+        "prompt_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False",
+        "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
+    )
+
+    # Always between max_prompt_length and use_vllm
+    found = re.findall(
+        r"\n(([ ]{8,})if self\.max_prompt_length is not None:.*?"\
+        r"\2if self\.use_vllm:)",
+        function,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    if len(found) != 0:
+        replace_part, spacing = found[0]
+        removed_comments = re.sub(r"\#[^\n]{1,}", "", replace_part)
+        splits = removed_comments.split("\n")
+        if sum(re.match(rf"{spacing}[^\s]", x) is not None for x in splits) == 2 and len(spacing) >= 8:
+
+            new_replacement = \
+            f"""\n{spacing}if self.max_prompt_length is not None:
+            # If max_prompt_length is set, we trim the prompt to keep only the last `max_prompt_length` tokens.
+            # Then we decode those tokens back into text. We manually remove leading pad tokens from the decoded text,
+            # because we can't use `skip_special_tokens=True` (some special tokens are still needed for generation).
+            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
+            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+            prompts_text = self.processing_class.batch_decode(
+                prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
+            )
+            pad_token = self.processing_class.pad_token
+            def strip_leading_tokens(text):
+                while text.startswith(pad_token):
+                    text = text.removeprefix(pad_token)
+                return text
+
+            if pad_token is not None:
+                prompts_text = [
+                    strip_leading_tokens(text) for text in prompts_text
+                ]
+
+        # Generate completions using either vLLM or regular generation
+        if self.use_vllm:"""
+            function = function.replace(replace_part, new_replacement)
+    pass
+    return function
+pass
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
+
+
 # Remove _move_model_to_vllm
 def grpo_trainer__move_model_to_vllm(function_name, function):
     if  function_name != "_move_model_to_vllm": return function
@@ -297,9 +350,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     if function_name != "_get_per_token_logps_and_entropies": return function
 
     # Just copy over from _get_per_token_logps replacement function above. For now this returns None anyway
-    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None, compute_entropy = False):
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None, compute_entropy = False, *args, **kwargs):
         if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
-            return {"logps": None, "entropies": None} # Unsloth efficient GRPO
+            return None, None  # logps, entropies Unsloth efficient GRPO
         # Otherwise, calculate normally:
         if not hasattr(self, '_autocast_dtype'):
             self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
@@ -320,7 +373,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 entropies = entropy_from_logits(logits)
 
             # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            return {"logps": logits, "entropies": entropies}
+            return logits, entropies  # logps, entropies
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
@@ -377,7 +430,7 @@ def grpo_trainer_compute_loss(function_name, function):
             lambda model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False: \
             self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep) \
             if hasattr(self, "_get_per_token_logps") else \
-            self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy)['logps']
+            self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy)[0]  # logps
 
         per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep)
 

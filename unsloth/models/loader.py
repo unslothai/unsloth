@@ -320,15 +320,15 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."\
                 )
             dispatch_model = FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
-        elif model_type == "falcon_h1":
-            dispatch_model = FastFalconH1Model
-            if not SUPPORTS_FALCON_H1:
-                raise ImportError(
-                    f"Unsloth: Your transformers version of {transformers_version} does not support FalconH1.\n"\
-                    f"The minimum required version is 4.50.3.\n"\
-                    f'Try `pip install --upgrade "transformers>=4.50.3"`\n'\
-                    f"to obtain the latest transformers build, then restart this session."\
-                )
+        # elif model_type == "falcon_h1":
+        #     dispatch_model = FastFalconH1Model
+        #     if not SUPPORTS_FALCON_H1:
+        #         raise ImportError(
+        #             f"Unsloth: Your transformers version of {transformers_version} does not support FalconH1.\n"\
+        #             f"The minimum required version is 4.50.3.\n"\
+        #             f'Try `pip install --upgrade "transformers>=4.50.3"`\n'\
+        #             f"to obtain the latest transformers build, then restart this session."\
+        #         )
         # Temporary disable optimized Cohere until errors match
         # elif model_type == "cohere":
         #     dispatch_model = FastCohereModel
@@ -584,6 +584,11 @@ class FastModel(FastBaseModel):
             
             if transformers_version < Version("4.53.0"):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
+        elif "falcon-h1" in lowered_model_name:
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "float16;torch.float32;torch.float16;"\
+                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16);"
+            os.environ["TRITON_F32_DEFAULT"] = "ieee"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
@@ -853,7 +858,7 @@ class FastModel(FastBaseModel):
                 trust_remote_code = trust_remote_code,
             )
             # Patch it as well!
-            model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing)
+            model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing, trust_remote_code  = trust_remote_code)
         pass
         return model, tokenizer
     pass
