@@ -644,7 +644,7 @@ class FastBaseModel:
             "loftq_config"      : loftq_config,
         }
         lora_config = LoraConfig(
-            **{k:v for k,v in lora_config_dict.items() if key in LoraConfig.__doc__},
+            **{k:v for k,v in lora_config_dict.items() if k in LoraConfig.__doc__},
         )
         model = prepare_model_for_kbit_training(
             model,
