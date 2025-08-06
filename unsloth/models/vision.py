@@ -272,6 +272,8 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
             )
+        if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
+            os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
@@ -427,16 +429,23 @@ class FastBaseModel:
         if do_forced_float32: torch_dtype = torch.bfloat16
 
         raise_handler = RaiseUninitialized()
-        model = auto_model.from_pretrained(
-            model_name,
-            device_map              = device_map,
-            torch_dtype             = torch_dtype,
-            # quantization_config   = bnb_config,
-            token                   = token,
-            trust_remote_code       = trust_remote_code,
-            # attn_implementation   = attn_implementation,
-            **kwargs,
-        )
+        # MXFP4 -> BF16 GPT-OSS check
+        if "gpt-oss" in os.environ.get("UNSLOTH_MODEL_NAME", "") and \
+            "quantization_config" not in kwargs:
+
+            from unsloth_zoo.temporary_patches.gpt_oss import load_gpt_oss_MXFP4
+            model = load_gpt_oss_MXFP4(model_name, torch_dtype)
+        else:
+            model = auto_model.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                torch_dtype             = torch_dtype,
+                # quantization_config   = bnb_config,
+                token                   = token,
+                trust_remote_code       = trust_remote_code,
+                # attn_implementation   = attn_implementation,
+                **kwargs,
+            )
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
@@ -622,16 +631,20 @@ class FastBaseModel:
         max_seq_length = model.max_seq_length
         # if we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model)
+        lora_config_dict = {
+            "r"                 : r,
+            "lora_alpha"        : lora_alpha,
+            "target_modules"    : target_modules,
+            "target_parameters" : kwargs.get("target_parameters", None),
+            "lora_dropout"      : lora_dropout,
+            "bias"              : bias,
+            "task_type"         : task_type,
+            "use_rslora"        : use_rslora,
+            "init_lora_weights" : init_lora_weights,
+            "loftq_config"      : loftq_config,
+        }
         lora_config = LoraConfig(
-            r                 = r,
-            lora_alpha        = lora_alpha,
-            target_modules    = target_modules,
-            lora_dropout      = lora_dropout,
-            bias              = bias,
-            task_type         = task_type,
-            use_rslora        = use_rslora,
-            init_lora_weights = init_lora_weights,
-            loftq_config      = loftq_config,
+            **{k:v for k,v in lora_config_dict.items() if key in LoraConfig.__doc__},
         )
         model = prepare_model_for_kbit_training(
             model,
