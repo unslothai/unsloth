@@ -592,6 +592,19 @@ class FastModel(FastBaseModel):
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee';"
         elif "gpt-oss" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+	     # the temporary patches for init need UNSLOTH_MODEL_NAME to be set
+            # which doesn't happen at import so manually call here
+            # before creating the compiled cache
+            try:
+                from unsloth_zoo.temporary_patches.gpt_oss import (
+                    patch_GptOssExperts_MXFP4,
+                    patch_GptOssExperts_bitsandbytes,
+                )
+
+                patch_GptOssExperts_MXFP4()
+                patch_GptOssExperts_bitsandbytes()
+            except:
+                pass
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
