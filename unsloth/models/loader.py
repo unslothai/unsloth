@@ -589,6 +589,9 @@ class FastModel(FastBaseModel):
                 "float16;torch.float32;torch.float16;"\
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16);"
             os.environ["TRITON_F32_DEFAULT"] = "ieee"
+        elif "gpt-oss" in lowered_model_name:
+            os.environ["UNSLOTH_MODEL_NAME"] = "gpt_oss"
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
