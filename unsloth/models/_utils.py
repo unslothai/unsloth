@@ -214,6 +214,14 @@ try:
 except:
     pass
 
+# MXFP4 quantization requires triton >= 3.4.0
+try:
+    from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
+    mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
+    del mxfp4_logger
+except:
+    pass
+
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
