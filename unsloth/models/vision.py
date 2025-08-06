@@ -626,6 +626,7 @@ class FastBaseModel:
             r                 = r,
             lora_alpha        = lora_alpha,
             target_modules    = target_modules,
+            target_parameters = kwargs.get("target_parameters", None),
             lora_dropout      = lora_dropout,
             bias              = bias,
             task_type         = task_type,
