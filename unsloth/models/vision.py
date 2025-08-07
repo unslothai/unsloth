@@ -435,23 +435,16 @@ class FastBaseModel:
         if do_forced_float32: torch_dtype = torch.bfloat16
 
         raise_handler = RaiseUninitialized()
-        # MXFP4 -> BF16 GPT-OSS check
-        if "gpt-oss" in os.environ.get("UNSLOTH_MODEL_NAME", "") and \
-            "quantization_config" not in kwargs:
-
-            from unsloth_zoo.temporary_patches.gpt_oss import load_gpt_oss_MXFP4
-            model = load_gpt_oss_MXFP4(model_name, torch_dtype)
-        else:
-            model = auto_model.from_pretrained(
-                model_name,
-                device_map              = device_map,
-                torch_dtype             = torch_dtype,
-                # quantization_config   = bnb_config,
-                token                   = token,
-                trust_remote_code       = trust_remote_code,
-                # attn_implementation   = attn_implementation,
-                **kwargs,
-            )
+        model = auto_model.from_pretrained(
+            model_name,
+            device_map              = device_map,
+            torch_dtype             = torch_dtype,
+            # quantization_config   = bnb_config,
+            token                   = token,
+            trust_remote_code       = trust_remote_code,
+            # attn_implementation   = attn_implementation,
+            **kwargs,
+        )
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
