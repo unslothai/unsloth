@@ -76,6 +76,7 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import re
+import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
@@ -422,6 +423,7 @@ HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
 if DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
+    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True
@@ -586,7 +588,6 @@ UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
-import functools
 from torch._inductor.runtime.hints import DeviceProperties
 
 @functools.lru_cache(None)

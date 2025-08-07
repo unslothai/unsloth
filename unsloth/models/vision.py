@@ -365,8 +365,10 @@ class FastBaseModel:
             allow_float16_runs = (checker == "float16" and dtype == torch.float16)
 
             if allow_all_runs or allow_float16_runs:
-                dtype = eval(_dtype)
-                bnb_compute_dtype = eval(_bnb_compute_dtype)
+                if eval(_dtype) is not None:
+                    dtype = eval(_dtype)
+                if eval(_bnb_compute_dtype) is not None:
+                    bnb_compute_dtype = eval(_bnb_compute_dtype)
                 correct_dtype = bnb_compute_dtype
                 custom_datatype = _custom_datatype
                 # Execute code as well

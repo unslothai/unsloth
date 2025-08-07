@@ -591,20 +591,12 @@ class FastModel(FastBaseModel):
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16); "\
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee';"
         elif "gpt-oss" in lowered_model_name:
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-	     # the temporary patches for init need UNSLOTH_MODEL_NAME to be set
-            # which doesn't happen at import so manually call here
-            # before creating the compiled cache
-            try:
-                from unsloth_zoo.temporary_patches.gpt_oss import (
-                    patch_GptOssExperts_MXFP4,
-                    patch_GptOssExperts_bitsandbytes,
-                )
-
-                patch_GptOssExperts_MXFP4()
-                patch_GptOssExperts_bitsandbytes()
-            except:
-                pass
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "all;None;None;"\
+                "x = 'gate_up_proj_bias'\n"\
+                "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
+                "x = 'down_proj_bias'\n"\
+                "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n;"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
