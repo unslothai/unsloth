@@ -424,7 +424,7 @@ class FastBaseModel:
         pass
 
         # Fix AttributeError: 'BitsAndBytesConfig' object has no attribute 'get_loading_attributes'
-        if not hasattr(bnb_config, "get_loading_attributes"):
+        if bnb_config is not None and not hasattr(bnb_config, "get_loading_attributes"):
             bnb_config.get_loading_attributes = lambda *args, **kwargs: {}
 
         # Cannot be None, since HF now checks for the config
