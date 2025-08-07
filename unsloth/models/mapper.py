@@ -924,12 +924,12 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/gpt-oss-20b-unsloth-bnb-4bit" : (
         "unsloth/gpt-oss-20b",
         "openai/gpt-oss-20b",
-        "unsloth/gpt-oss-20b-bnb-4bit",
+        "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
     ),
     "unsloth/gpt-oss-120b-unsloth-bnb-4bit" : (
         "unsloth/gpt-oss-120b",
         "openai/gpt-oss-120b",
-        "unsloth/gpt-oss-120b-bnb-4bit",
+        "unsloth/gpt-oss-120b-unsloth-bnb-4bit",
     ),
 }
 

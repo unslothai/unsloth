@@ -365,8 +365,10 @@ class FastBaseModel:
             allow_float16_runs = (checker == "float16" and dtype == torch.float16)
 
             if allow_all_runs or allow_float16_runs:
-                dtype = eval(_dtype)
-                bnb_compute_dtype = eval(_bnb_compute_dtype)
+                if eval(_dtype) is not None:
+                    dtype = eval(_dtype)
+                if eval(_bnb_compute_dtype) is not None:
+                    bnb_compute_dtype = eval(_bnb_compute_dtype)
                 correct_dtype = bnb_compute_dtype
                 custom_datatype = _custom_datatype
                 # Execute code as well
@@ -421,6 +423,10 @@ class FastBaseModel:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         pass
 
+        # Fix AttributeError: 'BitsAndBytesConfig' object has no attribute 'get_loading_attributes'
+        if bnb_config is not None and not hasattr(bnb_config, "get_loading_attributes"):
+            bnb_config.get_loading_attributes = lambda *args, **kwargs: {}
+
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
@@ -429,23 +435,16 @@ class FastBaseModel:
         if do_forced_float32: torch_dtype = torch.bfloat16
 
         raise_handler = RaiseUninitialized()
-        # MXFP4 -> BF16 GPT-OSS check
-        if "gpt-oss" in os.environ.get("UNSLOTH_MODEL_NAME", "") and \
-            "quantization_config" not in kwargs:
-
-            from unsloth_zoo.temporary_patches.gpt_oss import load_gpt_oss_MXFP4
-            model = load_gpt_oss_MXFP4(model_name, torch_dtype)
-        else:
-            model = auto_model.from_pretrained(
-                model_name,
-                device_map              = device_map,
-                torch_dtype             = torch_dtype,
-                # quantization_config   = bnb_config,
-                token                   = token,
-                trust_remote_code       = trust_remote_code,
-                # attn_implementation   = attn_implementation,
-                **kwargs,
-            )
+        model = auto_model.from_pretrained(
+            model_name,
+            device_map              = device_map,
+            torch_dtype             = torch_dtype,
+            # quantization_config   = bnb_config,
+            token                   = token,
+            trust_remote_code       = trust_remote_code,
+            # attn_implementation   = attn_implementation,
+            **kwargs,
+        )
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
