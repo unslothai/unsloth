@@ -592,12 +592,14 @@ class FastModel(FastBaseModel):
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee';"
         elif "gpt-oss" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "all;None;None;"\
-                "x = 'gate_up_proj_bias'\n"\
-                "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
-                "x = 'down_proj_bias'\n"\
-                "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n;"
+            if not model_name:
+                # Only upcast MoE biases for MXFP4, not BnB
+                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                    "all;None;None;"\
+                    "x = 'gate_up_proj_bias'\n"\
+                    "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
+                    "x = 'down_proj_bias'\n"\
+                    "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n;"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
