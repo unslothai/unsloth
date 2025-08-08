@@ -441,7 +441,6 @@ class FastBaseModel:
         if do_forced_float32: torch_dtype = torch.bfloat16
 
         raise_handler = RaiseUninitialized()
-        print(model_name, kwargs)
         model = auto_model.from_pretrained(
             model_name,
             device_map              = device_map,
