@@ -81,6 +81,7 @@ from ._utils import (
 global FORCE_FLOAT32
 FORCE_FLOAT32 = [
     "gemma3",
+    "gptoss",
 ]
 
 class FastLanguageModel(FastLlamaModel):
@@ -592,6 +593,9 @@ class FastModel(FastBaseModel):
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee';"
         elif "gpt-oss" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            # CCE fails on Tesla T4
+            # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
+            os.environ["UNSLOTH_ENABLE_CCE"] = "0"
             if not load_in_4bit:
                 # Only upcast MoE biases for MXFP4, not BnB
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
