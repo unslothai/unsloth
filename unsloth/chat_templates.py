@@ -1380,11 +1380,12 @@ gptoss_template = \
         {%- set tool = tool.function %}
         {{- "// " + tool.description + "\n" }}
         {{- "type "+ tool.name + " = " }}
-        {%- if tool.parameters and tool.parameters.properties -%}
-            {{- "(_: " }}
-            {{- "{\n" }}
+        {%- if tool.parameters and tool.parameters.properties %}
+            {{- "(_: {\n" }}
             {%- for param_name, param_spec in tool.parameters.properties.items() %}
-                {{- "// " + param_spec.description + "\n" }}
+                {%- if param_spec.description %}
+                    {{- "// " + param_spec.description + "\n" }}
+                {%- endif %}
                 {{- param_name }}
                 {%- if param_name not in (tool.parameters.required or []) -%}
                     {{- "?" }}
@@ -1403,7 +1404,7 @@ gptoss_template = \
                 {%- if not loop.last %}
                     {{- ",\n" }}
                 {%- else %}
-                    {{- "\n" }}
+                    {{- ",\n" }}
                 {%- endif -%}
             {%- endfor %}
             {{- "}) => any;\n\n" }}
@@ -1462,17 +1463,16 @@ gptoss_template = \
 {#- System Message Construction ============================================ #}
 {%- macro build_system_message() -%}
     {%- if model_identity is not defined %}
-        {{- "You are ChatGPT, a large language model trained by OpenAI.\n" -}}
-    {%- else %}
-        {{- model_identity }}
+        {%- set model_identity = "You are ChatGPT, a large language model trained by OpenAI." %}
     {%- endif %}
+    {{- model_identity + "\n" }}
     {{- "Knowledge cutoff: 2024-06\n" }}
     {{- "Current date: " + strftime_now("%Y-%m-%d") + "\n\n" }}
     {%- if reasoning_effort is not defined %}
         {%- set reasoning_effort = "medium" %}
     {%- endif %}
     {{- "Reasoning: " + reasoning_effort + "\n\n" }}
-    {%- if builtin_tools is defined %}
+    {%- if builtin_tools is defined and builtin_tools is not none %}
         {{- "# Tools\n\n" }}
         {%- set available_builtin_tools = namespace(browser=false, python=false) %}
         {%- for tool in builtin_tools %}
@@ -1485,7 +1485,7 @@ gptoss_template = \
         {{- render_builtin_tools(available_builtin_tools.browser, available_builtin_tools.python) }}
     {%- endif -%}
     {{- "# Valid channels: analysis, commentary, final. Channel must be included for every message." }}
-    {%- if tools is defined -%}
+    {%- if tools -%}
         {{- "\nCalls to these tools must go to the commentary channel: 'functions'." }}
     {%- endif -%}
 {%- endmacro -%}
@@ -1499,7 +1499,10 @@ gptoss_template = \
 {{- "<|end|>" }}
 
 {#- Extract developer message #}
-{%- if messages[0].role == "developer" or messages[0].role == "system" %}
+{%- if developer_instructions is defined and developer_instructions is not none %}
+    {%- set developer_message = developer_instructions %}
+    {%- set loop_messages = messages %}
+{%- elif messages[0].role == "developer" or messages[0].role == "system" %}
     {%- set developer_message = messages[0].content %}
     {%- set loop_messages = messages[1:] %}
 {%- else %}
@@ -1515,7 +1518,9 @@ gptoss_template = \
         {{- developer_message }}
     {%- endif %}
     {%- if tools -%}
-        {{- "\n\n" }}
+        {%- if developer_message %}
+            {{- "\n\n" }}
+        {%- endif %}
         {{- "# Tools\n\n" }}
         {{- render_tool_namespace("functions", tools) }}
     {%- endif -%}
@@ -1527,41 +1532,67 @@ gptoss_template = \
 {%- for message in loop_messages -%}
     {#- At this point only assistant/user/tool messages should remain #}
     {%- if message.role == 'assistant' -%}
+        {#- Checks to ensure the messages are being passed in the format we expect #}
+        {%- if "content" in message %}
+            {%- if "<|channel|>analysis<|message|>" in message.content or "<|channel|>final<|message|>" in message.content %}
+                {{- raise_exception("You have passed a message containing <|channel|> tags in the content field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
+            {%- endif %}
+        {%- endif %}
+        {%- if "thinking" in message %}
+            {%- if "<|channel|>analysis<|message|>" in message.thinking or "<|channel|>final<|message|>" in message.thinking %}
+                {{- raise_exception("You have passed a message containing <|channel|> tags in the thinking field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
+            {%- endif %}
+        {%- endif %}
         {%- if "tool_calls" in message %}
+            {#- We need very careful handling here - we want to drop the tool call analysis message if the model #}
+            {#- has output a later <|final|> message, but otherwise we want to retain it. This is the only case #}
+            {#- when we render CoT/analysis messages in inference. #}
+            {%- set future_final_message = namespace(found=false) %}
+            {%- for future_message in loop_messages[loop.index:] %}
+                {%- if future_message.role == 'assistant' and "tool_calls" not in future_message %}
+                    {%- set future_final_message.found = true %}
+                {%- endif %}
+            {%- endfor %}
             {#- We assume max 1 tool call per message, and so we infer the tool call name #}
             {#- in "tool" messages from the most recent assistant tool call name #}
             {%- set tool_call = message.tool_calls[0] %}
             {%- if tool_call.function %}
                 {%- set tool_call = tool_call.function %}
             {%- endif %}
-            {%- if message.content %}
+            {%- if message.content and message.thinking %}
+                {{- raise_exception("Cannot pass both content and thinking in an assistant message with tool calls! Put the analysis message in one or the other, but not both.") }}
+            {%- elif message.content and not future_final_message.found %}
                 {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.content + "<|end|>" }}
+            {%- elif message.thinking and not future_final_message.found %}
+                {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
             {%- endif %}
             {{- "<|start|>assistant to=" }}
-            {{- "functions." + tool_call.name + "<|channel|>commentary json<|message|>" }}
-            {{- tool_call.arguments|tojson }}
+            {{- "functions." + tool_call.name + "<|channel|>commentary " }}
+            {{- (tool_call.content_type if tool_call.content_type is defined else "json") + "<|message|>" }}
+            {%- if tool_call.arguments is string %}
+                {{- tool_call.arguments }}
+            {%- else %}
+                {{- tool_call.arguments|tojson }}
+            {%- endif %}
             {{- "<|call|>" }}
             {%- set last_tool_call.name = tool_call.name %}
-        {%- elif "thinking" in message and loop.last and not add_generation_prompt %}
+        {%- elif loop.last and not add_generation_prompt %}
             {#- Only render the CoT if the final turn is an assistant turn and add_generation_prompt is false #}
             {#- This is a situation that should only occur in training, never in inference. #}
-            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
+            {%- if "thinking" in message %}
+                {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
+            {%- endif %}
             {#- <|return|> indicates the end of generation, but <|end|> does not #}
             {#- <|return|> should never be an input to the model, but we include it as the final token #}
             {#- when training, so the model learns to emit it. #}
-            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|return|>" }}
-            {%- set last_tool_call.name = none %}
+            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|end|>" }}
         {%- elif "thinking" in message %}
             {#- CoT is dropped during all previous turns, so we never render it for inference #}
-            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|end|>" }}
+            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.content + "<|end|>" }}
             {%- set last_tool_call.name = none %}
-        {%- elif loop.last and not add_generation_prompt %}
-            {#- <|return|> indicates the end of generation, but <|end|> does not #}
-            {#- <|return|> should never be an input to the model, but we include it as the final token #}
-            {#- when training, so the model learns to emit it. #}
-            {{- "<|start|>assistant<|message|>" + message.content + "<|return|>" }}
         {%- else %}
-            {{- "<|start|>assistant<|message|>" + message.content + "<|end|>" }}
+            {#- CoT is dropped during all previous turns, so we never render it for inference #}
+            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|end|>" }}
             {%- set last_tool_call.name = none %}
         {%- endif %}
     {%- elif message.role == 'tool' -%}
@@ -1569,8 +1600,12 @@ gptoss_template = \
             {{- raise_exception("Message has tool role, but there was no previous assistant message with a tool call!") }}
         {%- endif %}
         {{- "<|start|>functions." + last_tool_call.name }}
-        {{- " to=assistant<|channel|>commentary<|message|>" + message.content|tojson + "<|end|>" }}
-    {%- else -%}
+        {%- if message.content is string %}
+            {{- " to=assistant<|channel|>commentary<|message|>" + message.content + "<|end|>" }}
+        {%- else %}
+            {{- " to=assistant<|channel|>commentary<|message|>" + message.content|tojson + "<|end|>" }}
+        {%- endif %}
+    {%- elif message.role == 'user' -%}
         {{- "<|start|>user<|message|>" + message.content + "<|end|>" }}
     {%- endif -%}
 {%- endfor -%}
