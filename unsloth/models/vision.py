@@ -435,7 +435,6 @@ class FastBaseModel:
         if do_forced_float32: torch_dtype = torch.bfloat16
 
         raise_handler = RaiseUninitialized()
-        print(kwargs, model_name)
         model = auto_model.from_pretrained(
             model_name,
             device_map              = device_map,
@@ -446,7 +445,6 @@ class FastBaseModel:
             # attn_implementation   = attn_implementation,
             **kwargs,
         )
-        print(model)
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
