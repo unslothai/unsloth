@@ -91,6 +91,7 @@ class FastLanguageModel(FastLlamaModel):
         dtype                      = None,
         load_in_4bit               = True,
         load_in_8bit               = False,
+        load_in_16bit              = False,
         full_finetuning            = False,
         token                      = None,
         device_map                 = "sequential",
@@ -110,13 +111,14 @@ class FastLanguageModel(FastLlamaModel):
         disable_log_stats          = True,
         *args, **kwargs,
     ):
-        if load_in_8bit or full_finetuning:
+        if load_in_8bit or load_in_16bit or full_finetuning:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
                 max_seq_length             = max_seq_length,
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
                 load_in_8bit               = load_in_8bit,
+                load_in_16bit              = load_in_16bit,
                 full_finetuning            = full_finetuning,
                 token                      = token,
                 device_map                 = device_map,
@@ -342,6 +344,7 @@ class FastLanguageModel(FastLlamaModel):
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
                 load_in_8bit               = load_in_8bit,
+                load_in_16bit              = load_in_16bit,
                 full_finetuning            = full_finetuning,
                 token                      = token,
                 device_map                 = device_map,
@@ -493,6 +496,7 @@ class FastModel(FastBaseModel):
         dtype                      = None,
         load_in_4bit               = True,
         load_in_8bit               = False,
+        load_in_16bit              = False,  # Load model in 16-bit precision (float16/bfloat16)
         full_finetuning            = False,
         token                      = None,
         device_map                 = "sequential",
@@ -525,18 +529,15 @@ class FastModel(FastBaseModel):
         patch_compiled_autograd()
         patch_compiling_bitsandbytes()
 
+        # Check for conflicting loading options
+        loading_options = sum([load_in_4bit, load_in_8bit, load_in_16bit, full_finetuning])
+        if loading_options > 1:
+            raise RuntimeError("Unsloth: Can only use one of load_in_4bit, load_in_8bit, load_in_16bit, or full_finetuning!")
+
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
             load_in_4bit = False
             load_in_8bit = False
-        pass
-
-        if load_in_4bit and load_in_8bit:
-            raise RuntimeError(
-                "Unsloth: Can only load in 4bit or 8bit, not both!\n"\
-                "Also, we by default set `load_in_4bit = True`.\n"\
-                "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`"
-            )
         pass
 
         old_model_name = model_name
@@ -811,6 +812,7 @@ class FastModel(FastBaseModel):
             dtype             = _get_dtype(dtype),
             load_in_4bit      = load_in_4bit,
             load_in_8bit      = load_in_8bit,
+            load_in_16bit     = load_in_16bit,
             full_finetuning   = full_finetuning,
             token             = token,
             device_map        = device_map,
