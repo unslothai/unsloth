@@ -416,8 +416,13 @@ def grpo_trainer_compute_loss(function_name, function):
             raise ValueError("The GRPOTrainer does not support returning outputs")
         # Compute the per-token log probabilities for the model
 
+        #breakpoint()
+
         prompt_ids, prompt_mask = inputs["prompt_ids"], inputs["prompt_mask"]
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
+        pixel_values, image_grid_thw = inputs.get("pixel_values", None), inputs.get("image_grid_thw", None)
+        pixel_attention_mask, image_sizes = inputs.get('pixel_attention_mask',None), inputs.get('image_sizes',None)
+
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         bsz, qlen = input_ids.shape
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
@@ -433,7 +438,6 @@ def grpo_trainer_compute_loss(function_name, function):
             self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy)[0]  # logps
 
         per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep)
-
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
         # https://github.com/huggingface/trl/blob/05bc43e960396581e458195b8388efe6b82cae1f/trl/trainer/grpo_trainer.py#L1328
@@ -444,11 +448,13 @@ def grpo_trainer_compute_loss(function_name, function):
             ref_per_token_logps = None
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
         # x - x.detach() allows for preserving gradients from x
+        #breakpoint()
         advantages = inputs["advantages"]
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         old_hidden_states = inputs.get("old_per_token_logps", None)
+        
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
@@ -474,6 +480,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 completion_mask,
                 self.beta,
                 advantages,
+                pixel_values = pixel_values,
+                image_grid_thw = image_grid_thw,
                 loss_type = self.args.loss_type,
                 epsilon_low = self.epsilon_low,
                 epsilon_high = self.epsilon_high,
@@ -489,6 +497,8 @@ def grpo_trainer_compute_loss(function_name, function):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
+                    pixel_values = pixel_values,
+                    image_grid_thw = image_grid_thw,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
