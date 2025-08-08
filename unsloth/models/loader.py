@@ -81,6 +81,7 @@ from ._utils import (
 global FORCE_FLOAT32
 FORCE_FLOAT32 = [
     "gemma3",
+    "gptoss",
 ]
 
 class FastLanguageModel(FastLlamaModel):
