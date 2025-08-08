@@ -58,7 +58,7 @@ SUPPORTS_QWEN3     = transformers_version >= Version("4.50.3")
 SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
 SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
 SUPPORTS_GEMMA3N   = transformers_version >= Version("4.53.0")
-
+SUPPORTS_GPTOSS    = transformers_version >= Version("4.55.0")
 if SUPPORTS_GEMMA:
     from .gemma  import FastGemmaModel
 if SUPPORTS_GEMMA2:
@@ -81,6 +81,7 @@ from ._utils import (
 global FORCE_FLOAT32
 FORCE_FLOAT32 = [
     "gemma3",
+    "gptoss",
 ]
 
 class FastLanguageModel(FastLlamaModel):
@@ -545,6 +546,7 @@ class FastModel(FastBaseModel):
 
         # Check versions
         lowered_model_name = model_name.lower()
+        os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
         LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
         NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
         # Pixtral
@@ -587,8 +589,21 @@ class FastModel(FastBaseModel):
         elif "falcon-h1" in lowered_model_name:
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                 "float16;torch.float32;torch.float16;"\
-                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16);"
-            os.environ["TRITON_F32_DEFAULT"] = "ieee"
+                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16); "\
+                "os.environ['TRITON_F32_DEFAULT'] = 'ieee';"
+        elif "gpt-oss" in lowered_model_name:
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            # CCE fails on Tesla T4
+            # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
+            os.environ["UNSLOTH_ENABLE_CCE"] = "0"
+            if not load_in_4bit:
+                # Only upcast MoE biases for MXFP4, not BnB
+                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                    "all;None;None;"\
+                    "x = 'gate_up_proj_bias'\n"\
+                    "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
+                    "x = 'down_proj_bias'\n"\
+                    "if hasattr(module, x): setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n;"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:

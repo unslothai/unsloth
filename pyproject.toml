@@ -37,7 +37,7 @@ triton = [
 ]
 
 huggingface = [
-    "unsloth_zoo>=2025.8.1",
+    "unsloth_zoo>=2025.8.3",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0",
@@ -59,6 +59,9 @@ windows=[
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5 ; platform_system == 'Windows'",
     "xformers>=0.0.22.post7 ; platform_system == 'Windows'",
+]
+base = [
+    "unsloth[huggingface]",
 ]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9' and platform_system == 'Linux'",
@@ -381,7 +384,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.8.1",
+    "unsloth_zoo>=2025.8.3",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0",

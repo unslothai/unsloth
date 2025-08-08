@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.8.1"
+__version__ = "2025.8.4"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -76,6 +76,7 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import re
+import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
@@ -138,6 +139,7 @@ warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "triton")
 
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
@@ -211,6 +213,14 @@ try:
     from huggingface_hub.file_download import logger as hub_logger
     hub_logger.addFilter(HideLoggingMessage("hf_xet"))
     del hub_logger
+except:
+    pass
+
+# MXFP4 quantization requires triton >= 3.4.0
+try:
+    from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
+    mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
+    del mxfp4_logger
 except:
     pass
 
@@ -414,6 +424,7 @@ HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
 if DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
+    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True
@@ -578,7 +589,6 @@ UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
-import functools
 from torch._inductor.runtime.hints import DeviceProperties
 
 @functools.lru_cache(None)
