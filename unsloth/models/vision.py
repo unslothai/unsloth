@@ -428,7 +428,13 @@ class FastBaseModel:
             bnb_config.get_loading_attributes = lambda *args, **kwargs: {}
 
         # Cannot be None, since HF now checks for the config
-        if load_in_4bit: kwargs["quantization_config"] = bnb_config
+        if load_in_4bit:
+            # Ignore load_in_4bit / load_in_8bit for MXFP4 - best to get config file
+            if "gpt-oss" in model_name.lower():
+                pass
+            else:
+                kwargs["quantization_config"] = bnb_config
+        pass
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
