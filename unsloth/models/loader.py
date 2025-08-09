@@ -24,6 +24,7 @@ from .llama   import FastLlamaModel, logger
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
 from .cohere  import FastCohereModel
+from .phi     import FastPhiModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
@@ -298,6 +299,8 @@ class FastLanguageModel(FastLlamaModel):
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
+        elif model_type == "phi":
+            dispatch_model = FastPhiModel
         # Temporary disable optimized Cohere until errors match
         # elif model_type == "cohere":
         #     dispatch_model = FastCohereModel
@@ -394,6 +397,12 @@ class FastLanguageModel(FastLlamaModel):
         if hasattr(tokenizer, "add_model_tags"):
             tokenizer.add_model_tags(["unsloth",])
         pass
+
+        # Allow model-specific post patches (e.g., Phi-2 defaults)
+        try:
+            model, tokenizer = dispatch_model.post_patch(model, tokenizer)
+        except Exception:
+            pass
 
         if load_in_4bit:
             # Fix up bitsandbytes config

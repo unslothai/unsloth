@@ -200,3 +200,42 @@ def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
     return Q, K
 pass
+
+
+@torch.compiler.disable
+def fast_partial_rope_embedding(Q, K, cos, sin, rotary_dim: int):
+    """Apply RoPE only to the first rotary_dim features of Q and K using the fast kernel.
+
+    Shapes:
+      Q, K: [bsz, n_heads, seqlen, head_dim]
+      cos, sin: broadcastable to [seqlen, rotary_dim]
+    """
+    if rotary_dim <= 0:
+        return Q, K
+    Q_rot = Q[..., :rotary_dim]
+    K_rot = K[..., :rotary_dim]
+    Q_rot2 = Fast_RoPE_Embedding.apply(Q_rot.transpose(1, 2), cos, sin).transpose(1, 2)
+    K_rot2 = Fast_RoPE_Embedding.apply(K_rot.transpose(1, 2), cos, sin).transpose(1, 2)
+    Q[..., :rotary_dim] = Q_rot2
+    K[..., :rotary_dim] = K_rot2
+    return Q, K
+pass
+
+
+def inplace_partial_rope_embedding(Q, K, cos, sin, position_ids, rotary_dim: int):
+    """Apply RoPE only to the first rotary_dim features of Q and K using the slow kernel.
+
+    Shapes:
+      Q, K: [bsz, n_heads, seqlen, head_dim]
+      cos, sin: broadcastable to [seqlen, rotary_dim]
+    """
+    if rotary_dim <= 0:
+        return Q, K
+    Q_rot = Q[..., :rotary_dim]
+    K_rot = K[..., :rotary_dim]
+    Q_rot2 = Slow_RoPE_Embedding.apply(Q_rot, cos, sin, position_ids)
+    K_rot2 = Slow_RoPE_Embedding.apply(K_rot, cos, sin, position_ids)
+    Q[..., :rotary_dim] = Q_rot2
+    K[..., :rotary_dim] = K_rot2
+    return Q, K
+pass

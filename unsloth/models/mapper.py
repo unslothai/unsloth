@@ -570,6 +570,10 @@ __INT_TO_FLOAT_MAPPER = \
         "microsoft/phi-4",
         "unsloth/phi-4-bnb-4bit",
     ),
+    "unsloth/Phi-2-bnb-4bit" : (
+        "unsloth/Phi-2",
+        "microsoft/Phi-2",
+    ),
     "unsloth/DeepSeek-R1-Distill-Qwen-32B-bnb-4bit" : (
         "unsloth/DeepSeek-R1-Distill-Qwen-32B",
         "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",

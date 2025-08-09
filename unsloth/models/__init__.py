@@ -17,6 +17,7 @@ from .loader  import FastLanguageModel, FastVisionModel, FastTextModel, FastMode
 from .mistral import FastMistralModel
 from .qwen2   import FastQwen2Model
 from .granite import FastGraniteModel
+from .phi     import FastPhiModel
 from .dpo     import PatchDPOTrainer, PatchKTOTrainer
 from ._utils  import is_bfloat16_supported, __version__
 from .rl      import PatchFastRL, vLLMSamplingParams

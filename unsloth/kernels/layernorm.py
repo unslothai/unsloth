@@ -170,6 +170,21 @@ def fast_layernorm(layernorm, X):
 pass
 
 
+# Public helper mirroring RMSNorm API for standard LayerNorm cases
+@torch.compiler.disable
+def fast_layernorm_inference(layernorm, X: torch.Tensor, out_weight: torch.Tensor | None = None):
+    XX = X.to(torch.float32, copy=True)
+    mean = XX.mean(-1, keepdim=True)
+    XX -= mean
+    var = (XX * XX).mean(-1, keepdim=True)
+    var += layernorm.eps if hasattr(layernorm, "eps") else layernorm.variance_epsilon
+    XX *= var.rsqrt_()
+    if out_weight is None:
+        return (XX * layernorm.weight).to(X.dtype)
+    out_weight[:] = layernorm.weight
+    return (XX * out_weight).to(X.dtype)
+
+
 
 def test_layernorm(
     dim = 1024, eps = 1e-5, dtype = torch.float16,
