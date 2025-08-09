@@ -373,7 +373,6 @@ class FastBaseModel:
                 custom_datatype = _custom_datatype
                 # Execute code as well
                 if len(execute_code.strip()) != 0:
-                    print(execute_code)
                     exec(execute_code)
             else:
                 custom_datatype = None
