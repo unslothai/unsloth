@@ -591,8 +591,8 @@ class FastModel(FastBaseModel):
             # since Mamba kernels error out on using lower precision
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                 "float16;torch.float32;torch.float16;"\
-                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): "\
-                "module, os.environ['TRITON_F32_DEFAULT'] = module.to(torch.float16), 'ieee'"
+                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16);"\
+                "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
         elif "gpt-oss" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             # CCE fails on Tesla T4
