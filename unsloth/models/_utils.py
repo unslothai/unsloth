@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.3.19"
+__version__ = "2025.8.4"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
+    "is_vLLM_available",
 
     "prepare_model_for_kbit_training",
     "xformers",
@@ -64,6 +65,8 @@ __all__ = [
     "process_vision_info",
     "unsloth_compile_transformers",
     "patch_fast_lora",
+    "validate_loftq_config",
+    "RaiseUninitialized",
 ]
 
 import torch
@@ -73,8 +76,10 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import re
+import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
+from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -134,6 +139,7 @@ warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "triton")
 
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
@@ -146,11 +152,13 @@ class HideLoggingMessage(logging.Filter):
     def filter(self, x): return not (self.text in x.getMessage())
 pass
 
-# The speedups for torchdynamo mostly come wih GPU Ampere or higher and which is not detected here.
+# The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
 from transformers.training_args import logger as transformers_training_args_logger
 transformers_training_args_logger.addFilter(HideLoggingMessage("The speedups"))
 # torch.distributed process group is initialized, but parallel_mode != ParallelMode.DISTRIBUTED.
 transformers_training_args_logger.addFilter(HideLoggingMessage("torch.distributed"))
+# average_tokens_across_devices is set to True but it is invalid when world size is1
+transformers_training_args_logger.addFilter(HideLoggingMessage("average_tokens_across_devices"))
 del transformers_training_args_logger
 
 # No label_names provided for model class
@@ -178,7 +186,17 @@ except:
 try:
     from transformers.generation.utils import logger as transformers_generation_utils_logger
     transformers_generation_utils_logger.addFilter(HideLoggingMessage("Setting `pad_token_id` to `eos_token_id`"))
+    # "You have set `compile_config`
+    transformers_generation_utils_logger.addFilter(HideLoggingMessage("compile_config"))
     del transformers_generation_utils_logger
+except:
+    pass
+
+# The following generation flags are not valid and may be ignored:
+try:
+    from transformers.generation.configuration_utils import logger as configuration_logger
+    configuration_logger.addFilter(HideLoggingMessage("following generation flags"))
+    del configuration_logger
 except:
     pass
 
@@ -190,9 +208,64 @@ try:
 except:
     pass
 
+# Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed.
+try:
+    from huggingface_hub.file_download import logger as hub_logger
+    hub_logger.addFilter(HideLoggingMessage("hf_xet"))
+    del hub_logger
+except:
+    pass
+
+# MXFP4 quantization requires triton >= 3.4.0
+try:
+    from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
+    mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
+    del mxfp4_logger
+except:
+    pass
+
+# Errors out on
+# Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
+from transformers.modeling_utils import logger as transformers_logger
+class _RaiseUninitialized(logging.Handler):
+    def __init__(self):
+        super().__init__()
+    def emit(self, record):
+        record_lower = str(record).lower()
+        if ("some weights of" in record_lower) and \
+            ("score.weight" not in record_lower) and \
+            ("classifier.weight" not in record_lower):
+            raise Exception(
+                f"Unsloth: Critical error since some weights are not initialized.\n"\
+                f"Please try updating Unsloth, transformers and timm via:\n"\
+                f"`pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo transformers timm`\n"\
+                f"{str(record)}"
+            )
+pass
+class RaiseUninitialized:
+    def __init__(self):
+        self.error_handler = _RaiseUninitialized()
+        transformers_logger.addHandler(self.error_handler)
+    def remove(self):
+        transformers_logger.removeHandler(self.error_handler)
+pass
 
 # Patch get_model_param_count to record correct 4bit / 8bit
 from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
+
+def extract_quant_model_param_count(model):
+    """
+    Calculate quant model param count based on difference in param class. Returns int for param count.
+    """
+    count: int = 0
+    for name, p in model.named_parameters():
+        if p.__class__.__name__ == "Params4bit":
+            count += 2 * p.numel()
+        else:
+            count += p.numel()
+    return count
+pass
+
 def get_model_param_count(model, trainable_only = False):
     """
     Calculate model's total param count. If trainable_only is True then count only those requiring grads
@@ -207,12 +280,9 @@ def get_model_param_count(model, trainable_only = False):
     if (not trainable_only) and \
         hasattr(model, "config") and \
         hasattr(model.config, "quantization_config"):
-
-        billions = re.findall(r"([0-9]{1,})(?:b|B)", model.config.name_or_path)
-        if len(billions) != 0:
-            billions = int(billions[0])
-            s = 1_000_000_000 * billions
-    pass
+        approx = extract_quant_model_param_count(model)
+        if approx is not None:
+            s = approx
     return s
 pass
 import transformers.trainer_pt_utils
@@ -241,15 +311,24 @@ def patch_mistral_nemo_config(config):
     return config
 pass
 
+try:
+    # Some Config files use layer_type_validation
+    # for eg Gemma-2, so we must import it to stop errors.
+    from transformers.configuration_utils import layer_type_validation
+except:
+    pass
 from transformers import __version__ as transformers_version
 from transformers import PretrainedConfig
-model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite"]
+model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
 
 for model_name in model_architectures:
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title()}Config"
-    exec(f"from {config_filepath} import {config_filename}", globals())
+    config_filename = f"{model_name.title().replace('_','')}Config" # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
+    try:
+        exec(f"from {config_filepath} import {config_filename}", globals())
+    except:
+        continue
 
     try:
         config = inspect.getsource(eval(config_filename))
@@ -279,13 +358,20 @@ pass
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 torch_version = torch.__version__
-if Version(torch_version) < Version("2.4.0"):
-    torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
-    torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
-else:
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
-pass
+if DEVICE_TYPE == "cuda":
+    if Version(torch_version) < Version("2.4.0"):
+        torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
+        torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
+    pass
+elif DEVICE_TYPE == "xpu":
+    if Version(torch_version) < Version("2.6.0"):
+        raise RuntimeError("torch.xpu currently only supports torch.version >= 2.6.0")
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 # =============================================
 
 # =============================================
@@ -322,64 +408,71 @@ if is_openai_available():
         def _is_openai_available(): return False
         transformers.utils.is_openai_available = _is_openai_available
     pass
-pass 
+pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-import bitsandbytes as bnb
+if DEVICE_TYPE == "cuda":
+    import bitsandbytes as bnb
+
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
-major_version, minor_version = torch.cuda.get_device_capability()
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
-if major_version >= 8:
-    SUPPORTS_BFLOAT16 = True
-    if _is_package_available("flash_attn"):
-        # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
-        try:
+if DEVICE_TYPE == "cuda":
+    major_version, minor_version = torch.cuda.get_device_capability()
+    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
+
+    if major_version >= 8:
+        SUPPORTS_BFLOAT16 = True
+        if _is_package_available("flash_attn"):
+            # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
             try:
-                # See https://github.com/unslothai/unsloth/issues/1437
-                from flash_attn.flash_attn_interface import flash_attn_gpu
+                try:
+                    # See https://github.com/unslothai/unsloth/issues/1437
+                    from flash_attn.flash_attn_interface import flash_attn_gpu
+                except:
+                    from flash_attn.flash_attn_interface import flash_attn_cuda
+                HAS_FLASH_ATTENTION = True
+
+                # Also check for softcapping
+                from flash_attn import __version__ as flash_attn_version
+                HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
+                if not HAS_FLASH_ATTENTION_SOFTCAPPING:
+                    print(
+                        "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
+                        "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
+                        "To update flash-attn, do the below:\n"\
+                        '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
+                    )
             except:
-                from flash_attn.flash_attn_interface import flash_attn_cuda
-            HAS_FLASH_ATTENTION = True
-
-            # Also check for softcapping
-            from flash_attn import __version__ as flash_attn_version
-            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
-            if not HAS_FLASH_ATTENTION_SOFTCAPPING:
                 print(
-                    "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
-                    "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
-                    "To update flash-attn, do the below:\n"\
-                    '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
+                    "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
+                    "A possible explanation is you have a new CUDA version which isn't\n"\
+                    "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
+                    "We shall now use Xformers instead, which does not have any performance hits!\n"\
+                    "We found this negligible impact by benchmarking on 1x A100."
                 )
-        except:
-            print(
-                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
-                "A possible explanation is you have a new CUDA version which isn't\n"\
-                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
-                "We shall now use Xformers instead, which does not have any performance hits!\n"\
-                "We found this negligible impact by benchmarking on 1x A100."
-            )
 
-            # Stop Flash Attention from importing!
-            import transformers.utils.import_utils
-            transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
-            import transformers.utils
-            transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+                # Stop Flash Attention from importing!
+                import transformers.utils.import_utils
+                transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+                import transformers.utils
+                transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
 
+                HAS_FLASH_ATTENTION = False
+            pass
+        else:
             HAS_FLASH_ATTENTION = False
-        pass
     else:
+        # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
-else:
-    # Tri Dao's benchmark shows xformers is faster for now.
-    HAS_FLASH_ATTENTION = False
-pass
+    pass
+elif DEVICE_TYPE == "xpu":
+    SUPPORTS_BFLOAT16 = True
 
 from transformers.models.llama.modeling_llama import logger
 
@@ -496,14 +589,23 @@ UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
-import functools
+from torch._inductor.runtime.hints import DeviceProperties
+
 @functools.lru_cache(None)
-def is_big_gpu(index):
-    sms = torch.cuda.get_device_properties(index).multi_processor_count
-    if sms < 80:  # V100
-        # log.warning("not enough SMs to use max_autotune_gemm mode")
+def is_big_gpu(index) -> bool:
+
+    if DEVICE_TYPE == "xpu":
+        prop = DeviceProperties.create(torch.device("xpu", index) if type(index) is int else index)
+        min_sms = 16
+    else:
+        prop = DeviceProperties.create(torch.device("cuda", index) if type(index) is int else index)
+        min_sms = 80
+
+    avail_sms = prop.multi_processor_count
+    if avail_sms < min_sms:
         return False
     return True
+
 import torch._inductor.utils
 torch._inductor.utils.is_big_gpu = is_big_gpu
 patch_torch_compile(
@@ -689,8 +791,7 @@ def get_statistics():
         pass
     pass
     try:
-        devices = torch.cuda.device_count()
-        _get_statistics(f"{devices if devices <= 8 else 9}")
+        _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
     except:
         pass
     if disabled: enable_progress_bars()
@@ -716,27 +817,43 @@ BitsAndBytesConfig__init__ = BitsAndBytesConfig__init__.replace(
 )
 exec(BitsAndBytesConfig__init__, globals())
 
-if torch.cuda.device_count() == 1:
+if DEVICE_COUNT == 1:
     from accelerate.utils.dataclasses import DistributedType
-    def _prepare_backend(
-        self, cpu = False, sagemaker_dp = False, backend: str = None,
-    ) -> tuple[str, DistributedType]:
-        return None, DistributedType.NO
-    pass
+    def _prepare_backend(self, *args, **kwargs): return None, DistributedType.NO
     import accelerate.state
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-
-    import accelerate.accelerator
-    prepare = inspect.getsource(accelerate.accelerator.Accelerator.prepare)
-    prepare = prepare.split("\n")
-    spaces = prepare[0].find("def")
-    prepare = "\n".join(x[spaces:] for x in prepare)
-    x = "for obj in args:"
-    s = " "*spaces
-    prepare = prepare.replace(x, f'self.state.distributed_type = DistributedType.NO\n{s}{x}', 1)
-    exec(prepare, globals())
-    accelerate.accelerator.Accelerator.prepare = prepare
+    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
 pass
+
+# to move multiple tensors to the same device
+def move_to_device(target_device, *tensors):
+    """
+    Move multiple tensors to target device if they're not already there.
+
+    Args:
+        target_device: The target device to move tensors to
+        *tensors: Variable number of tensors to potentially move
+
+    Returns:
+        tuple: The tensors on the target device (same objects if already on device, new if moved)
+    """
+    if isinstance(target_device, int):
+        target_device = torch.device(target_device)
+    elif isinstance(target_device, str):
+        # if string we expect it to be a device name like "cuda:0"
+        target_device = torch.device(target_device)
+    elif isinstance(target_device, torch.device):
+        pass
+    else:
+        raise ValueError(f"Invalid target device: {target_device}")
+    pass
+    moved_tensors = []
+    for tensor in tensors:
+        if tensor.device != target_device:
+            moved_tensors.append(tensor.to(target_device))
+        else:
+            moved_tensors.append(tensor)
+    return tuple(moved_tensors) if len(moved_tensors) > 1 else moved_tensors[0]
 
 import transformers.utils.quantization_config
 transformers.utils.quantization_config.BitsAndBytesConfig.__init__ = _BitsAndBytesConfig__init__
@@ -790,6 +907,9 @@ def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
 pass
 
+def is_vLLM_available():
+    return _is_package_available("vllm")
+pass
 
 # Patches models to add RoPE Scaling
 def patch_linear_scaling(
@@ -1032,7 +1152,7 @@ pass
 
 
 def patch_gradient_accumulation_fix(Trainer):
-    # Fixes gradient accumulation 
+    # Fixes gradient accumulation
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
@@ -1106,10 +1226,10 @@ def patch_gradient_accumulation_fix(Trainer):
         "\2if num_items_in_batch is None:\n"\
         "\3loss = loss / self.args.gradient_accumulation_steps\n"\
         "\1self.accelerator.backward(loss, **kwargs)",
-        
+
         function,
     )
-    
+
     exec(function, globals())
     Trainer.training_step = _unsloth_training_step
 pass
@@ -1160,6 +1280,7 @@ def unsloth_compile_transformers(
     import_from_cache       = False,
     disable                 = False,
     return_logits           = False,
+    unsloth_force_compile   = False,
 ):
     if Version(torch_version) < Version("2.4.0"):
         print(
@@ -1170,12 +1291,12 @@ def unsloth_compile_transformers(
         )
         return
     pass
-    if trust_remote_code:
+    if trust_remote_code and unsloth_force_compile == False:
         print(
             "Unsloth: We can't trace models if `trust_remote_code = True`, "\
             "so turning off some optimizations!"
         )
-        return
+        return model_types, False
     model_types = list(dict().fromkeys(model_types).keys())
     if disable: return model_types, False
 
@@ -1252,3 +1373,63 @@ if USE_MODELSCOPE:
         raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
     pass
 pass
+
+
+def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
+    from peft import LoraConfig
+
+    if loftq_config is None: loftq_config = {}
+
+    signature = str(inspect.signature(LoraConfig))
+    SUPPORTS_LOFTQ  = "loftq_config" in signature
+
+    if lora_dropout != 0:
+        logger.warning_once(
+            f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"\
+            f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
+        )
+    pass
+
+    if bias != "none":
+        logger.warning_once(
+            f"Unsloth: bias = `none` is supported for fast patching. You are using bias = {bias}.\n"\
+            f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
+        )
+    pass
+
+    if not (type(init_lora_weights) is bool or \
+        init_lora_weights == "gaussian" or init_lora_weights == "loftq"):
+        raise ValueError(
+            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq"].'
+        )
+    pass
+
+    if init_lora_weights == "loftq":
+
+        if not SUPPORTS_LOFTQ:
+            import peft
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support LoftQ init.\n"\
+                "Please install PEFT 0.7.2 or higher.\n"\
+                "You can also install from source: `pip install git+https://github.com/huggingface/peft.git"
+            )
+        pass
+
+        if loftq_config == {}:
+            from peft import LoftQConfig
+            logger.warning_once(
+                "Unsloth: init_lora_weights = `loftq` is set, but `loftq_config` is None.\n"\
+                "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
+            )
+            loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
+        pass
+
+        if hasattr(model.config, "quantization_config"):
+            raise ValueError(
+                "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"\
+                "Reload your model without any quantization by setting `load_in_4bit = False`."
+            )
+        pass
+    pass
+
+    return loftq_config

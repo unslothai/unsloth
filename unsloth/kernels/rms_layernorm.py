@@ -15,13 +15,13 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_cuda_device
+from .utils import calculate_settings, torch_gpu_device
 
 @triton.jit
 def _rms_layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W, W_row_stride,
+    Y, Y_row_stride : tl.constexpr,
+    X, X_row_stride : tl.constexpr,
+    W, W_row_stride : tl.constexpr,
     r, r_row_stride : tl.constexpr,
     n_cols     : tl.constexpr,
     eps        : tl.constexpr,
@@ -54,10 +54,10 @@ pass
 
 
 def _rms_layernorm_backward(
-    dY, dY_row_stride,
-    dX, dX_row_stride,
-    X,   X_row_stride,
-    W,   W_row_stride,
+    dY, dY_row_stride : tl.constexpr,
+    dX, dX_row_stride : tl.constexpr,
+    X,   X_row_stride : tl.constexpr,
+    W,   W_row_stride : tl.constexpr,
     r,   r_row_stride : tl.constexpr,
     # dW, dW_row_stride,
     n_cols     : tl.constexpr,
@@ -106,9 +106,9 @@ _rms_layernorm_backward = triton.heuristics(
 
 @triton.jit
 def _gemma_rms_layernorm_forward(
-    Y, Y_row_stride,
-    X, X_row_stride,
-    W, W_row_stride,
+    Y, Y_row_stride : tl.constexpr,
+    X, X_row_stride : tl.constexpr,
+    W, W_row_stride : tl.constexpr,
     r, r_row_stride : tl.constexpr,
     n_cols     : tl.constexpr,
     eps        : tl.constexpr,
@@ -156,7 +156,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         r = torch.empty(n_rows, dtype = torch.float32, device = device)
 
         fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
-        with torch_cuda_device(device):
+        with torch_gpu_device(device):
             fx[(n_rows,)](
                 Y, Y.stride(0),
                 X, X.stride(0),
@@ -186,7 +186,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         # dW = X
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
 
-        with torch_cuda_device(dY.device):
+        with torch_gpu_device(dY.device):
             _rms_layernorm_backward[(n_rows,)](
                 dY, dY.stride(0),
                 dX, dX.stride(0),

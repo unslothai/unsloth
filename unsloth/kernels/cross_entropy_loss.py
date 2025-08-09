@@ -20,7 +20,7 @@ from .utils import (
     MAX_FUSED_SIZE,
     triton_tanh,
     triton_cast,
-    torch_cuda_device,
+    torch_gpu_device,
 )
 from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
@@ -107,7 +107,7 @@ _cross_entropy_forward = triton.heuristics(
 
 def _chunked_cross_entropy_forward(
     logits_ptr        ,
-    logits_row_stride ,
+    logits_row_stride : tl.constexpr,
     loss_ptr          ,
     logsumexp_ptr     ,
     labels_ptr        ,
@@ -191,9 +191,9 @@ _chunked_cross_entropy_forward = triton.heuristics(
 
 def _cross_entropy_backward(
     logits_ptr        ,
-    logits_row_stride ,
+    logits_row_stride : tl.constexpr,
     dloss_ptr         ,
-    dloss_row_stride  ,
+    dloss_row_stride  : tl.constexpr,
     logsumexp_ptr     ,
     labels_ptr        ,
     VOCAB_SIZE        : tl.constexpr,
@@ -301,7 +301,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
             logsumexp = torch.empty(n_rows, dtype = torch.float32, device = device)
 
-            with torch_cuda_device(device):
+            with torch_gpu_device(device):
                 _cross_entropy_forward[(n_rows,)](
                     logits, logits.stride(0),
                     losses,
@@ -319,7 +319,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             # For large vocabs > 65336 like Gemma 256K
             logsumexp = torch.empty((n_rows, n_chunks,), dtype = torch.float32, device = device)
 
-            with torch_cuda_device(device):
+            with torch_gpu_device(device):
                 _chunked_cross_entropy_forward[(n_rows, n_chunks,)](
                     logits, logits.stride(0),
                     losses,
@@ -363,7 +363,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         div, mod = divmod(vocab_size, BLOCK_SIZE)
         n_blocks : int = div + (mod != 0)
 
-        with torch_cuda_device(dlosses.device):
+        with torch_gpu_device(dlosses.device):
             _cross_entropy_backward[(n_rows, n_blocks,)](
                 logits,   logits.stride(0),
                 dlosses, dlosses.stride(0),

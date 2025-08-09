@@ -70,6 +70,7 @@ LLAMA_WEIGHTS = (
 LLAMA_LAYERNORMS = (
     "input_layernorm", "post_attention_layernorm",
     "pre_feedforward_layernorm", "post_feedforward_layernorm",
+    "self_attn.q_norm", "self_attn.k_norm",
 )
 
 # https://github.com/ggerganov/llama.cpp/blob/master/examples/quantize/quantize.cpp#L19
@@ -887,11 +888,14 @@ def install_llama_cpp_old(version = -10):
         os.path.exists("llama.cpp/llama-quantize.exe") or
         os.path.exists("llama.cpp/llama-quantize") or
         os.path.exists("llama.cpp/quantize.exe") or
-        os.path.exists("llama.cpp/quantize")
+        os.path.exists("llama.cpp/quantize") or
+        os.path.exists("llama.cpp/build/bin/llama-quantize") or
+        os.path.exists("llama.cpp/build/bin/quantize")
     ):
         raise RuntimeError(
             "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
-            "But we expect this file to exist! Maybe the llama.cpp developers changed the name or check extension of the llama-quantize file."
+            "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
+            "But we expect this file to exist! Check if the file exists under llama.cpp and investigate the building process of llama.cpp (make/cmake)!"
         )
     pass
 pass
@@ -1081,10 +1085,15 @@ def save_to_gguf(
             quantize_location = "llama.cpp/llama-quantize.exe"
         elif os.path.exists("llama.cpp/llama-quantize"):
             quantize_location = "llama.cpp/llama-quantize"
+        elif os.path.exists("llama.cpp/build/bin/llama-quantize"):
+            quantize_location = "llama.cpp/build/bin/llama-quantize"
+        elif os.path.exists("llama.cpp/build/bin/quantize"):
+            quantize_location = "llama.cpp/build/bin/quantize"
         else:
             raise RuntimeError(
-                "Unsloth: The file ('llama.cpp/llama-quantize' or 'llama.cpp/llama-quantize.exe' if you are on Windows WSL) or 'llama.cpp/quantize' does not exist.\n"\
-                "But we expect this file to exist! Maybe the llama.cpp developers changed the name or check extension of the llama-quantize file."
+                "Unsloth: The file 'llama.cpp/llama-quantize' or `llama.cpp/quantize` does not exist.\n"\
+                "We've also double checked the building directory under 'llama.cpp/build/bin/'.\n"\
+                "But we expect this file to exist! Check if the file exists under llama.cpp and investigate the building process of llama.cpp (make/cmake)!"
             )
         pass
 
@@ -1616,9 +1625,9 @@ def create_ollama_modelfile(tokenizer, gguf_location):
 pass
 
 def create_ollama_model(
-    username: str, 
-    model_name: str, 
-    tag: str, 
+    username: str,
+    model_name: str,
+    tag: str,
     modelfile_path: str
 ):
     try:
@@ -1702,7 +1711,7 @@ def push_to_ollama(
     with open(f"Modelfile_{model_name}", "w") as f:
         f.write(model_file)
         f.close()
-    
+
     create_ollama_model(
         username=username,
         model_name=model_name,
@@ -1716,7 +1725,7 @@ def push_to_ollama(
         tag=tag
     )
 
-    print("Succesfully pushed to ollama")
+    print("Successfully pushed to ollama")
 
 
 
@@ -2231,6 +2240,7 @@ from unsloth_zoo.llama_cpp import (
 def save_to_gguf_generic(
     model,
     save_directory,
+    quantization_method = None,
     quantization_type = "Q8_0",
     repo_id = None,
     token = None,
@@ -2243,29 +2253,63 @@ def save_to_gguf_generic(
         install_llama_cpp(just_clone_repo = True)
     pass
 
-    metadata = _convert_to_gguf(
-        save_directory,
-        print_output = True,
-        quantization_type = quantization_type,
-    )
-    if repo_id is not None:
-        prepare_saving(
-            model,
-            repo_id,
-            push_to_hub = True,
-            max_shard_size = "50GB",
-            private = True,
-            token = token,
-        )
+    # Use old style quantization_method
+    new_quantization_methods = []
+    if quantization_method is not None:
+        # Convert quantization_method to list
+        if   isinstance(quantization_method, list):  pass
+        elif isinstance(quantization_method, str):   quantization_method = [ quantization_method, ]
+        elif isinstance(quantization_method, tuple): quantization_method = list(quantization_method)
+        else:
+            raise TypeError("Unsloth: quantization_method can only be a string or a list of strings")
+        pass
+        for i, quant_method in enumerate(quantization_method):
+            quant_method = quant_method.lower()
+            if   quant_method == "not_quantized":  quant_method = "f16"
+            elif quant_method == "fast_quantized": quant_method = "q8_0"
+            elif quant_method == "quantized":      quant_method = "q4_k_m"
+            elif quant_method is None:             quant_method = "q8_0"
+            new_quantization_methods.append(quant_method.lower())
+        pass
+    else:
+        new_quantization_methods.append(quantization_type.lower())
+    # Check if wrong method
+    for quant_method in new_quantization_methods:
+        if quant_method not in ALLOWED_QUANTS.keys():
+            error = f"Unsloth: Quant method = [{quant_method}] not supported. Choose from below:\n"
+            for key, value in ALLOWED_QUANTS.items():
+                error += f"[{key}] => {value}\n"
+            raise RuntimeError(error)
+        pass
+    pass
 
-        from huggingface_hub import HfApi
-        api = HfApi(token = token)
-        api.upload_folder(
-            folder_path = save_directory,
-            repo_id = repo_id,
-            repo_type = "model",
-            allow_patterns = ["*.gguf"],
+    # Go through all types and save individually - somewhat inefficient
+    # since we save F16 / BF16 multiple times
+    for quantization_type in new_quantization_methods:
+        metadata = _convert_to_gguf(
+            save_directory,
+            print_output = True,
+            quantization_type = quantization_type,
         )
+        if repo_id is not None:
+            prepare_saving(
+                model,
+                repo_id,
+                push_to_hub = True,
+                max_shard_size = "50GB",
+                private = True,
+                token = token,
+            )
+
+            from huggingface_hub import HfApi
+            api = HfApi(token = token)
+            api.upload_folder(
+                folder_path = save_directory,
+                repo_id = repo_id,
+                repo_type = "model",
+                allow_patterns = ["*.gguf"],
+            )
+        pass
     pass
     return metadata
 pass
@@ -2301,6 +2345,17 @@ def unsloth_generic_save(
     maximum_memory_usage : float = 0.9,
 ):
     if token is None and push_to_hub: token = get_token()
+
+    if save_method == "merged_4bit":
+        raise RuntimeError(
+            "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"\
+            "to merge to GGUF or others later on. I suggest you to do this as a final step\n"\
+            "if you're planning to do multiple saves.\n"\
+            "If you are certain, change `save_method` to `merged_4bit_forced`."
+        )
+    elif save_method == "merged_4bit_forced":
+        save_method = "merged_4bit"
+
     merge_and_overwrite_lora(
         get_model_name,
         model                = model,
@@ -2309,6 +2364,7 @@ def unsloth_generic_save(
         push_to_hub          = push_to_hub,
         private              = private,
         token                = token,
+        save_method          = save_method,
         output_dtype         = None,
         low_disk_space_usage = True,
         use_temp_file        = False,
@@ -2503,8 +2559,8 @@ def patch_saving_functions(model, vision = False):
     if not vision:
         if hasattr(model, "config"):
             # Counteract tokenizers
-            model.push_to_hub_merged     = types.MethodType(unsloth_push_to_hub_merged,                    model)
-            model.save_pretrained_merged = types.MethodType(unsloth_save_pretrained_merged,                model)
+            model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,                    model)
+            model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged,                model)
             model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
             model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
             model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)

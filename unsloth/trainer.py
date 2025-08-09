@@ -66,12 +66,11 @@ try:
 except:
     from transformers import TrainingArguments
 pass
-@dataclass
+
 class UnslothTrainingArguments(TrainingArguments):
-    embedding_learning_rate : Optional[float] = field(
-        default = None,
-        metadata = {"help" : "Different learning rates for embeddings and lm_head."}
-    )
+    def __init__(self, embedding_learning_rate: float = None, *args, **kwargs):
+        embedding_learning_rate = embedding_learning_rate
+        super().__init__(*args, **kwargs)
 pass
 
 
@@ -194,8 +193,15 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             config_dict.update(additional_config_kwargs)
 
             # Create Config with all the collected parameters
-            config = config_class(**config_dict)
-            
+            # Reinitialising config class with parameters (that were none initially but populated on first init)
+            # causes the 2nd init to fail as there are mutual exclusive checks on pairs of parameters.
+            # Refer: https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_config.py#L499-L502 for example
+            # So we only create config class if the previous init was not TrainingArguments
+            if not isinstance(training_args, TrainingArguments):
+                config = config_class(**config_dict)
+            else:
+                config = training_args
+
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config
