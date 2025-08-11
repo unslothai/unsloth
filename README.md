@@ -10,7 +10,7 @@
 <a href="https://discord.com/invite/unsloth"><img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/Discord button.png" width="165"></a>
 <a href="https://docs.unsloth.ai"><img src="https://raw.githubusercontent.com/unslothai/unsloth/refs/heads/main/images/Documentation%20Button.png" width="137"></a>
 
-### Finetune Gemma 3n, Qwen3, Llama 4, Phi-4 & Mistral 2x faster with 80% less VRAM!
+### Finetune gpt-oss, Gemma 3n, Qwen3, Llama 4, & Mistral 2x faster with 80% less VRAM!
 
 ![](https://i.ibb.co/sJ7RhGG/image-41.png)
 
@@ -46,7 +46,7 @@ pip install unsloth
 For Windows install instructions, see [here](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
 
 ## 🦥 Unsloth.ai News
-- 📣 **gpt-oss** by OpenAI: [Read Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
+- 📣 **gpt-oss** by OpenAI: For details on our bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
 - 📣 **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
 - 📣 **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
 - 📣 **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
