@@ -304,7 +304,7 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__move_model_to_vllm)
 def grpo_trainer__get_per_token_logps(function_name, function):
     if function_name != "_get_per_token_logps": return function
 
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
+    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, compute_efficient = False):
         if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return None # Unsloth efficient GRPO
         # Otherwise, calculate normally:
@@ -350,46 +350,58 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     if function_name != "_get_per_token_logps_and_entropies": return function
 
     # Just copy over from _get_per_token_logps replacement function above. For now this returns None anyway
-    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None, compute_entropy = False, *args, **kwargs):
-        if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
-            return None, None  # logps, entropies Unsloth efficient GRPO
-        # Otherwise, calculate normally:
-        if not hasattr(self, '_autocast_dtype'):
-            self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
-            if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float16
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None, 
+                                           compute_entropy = False, compute_efficient = False, *args, **kwargs):
+        # if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
+        #     return None, None  # logps, entropies Unsloth efficient GRPO
+        if compute_efficient:
+            return None, None
+        else: 
+            # Otherwise, calculate normally:
+            if not hasattr(self, '_autocast_dtype'):
+                self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
+                if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1': self._autocast_dtype = torch.float16
 
-        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-        with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
-            # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            logits = model(
-                input_ids = input_ids,
-                attention_mask = attention_mask,
-                logits_to_keep = logits_to_keep + 1,
-            ).logits
+            pixel_values, image_grid_thw = kwargs.get("pixel_values", None), kwargs.get("image_grid_thw", None)
+            pixel_attention_mask, image_sizes = kwargs.get('pixel_attention_mask',None), kwargs.get('image_sizes',None)
 
-            entropies = None
-            if compute_entropy:
-                from trl.trainer.utils import entropy_from_logits
-                entropies = entropy_from_logits(logits)
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+            with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
+                # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+                logits = model(
+                    input_ids = input_ids,
+                    attention_mask = attention_mask,
+                    pixel_values = pixel_values,
+                    image_grid_thw = image_grid_thw,
+                    pixel_attention_mask = pixel_attention_mask,
+                    image_sizes = image_sizes,
+                    logits_to_keep = logits_to_keep + 1,
+                ).logits
+                pass
 
-            # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-            return logits, entropies  # logps, entropies
-            # input_ids = input_ids[:, -logits_to_keep:]
-            # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
-            # See https://github.com/huggingface/trl/issues/2770
-            # logits = logits[:, -logits_to_keep:]
-            # return logits
-            # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
-            # logits = logits / self.temperature
-            # logps = selective_log_softmax(logits, input_ids)
+                entropies = None
+                if compute_entropy:
+                    from trl.trainer.utils import entropy_from_logits
+                    entropies = entropy_from_logits(logits)
+                #breakpoint()
+                # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+                return logits, entropies  # logps, entropies
+                # input_ids = input_ids[:, -logits_to_keep:]
+                # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
+                # See https://github.com/huggingface/trl/issues/2770
+                # logits = logits[:, -logits_to_keep:]
+                # return logits
+                # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+                # logits = logits / self.temperature
+                # logps = selective_log_softmax(logits, input_ids)
 
-            # row_indices, col_indices = torch.where(logps < -20)
+                # row_indices, col_indices = torch.where(logps < -20)
 
-            # # Method 1: Check if tensors have elements
-            # if len(row_indices) > 0 and len(col_indices) > 0:
-            #     breakpoint()  # Breakpoint triggered here
-            #     print("Found high values!")
-            # return  logps #  compute logprobs for the input tokens
+                # # Method 1: Check if tensors have elements
+                # if len(row_indices) > 0 and len(col_indices) > 0:
+                #     breakpoint()  # Breakpoint triggered here
+                #     print("Found high values!")
+                # return  logps #  compute logprobs for the input tokens
         pass
     pass
 
@@ -432,23 +444,23 @@ def grpo_trainer_compute_loss(function_name, function):
         _logits_to_keep = logits_to_keep
 
         get_logps_func = \
-            lambda model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False: \
-            self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep) \
+            lambda model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False, compute_efficient = False: \
+            self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep, compute_efficient) \
             if hasattr(self, "_get_per_token_logps") else \
-            self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy)[0]  # logps
-
-        per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep)
+            self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, compute_efficient)[0]  # logps
+        #breakpoint()
+        per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep, compute_efficient = True)
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
         # https://github.com/huggingface/trl/blob/05bc43e960396581e458195b8388efe6b82cae1f/trl/trainer/grpo_trainer.py#L1328
-        if self.beta != 0.0:
-            with torch.inference_mode(), model.disable_adapter():
-                ref_per_token_logps = per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep)
-        else:
-            ref_per_token_logps = None
+        # if self.beta != 0.0:
+        #     with torch.inference_mode(), model.disable_adapter():
+        #         ref_per_token_logps = per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep)
+        # else:
+        #     ref_per_token_logps = None
+        ref_hidden_states = inputs.get("ref_per_token_logps", None)
         # per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
         # x - x.detach() allows for preserving gradients from x
-        #breakpoint()
         advantages = inputs["advantages"]
         # per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1)
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
@@ -465,15 +477,16 @@ def grpo_trainer_compute_loss(function_name, function):
         logit_scale_divide = getattr(model.config, "logits_scaling", 0) # Granite
         if logit_scale_divide is None: logit_scale_divide = 0
 
-
         if per_token_logps is not None:
 
-            if ref_per_token_logps is not None:
-                ref_per_token_logps = ref_per_token_logps[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            if ref_hidden_states is not None:
+                ref_hidden_states = ref_hidden_states[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            if old_hidden_states is not None:
+                old_hidden_states = old_hidden_states[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             per_token_logps = per_token_logps[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
 
             loss, completion_length, mean_kl = grpo_compute_loss_slow(
-                ref_per_token_logps,
+                ref_hidden_states,
                 per_token_logps,
                 old_hidden_states,
                 input_ids,
@@ -493,6 +506,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 logit_scale_divide = logit_scale_divide,
             )
         else:
+            #breakpoint()
             if hasattr(self.args, "loss_type"):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
                     trainer = self,
@@ -503,6 +517,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     completion_mask = completion_mask,
                     advantages = advantages,
                     old_hidden_states = old_hidden_states,
+                    ref_hidden_states = ref_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
                     epsilon_low = self.epsilon_low,
@@ -524,6 +539,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     completion_mask = completion_mask,
                     advantages = advantages,
                     old_hidden_states = old_hidden_states,
+                    ref_hidden_states = ref_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                     temperature = self.args.temperature,
                     logit_softcapping = logit_softcapping,
