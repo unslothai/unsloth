@@ -496,6 +496,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 pixel_values = pixel_values,
                 image_grid_thw = image_grid_thw,
                 loss_type = self.args.loss_type,
+                importance_sampling_level = self.importance_sampling_level,
                 epsilon_low = self.epsilon_low,
                 epsilon_high = self.epsilon_high,
                 max_completion_length = self.args.max_completion_length,
@@ -506,7 +507,6 @@ def grpo_trainer_compute_loss(function_name, function):
                 logit_scale_divide = logit_scale_divide,
             )
         else:
-            #breakpoint()
             if hasattr(self.args, "loss_type"):
                 loss, completion_length, mean_kl = grpo_accumulated_loss(
                     trainer = self,
@@ -520,6 +520,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     ref_hidden_states = ref_hidden_states,
                     n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
+                    importance_sampling_level = self.importance_sampling_level,
                     epsilon_low = self.epsilon_low,
                     epsilon_high = self.epsilon_high,
                     max_completion_length = self.args.max_completion_length,
