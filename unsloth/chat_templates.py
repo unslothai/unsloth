@@ -1257,9 +1257,6 @@ gemma3n_ollama = \
 gemma3n_template_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma-3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None # No system message in Gemma-3n
-
-CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
 pass
 
 # =========================================== GPT-OSS
