@@ -1794,9 +1794,6 @@ type {{ .Function.Name }} = () => any;
 gptoss_template_template_eos_token = "<|return|>"
 CHAT_TEMPLATES["gpt-oss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gpt-oss"] = None # No system message in GPT-oss
-
-CHAT_TEMPLATES["gptoss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gptoss"] = None # No system message in GPT-oss
 pass
 
 # =========================================== Qwen3-Instruct
