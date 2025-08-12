@@ -1010,9 +1010,6 @@ PARAMETER num_predict 32768
 gemma3_template_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma-3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma-3"] = None # No system message in Gemma-3
-
-CHAT_TEMPLATES["gemma3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma3"] = None # No system message in Gemma-3
 pass
 
 # =========================================== Qwen-3
