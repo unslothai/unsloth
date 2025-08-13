@@ -111,6 +111,14 @@ class FastLanguageModel(FastLlamaModel):
         disable_log_stats          = True,
         *args, **kwargs,
     ):
+        # Login to allow private models
+        if token is None: token = get_token()
+        if token is not None:
+            try:
+                from huggingface_hub import login
+                login(token = token)
+            except:
+                pass
         if load_in_8bit or full_finetuning:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
@@ -513,6 +521,13 @@ class FastModel(FastBaseModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
+        # Login to allow private models
+        if token is not None:
+            try:
+                from huggingface_hub import login
+                login(token = token)
+            except:
+                pass
         if whisper_language is not None: assert(type(whisper_language) is str)
         if whisper_task is not None: assert(type(whisper_task) is str)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
@@ -587,10 +602,12 @@ class FastModel(FastBaseModel):
             if transformers_version < Version("4.53.0"):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
         elif "falcon-h1" in lowered_model_name:
+            # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
+            # since Mamba kernels error out on using lower precision
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                 "float16;torch.float32;torch.float16;"\
-                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16); "\
-                "os.environ['TRITON_F32_DEFAULT'] = 'ieee';"
+                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16);"\
+                "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
         elif "gpt-oss" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             # CCE fails on Tesla T4
