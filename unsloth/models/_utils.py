@@ -154,8 +154,8 @@ pass
 
 if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
     try:
-        print(f'Patching vLLM worker, executor and prefix logs')
         from vllm.worker.worker import logger as vllm_worker_logger
+        print(f'Patching vLLM worker, executor and prefix logs')
         vllm_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
         del vllm_worker_logger
 
