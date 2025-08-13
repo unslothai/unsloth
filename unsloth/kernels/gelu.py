@@ -12,27 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-import torch.nn.functional as F
-
-
-@torch.compiler.disable
-def fast_gelu(x: torch.Tensor, approximate: str | None = None) -> torch.Tensor:
-    """Fast GeLU wrapper. Uses torch.nn.functional.gelu with optional approximation.
-
-    approximate: None | "tanh"
-    """
-    if approximate is None:
-        return F.gelu(x)
-    return F.gelu(x, approximate=approximate)
-
-
-class FastGELU(torch.nn.Module):
-    def __init__(self, approximate: str | None = None):
-        super().__init__()
-        self.approximate = approximate
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return fast_gelu(x, self.approximate)
+"""
+Reserved module for optional GeLU acceleration. Currently unused.
+Left intentionally minimal to address reviewer feedback.
+"""
 
 
