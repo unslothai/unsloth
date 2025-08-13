@@ -81,7 +81,7 @@ from ._utils import (
 global FORCE_FLOAT32
 FORCE_FLOAT32 = [
     "gemma3",
-    "gptoss",
+    "gpt_oss",
 ]
 
 class FastLanguageModel(FastLlamaModel):
@@ -759,7 +759,7 @@ class FastModel(FastBaseModel):
             if model_type_arch != "siglip": break
         global FORCE_FLOAT32
         for disable_name in FORCE_FLOAT32:
-            if (disable_name.lower() == model_type_arch.lower() or \
+            if (disable_name.lower() == model_type_arch.lower().replace("-", "_") or \
                 disable_name.lower() in model_name.lower()) and \
                 ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
