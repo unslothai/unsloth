@@ -152,6 +152,7 @@ class HideLoggingMessage(logging.Filter):
     def filter(self, x): return not (self.text in x.getMessage())
 pass
 
+# Stop vLLM messages
 if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
     try:
         from vllm.worker.worker import logger as vllm_worker_logger
@@ -255,6 +256,17 @@ try:
     from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
     mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
     del mxfp4_logger
+except:
+    pass
+
+# You passed `quantization_config` or equivalent parameters
+try:
+    warnings.filterwarnings(
+        action = "ignore",
+        message = r".*quantization_config.*",
+        category = UserWarning,
+        append = True,
+    )
 except:
     pass
 
