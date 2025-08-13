@@ -155,28 +155,36 @@ pass
 if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
     try:
         from vllm.worker.worker import logger as vllm_worker_logger
-        print(f'Patching vLLM worker, executor and prefix logs')
         vllm_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
         del vllm_worker_logger
-
+    except:
+        pass
+    try:
         from vllm.v1.worker.gpu_worker import logger as vllm_gpu_worker_logger
         vllm_gpu_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
         del vllm_gpu_worker_logger
-
+    except:
+        pass
+    try:
         from vllm.executor.executor_base import logger as vllm_executor_logger
         vllm_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
         vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
         del vllm_executor_logger
-
+    except:
+        pass
+    try:
         from vllm.core.block.prefix_caching_block import logger as vllm_prefix_caching_logger
         vllm_prefix_caching_logger.addFilter(HideLoggingMessage("reset prefix cache"))
         del vllm_prefix_caching_logger
-
+    except:
+        pass
+    try:
         from vllm.v1.core.block_pool import logger as vllm_block_pool_logger
         vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
         del vllm_block_pool_logger
-    except Exception as e:
+    except:
         pass
+pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
 from transformers.training_args import logger as transformers_training_args_logger
