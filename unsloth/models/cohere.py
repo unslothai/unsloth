@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .llama import *
+from ..kernels import fast_layernorm_inference
 from ._utils import __version__
 try:
     from transformers.models.cohere.modeling_cohere import (
