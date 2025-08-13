@@ -111,6 +111,14 @@ class FastLanguageModel(FastLlamaModel):
         disable_log_stats          = True,
         *args, **kwargs,
     ):
+        # Login to allow private models
+        if token is None: token = get_token()
+        if token is not None:
+            try:
+                from huggingface_hub import login
+                login(token = token)
+            except:
+                pass
         if load_in_8bit or full_finetuning:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
@@ -513,6 +521,13 @@ class FastModel(FastBaseModel):
         *args, **kwargs,
     ):
         if token is None: token = get_token()
+        # Login to allow private models
+        if token is not None:
+            try:
+                from huggingface_hub import login
+                login(token = token)
+            except:
+                pass
         if whisper_language is not None: assert(type(whisper_language) is str)
         if whisper_task is not None: assert(type(whisper_task) is str)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
