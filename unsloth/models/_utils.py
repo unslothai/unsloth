@@ -58,6 +58,7 @@ __all__ = [
     "HAS_CUT_CROSS_ENTROPY",
     "EMPTY_LOGITS",
     "fused_linear_cross_entropy",
+    "unsloth_fused_ce_loss",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
 
@@ -109,6 +110,7 @@ from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
     fused_linear_cross_entropy,
     _unsloth_get_batch_samples,
+    unsloth_fused_ce_loss,
 )
 from unsloth_zoo.vision_utils import (
     process_vision_info,
