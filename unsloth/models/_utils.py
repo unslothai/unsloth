@@ -176,7 +176,7 @@ if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
         vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
         del vllm_block_pool_logger
     except Exception as e:
-        print(f'Unsloth: Failed to patch vLLM standby logger: {e}')
+        pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
 from transformers.training_args import logger as transformers_training_args_logger
