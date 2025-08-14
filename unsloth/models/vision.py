@@ -356,6 +356,7 @@ class FastBaseModel:
         correct_dtype = None
         if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
             custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
+            print(custom_datatype)
             assert custom_datatype.count(";") >= 4
             checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code = custom_datatype.split(";", 4)
 
@@ -371,6 +372,7 @@ class FastBaseModel:
                     bnb_compute_dtype = eval(_bnb_compute_dtype)
                 correct_dtype = bnb_compute_dtype
                 custom_datatype = _custom_datatype
+                print(custom_datatype)
                 # Execute code as well
                 if len(execute_code.strip()) != 0:
                     exec(execute_code)
@@ -458,7 +460,6 @@ class FastBaseModel:
         # Edit data-types
         if custom_datatype is not None:
             for jj, (name, module) in enumerate(model.named_modules()):
-                print(custom_datatype)
                 exec(custom_datatype)
             pass
         pass
