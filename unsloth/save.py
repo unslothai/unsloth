@@ -1530,7 +1530,7 @@ def upload_to_huggingface(
         # We also upload a config.json file
         if create_config:
             import json
-            with open("_temporary_unsloth_config.json", "w") as file:
+            with open("_temporary_unsloth_config.json", "w", encoding = "utf-8") as file:
                 json.dump({"model_type" : model.config.model_type}, file, indent = 4)
             pass
             hf_api.upload_file(
@@ -1708,7 +1708,7 @@ def push_to_ollama(
         gguf_location=gguf_location
     )
 
-    with open(f"Modelfile_{model_name}", "w") as f:
+    with open(f"Modelfile_{model_name}", "w", encoding = "utf-8") as f:
         f.write(model_file)
         f.close()
 
@@ -1872,7 +1872,7 @@ def unsloth_save_pretrained_gguf(
     modelfile_location = None
     if modelfile is not None:
         modelfile_location = os.path.join(new_save_directory, "Modelfile")
-        with open(modelfile_location, "w") as file:
+        with open(modelfile_location, "w", encoding = "utf-8") as file:
             file.write(modelfile)
         pass
         print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
@@ -2050,7 +2050,7 @@ def unsloth_push_to_hub_gguf(
     modelfile_location = None
     if modelfile is not None:
         modelfile_location = os.path.join(new_save_directory, "Modelfile")
-        with open(modelfile_location, "w") as file:
+        with open(modelfile_location, "w", encoding = "utf-8") as file:
             file.write(modelfile)
         pass
         print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
