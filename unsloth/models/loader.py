@@ -625,7 +625,9 @@ class FastModel(FastBaseModel):
                     "if hasattr(module, x): "\
                     "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
                     ""\
-                    "if 'down_projs' in name and hasattr(module, 'compute_dtype'): module.compute_dtype = torch.float32\n"\
+                    "if 'down_projs' in name and hasattr(module, 'compute_dtype') and "\
+                    "torch.amax(dequantize_module_weight(module)) >= 1024:"\
+                    "module.compute_dtype = torch.float32\n"\
                     ";"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
