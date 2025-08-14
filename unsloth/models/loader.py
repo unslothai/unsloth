@@ -615,16 +615,17 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_ENABLE_CCE"] = "0"
             if not load_in_4bit:
                 # Only upcast MoE biases for MXFP4, not BnB
-                # Also set down projection compute dtype to be float32
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                     "all;None;None;"\
                     "x = 'gate_up_proj_bias'\n"\
                     "if hasattr(module, x): "\
                     "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
                     "x = 'down_proj_bias'\n"\
-                    "if hasattr(module, x): "\
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
-                    ""\
+                    ";"
+            else:
+                # Set down projection compute dtype to be float32 for float16 machines
+                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                    "all;None;None;"\
                     "if 'down_projs' in name and hasattr(module, 'compute_dtype') and "\
                     "torch.amax(dequantize_module_weight(module)) >= 1024:"\
                     "module._pre_set_compute_dtype = torch.float32\n"\
