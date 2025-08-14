@@ -1008,6 +1008,38 @@ else:
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ),
+    "unsloth/Qwen3-30B-A3B-Thinking-2507" : (
+        "unsloth/Qwen3-30B-A3B-Thinking-2507",
+        "Qwen/Qwen3-30B-A3B-Thinking-2507",
+    ),
+    "unsloth/Qwen3-30B-A3B-Instruct-2507" : (
+        "unsloth/Qwen3-30B-A3B-Instruct-2507",
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    ),
+    "unsloth/Qwen3-Coder-30B-A3B-Instruct" : (
+        "unsloth/Qwen3-Coder-30B-A3B-Instruct",
+        "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+    ),
+    "unsloth/gpt-oss-20b-unsloth-bnb-4bit" : (
+        "unsloth/gpt-oss-20b",
+        "openai/gpt-oss-20b",
+        "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
+    ),
+    "unsloth/gpt-oss-120b-unsloth-bnb-4bit" : (
+        "unsloth/gpt-oss-120b",
+        "openai/gpt-oss-120b",
+        "unsloth/gpt-oss-120b-unsloth-bnb-4bit",
+    ),
+    "unsloth/Qwen3-4B-Instruct-2507-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-4B-Instruct-2507",
+        "Qwen/Qwen3-4B-Instruct-2507",
+        "unsloth/Qwen3-4B-Instruct-2507-bnb-4bit",
+    ),
+    "unsloth/Qwen3-4B-Thinking-2507-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-4B-Thinking-2507",
+        "Qwen/Qwen3-4B-Thinking-2507",
+        "unsloth/Qwen3-4B-Thinking-2507-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.9"
+__version__ = "2025.8.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -58,6 +58,7 @@ __all__ = [
     "HAS_CUT_CROSS_ENTROPY",
     "EMPTY_LOGITS",
     "fused_linear_cross_entropy",
+    "unsloth_fused_ce_loss",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
 
@@ -76,6 +77,7 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import re
+import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth import devices
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
@@ -117,6 +119,7 @@ if not devices.has_mps:
         HAS_CUT_CROSS_ENTROPY,
         fused_linear_cross_entropy,
         _unsloth_get_batch_samples,
+        unsloth_fused_ce_loss,
     )
     from unsloth_zoo.vision_utils import (
         process_vision_info,
@@ -147,6 +150,7 @@ warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "triton")
 
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
@@ -157,6 +161,41 @@ class HideLoggingMessage(logging.Filter):
     __slots__ = "text",
     def __init__(self, text): self.text = text
     def filter(self, x): return not (self.text in x.getMessage())
+pass
+
+# Stop vLLM messages
+if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
+    try:
+        from vllm.worker.worker import logger as vllm_worker_logger
+        vllm_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
+        del vllm_worker_logger
+    except:
+        pass
+    try:
+        from vllm.v1.worker.gpu_worker import logger as vllm_gpu_worker_logger
+        vllm_gpu_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
+        del vllm_gpu_worker_logger
+    except:
+        pass
+    try:
+        from vllm.executor.executor_base import logger as vllm_executor_logger
+        vllm_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
+        vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
+        del vllm_executor_logger
+    except:
+        pass
+    try:
+        from vllm.core.block.prefix_caching_block import logger as vllm_prefix_caching_logger
+        vllm_prefix_caching_logger.addFilter(HideLoggingMessage("reset prefix cache"))
+        del vllm_prefix_caching_logger
+    except:
+        pass
+    try:
+        from vllm.v1.core.block_pool import logger as vllm_block_pool_logger
+        vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
+        del vllm_block_pool_logger
+    except:
+        pass
 pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
@@ -223,6 +262,25 @@ try:
 except:
     pass
 
+# MXFP4 quantization requires triton >= 3.4.0
+try:
+    from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
+    mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
+    del mxfp4_logger
+except:
+    pass
+
+# You passed `quantization_config` or equivalent parameters
+try:
+    warnings.filterwarnings(
+        action = "ignore",
+        message = r".*quantization_config.*",
+        category = UserWarning,
+        append = True,
+    )
+except:
+    pass
+
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
@@ -230,12 +288,16 @@ class _RaiseUninitialized(logging.Handler):
     def __init__(self):
         super().__init__()
     def emit(self, record):
-        if "some weights of" in str(record).lower():
+        record_lower = str(record).lower()
+        if ("some weights of" in record_lower) and \
+            ("score.weight" not in record_lower) and \
+            ("classifier.weight" not in record_lower):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
                 f"`pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo transformers timm`\n"\
-                f"".str(record))
+                f"{str(record)}"
+            )
 pass
 class RaiseUninitialized:
     def __init__(self):
@@ -420,6 +482,7 @@ HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
 if DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
+    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True

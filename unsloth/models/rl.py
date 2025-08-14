@@ -421,6 +421,20 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_post += neftune_check
     pass
 
+    # Add accelerator scaler to model
+    if "model" in call_args:
+        neftune_check = \
+        "if hasattr(self, 'accelerator'):\n"\
+        "    scaler = self.accelerator.scaler\n"\
+        "    current_model = model\n"\
+        "    while hasattr(current_model, 'model'):\n"\
+        "        current_model.accelerator_scaler = scaler\n"\
+        "        current_model = current_model.model\n"\
+        "    current_model.accelerator_scaler = scaler\n"\
+        "pass\n"
+        RLTrainer_post += neftune_check
+    pass
+
     # Edit optional metrics
     other_metrics_processor = ""
     if trainer_file in RL_METRICS_CHANGES:
@@ -702,13 +716,16 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         )
     pass
 
-
     # Remove peft_config
     init = init.replace("elif peft_config is None:", "elif False:")
     init = init.replace("elif peft_config is not None:", "elif False:")
     init = init.replace("if peft_config is None:", "if False:")
     init = init.replace("if peft_config is not None:", "if False:")
     init = init.replace("get_peft_model(model, peft_config)", "model")
+    # New TRL 0.20.0
+    init = init.replace("if peft_config is not None or (is_peft_available() and isinstance(model, PeftModel)):", "if False:")
+    # New TRL 0.20.0
+    init = init.replace("model = self._prepare_peft_model(model, peft_config, args)\n", "pass\n")
 
     # Set use_vllm if not set
     if "args.use_vllm" in init and "model" in init and "args" in init:
