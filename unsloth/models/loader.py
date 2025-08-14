@@ -824,12 +824,13 @@ class FastModel(FastBaseModel):
         # Check if VLM
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
-        if AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None) is not None:
-            auto_model = AutoModelForSeq2SeqLM
-        elif is_vlm:
-            auto_model = AutoModelForVision2Seq
-        else:
-            auto_model = AutoModelForCausalLM
+        if auto_model is None:
+            if AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None) is not None:
+                auto_model = AutoModelForSeq2SeqLM
+            elif is_vlm:
+                auto_model = AutoModelForVision2Seq
+            else:
+                auto_model = AutoModelForCausalLM
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
