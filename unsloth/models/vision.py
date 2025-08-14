@@ -458,6 +458,7 @@ class FastBaseModel:
         # Edit data-types
         if custom_datatype is not None:
             for jj, (name, module) in enumerate(model.named_modules()):
+                print(custom_datatype)
                 exec(custom_datatype)
             pass
         pass
