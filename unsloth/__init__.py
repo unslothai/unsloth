@@ -117,7 +117,7 @@ try:
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
 
         if cutlass.exists():
-            with open(cutlass, "r+") as f:
+            with open(cutlass, "r+", encoding = "utf-8") as f:
                 text = f.read()
                 # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
                 if "num_splits_key=-1," in text:
