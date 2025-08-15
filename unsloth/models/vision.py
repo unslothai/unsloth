@@ -457,8 +457,10 @@ class FastBaseModel:
 
         # Edit data-types
         if custom_datatype is not None:
-            for jj, (name, module) in enumerate(model.named_modules()):
-                exec(custom_datatype)
+            with torch.no_grad():
+                for jj, (name, module) in enumerate(model.named_modules()):
+                    exec(custom_datatype)
+                pass
             pass
         pass
         # Clear deleted GPU items
