@@ -2240,6 +2240,7 @@ from unsloth_zoo.llama_cpp import (
 def save_to_gguf_generic(
     model,
     save_directory,
+    tokenizer,
     quantization_method = None,
     quantization_type = "Q8_0",
     repo_id = None,
