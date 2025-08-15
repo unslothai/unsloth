@@ -278,7 +278,7 @@ _cross_entropy_backward = triton.heuristics(
 )(_cross_entropy_backward)
 
 
-MAX_FUSED_SIZE = 65536 # 2**16
+MAX_FUSED_SIZE = 32768 # 2**15
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def forward(ctx, logits, labels, logit_softcapping : float = 0, logit_scaling : float = 0):
@@ -327,12 +327,12 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     labels,
                     VOCAB_SIZE       = vocab_size,
                     N_CHUNKS         = n_chunks,
-                    BLOCK_SIZE       = MAX_FUSED_SIZE,
+                    BLOCK_SIZE       = 16384,
                     DO_SOFTCAPPING   = DO_SOFTCAPPING,
                     SOFTCAP          = logit_softcapping,
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE      = logit_scaling,
-                    num_warps        = 32,
+                    num_warps        = 16,
                 )
             # logsumexp(chunked_logsumexp) - x
             # Do the -x separately

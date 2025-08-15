@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.8.6"
+__version__ = "2025.8.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -68,7 +68,6 @@ __all__ = [
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
-    "dequantize_module_weight",
 ]
 
 import torch
@@ -407,7 +406,7 @@ pass
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 torch_version = torch.__version__
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm":
     if Version(torch_version) < Version("2.4.0"):
         torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
         torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
@@ -471,7 +470,7 @@ SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm":
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
@@ -725,7 +724,6 @@ pass
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
 from peft import __version__ as peft_version
-from peft.utils.integrations import dequantize_module_weight
 if Version(peft_version) < Version("0.12.0"):
     from peft.tuners.lora.layer import LoraLayer
     try:

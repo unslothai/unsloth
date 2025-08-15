@@ -16,6 +16,9 @@ import warnings, importlib, sys
 from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
+import triton
+print(f"Triton file: {triton.__file__}")
+print(f"Triton path: {triton.__path__}")
 
 # Check if modules that need patching are already imported
 critical_modules = ['trl', 'transformers', 'peft']
@@ -66,15 +69,23 @@ pass
 
 def get_device_type():
     if hasattr(torch, "cuda") and torch.cuda.is_available():
+        # Check if this is actually an AMD GPU running ROCm
+        try:
+            # ROCm reports as CUDA but we can detect it via device name
+            device_name = torch.cuda.get_device_name(0) if torch.cuda.device_count() > 0 else ""
+            if "AMD" in device_name or "Radeon" in device_name:
+                return "rocm"
+        except:
+            pass
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    raise NotImplementedError("Unsloth currently only works on NVIDIA GPUs and Intel GPUs.")
+    raise NotImplementedError("Unsloth currently only works on NVIDIA GPUs, AMD GPUs (ROCm), and Intel GPUs.")
 pass
 DEVICE_TYPE : str = get_device_type()
 
 def get_device_count():
-    if DEVICE_TYPE == "cuda":
+    if DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm":
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
@@ -86,7 +97,7 @@ DEVICE_COUNT : int = get_device_count()
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
-if DEVICE_TYPE == "cuda" and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
+if (DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm") and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
@@ -117,7 +128,7 @@ try:
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
 
         if cutlass.exists():
-            with open(cutlass, "r+", encoding = "utf-8") as f:
+            with open(cutlass, "r+") as f:
                 text = f.read()
                 # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
                 if "num_splits_key=-1," in text:
@@ -135,7 +146,7 @@ except:
 pass
 
 # Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = (major_version >= 8)
 
@@ -158,7 +169,7 @@ pass
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm":
     libcuda_dirs = lambda: None
     if Version(triton.__version__) >= Version("3.0.0"):
         try: from triton.backends.nvidia.driver import libcuda_dirs

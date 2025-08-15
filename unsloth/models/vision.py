@@ -300,6 +300,14 @@ class FastBaseModel:
 
             # TODO: After adding vLLM support for XPU, changed this
             vllm_version = ""
+        elif DEVICE_TYPE == "rocm":
+            gpu_stats = torch.cuda.get_device_properties(0) # ROCm uses torch.cuda for device properties
+            gpu_version = torch.version.hip # Use torch.version.hip for ROCm version
+            gpu_stats_snippet = f"ROCm: {gpu_stats.major}.{gpu_stats.minor}. HIP Toolkit: {gpu_version}."
+
+            from importlib.metadata import version as importlib_version
+            try:    vllm_version = f" vLLM: {importlib_version('vllm')}. (ROCm support may vary)"
+            except: vllm_version = ""
         else:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 
@@ -457,10 +465,8 @@ class FastBaseModel:
 
         # Edit data-types
         if custom_datatype is not None:
-            with torch.no_grad():
-                for jj, (name, module) in enumerate(model.named_modules()):
-                    exec(custom_datatype)
-                pass
+            for jj, (name, module) in enumerate(model.named_modules()):
+                exec(custom_datatype)
             pass
         pass
         # Clear deleted GPU items

@@ -32,13 +32,13 @@ if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
 else:
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
+    if DEVICE_TYPE == "xpu":
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+    else:  # cuda or rocm
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "cuda")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "cuda")
 pass
-
-if DEVICE_TYPE == "xpu":
-    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
-    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 
 
 # tl.math.tanh now is libdevice.tanh
@@ -85,12 +85,12 @@ else:
     # NVIDIA-GPU logic here as default
     import bitsandbytes as bnb
     # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
-    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
+    HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.42.0")
     get_ptr = bnb.functional.get_ptr
 
 
 if DEVICE_COUNT > 1:
-    if DEVICE_TYPE == "cuda":
+    if DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm":
         torch_gpu_device = torch.cuda.device
     elif DEVICE_TYPE == "xpu":
         torch_gpu_device = torch.xpu.device
@@ -102,8 +102,8 @@ else:
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu":
     _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
-# NVIDIA GPU Default Logic
-else:
+# NVIDIA/AMD GPU Default Logic
+else:  # cuda or rocm
     _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
 
 c_void_p = ctypes.c_void_p
@@ -132,7 +132,7 @@ if DEVICE_TYPE == "xpu":
     XPU_STREAMS = tuple(XPU_STREAMS)
     del _XPU_STREAMS
 else:
-    # NVIDIA GPU Default Logic
+    # NVIDIA/AMD GPU Default Logic (cuda or rocm)
     _CUDA_STREAMS = {
         (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
         for i in range(DEVICE_COUNT)
@@ -166,7 +166,7 @@ if DEVICE_TYPE == "xpu":
     def cgemm_4bit_inference_naive_bf16(*args, **kwargs):
         raise RuntimeError("XPU BNB support is not implemented yet. cgemm_4bit_inference_naive_bf16 should not be called now.")
 else:
-    # NVIDIA GPU Default Logic
+    # NVIDIA/AMD GPU Default Logic (cuda or rocm)
     cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
     cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
     cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
@@ -309,8 +309,8 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         is_transposed = (True if W.shape[0] == 1 else False)
         return out.t() if is_transposed else out
     pass
-# NVIDIA GPU Default Logic
-elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
+# NVIDIA/AMD GPU Default Logic
+elif (DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
@@ -511,7 +511,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
         return out
     pass
-elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
+elif (DEVICE_TYPE == "cuda" or DEVICE_TYPE == "rocm") and HAS_CUDA_STREAM:
     def fast_gemv(X, W, quant_state, out = None):
         if quant_state is None: return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1

@@ -941,16 +941,6 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/Qwen3-4B-Thinking-2507",
         "unsloth/Qwen3-4B-Thinking-2507-bnb-4bit",
     ),
-    "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" : (
-        "unsloth/gemma-3-270m-it",
-        "google/gemma-3-270m-it",
-        "unsloth/gemma-3-270m-it-bnb-4bit",
-    ),
-    "unsloth/gemma-3-270m-unsloth-bnb-4bit" : (
-        "unsloth/gemma-3-270m",
-        "google/gemma-3-270m",
-        "unsloth/gemma-3-270m-bnb-4bit",
-    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}
