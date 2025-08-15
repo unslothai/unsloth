@@ -330,7 +330,7 @@ def unsloth_save_model(
             old_username = None, private = private,
         )
 
-        getattr(model, "original_push_to_hub", tokenizer.push_to_hub)\
+        getattr(model, "original_push_to_hub", model.push_to_hub)\
         (
             repo_id            = save_directory,
             use_temp_dir       = use_temp_dir,
