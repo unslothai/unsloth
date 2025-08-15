@@ -158,7 +158,7 @@ class FastLanguageModel(FastLlamaModel):
                 )
             pass
         pass
-        
+
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
@@ -214,7 +214,7 @@ class FastLanguageModel(FastLlamaModel):
             else:
                 # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
                 files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = (os.path.split(x)[-1] for x in files)
+                files = list(os.path.split(x)[-1] for x in files)
                 if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
                 pass
@@ -239,7 +239,7 @@ class FastLanguageModel(FastLlamaModel):
                     f"This includes Llama 3.1. The minimum required version is 4.43.2\n"\
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
-                ) 
+                )
             # Create a combined error message showing both failures
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -316,7 +316,7 @@ class FastLanguageModel(FastLlamaModel):
                     "To update flash-attn, do the below:\n"\
                     '\npip install --no-deps --upgrade "flash-attn>=2.6.3"'
                 )
-            
+
             dispatch_model = FastGemma2Model
         elif model_type == "qwen2":
             dispatch_model = FastQwen2Model
@@ -383,7 +383,7 @@ class FastLanguageModel(FastLlamaModel):
                 fast_inference = False
             pass
             from unsloth_zoo.vllm_utils import (
-                patch_vllm, 
+                patch_vllm,
                 vllm_dynamic_quant_supported,
             )
             patch_vllm()
@@ -421,7 +421,7 @@ class FastLanguageModel(FastLlamaModel):
             disable_log_stats = disable_log_stats,
             *args, **kwargs,
         )
-        
+
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
         pass
@@ -598,7 +598,7 @@ class FastModel(FastBaseModel):
                 "float16;torch.float16;torch.float16;"\
                 "if name.endswith(('.conv')): module;"\
                 "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
-            
+
             if transformers_version < Version("4.53.0"):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
         elif "falcon-h1" in lowered_model_name:
@@ -695,7 +695,7 @@ class FastModel(FastBaseModel):
                 both_exist = exist_adapter_config and exist_config
             else:
                 files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
-                files = (os.path.split(x)[-1] for x in files)
+                files = list(os.path.split(x)[-1] for x in files)
                 if sum(x == "adapter_config.json" or x == "config.json" for x in files) >= 2:
                     both_exist = True
                 pass
@@ -720,7 +720,7 @@ class FastModel(FastBaseModel):
                     f"This includes Llama 3.1. The minimum required version is 4.43.2\n"\
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'\
                     f"to obtain the latest transformers build, then restart this session."\
-                ) 
+                )
             # Create a combined error message showing both failures
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
@@ -736,7 +736,7 @@ class FastModel(FastBaseModel):
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
-            
+
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -852,7 +852,7 @@ class FastModel(FastBaseModel):
             use_gradient_checkpointing = use_gradient_checkpointing,
             supports_sdpa     = supports_sdpa,
             whisper_language  = whisper_language,
-            whisper_task      = whisper_task,            
+            whisper_task      = whisper_task,
             *args, **kwargs,
         )
 
