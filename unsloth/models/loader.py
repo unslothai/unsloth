@@ -621,6 +621,8 @@ class FastModel(FastBaseModel):
                     "if hasattr(module, x): "\
                     "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
                     "x = 'down_proj_bias'\n"\
+                    "if hasattr(module, x): "\
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
                     ";"
             else:
                 # Set down projection compute dtype to be float32 for float16 machines

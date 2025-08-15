@@ -360,7 +360,7 @@ def fix_sentencepiece_tokenizer(
     old_tokenizer.save_pretrained(temporary_location)
 
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
-    tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb", encoding = "utf-8").read())
+    tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
 
     # Now save the new tokenizer
     new_tokenizer.save_pretrained(temporary_location)
@@ -385,7 +385,7 @@ def fix_sentencepiece_tokenizer(
     pass
 
     # And now write it
-    with open(f"{temporary_location}/tokenizer.model", "wb", encoding = "utf-8") as file:
+    with open(f"{temporary_location}/tokenizer.model", "wb") as file:
         file.write(tokenizer_file.SerializeToString())
     pass
 
@@ -423,7 +423,7 @@ def fix_sentencepiece_gguf(saved_location):
     # Load tokenizer.model
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     if not os.path.isfile(f"{saved_location}/tokenizer.model"): return
-    tokenizer_file.ParseFromString(open(f"{saved_location}/tokenizer.model", "rb", encoding = "utf-8").read())
+    tokenizer_file.ParseFromString(open(f"{saved_location}/tokenizer.model", "rb").read())
     sentence_piece_size = len(tokenizer_file.pieces)
 
     # Load added_tokens_json
@@ -457,7 +457,7 @@ def fix_sentencepiece_gguf(saved_location):
 
     tokenizer_file.pieces.extend(new_tokens)
 
-    with open(f"{saved_location}/tokenizer.model", "wb", encoding = "utf-8") as file:
+    with open(f"{saved_location}/tokenizer.model", "wb") as file:
         file.write(tokenizer_file.SerializeToString())
     pass
 
