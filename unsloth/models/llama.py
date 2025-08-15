@@ -698,6 +698,9 @@ def LlamaModel_fast_forward(
 
     seq_length_with_past = seq_length
 
+    shape = input_ids.shape if input_ids is not None else inputs_embeds.shape
+    print(shape)
+
     # Fix out of bounds tokenization
     if hasattr(self, "max_seq_length"):
         if seq_length > self.max_seq_length:
