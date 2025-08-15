@@ -386,6 +386,7 @@ class FastBaseModel:
             print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to eager!")
             del kwargs["attn_implementation"]
         pass
+        print(supports_sdpa, kwargs)
 
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
