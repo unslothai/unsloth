@@ -507,6 +507,7 @@ class FastBaseModel:
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
         pass
         # Fix other stuff like BnB compute data types
+        print("do_forced_float32", do_forced_float32)
         model, tokenizer = patch_model_and_tokenizer(
             model,
             tokenizer,
