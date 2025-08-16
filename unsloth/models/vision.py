@@ -470,6 +470,7 @@ class FastBaseModel:
             if DEVICE_TYPE == "cuda":  torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu": torch.xpu.empty_cache()
         pass
+        print(model.model.layers[0].input_layernorm.weight, model.model.layers[0].input_layernorm.weight.dtype)
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
@@ -516,6 +517,7 @@ class FastBaseModel:
         )
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
+        print(model.model.layers[0].input_layernorm.weight, model.model.layers[0].input_layernorm.weight.dtype)
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
