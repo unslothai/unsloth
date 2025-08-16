@@ -451,6 +451,7 @@ class FastBaseModel:
             # attn_implementation   = attn_implementation,
             **kwargs,
         )
+        print(model.model.layers[0].input_layernorm.weight, model.model.layers[0].input_layernorm.weight.dtype)
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
