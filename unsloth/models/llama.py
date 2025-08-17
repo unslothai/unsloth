@@ -798,7 +798,8 @@ def LlamaModel_fast_forward(
     # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
-    elif self.training:
+    elif self.training and os.getenv("UNSLOTH_GRPO", "0") != "1":
+        # GRPO uses left padding so we might want to persist attention mask
         attention_mask = None
         padding_mask = None
     else:

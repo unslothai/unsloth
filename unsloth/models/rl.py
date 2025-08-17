@@ -738,7 +738,9 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         if len(replacer) != 0:
             replacer = replacer[0]
             vllm_setter = "\n" + " "*8 + \
-            "if hasattr(model, 'vllm_engine') and hasattr(args, 'use_vllm'):\n" + \
+            "os.environ['UNSLOTH_GRPO'] = '1'\n" + \
+            " " * 8  + "print('Setting unsloth grpo to True')\n" + \
+            " " * 8  + "if hasattr(model, 'vllm_engine') and hasattr(args, 'use_vllm'):\n" + \
             " " * 12 + "if (getattr(args, 'use_vllm', False) == False):\n" + \
             " " * 16 + "args.use_vllm = True\n"
 
