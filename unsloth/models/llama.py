@@ -170,7 +170,6 @@ def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **
 
     if "cache_position" in kwargs:
         kwargs["position_ids"] = kwargs["cache_position"]
-    print(attention_mask)
     return { "input_ids" : input_ids, "attention_mask": attention_mask, **kwargs, }
 pass
 
@@ -798,6 +797,7 @@ def LlamaModel_fast_forward(
     pass
 
     # Ignore attention_mask
+    print(attention_mask)
     if attention_mask is None:
         padding_mask = None
     elif self.training:
