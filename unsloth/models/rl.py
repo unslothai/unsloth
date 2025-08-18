@@ -487,6 +487,8 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "logging_steps"                 : 1,
         "max_seq_length"                : None,
         "num_generations"               : 8,
+        "steps_per_generation"          : 1, # Otherwise defaults to ga_steps which is wrong
+        "generation_batch_size"         : None, # Useless. If steps_per_generation set, generation_batch_size clashes
         "top_k"                         : None,
         "vllm_mode"                     : "colocate",
         "generation_kwargs"             : {},
