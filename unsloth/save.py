@@ -1195,6 +1195,41 @@ def save_to_gguf(
             f"--outfile {final_location} --vocab-type {vocab_type} "\
             f"--outtype {first_conversion} --concurrency {n_cpus} --pad-vocab"
     else:
+        # Fix up conversion script is possible
+        with open(convert_location, "rb") as f: converter_latest = f.read()
+        # Fix metadata
+        converter_latest = re.sub(
+            rb"(self\.metadata \= .+?\(.+?\)"\
+            rb"[\n]{1,}([\s]{4,}))",
+            rb"\1"\
+            rb"if hasattr(self.metadata, 'quantized_by'): self.metadata.quantized_by = 'Unsloth'\n"\
+            rb"\2if hasattr(self.metadata, 'repo_url'): self.metadata.repo_url = 'https://huggingface.co/unsloth'\n"\
+            rb"\2if hasattr(self.metadata, 'tags'): self.metadata.tags = ['unsloth', 'llama.cpp']\n"\
+            rb"\2",
+            converter_latest,
+        )
+
+        # Make mistral_common optional for now
+        # from x import y
+        converter_latest = re.sub(
+            rb"(from mistral_common[^\n\(]{1,})[\s]{0,}\n",
+            rb"try:\n    \1\nexcept:\n    pass\n",
+            converter_latest,
+        )
+        # from x import (y, z,)
+        converter_latest = re.sub(
+            rb"(from mistral_common[^\n\(]{1,}[\s]{0,}\(.+?\))",
+            rb"try:\n    \1\nexcept:\n    pass\n",
+            converter_latest,
+            flags = re.MULTILINE | re.DOTALL,
+        )
+
+        try:
+            # Write file
+            with open(convert_location, "wb") as file:
+                file.write(converter_latest)
+        except:
+            pass
         command = f"python {convert_location} {model_directory} "\
             f"--outfile {final_location} "\
             f"--outtype {first_conversion}"
@@ -1694,7 +1729,7 @@ def push_to_ollama_hub(username: str, model_name: str, tag: str):
         print(f"\nMODEL PUBLISHED FAILED WITH RETURN CODE {return_code}")
     else:
         print("\nMODEL PUBLISHED SUCCESSFULLY")
-
+pass
 
 def push_to_ollama(
     tokenizer,
@@ -1726,9 +1761,7 @@ def push_to_ollama(
     )
 
     print("Successfully pushed to ollama")
-
-
-
+pass
 
 
 def unsloth_save_pretrained_gguf(

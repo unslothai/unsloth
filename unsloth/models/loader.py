@@ -571,8 +571,11 @@ class FastModel(FastBaseModel):
         elif "qwen2.5" in lowered_model_name and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
         # Gemma 3
-        elif "gemma-3" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
-            raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+        elif "gemma-3" in lowered_model_name:
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+            # Set norms to float32 since anyways they get upcasted to float32
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         # Cohere
         elif "c4ai-command-a-03-2025" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
@@ -582,31 +585,36 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                 "all;torch.float32;torch.float16;"\
-                "if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16);"
+                "if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"\
+                ";"
         # Granite 4
         elif 'granite-4' in lowered_model_name:
-            # granite-4 rms norms are stored as 16 bit, but we upcast
-            os.environ["UNSLOTH_UPCAST_LAYERNORM"] = "1"
+            # Granite-4 rms norms are stored as 16 bit, but we upcast
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
         # Olmo 2
         elif "olmo-2" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
         # Gemma 3N
         elif "gemma-3n" in lowered_model_name:
+            if transformers_version < Version("4.53.0"):
+                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                 "float16;torch.float16;torch.float16;"\
-                "if name.endswith(('.conv')): module;"\
+                "if name.endswith('norm'): "\
+                "module._pre_set_compute_dtype = torch.float32\n"\
+                ";"\
                 "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
-
-            if transformers_version < Version("4.53.0"):
-                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
+            # Set norms to float32 since anyways they get upcasted to float32
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         elif "falcon-h1" in lowered_model_name:
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                 "float16;torch.float32;torch.float16;"\
-                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16);"\
+                "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"\
+                ";"\
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
         elif "gpt-oss" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
@@ -615,23 +623,30 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_ENABLE_CCE"] = "0"
             if not load_in_4bit:
                 # Only upcast MoE biases for MXFP4, not BnB
+                # Set norms to float32 since anyways they get upcasted to float32
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                     "all;None;None;"\
                     "x = 'gate_up_proj_bias'\n"\
                     "if hasattr(module, x): "\
                     "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
+                    ""\
                     "x = 'down_proj_bias'\n"\
                     "if hasattr(module, x): "\
                     "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"\
+                    ""\
                     ";"
             else:
                 # Set down projection compute dtype to be float32 for float16 machines
+                # Set norms to float32 since anyways they get upcasted to float32
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                     "all;None;None;"\
-                    "if 'down_projs' in name and hasattr(module, 'compute_dtype') and "\
+                    "if 'down_projs' in name and hasattr(module, 'weight') and "\
                     "torch.amax(dequantize_module_weight(module)) >= 1024:"\
                     "module._pre_set_compute_dtype = torch.float32\n"\
+                    ""\
                     ";"
+            # Set norms to float32 since anyways they get upcasted to float32
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
