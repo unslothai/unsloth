@@ -16,7 +16,7 @@ import torch
 import gc
 import math
 import functools
-from typing import Optional, Tuple, List, Union
+from typing import Any, Dict, Optional, Tuple, List, Union
 from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__
@@ -112,6 +112,46 @@ KV_CACHE_INCREMENT = 512 # KV Cache update size
 torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
+
+
+def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.Module:
+    """
+    Apply QAT + LoRA during fine-tuning.
+
+    On a high level, this means fake quantizing the base (frozen) model during LoRA training.
+    Fake quantization refers to simulating quantization numerics in high precision (e.g. bf16).
+    This helps mitigate quantization degradations when the model is quantized after training.
+
+    For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
+    """
+    try:
+        from torchao.quantization import (
+            Float8DynamicActivationFloat8WeightConfig,
+            Float8DynamicActivationInt4WeightConfig,
+            PerRow,
+            quantize_,
+        )
+        from torchao.quantization.qat import QATConfig
+    except ImportError as e:
+        print(
+            "Please install torchao nightly for the latest QAT features:\n"
+            "  pip install --pre torchao --index-url https://download.pytorch.org/whl/nightly/cu126"
+        )
+        raise e
+    pass
+    filter_fn = None
+    if qat_scheme == "fp8-int4":
+        group_size = 128
+        base_config = Float8DynamicActivationInt4WeightConfig(group_size=group_size)
+        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+    elif qat_scheme == "fp8-fp8":
+        base_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
+    else:
+        raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
+    pass
+    quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
+    return model
+pass
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **kwargs,):
@@ -701,8 +741,9 @@ def LlamaModel_fast_forward(
     # Fix out of bounds tokenization
     if hasattr(self, "max_seq_length"):
         if seq_length > self.max_seq_length:
+            shape = input_ids.shape if input_ids is not None else inputs_embeds.shape
             logger.warning_once(
-                f"Unsloth: Input IDs of length {seq_length} > the model's max sequence length of {self.max_seq_length}.\n"\
+                f"Unsloth: Input IDs of shape {shape} with length {seq_length} > the model's max sequence length of {self.max_seq_length}.\n"\
                 "We shall truncate it ourselves. It's imperative if you correct this issue first."
             )
         if input_ids is not None:
@@ -1921,7 +1962,7 @@ class FastLlamaModel:
 
         has_rope_scaling = False
         try:
-            with open(inspect.getfile(model_function), "r") as file:
+            with open(inspect.getfile(model_function), "r", encoding = "utf-8") as file:
                 has_rope_scaling = "self.config.rope_scaling" in file.read()
         except: pass
         has_rope_scaling = True
@@ -2247,6 +2288,7 @@ class FastLlamaModel:
         init_lora_weights   = True,
         loftq_config        = {},
         temporary_location  = "_unsloth_temporary_saved_buffers",
+        qat_scheme          = None,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
@@ -2612,6 +2654,12 @@ class FastLlamaModel:
         pass
 
         model = _get_peft_model(model, lora_config)
+
+        # Apply QAT + LoRA if specified
+        if qat_scheme is not None:
+            print("Unsloth: Applying QAT to mitigate quantization degradation")
+            model = _prepare_model_for_qat(model, qat_scheme)
+        pass
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 

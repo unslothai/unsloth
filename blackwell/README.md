@@ -10,8 +10,8 @@ The core libs for running unsloth which have dependencies on `CUDA` version are:
 - `bitsandbytes` - already has wheels built with `CUDA 12.8` so `pip install` should work out of the box
 - `triton` - requires `triton>=3.3.1`
 - `torch` - requires installing with `pip install torch --extra-index-url https://download.pytorch.org/whl/cu128`
-- `vllm` - safest is to use the nightly build: `uv pip install -U vllm --torch-backend=cu128 --extra-index-url https://wheels.vllm.ai/nightly`
-- `xformers` - as of 6/26, `xformers` wheels are not yet built with `sm100+` enabled as support was only recently [added](https://github.com/facebookresearch/xformers/commit/d9b3b6e2b38ca485c89507ef8ac1fbef2723cdfa) so will require a source build (see below).
+- `vllm` - vLLM 0.10.0 supports Blackwell now, but use CUDA 12.8: `uv pip install -U vllm --torch-backend=cu128`
+- `xformers` - (Optional) as of 6/26, `xformers` wheels are not yet built with `sm100+` enabled as support was only recently [added](https://github.com/facebookresearch/xformers/commit/d9b3b6e2b38ca485c89507ef8ac1fbef2723cdfa) so will require a source build (see below).
 
 ## Installation
 
@@ -30,7 +30,7 @@ The installation order is important, since we want the overwrite bundled depende
     Create a project dir and venv:
 
     ```bash
-    mkdir `unsloth-blackwell` && cd `unsloth-blackwell`
+    mkdir 'unsloth-blackwell' && cd 'unsloth-blackwell'
     uv venv .venv --python=3.12 --seed
     source .venv/bin/activate
     ```
@@ -38,7 +38,7 @@ The installation order is important, since we want the overwrite bundled depende
 2) Install `vllm`
 
     ```bash
-    uv pip install -U vllm --torch-backend=cu128 --extra-index-url https://wheels.vllm.ai/nightly
+    uv pip install -U vllm --torch-backend=cu128
     ```
 
     Note that we have to specify `cu128`, otherwise `vllm` will install `torch==2.7.0` but with `cu126`.
@@ -49,7 +49,17 @@ The installation order is important, since we want the overwrite bundled depende
     uv pip install unsloth unsloth_zoo bitsandbytes
     ```
 
-4) Download and build `xformers`
+    If you notice weird resolving issues due to Xformers, you can also install Unsloth from source without Xformers:
+
+    ```bash
+    uv pip install -qqq \
+    "unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo" \
+    "unsloth[base] @ git+https://github.com/unslothai/unsloth"
+    ```
+
+4) Download and build `xformers` (Optional)
+
+    Xformers is optional, but it is definitely faster and uses less memory. We'll use PyTorch's native SDPA if you do not want Xformers. Building Xformers from source might be slow, so beware!
 
     ```bash
     # First uninstall xformers installed by previous libraries
@@ -64,23 +74,11 @@ The installation order is important, since we want the overwrite bundled depende
 
     Note that we have to explicitly set `TORCH_CUDA_ARCH_LIST=12.0`.
 
-5) Update `triton`
+5) `transformers`
+    Install any transformers version, but best to get the latest.
 
     ```bash
-    uv pip install -U triton>=3.3.1
-    ```
-
-    `triton>=3.3.1` is required for `Blackwell` support.
-
-6) `transformers`
-    `transformers >= 4.53.0` breaks `unsloth` inference.  Specifically, `transformers` with `gradient_checkpointing` enabled will automatically [switch off caching](https://github.com/huggingface/transformers/blob/67ddc82fbc7e52c6f42a395b4a6d278c55b77a39/src/transformers/modeling_layers.py#L52-L59).
-
-    When using `unsloth` `FastLanguageModel` to `generate` directly after training with `use_cache=True`, this will result in mismatch between expected and actual outputs [here](https://github.com/unslothai/unsloth/blob/bfa6a3678e2fb8097c5ece41d095a8051f099db3/unsloth/models/llama.py#L939).
-
-    Temporary solution is to switch off `gradient_checkpointing` (e.g., `model.disable_gradient_checkpointing()`) before generation if using `4.53.0` or stick with `4.52.4` for now:
-
-    ```bash
-    uv pip install -U transformers==4.52.4
+    uv pip install -U transformers
     ```
 
 
@@ -112,7 +110,7 @@ The installation order is important, since we want the overwrite bundled depende
     Make sure you are inside the activated conda/mamba environment. You should see the name of your environment as a prefix to your terminal shell like this your  `(unsloth-blackwell)user@machine:`
 
     ```bash
-    pip install -U vllm --extra-index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://wheels.vllm.ai/nightly
+    pip install -U vllm --extra-index-url https://download.pytorch.org/whl/cu128
     ```
 
     Note that we have to specify `cu128`, otherwise `vllm` will install `torch==2.7.0` but with `cu126`.
@@ -125,9 +123,11 @@ The installation order is important, since we want the overwrite bundled depende
     pip install unsloth unsloth_zoo bitsandbytes
     ```
 
-4) Download and build `xformers`
+4) Download and build `xformers` (Optional)
 
-    Make sure you are inside the activated conda/mamba environment. You should see the name of your environment as a prefix to your terminal shell like this your  `(unsloth-blackwell)user@machine:`
+    Xformers is optional, but it is definitely faster and uses less memory. We'll use PyTorch's native SDPA if you do not want Xformers. Building Xformers from source might be slow, so beware!
+
+    You should see the name of your environment as a prefix to your terminal shell like this your  `(unsloth-blackwell)user@machine:`
 
     ```bash
     # First uninstall xformers installed by previous libraries
@@ -153,16 +153,10 @@ The installation order is important, since we want the overwrite bundled depende
     `triton>=3.3.1` is required for `Blackwell` support.
 
 6) `Transformers`
-    `transformers >= 4.53.0` breaks `unsloth` inference.  Specifically, `transformers` with `gradient_checkpointing` enabled will automatically [switch off caching](https://github.com/huggingface/transformers/blob/67ddc82fbc7e52c6f42a395b4a6d278c55b77a39/src/transformers/modeling_layers.py#L52-L59).
-
-    When using `unsloth` `FastLanguageModel` to `generate` directly after training with `use_cache=True`, this will result in mismatch between expected and actual outputs [here](https://github.com/unslothai/unsloth/blob/bfa6a3678e2fb8097c5ece41d095a8051f099db3/unsloth/models/llama.py#L939).
-
-    Temporary solution is to switch off `gradient_checkpointing` (e.g., `model.disable_gradient_checkpointing()`) before generation if using `4.53.0` or stick with `4.52.4` for now:
-
-    Make sure you are inside the activated conda/mamba environment. You should see the name of your environment as a prefix to your terminal shell like this your  `(unsloth-blackwell)user@machine:`
+    Install any transformers version, but best to get the latest.
 
     ```bash
-    pip install -U transformers==4.52.4
+    uv pip install -U transformers
     ```
 
 
@@ -171,7 +165,7 @@ If you are using mamba as your package just replace conda with mamba for all com
 
 ## WSL-Specific Notes
 
-If you're using WSL (Windows Subsystem for Linux) and encounter issues during xformers compilation, follow these additional steps:
+If you're using WSL (Windows Subsystem for Linux) and encounter issues during xformers compilation (reminder Xformers is optional, but faster for training) follow these additional steps:
 
 1. **Increase WSL Memory Limit**
    Create or edit the WSL configuration file:
