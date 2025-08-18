@@ -455,6 +455,12 @@ class FastBaseModel:
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
+        # Check float32 norm weights
+        if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
+            for jj, (name, module) in enumerate(model.named_modules()):
+                if name.endswith("norm") and hasattr(module, "weight"):
+                    module._pre_set_compute_dtype = torch.float32
+        pass
         # Edit data-types
         if custom_datatype is not None:
             with torch.no_grad():
