@@ -38,7 +38,7 @@ The installation order is important, since we want the overwrite bundled depende
 2) Install `vllm`
 
     ```bash
-    uv pip install -U vllm --torch-backend=cu128 --extra-index-url https://wheels.vllm.ai/nightly
+    uv pip install -U vllm --torch-backend=cu128
     ```
 
     Note that we have to specify `cu128`, otherwise `vllm` will install `torch==2.7.0` but with `cu126`.
@@ -64,15 +64,7 @@ The installation order is important, since we want the overwrite bundled depende
 
     Note that we have to explicitly set `TORCH_CUDA_ARCH_LIST=12.0`.
 
-5) Update `triton`
-
-    ```bash
-    uv pip install -U triton>=3.3.1
-    ```
-
-    `triton>=3.3.1` is required for `Blackwell` support.
-
-6) `transformers`
+5) `transformers`
     `transformers >= 4.53.0` breaks `unsloth` inference.  Specifically, `transformers` with `gradient_checkpointing` enabled will automatically [switch off caching](https://github.com/huggingface/transformers/blob/67ddc82fbc7e52c6f42a395b4a6d278c55b77a39/src/transformers/modeling_layers.py#L52-L59).
 
     When using `unsloth` `FastLanguageModel` to `generate` directly after training with `use_cache=True`, this will result in mismatch between expected and actual outputs [here](https://github.com/unslothai/unsloth/blob/bfa6a3678e2fb8097c5ece41d095a8051f099db3/unsloth/models/llama.py#L939).
