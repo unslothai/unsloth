@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.7.11"
+__version__ = "2025.8.6"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -58,6 +58,7 @@ __all__ = [
     "HAS_CUT_CROSS_ENTROPY",
     "EMPTY_LOGITS",
     "fused_linear_cross_entropy",
+    "unsloth_fused_ce_loss",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
 
@@ -70,6 +71,7 @@ __all__ = [
     "fast_inference_setup",
     "patch_peft_fast_inference",
     "error_out_no_vllm",
+    "dequantize_module_weight",
 ]
 
 import torch
@@ -79,6 +81,7 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import re
+import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
@@ -111,6 +114,7 @@ from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
     fused_linear_cross_entropy,
     _unsloth_get_batch_samples,
+    unsloth_fused_ce_loss,
 )
 from unsloth_zoo.vision_utils import (
     process_vision_info,
@@ -141,6 +145,7 @@ warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "accelerate")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
+warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "triton")
 
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
@@ -151,6 +156,41 @@ class HideLoggingMessage(logging.Filter):
     __slots__ = "text",
     def __init__(self, text): self.text = text
     def filter(self, x): return not (self.text in x.getMessage())
+pass
+
+# Stop vLLM messages
+if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
+    try:
+        from vllm.worker.worker import logger as vllm_worker_logger
+        vllm_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
+        del vllm_worker_logger
+    except:
+        pass
+    try:
+        from vllm.v1.worker.gpu_worker import logger as vllm_gpu_worker_logger
+        vllm_gpu_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
+        del vllm_gpu_worker_logger
+    except:
+        pass
+    try:
+        from vllm.executor.executor_base import logger as vllm_executor_logger
+        vllm_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
+        vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
+        del vllm_executor_logger
+    except:
+        pass
+    try:
+        from vllm.core.block.prefix_caching_block import logger as vllm_prefix_caching_logger
+        vllm_prefix_caching_logger.addFilter(HideLoggingMessage("reset prefix cache"))
+        del vllm_prefix_caching_logger
+    except:
+        pass
+    try:
+        from vllm.v1.core.block_pool import logger as vllm_block_pool_logger
+        vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
+        del vllm_block_pool_logger
+    except:
+        pass
 pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
@@ -214,6 +254,25 @@ try:
     from huggingface_hub.file_download import logger as hub_logger
     hub_logger.addFilter(HideLoggingMessage("hf_xet"))
     del hub_logger
+except:
+    pass
+
+# MXFP4 quantization requires triton >= 3.4.0
+try:
+    from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
+    mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
+    del mxfp4_logger
+except:
+    pass
+
+# You passed `quantization_config` or equivalent parameters
+try:
+    warnings.filterwarnings(
+        action = "ignore",
+        message = r".*quantization_config.*",
+        category = UserWarning,
+        append = True,
+    )
 except:
     pass
 
@@ -417,6 +476,7 @@ HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
 if DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
+    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True
@@ -581,7 +641,6 @@ UNSLOTH_COMPILE_DEBUG         = os.environ.get("UNSLOTH_COMPILE_DEBUG",         
 UNSLOTH_COMPILE_MAXIMUM       = os.environ.get("UNSLOTH_COMPILE_MAXIMUM",       "0") == "1"
 UNSLOTH_COMPILE_IGNORE_ERRORS = os.environ.get("UNSLOTH_COMPILE_IGNORE_ERRORS", "1") == "1"
 # Just remove max_autotune_gemm warning
-import functools
 from torch._inductor.runtime.hints import DeviceProperties
 
 @functools.lru_cache(None)
@@ -669,6 +728,7 @@ pass
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
 from peft import __version__ as peft_version
+from peft.utils.integrations import dequantize_module_weight
 if Version(peft_version) < Version("0.12.0"):
     from peft.tuners.lora.layer import LoraLayer
     try:

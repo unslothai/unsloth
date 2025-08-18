@@ -499,8 +499,6 @@ def LlamaAttention_fast_forward(
     #     else inplace_rope_embedding(Q, K, cos, sin, position_ids)
     # )
     Q, K = fast_rope_embedding(Q, K, cos, sin)
-    # synchronize before cat to avoid race condition
-    torch.cuda.current_stream(Q.device).synchronize()
 
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
@@ -703,8 +701,9 @@ def LlamaModel_fast_forward(
     # Fix out of bounds tokenization
     if hasattr(self, "max_seq_length"):
         if seq_length > self.max_seq_length:
+            shape = input_ids.shape if input_ids is not None else inputs_embeds.shape
             logger.warning_once(
-                f"Unsloth: Input IDs of length {seq_length} > the model's max sequence length of {self.max_seq_length}.\n"\
+                f"Unsloth: Input IDs of shape {shape} with length {seq_length} > the model's max sequence length of {self.max_seq_length}.\n"\
                 "We shall truncate it ourselves. It's imperative if you correct this issue first."
             )
         if input_ids is not None:
@@ -1199,12 +1198,25 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
 
-                loss = fused_linear_cross_entropy(
-                    hidden_states      = hidden_states,
-                    lm_weight          = lm_head,
-                    labels             = labels,
-                    num_items_in_batch = n_items,
-                    logit_softcapping  = logit_softcapping,
+                # loss = fused_linear_cross_entropy(
+                #     hidden_states      = hidden_states,
+                #     lm_weight          = lm_head,
+                #     labels             = labels,
+                #     num_items_in_batch = n_items,
+                #     logit_softcapping  = logit_softcapping,
+                # )
+                loss = unsloth_fused_ce_loss(
+                    trainer              = None,
+                    hidden_states        = hidden_states,
+                    lm_head_weight       = lm_head,
+                    lm_head_bias         = None,
+                    labels               = labels,
+                    mask                 = None,
+                    n_items              = n_items,
+                    scaling              = getattr(self, "accelerator_scaler", None),
+                    target_gb            = 1,
+                    torch_compile        = True,
+                    logit_softcapping    = logit_softcapping,
                 )
                 if not return_dict:
                     output = (logits,) + outputs[1:]
@@ -1910,7 +1922,7 @@ class FastLlamaModel:
 
         has_rope_scaling = False
         try:
-            with open(inspect.getfile(model_function), "r") as file:
+            with open(inspect.getfile(model_function), "r", encoding = "utf-8") as file:
                 has_rope_scaling = "self.config.rope_scaling" in file.read()
         except: pass
         has_rope_scaling = True

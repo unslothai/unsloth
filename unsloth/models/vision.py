@@ -283,6 +283,8 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
             )
+        if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
+            os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
         is_vlm = (auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText])
         is_whisper = (whisper_language is not None and whisper_task is not None)
@@ -396,8 +398,10 @@ class FastBaseModel:
             allow_float16_runs = (checker == "float16" and dtype == torch.float16)
 
             if allow_all_runs or allow_float16_runs:
-                dtype = eval(_dtype)
-                bnb_compute_dtype = eval(_bnb_compute_dtype)
+                if eval(_dtype) is not None:
+                    dtype = eval(_dtype)
+                if eval(_bnb_compute_dtype) is not None:
+                    bnb_compute_dtype = eval(_bnb_compute_dtype)
                 correct_dtype = bnb_compute_dtype
                 custom_datatype = _custom_datatype
                 # Execute code as well
@@ -452,8 +456,18 @@ class FastBaseModel:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "0"
         pass
 
+        # Fix AttributeError: 'BitsAndBytesConfig' object has no attribute 'get_loading_attributes'
+        if bnb_config is not None and not hasattr(bnb_config, "get_loading_attributes"):
+            bnb_config.get_loading_attributes = lambda *args, **kwargs: {}
+
         # Cannot be None, since HF now checks for the config
-        if load_in_4bit: kwargs["quantization_config"] = bnb_config
+        if load_in_4bit:
+            # Ignore load_in_4bit / load_in_8bit for MXFP4 - best to get config file
+            if "gpt-oss" in model_name.lower():
+                pass
+            else:
+                kwargs["quantization_config"] = bnb_config
+        pass
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
@@ -527,8 +541,10 @@ class FastBaseModel:
 
         # Edit data-types
         if custom_datatype is not None:
-            for jj, (name, module) in enumerate(model.named_modules()):
-                exec(custom_datatype)
+            with torch.no_grad():
+                for jj, (name, module) in enumerate(model.named_modules()):
+                    exec(custom_datatype)
+                pass
             pass
         pass
         # Clear deleted GPU items
@@ -720,16 +736,20 @@ class FastBaseModel:
         max_seq_length = model.max_seq_length
         # if we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model)
+        lora_config_dict = {
+            "r"                 : r,
+            "lora_alpha"        : lora_alpha,
+            "target_modules"    : target_modules,
+            "target_parameters" : kwargs.get("target_parameters", None),
+            "lora_dropout"      : lora_dropout,
+            "bias"              : bias,
+            "task_type"         : task_type,
+            "use_rslora"        : use_rslora,
+            "init_lora_weights" : init_lora_weights,
+            "loftq_config"      : loftq_config,
+        }
         lora_config = LoraConfig(
-            r                 = r,
-            lora_alpha        = lora_alpha,
-            target_modules    = target_modules,
-            lora_dropout      = lora_dropout,
-            bias              = bias,
-            task_type         = task_type,
-            use_rslora        = use_rslora,
-            init_lora_weights = init_lora_weights,
-            loftq_config      = loftq_config,
+            **{k:v for k,v in lora_config_dict.items() if k in LoraConfig.__doc__},
         )
         model = prepare_model_for_kbit_training(
             model,

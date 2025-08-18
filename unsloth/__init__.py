@@ -117,7 +117,7 @@ try:
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
 
         if cutlass.exists():
-            with open(cutlass, "r+") as f:
+            with open(cutlass, "r+", encoding = "utf-8") as f:
                 text = f.read()
                 # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
                 if "num_splits_key=-1," in text:
@@ -222,7 +222,7 @@ elif DEVICE_TYPE == "xpu":
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.7.7"):
+    if Version(unsloth_zoo_version) < Version("2025.8.1"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
