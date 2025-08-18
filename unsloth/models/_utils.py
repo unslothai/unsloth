@@ -1524,4 +1524,4 @@ def patch_peft_fast_inference(model):
     pass
 
 def error_out_no_vllm(*args, **kwargs):
-    raise NotImplementedError("vLLM is not yet supported for fast inference for this model! Please use `.generate` instead")
+    raise NotImplementedError("Unsloth: vLLM is not yet supported for fast inference for this model! Please use `.generate` instead")

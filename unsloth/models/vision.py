@@ -72,6 +72,14 @@ NUM_LOGITS_TO_KEEP = dict()
 global PROMPT_LOOPKUP
 PROMPT_LOOPKUP = dict()
 
+VLLM_SUPPORTED_VLM = [
+    "qwen2_5_vl",
+    "gemma3",
+]
+VLLM_NON_LORA_VLM = [
+    "mllama"
+]
+
 from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig
 _compile_config = CompileConfig(
     fullgraph = False,
@@ -297,16 +305,14 @@ class FastBaseModel:
 
         vllm_enable_lora = True
 
-
         if is_vlm and fast_inference:
-            supported = {"qwen2_5_vl", "gemma3", }
-            if not any(arch in supported for arch in model_types):
+            if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
                     f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3 among vision models. "
                     f"Found architectures: {', '.join(model_types)}!"
                 )
 
-        if "mllama" in model_types:
+        if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
             # mllama is still only in vllm v0 https://arc.net/l/quote/llwkfgmu
             # https://docs.vllm.ai/en/stable/models/supported_models.html#text-generation_1
             # vLLM V0 does not support LoRA on multi modal models.
@@ -709,7 +715,7 @@ class FastBaseModel:
         pass
 
         if hasattr(model, "vllm_engine"):
-            if model.vllm_engine.llm_engine.vllm_config.lora_config is None:
+            if hasattr(model.vllm_engine, "llm_engine") and hasattr(model.vllm_engine.llm_engine, "vllm_config") and getattr(model.vllm_engine.llm_engine.vllm_config, "lora_config", None) is None:
                 # If vLLM is being used but lora is not enabled, throw an error
                 # Ref https://github.com/vllm-project/vllm/blob/51ba839555a5d122eadd91e9c16463ac288f5fa1/vllm/v1/engine/processor.py#L148-L151
                 raise RuntimeError("Unsloth: LoRA is not enabled for this model!")
@@ -718,7 +724,7 @@ class FastBaseModel:
                 # https://github.com/vllm-project/vllm/blob/main/vllm/lora/models.py#L471-L477
                 # TODO: Update this once vLLM V1 supports LoRA on vision layers (possibly not happening)
                 raise RuntimeError("Unsloth: Finetuning vision layers is not supported for fast_inference!")
-            if model.config.model_type == "mllama":
+            if model.config.model_type in VLLM_NON_LORA_VLM:
                 # mllama is still only in vllm v0 https://arc.net/l/quote/llwkfgmu
                 # https://docs.vllm.ai/en/stable/models/supported_models.html#text-generation_1
                 # vLLM V0 does not support LoRA on multi modal models.
