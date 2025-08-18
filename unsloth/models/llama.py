@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-global final_attention_mask
+
 import torch
 import gc
 import math
@@ -797,10 +797,6 @@ def LlamaModel_fast_forward(
     pass
 
     # Ignore attention_mask
-    if "RAISE_ATTENTION_MASK" in os.environ:
-        global final_attention_mask
-        final_attention_mask = attention_mask
-        raise
     if attention_mask is None:
         padding_mask = None
     elif self.training:
