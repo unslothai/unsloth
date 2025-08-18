@@ -30,7 +30,7 @@ The installation order is important, since we want the overwrite bundled depende
     Create a project dir and venv:
 
     ```bash
-    mkdir `unsloth-blackwell` && cd `unsloth-blackwell`
+    mkdir 'unsloth-blackwell' && cd 'unsloth-blackwell'
     uv venv .venv --python=3.12 --seed
     source .venv/bin/activate
     ```
