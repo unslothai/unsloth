@@ -133,15 +133,18 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         default = -1,
         metadata = {{'help': 'Chunk size to reduce memory usage. -1 is most efficient.'}},
     )
+    {max_seq_length_pre}
     def __init__({RLConfig_arguments},
         vllm_sampling_params = None,
         unsloth_num_chunks = -1,
+        {max_seq_length_call}
         **kwargs,
     ):
 {RLConfig_extra_args}
         super().__init__({RLConfig_call_args}{RLConfig_kwargs})
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
+        {max_seq_length_post}
 pass
 
 {RLTrainer_extras}
@@ -266,6 +269,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += mixed_precision
     pass
 
+    # Check if max_seq_length is NOT defined (max_length is now default)
+    if "max_seq_length" not in call_args and "max_length" in call_args:
+        max_seq_length_pre = \
+            """max_seq_length : Optional[int] = field(
+        default = None,
+        metadata = {{'help': 'Maximum sequence length to truncate to.'}},
+    )"""
+        max_seq_length_call = "max_seq_length = max_seq_length,"
+        max_seq_length_post = "self.max_seq_length = max_seq_length"
+    else:
+        max_seq_length_pre = ""
+        max_seq_length_call = ""
+        max_seq_length_post = ""
+    pass
+
     # Check if per_device_eval_batch_size (default 8) bigger than bsz
     # Also use FP16 / BF16 evaluation
     if "args" in call_args:
@@ -353,9 +371,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "            max_length = args.max_length\n"\
             "    else:\n"\
             "        model_max_length = getattr(model, 'max_seq_length', None)\n"\
-            "        # print(model_max_length, 'mml1')\n"\
             "        if model_max_length is None: model_max_length = getattr(model, 'max_length', None)\n"\
-            "        # print(model_max_length, 'mml2')\n"\
             "        if model_max_length is not None:\n"\
             "            args.max_length = model_max_length\n"\
             "            max_length = args.max_length\n"\
@@ -665,6 +681,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RLTrainer_extras     = RLTrainer_extras,
         RLTrainer_post       = RLTrainer_post,
         RL_pre               = RL_pre,
+
+        max_seq_length_pre   = max_seq_length_pre,
+        max_seq_length_call  = max_seq_length_call,
+        max_seq_length_post  = max_seq_length_post,
 
         selective_log_softmax_code = selective_log_softmax_code,
     )
