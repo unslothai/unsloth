@@ -23,6 +23,7 @@ __all__ = [
     "standardize_data_formats",
     "apply_chat_template",
     "train_on_responses_only",
+    "parse_multicolumn_output",
 
     "test_construct_chat_template",
 ]
@@ -34,6 +35,7 @@ from .save import patch_saving_functions
 import os
 import shutil
 from .tokenizer_utils import *
+from functools import partial
 from .models._utils import patch_tokenizer
 import re
 from unsloth_zoo.dataset_utils import (
@@ -2323,6 +2325,21 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 pass
 
+def extract_add_generation_prompt(tokenizer):
+    if not hasattr(tokenizer, "_generation_prompt"):
+        w_generation_prompt = tokenizer.apply_chat_template(conversation=[{"role" : "user", "content" : "Dummy"}], tokenize = False, add_generation_prompt = True)
+        wo_generation_prompt = tokenizer.apply_chat_template(conversation=[{"role" : "user", "content" : "Dummy"}], tokenize = False, add_generation_prompt = False)
+        tokenizer._generation_prompt = w_generation_prompt[len(wo_generation_prompt):]
+    pass
+
+    return tokenizer._generation_prompt
+pass
+
+def parse_multicolumn_output(tokenizer, output):
+    generation_prompt = extract_add_generation_prompt(tokenizer)
+    return eval(output.lstrip(generation_prompt).rstrip(tokenizer.eos_token))
+pass
+
 
 def _parse_combined_prompt(combined_prompt, dataset):
     # Find {...}
@@ -2425,7 +2442,7 @@ def to_sharegpt(
     """
     Converts a dataset to ShareGPT style.
     ShareGPT requires only 1 input and 1 output field.
-    This means one has to merge multiple columns into 1 for 1 input field.
+    You can pass a multiple columns in the output field and they will be merged into 1 column in JSON format.
     Use `conversation_extension` to increase the length of each conversation by randomnly
     selecting a few and packing them into 1.
 
@@ -2442,6 +2459,17 @@ def to_sharegpt(
             raise TypeError("Unsloth: Your dataset is probably already in ShareGPT format!")
         pass
     pass
+
+    if isinstance(output_column_name, list):
+        def format_to_merge_output_columns(example, columns: list):
+            merged_dict = {}
+            for column in columns:
+                merged_dict[column] = example[column]
+            example["🔥merged😅"] = str(merged_dict)
+            return example
+
+        dataset = dataset.map(partial(format_to_merge_output_columns, columns=output_column_name), desc="Merging output columns")
+        output_column_name = "🔥merged😅"
 
     possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
     function = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
