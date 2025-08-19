@@ -269,21 +269,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         extra_args += mixed_precision
     pass
 
-    # Check if max_seq_length is NOT defined (max_length is now default)
-    if "max_seq_length" not in call_args and "max_length" in call_args:
-        max_seq_length_pre = \
-            """max_seq_length : Optional[int] = field(
-        default = None,
-        metadata = {{'help': 'Maximum sequence length to truncate to.'}},
-    )"""
-        max_seq_length_call = "max_seq_length = max_seq_length,"
-        max_seq_length_post = "self.max_seq_length = max_seq_length"
-    else:
-        max_seq_length_pre = ""
-        max_seq_length_call = ""
-        max_seq_length_post = ""
-    pass
-
     # Check if per_device_eval_batch_size (default 8) bigger than bsz
     # Also use FP16 / BF16 evaluation
     if "args" in call_args:
@@ -549,6 +534,21 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "if learning_rate > 1: raise OverflowError(f'Unsloth: Your learning rate of `{learning_rate}` is way too larger > 1! "\
         "Consider decreasing it to 1e-1, otherwise gradient updates will explode!')\n"
         extra_args += learning_rate_check
+    pass
+
+    # Check if max_seq_length is NOT defined (max_length is now default)
+    if "max_seq_length" not in call_args and "max_length" in call_args:
+        max_seq_length_pre = \
+            """max_seq_length : Optional[int] = field(
+        default = None,
+        metadata = {{'help': 'Maximum sequence length to truncate to.'}},
+    )"""
+        max_seq_length_call = "max_seq_length = max_seq_length,"
+        max_seq_length_post = "self.max_seq_length = max_seq_length"
+    else:
+        max_seq_length_pre = ""
+        max_seq_length_call = ""
+        max_seq_length_post = ""
     pass
 
     # Add output_dir saving
