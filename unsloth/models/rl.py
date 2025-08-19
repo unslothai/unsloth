@@ -543,7 +543,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         default = None,
         metadata = {'help': 'Maximum sequence length to truncate to.'},
     )"""
-        max_seq_length_call = "max_seq_length = max_seq_length,"
+        max_seq_length_call = "max_seq_length = None,"
         max_seq_length_post = "self.max_seq_length = max_seq_length"
     else:
         max_seq_length_pre = ""
