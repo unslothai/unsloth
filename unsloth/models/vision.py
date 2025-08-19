@@ -503,7 +503,7 @@ class FastBaseModel:
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
-                attn_implementation = "sdpa",
+                attn_implementation = "sdpa" if supports_sdpa else "eager",
             )
 
             if fast_inference:
