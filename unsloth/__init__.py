@@ -17,6 +17,26 @@ from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
 
+def patch_tf_protobuf():
+    # TF 2.19.0 throws a non terminating error with later versions of protobuf.
+    # This patch avoids it. This needs to happen before transformers import
+    import google.protobuf.message_factory
+    if not hasattr(google.protobuf.message_factory, "MessageFactory"):
+        class MessageFactory:
+            def CreatePrototype(self, *args, **kwargs): return
+            def GetMessages(self, *args, **kwargs): return
+            def GetPrototype(self, *args, **kwargs): return
+        google.protobuf.message_factory.MessageFactory = MessageFactory
+    elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
+        not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
+        hasattr(google.protobuf.message_factory, "GetMessageClass"):
+        GetMessageClass = google.protobuf.message_factory.GetMessageClass
+        def GetPrototype(self, descriptor):
+            return GetMessageClass(descriptor)
+        google.protobuf.message_factory.MessageFactory.GetPrototype = GetPrototype
+
+patch_tf_protobuf()
+
 # Check if modules that need patching are already imported
 critical_modules = ['trl', 'transformers', 'peft']
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
