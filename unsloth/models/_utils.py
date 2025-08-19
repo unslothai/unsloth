@@ -273,6 +273,38 @@ try:
 except:
     pass
 
+# Using a slow image processor as `use_fast`
+try:
+    from transformers.processing_utils import logger as processing_utils_logger
+    processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
+    del processing_utils_logger
+except:
+    pass
+
+# Using a slow image processor as `use_fast`
+try:
+    from transformers.models.auto.image_processing_auto import logger as processing_utils_logger
+    processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
+    del processing_utils_logger
+except:
+    pass
+
+# `use_cache=True` is incompatible with gradient checkpointing
+try:
+    from transformers.trainer import logger as trainer_logger
+    trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
+    del trainer_logger
+except:
+    pass
+
+# `use_cache=True` is incompatible with gradient checkpointing
+try:
+    from transformers.utils.generic import logger as trainer_logger
+    trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
+    del trainer_logger
+except:
+    pass
+
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
