@@ -75,8 +75,9 @@ def fix_xformers_performance_issue():
                         f.truncate()
                         if UNSLOTH_ENABLE_LOGGING:
                             print("Unsloth: Patching Xformers to fix some performance issues.")
-        except:
-            pass
+        except Exception as e:
+            if UNSLOTH_ENABLE_LOGGING:
+                print(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 pass
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
@@ -84,7 +85,7 @@ def fix_vllm_aimv2_issue():
     if importlib.util.find_spec("vllm") is None: return
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
-        vllm_version = importlib.util.find_spec("xformers").origin
+        vllm_version = importlib.util.find_spec("vllm").origin
         vllm_version = os.path.split(vllm_version)[0]
         ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
         try:
@@ -112,6 +113,7 @@ def fix_vllm_aimv2_issue():
                         f.truncate()
                         if UNSLOTH_ENABLE_LOGGING:
                             print("Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`")
-        except:
-            pass
+        except Exception as e:
+            if UNSLOTH_ENABLE_LOGGING:
+                print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 pass
