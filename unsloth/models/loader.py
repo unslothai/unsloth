@@ -637,7 +637,7 @@ class FastModel(FastBaseModel):
                 # Set norms to float32 since anyways they get upcasted to float32
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                     "all;None;None;"\
-                    "if 'down_projs' in name and hasattr(module, 'weight') and "\
+                    "if ('down_projs' in name or 'gate_up_projs' in name) and hasattr(module, 'weight') and "\
                     "torch.amax(dequantize_module_weight(module)) >= 0:"\
                     "module._pre_set_compute_dtype = torch.float32\n"\
                     ""\
