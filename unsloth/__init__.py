@@ -17,6 +17,10 @@ from packaging.version import Version
 import os, re, subprocess, inspect
 import numpy as np
 
+# Fix some issues before importing other packages
+from .import_fixes import fix_message_factory_issue
+fix_message_factory_issue(); del fix_message_factory_issue;
+
 # Check if modules that need patching are already imported
 critical_modules = ['trl', 'transformers', 'peft']
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
@@ -161,7 +165,6 @@ elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 pass
 
-
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
 import triton
@@ -224,31 +227,6 @@ if DEVICE_TYPE == "cuda":
 elif DEVICE_TYPE == "xpu":
     # currently intel xpu will not support bnb, will add support in the future
     # TODO: check triton for intel installed properly.
-    pass
-
-# Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
-# MUST do this at the start primarily due to tensorflow causing issues
-try:
-    import google.protobuf.message_factory
-    class MessageFactory:
-        def CreatePrototype(self, *args, **kwargs): return
-        def GetMessages(self, *args, **kwargs): return
-        def GetPrototype(self, *args, **kwargs): return
-    if not hasattr(google.protobuf.message_factory, "MessageFactory"):
-        google.protobuf.message_factory.MessageFactory = MessageFactory
-    elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
-        not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
-        not hasattr(google.protobuf.message_factory, "GetMessageClass"):
-        google.protobuf.message_factory.MessageFactory = MessageFactory
-    elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
-        not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
-        hasattr(google.protobuf.message_factory, "GetMessageClass"):
-        GetMessageClass = google.protobuf.message_factory.GetMessageClass
-        def GetPrototype(self, descriptor):
-            return GetMessageClass(descriptor)
-        google.protobuf.message_factory.MessageFactory.GetPrototype = GetPrototype
-    pass
-except:
     pass
 
 # Check for unsloth_zoo
