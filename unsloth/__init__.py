@@ -93,7 +93,7 @@ if DEVICE_TYPE == "cuda" and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
 
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
-torch_version = str(torch.__version__).split(".")
+torch_version = str(re.match(r"[0-9\.]{3,}", str(torch.__version__)).group(0)).split(".")
 major_torch, minor_torch = torch_version[0], torch_version[1]
 major_torch, minor_torch = int(major_torch), int(minor_torch)
 if (major_torch < 2):
