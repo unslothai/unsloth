@@ -54,6 +54,7 @@ pass
 
 # Fix Xformers performance issues since 0.0.25
 def fix_xformers_performance_issue():
+    if importlib.util.find_spec("xformers") is None: return
     xformers_version = importlib_version("xformers")
     if Version(xformers_version) < Version("0.0.29"):
         xformers_location = importlib.util.find_spec("xformers").origin
@@ -80,6 +81,7 @@ pass
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
+    if importlib.util.find_spec("vllm") is None: return
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
         vllm_version = importlib.util.find_spec("xformers").origin
