@@ -276,6 +276,18 @@ try:
 except:
     pass
 
+# UserWarning: Logical operators 'and' and 'or' are deprecated for non-scalar tensors; please use '&' or '|' instead
+# Will be fixed in torch 2.8.1 https://github.com/pytorch/pytorch/issues/158463
+try:
+    warnings.filterwarnings(
+        action = "ignore",
+        message = r".*Logical operators 'and' and 'or'.*",
+        category = UserWarning,
+        append = True,
+    )
+except:
+    pass
+
 # Using a slow image processor as `use_fast`
 try:
     from transformers.processing_utils import logger as processing_utils_logger
