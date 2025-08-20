@@ -111,31 +111,6 @@ if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
     os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 pass
 
-# Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
-# MUST do this at the start primarily due to tensorflow causing issues
-try:
-    import google.protobuf.message_factory
-    class MessageFactory:
-        def CreatePrototype(self, *args, **kwargs): return
-        def GetMessages(self, *args, **kwargs): return
-        def GetPrototype(self, *args, **kwargs): return
-    if not hasattr(google.protobuf.message_factory, "MessageFactory"):
-        google.protobuf.message_factory.MessageFactory = MessageFactory
-    elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
-        not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
-        not hasattr(google.protobuf.message_factory, "GetMessageClass"):
-        google.protobuf.message_factory.MessageFactory = MessageFactory
-    elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
-        not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
-        hasattr(google.protobuf.message_factory, "GetMessageClass"):
-        GetMessageClass = google.protobuf.message_factory.GetMessageClass
-        def GetPrototype(self, descriptor):
-            return GetMessageClass(descriptor)
-        google.protobuf.message_factory.MessageFactory.GetPrototype = GetPrototype
-    pass
-except:
-    pass
-
 # Fix Xformers performance issues since 0.0.25
 import importlib.util
 from pathlib import Path
@@ -271,6 +246,31 @@ try:
 except:
     raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
 pass
+
+# Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
+# MUST do this at the start primarily due to tensorflow causing issues
+try:
+    import google.protobuf.message_factory
+    class MessageFactory:
+        def CreatePrototype(self, *args, **kwargs): return
+        def GetMessages(self, *args, **kwargs): return
+        def GetPrototype(self, *args, **kwargs): return
+    if not hasattr(google.protobuf.message_factory, "MessageFactory"):
+        google.protobuf.message_factory.MessageFactory = MessageFactory
+    elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
+        not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
+        not hasattr(google.protobuf.message_factory, "GetMessageClass"):
+        google.protobuf.message_factory.MessageFactory = MessageFactory
+    elif hasattr(google.protobuf.message_factory, "MessageFactory") and \
+        not hasattr(google.protobuf.message_factory.MessageFactory, "GetPrototype") and \
+        hasattr(google.protobuf.message_factory, "GetMessageClass"):
+        GetMessageClass = google.protobuf.message_factory.GetMessageClass
+        def GetPrototype(self, descriptor):
+            return GetMessageClass(descriptor)
+        google.protobuf.message_factory.MessageFactory.GetPrototype = GetPrototype
+    pass
+except:
+    pass
 
 from .models import *
 from .models import __version__
