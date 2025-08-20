@@ -618,9 +618,6 @@ class FastModel(FastBaseModel):
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
         elif "gpt-oss" in lowered_model_name:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            # CCE fails on Tesla T4
-            # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
-            os.environ["UNSLOTH_ENABLE_CCE"] = "0"
             if not load_in_4bit:
                 # Only upcast MoE biases for MXFP4, not BnB
                 # Set norms to float32 since anyways they get upcasted to float32
@@ -639,11 +636,13 @@ class FastModel(FastBaseModel):
                 # Set down projection compute dtype to be float32 for float16 machines
                 # Set norms to float32 since anyways they get upcasted to float32
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                    "all;None;None;"\
-                    "if 'down_projs' in name and hasattr(module, 'weight') and "\
-                    "torch.amax(dequantize_module_weight(module)) >= 1024:"\
+                    "torch.float16;torch.bfloat16;torch.float16;"\
+                    "if ('down_projs' in name) and hasattr(module, 'weight') and "\
+                    "torch.amax(dequantize_module_weight(module)) >= 0:"\
                     "module._pre_set_compute_dtype = torch.float32\n"\
                     ""\
+                    "if ('mlp.router' in name) and hasattr(module, 'weight'):"\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
                     ";"
             # Set norms to float32 since anyways they get upcasted to float32
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"

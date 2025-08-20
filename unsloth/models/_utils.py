@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.8.8"
+__version__ = "2025.8.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -267,6 +267,18 @@ try:
     warnings.filterwarnings(
         action = "ignore",
         message = r".*quantization_config.*",
+        category = UserWarning,
+        append = True,
+    )
+except:
+    pass
+
+# UserWarning: Logical operators 'and' and 'or' are deprecated for non-scalar tensors; please use '&' or '|' instead
+# Will be fixed in torch 2.8.1 https://github.com/pytorch/pytorch/issues/158463
+try:
+    warnings.filterwarnings(
+        action = "ignore",
+        message = r".*Logical operators 'and' and 'or'.*",
         category = UserWarning,
         append = True,
     )
