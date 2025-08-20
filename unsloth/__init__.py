@@ -226,27 +226,6 @@ elif DEVICE_TYPE == "xpu":
     # TODO: check triton for intel installed properly.
     pass
 
-# Check for unsloth_zoo
-try:
-    unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.8.1"):
-        print(
-            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
-            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
-        )
-        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
-        #     try:
-        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        #     except:
-        #         try:
-        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
-        #         except:
-        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    import unsloth_zoo
-except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
-pass
-
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues
 try:
@@ -271,6 +250,27 @@ try:
     pass
 except:
     pass
+
+# Check for unsloth_zoo
+try:
+    unsloth_zoo_version = importlib_version("unsloth_zoo")
+    if Version(unsloth_zoo_version) < Version("2025.8.1"):
+        print(
+            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
+            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
+        )
+        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
+        #     try:
+        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
+        #     except:
+        #         try:
+        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+        #         except:
+        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
+    import unsloth_zoo
+except:
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
+pass
 
 from .models import *
 from .models import __version__
