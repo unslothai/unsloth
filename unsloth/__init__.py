@@ -115,35 +115,15 @@ if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
     os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 pass
 
-# Fix Xformers performance issues since 0.0.25
+# Fix other issues
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
 from packaging.version import Version
-try:
-    xformers_version = importlib_version("xformers")
-    if Version(xformers_version) < Version("0.0.29"):
-        xformers_location = importlib.util.find_spec("xformers").origin
-        xformers_location = os.path.split(xformers_location)[0]
-        cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
-
-        if cutlass.exists():
-            with open(cutlass, "r+", encoding = "utf-8") as f:
-                text = f.read()
-                # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
-                if "num_splits_key=-1," in text:
-                    text = text.replace("num_splits_key=-1,", "num_splits_key=None,")
-                    f.seek(0)
-                    f.write(text)
-                    f.truncate()
-                    print("Unsloth: Patching Xformers to fix some performance issues.")
-                pass
-            pass
-        pass
-    pass
-except:
-    pass
-pass
+from .import_fixes import fix_xformers_performance_issue
+fix_xformers_performance_issue(); del fix_xformers_performance_issue;
+from .import_fixes import fix_vllm_aimv2_issue
+fix_vllm_aimv2_issue(); del fix_vllm_aimv2_issue;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
