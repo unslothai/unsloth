@@ -638,7 +638,7 @@ class FastModel(FastBaseModel):
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                     "all;None;None;"\
                     "if 'down_projs' in name and hasattr(module, 'weight') and "\
-                    "torch.amax(dequantize_module_weight(module)) >= 128:"\
+                    "torch.amax(dequantize_module_weight(module)) >= 0:"\
                     "module._pre_set_compute_dtype = torch.float32\n"\
                     ""\
                     ";"
