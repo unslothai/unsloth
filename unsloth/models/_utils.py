@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.8.7"
+__version__ = "2025.8.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -270,6 +270,50 @@ try:
         category = UserWarning,
         append = True,
     )
+except:
+    pass
+
+# UserWarning: Logical operators 'and' and 'or' are deprecated for non-scalar tensors; please use '&' or '|' instead
+# Will be fixed in torch 2.8.1 https://github.com/pytorch/pytorch/issues/158463
+try:
+    warnings.filterwarnings(
+        action = "ignore",
+        message = r".*Logical operators 'and' and 'or'.*",
+        category = UserWarning,
+        append = True,
+    )
+except:
+    pass
+
+# Using a slow image processor as `use_fast`
+try:
+    from transformers.processing_utils import logger as processing_utils_logger
+    processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
+    del processing_utils_logger
+except:
+    pass
+
+# Using a slow image processor as `use_fast`
+try:
+    from transformers.models.auto.image_processing_auto import logger as processing_utils_logger
+    processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
+    del processing_utils_logger
+except:
+    pass
+
+# `use_cache=True` is incompatible with gradient checkpointing
+try:
+    from transformers.trainer import logger as trainer_logger
+    trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
+    del trainer_logger
+except:
+    pass
+
+# `use_cache=True` is incompatible with gradient checkpointing
+try:
+    from transformers.utils.generic import logger as trainer_logger
+    trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
+    del trainer_logger
 except:
     pass
 
