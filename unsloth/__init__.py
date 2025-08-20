@@ -104,6 +104,12 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
+# CCE fails on Torch 2.8 and above
+# OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
+if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
+    os.environ["UNSLOTH_ENABLE_CCE"] = "0"
+pass
+
 # Fix Xformers performance issues since 0.0.25
 import importlib.util
 from pathlib import Path
