@@ -366,7 +366,7 @@ class FastBaseModel:
                 (checker == "float16" or checker == "torch.float16") and \
                 (dtype == torch.float16)
             )
-            print([allow_float16_runs], [checker], [_dtype], [_bnb_compute_dtype], [_custom_datatype], [execute_code] )
+            print([(checker == "float16" or checker == "torch.float16")], [dtype], [allow_float16_runs], [checker], [_dtype], [_bnb_compute_dtype], [_custom_datatype], [execute_code] )
 
             if allow_all_runs or allow_float16_runs:
                 if eval(_dtype) is not None:
