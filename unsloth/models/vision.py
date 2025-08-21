@@ -359,7 +359,6 @@ class FastBaseModel:
             custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
             assert custom_datatype.count(";") >= 4
             checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code = custom_datatype.split(";", 4)
-            print(checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code)
             # Allow custom dtypes on all runs
             allow_all_runs = (checker == "all")
             # Allow only on float16 datatypes
@@ -367,6 +366,7 @@ class FastBaseModel:
                 (checker == "float16" or checker == "torch.float16") and \
                 (dtype == torch.float16)
             )
+            print([checker], [_dtype], [_bnb_compute_dtype], [_custom_datatype], [execute_code] )
 
             if allow_all_runs or allow_float16_runs:
                 if eval(_dtype) is not None:
@@ -387,7 +387,7 @@ class FastBaseModel:
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = "sdpa"
         if not supports_sdpa:
-            print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to eager!")
+            print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager.")
             del kwargs["attn_implementation"]
         pass
 
