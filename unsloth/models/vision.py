@@ -455,9 +455,6 @@ class FastBaseModel:
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
-        global partial_model
-        partial_model = model
-        raise
 
         # Check float32 norm weights
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
@@ -525,6 +522,9 @@ class FastBaseModel:
         )
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model = post_patch_loss_function(model)
+        global partial_model
+        partial_model = model
+        raise
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):
