@@ -643,6 +643,10 @@ class FastModel(FastBaseModel):
                     "\n"\
                     "if ('mlp.router' in name) and hasattr(module, 'weight'):"\
                     "module._pre_set_compute_dtype = torch.float32\n"\
+                    "\n"\
+                    "if ('self_attn' in name) and hasattr(module, 'sinks'):"\
+                    "module.sinks._pre_set_compute_dtype = torch.float32\n"\
+                    "\n"\
                     ";"
             # Set norms to float32 since anyways they get upcasted to float32
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
