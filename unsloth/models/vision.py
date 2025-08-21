@@ -245,6 +245,7 @@ def unsloth_base_fast_generate(
     return output
 pass
 
+global partial_model
 
 class FastBaseModel:
 
@@ -454,6 +455,9 @@ class FastBaseModel:
         raise_handler.remove()
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
+        global partial_model
+        partial_model = model
+        raise
 
         # Check float32 norm weights
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
