@@ -463,6 +463,7 @@ class FastBaseModel:
                     module._pre_set_compute_dtype = torch.float32
         pass
         # Edit data-types
+        print("custom_datatype", custom_datatype)
         if custom_datatype is not None:
             with torch.no_grad():
                 for jj, (name, module) in enumerate(model.named_modules()):
