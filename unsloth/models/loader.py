@@ -646,6 +646,7 @@ class FastModel(FastBaseModel):
                     ";"
             # Set norms to float32 since anyways they get upcasted to float32
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+            print(os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"])
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:

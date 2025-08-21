@@ -359,7 +359,7 @@ class FastBaseModel:
             custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
             assert custom_datatype.count(";") >= 4
             checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code = custom_datatype.split(";", 4)
-
+            print(checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code)
             # Allow custom dtypes on all runs
             allow_all_runs = (checker == "all")
             # Allow only on float16 datatypes
