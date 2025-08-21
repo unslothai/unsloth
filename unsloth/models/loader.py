@@ -641,6 +641,9 @@ class FastModel(FastBaseModel):
                     "torch.amax(dequantize_module_weight(module)) >= 0:"\
                     "module._pre_set_compute_dtype = torch.bfloat16\n"\
                     "\n"\
+                    "if hasattr(module, 'weight'):"\
+                    "module._pre_set_compute_dtype = torch.bfloat16\n"\
+                    "\n"\
                     "if ('mlp.router' in name) and hasattr(module, 'weight'):"\
                     "module._pre_set_compute_dtype = torch.bfloat16\n"\
                     "\n"\
