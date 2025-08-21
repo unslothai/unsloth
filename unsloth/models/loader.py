@@ -638,9 +638,11 @@ class FastModel(FastBaseModel):
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
                     "torch.float16;torch.bfloat16;torch.float16;"\
                     "if ('down_projs' in name) and hasattr(module, 'weight') and "\
-                    "torch.amax(dequantize_module_weight(module)) >= 512:"\
+                    "torch.amax(dequantize_module_weight(module)) >= 256:"\
                     "module._pre_set_compute_dtype = torch.float32\n"\
                     "\n"\
+                    "if ('mlp.router' in name) and hasattr(module, 'weight'):"\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
                     ";"
             # Set norms to float32 since anyways they get upcasted to float32
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
