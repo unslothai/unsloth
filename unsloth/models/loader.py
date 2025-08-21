@@ -601,7 +601,7 @@ class FastModel(FastBaseModel):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "float16;torch.float16;torch.float16;"\
+                "torch.float16;torch.float16;torch.float16;"\
                 "if name.endswith('norm'): "\
                 "module._pre_set_compute_dtype = torch.float32\n"\
                 ";"\
@@ -612,7 +612,7 @@ class FastModel(FastBaseModel):
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "float16;torch.float32;torch.float16;"\
+                "torch.float16;torch.float32;torch.float16;"\
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"\
                 ";"\
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
@@ -646,7 +646,6 @@ class FastModel(FastBaseModel):
                     ";"
             # Set norms to float32 since anyways they get upcasted to float32
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
-            print(os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"])
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:

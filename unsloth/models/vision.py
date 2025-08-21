@@ -363,7 +363,10 @@ class FastBaseModel:
             # Allow custom dtypes on all runs
             allow_all_runs = (checker == "all")
             # Allow only on float16 datatypes
-            allow_float16_runs = (checker == "float16" and dtype == torch.float16)
+            allow_float16_runs = (
+                (checker == "float16" or checker == "torch.float16") and \
+                (dtype == torch.float16)
+            )
 
             if allow_all_runs or allow_float16_runs:
                 if eval(_dtype) is not None:
