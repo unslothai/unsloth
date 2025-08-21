@@ -785,7 +785,8 @@ class FastModel(FastBaseModel):
         model_types = ["siglip"] + model_types
 
         # Set forced float32 env flag
-        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        if "UNSLOTH_FORCE_FLOAT32" not in os.environ:
+            os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         do_forced_float32 = False
         for model_type_arch in model_types:
             if model_type_arch != "siglip": break
