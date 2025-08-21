@@ -213,7 +213,8 @@ def unsloth_base_fast_generate(
         cache_implementation = None
     if cache_implementation is not None:
         swa = getattr(getattr(self.config, "text_config", self.config), "sliding_window", None)
-        if swa == 0 or type(swa) is not int:
+        if (swa == 0 or type(swa) is not int) \
+            and (getattr(self, "_can_compile_fullgraph", True) is True):
             cache_implementation = "static"
         else:
             cache_implementation = "hybrid"
