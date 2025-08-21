@@ -145,7 +145,8 @@ class FastLanguageModel(FastLlamaModel):
         if token is None: token = get_token()
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
-        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
+        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16
+                or dtype == torch.float32)
 
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
