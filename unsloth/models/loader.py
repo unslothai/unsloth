@@ -639,13 +639,13 @@ class FastModel(FastBaseModel):
                     "torch.float16;torch.bfloat16;torch.float16;"\
                     "if ('down_projs') and hasattr(module, 'weight') and "\
                     "torch.amax(dequantize_module_weight(module)) >= 0:"\
-                    "module._pre_set_compute_dtype = torch.float32\n"\
+                    "module._pre_set_compute_dtype = torch.bfloat16\n"\
                     "\n"\
                     "if ('mlp.router' in name) and hasattr(module, 'weight'):"\
-                    "module._pre_set_compute_dtype = torch.float32\n"\
+                    "module._pre_set_compute_dtype = torch.bfloat16\n"\
                     "\n"\
                     "if ('self_attn' in name) and hasattr(module, 'sinks'):"\
-                    "module.sinks._pre_set_compute_dtype = torch.float32\n"\
+                    "module.sinks._pre_set_compute_dtype = torch.bfloat16\n"\
                     "\n"\
                     "if ('embed_tokens' in name or 'lm_head' in name) and hasattr(module, 'weight'):"\
                     "module._pre_set_compute_dtype = torch.bfloat16\n"\
