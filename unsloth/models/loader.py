@@ -647,8 +647,8 @@ class FastModel(FastBaseModel):
                     "if ('self_attn' in name) and hasattr(module, 'sinks'):"\
                     "module.sinks._pre_set_compute_dtype = torch.float32\n"\
                     "\n"\
-                    "if ('embed_tokens' in name):"\
-                    "module.sinks._pre_set_compute_dtype = torch.float32\n"\
+                    "if ('embed_tokens' in name) and hasattr(module, 'weight'):"\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
                     "\n"\
                     ";"
             # Set norms to float32 since anyways they get upcasted to float32
