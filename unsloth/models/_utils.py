@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.8.4"
+__version__ = "2025.8.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -58,6 +58,7 @@ __all__ = [
     "HAS_CUT_CROSS_ENTROPY",
     "EMPTY_LOGITS",
     "fused_linear_cross_entropy",
+    "unsloth_fused_ce_loss",
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
 
@@ -67,6 +68,7 @@ __all__ = [
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
+    "dequantize_module_weight",
 ]
 
 import torch
@@ -109,6 +111,7 @@ from unsloth_zoo.loss_utils import (
     HAS_CUT_CROSS_ENTROPY,
     fused_linear_cross_entropy,
     _unsloth_get_batch_samples,
+    unsloth_fused_ce_loss,
 )
 from unsloth_zoo.vision_utils import (
     process_vision_info,
@@ -150,6 +153,41 @@ class HideLoggingMessage(logging.Filter):
     __slots__ = "text",
     def __init__(self, text): self.text = text
     def filter(self, x): return not (self.text in x.getMessage())
+pass
+
+# Stop vLLM messages
+if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
+    try:
+        from vllm.worker.worker import logger as vllm_worker_logger
+        vllm_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
+        del vllm_worker_logger
+    except:
+        pass
+    try:
+        from vllm.v1.worker.gpu_worker import logger as vllm_gpu_worker_logger
+        vllm_gpu_worker_logger.addFilter(HideLoggingMessage("Sleep mode freed"))
+        del vllm_gpu_worker_logger
+    except:
+        pass
+    try:
+        from vllm.executor.executor_base import logger as vllm_executor_logger
+        vllm_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
+        vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
+        del vllm_executor_logger
+    except:
+        pass
+    try:
+        from vllm.core.block.prefix_caching_block import logger as vllm_prefix_caching_logger
+        vllm_prefix_caching_logger.addFilter(HideLoggingMessage("reset prefix cache"))
+        del vllm_prefix_caching_logger
+    except:
+        pass
+    try:
+        from vllm.v1.core.block_pool import logger as vllm_block_pool_logger
+        vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
+        del vllm_block_pool_logger
+    except:
+        pass
 pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
@@ -221,6 +259,61 @@ try:
     from transformers.quantizers.quantizer_mxfp4 import logger as mxfp4_logger
     mxfp4_logger.addFilter(HideLoggingMessage("requires triton"))
     del mxfp4_logger
+except:
+    pass
+
+# You passed `quantization_config` or equivalent parameters
+try:
+    warnings.filterwarnings(
+        action = "ignore",
+        message = r".*quantization_config.*",
+        category = UserWarning,
+        append = True,
+    )
+except:
+    pass
+
+# UserWarning: Logical operators 'and' and 'or' are deprecated for non-scalar tensors; please use '&' or '|' instead
+# Will be fixed in torch 2.8.1 https://github.com/pytorch/pytorch/issues/158463
+try:
+    warnings.filterwarnings(
+        action = "ignore",
+        message = r".*Logical operators 'and' and 'or'.*",
+        category = UserWarning,
+        append = True,
+    )
+except:
+    pass
+
+# Using a slow image processor as `use_fast`
+try:
+    from transformers.processing_utils import logger as processing_utils_logger
+    processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
+    del processing_utils_logger
+except:
+    pass
+
+# Using a slow image processor as `use_fast`
+try:
+    from transformers.models.auto.image_processing_auto import logger as processing_utils_logger
+    processing_utils_logger.addFilter(HideLoggingMessage("`use_fast`"))
+    del processing_utils_logger
+except:
+    pass
+
+# `use_cache=True` is incompatible with gradient checkpointing
+try:
+    from transformers.trainer import logger as trainer_logger
+    trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
+    del trainer_logger
+except:
+    pass
+
+# `use_cache=True` is incompatible with gradient checkpointing
+try:
+    from transformers.utils.generic import logger as trainer_logger
+    trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
+    del trainer_logger
 except:
     pass
 
@@ -676,6 +769,7 @@ pass
 # Weirdly LoraLayer.update_layer downcasts PEFT layers to float16??
 # For mixed precision, we need it to be in float32 not float16.
 from peft import __version__ as peft_version
+from peft.utils.integrations import dequantize_module_weight
 if Version(peft_version) < Version("0.12.0"):
     from peft.tuners.lora.layer import LoraLayer
     try:
