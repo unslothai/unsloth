@@ -897,6 +897,8 @@ class FastModel(FastBaseModel):
 
         if load_in_4bit:
             # Fix up bitsandbytes config
+            print("torch_dtype", model.config.to_dict().get("torch_dtype"))
+            print("dtype", model.config.to_dict().get("dtype"))
             quantization_config = \
             {
                 # Sometimes torch_dtype is not a string!!
