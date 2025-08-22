@@ -549,11 +549,14 @@ def unsloth_save_model(
     from collections import OrderedDict
     state_dict = OrderedDict()
 
-    torch_dtype = internal_model.config.torch_dtype
+    torch_dtype = \
+        getattr(internal_model.config, "dtype", None) or \
+        getattr(internal_model.config, "torch_dtype", None)
     if type(torch_dtype) is str:
         if   torch_dtype ==  "float16": torch_dtype = torch.float16
         elif torch_dtype == "bfloat16": torch_dtype = torch.bfloat16
-    pass
+    else:
+        torch_dtype = internal_model.model.embed_tokens.weight.dtype
 
     # Check modules to save float32 dtype
     state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data.to(torch_dtype)
@@ -1880,7 +1883,9 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    model_dtype = self.config.torch_dtype
+    model_dtype = \
+        getattr(self.config, "dtype", None) or \
+        getattr(self.config, "torch_dtype", None)
     model_type  = self.config.model_type
     if type(model_dtype) is str:
         assert(model_dtype == "float16" or model_dtype == "bfloat16")
@@ -2058,7 +2063,9 @@ def unsloth_push_to_hub_gguf(
     for _ in range(3):
         gc.collect()
 
-    model_dtype = self.config.torch_dtype
+    model_dtype = \
+        getattr(self.config, "dtype", None) or \
+        getattr(self.config, "torch_dtype", None)
     model_type  = self.config.model_type
     if type(model_dtype) is str:
         assert(model_dtype == "float16" or model_dtype == "bfloat16")

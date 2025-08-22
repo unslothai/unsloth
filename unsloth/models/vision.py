@@ -73,6 +73,9 @@ global PROMPT_LOOPKUP
 PROMPT_LOOPKUP = dict()
 
 from transformers import GenerationConfig, CompileConfig, HybridCache
+from transformers import PretrainedConfig
+HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
+
 _compile_config = CompileConfig(
     fullgraph = False,
     dynamic = None,
@@ -118,7 +121,7 @@ def unsloth_base_fast_generate(
     bsz = input_ids.shape[0]
 
     FastBaseModel.for_inference(self)
-    dtype = _get_dtype(self.config.torch_dtype)
+    dtype = _get_dtype(getattr(self.config, "dtype", None) or getattr(self.config, "torch_dtype", None))
 
     # Check if VLM
     is_vlm = any(
@@ -245,8 +248,6 @@ def unsloth_base_fast_generate(
     FastBaseModel.for_training(self)
     return output
 pass
-
-global partial_model
 
 class FastBaseModel:
 
@@ -443,11 +444,17 @@ class FastBaseModel:
         torch_dtype = dtype
         if do_forced_float32: torch_dtype = torch.bfloat16
 
+        if HAS_TORCH_DTYPE:
+            kwargs["torch_dtype"] = torch_dtype
+        else:
+            # Transformers removed torch_dtype
+            kwargs["dtype"] = torch_dtype
+
         raise_handler = RaiseUninitialized()
         model = auto_model.from_pretrained(
             model_name,
             device_map              = device_map,
-            torch_dtype             = torch_dtype,
+            # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
             # quantization_config   = bnb_config,
             token                   = token,
             trust_remote_code       = trust_remote_code,
@@ -698,7 +705,9 @@ class FastBaseModel:
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         float32_mixed_precision = True
-        if _get_dtype(model.config.torch_dtype) == torch.bfloat16 and full_finetuning:
+        if _get_dtype(
+                getattr(model.config, "dtype", None) or getattr(model.config, "torch_dtype", None)
+            ) == torch.bfloat16 and full_finetuning:
             # Use bfloat16 precision for full finetuning
             float32_mixed_precision = False
 
