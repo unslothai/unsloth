@@ -263,22 +263,22 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             # If max_prompt_length is set, we trim the prompt to keep only the last `max_prompt_length` tokens.
             # Then we decode those tokens back into text. We manually remove leading pad tokens from the decoded text,
             # because we can't use `skip_special_tokens=True` (some special tokens are still needed for generation).
-            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
-            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
-            prompts_text = self.processing_class.batch_decode(
-                prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
+            protected = [self.image_token_id, self.vision_start_token_id, self.vision_end_token_id]
+            protected = [token for token in protected if token is not None]
+            prompt_ids, prompt_mask = truncate_with_protected_tokens(
+                prompt_ids, prompt_mask, self.max_prompt_length, protected
             )
-            pad_token = self.processing_class.pad_token
-            def strip_leading_tokens(text):
-                while text.startswith(pad_token):
-                    text = text.removeprefix(pad_token)
-                return text
 
-            if pad_token is not None:
+            prompts_text = [re.sub(rf"^({{re.escape(self.pad_token)}})+", "", text) for text in prompts_text]
+
+            # The chat template inserts a single image token into the prompt text. However, when this text is later
+            # tokenized, the single image token string is expanded into multiple image token IDs, depending on the
+            # image size. Since we're detokenizing here, we may see repeated image tokens in the decoded text. We
+            # collapse them back into a single token string to match the original template.
+            if self.image_token is not None:
                 prompts_text = [
-                    strip_leading_tokens(text) for text in prompts_text
+                    re.sub(rf"({{re.escape(self.image_token)}})+", self.image_token, text) for text in prompts_text
                 ]
-
         # Generate completions using either vLLM or regular generation
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
