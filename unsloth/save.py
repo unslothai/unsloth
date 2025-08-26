@@ -2122,6 +2122,55 @@ def unsloth_push_to_hub_gguf(
     pass
 pass
 
+def unsloth_save_pretrained_torchao(
+    self,
+    save_directory       : Union[str, os.PathLike],
+    tokenizer            = None,
+    torchao_config       = None,
+    push_to_hub          : bool = False,
+):
+    """Quantizes the model with torchao and saves a torchao quantized checkpoint
+
+    Args
+      `save_directory`: local folder path or huggingface hub ID when `push_to_hub` is set to True, e.g. `my_model`
+      `torchao_config` (TorchAOBaseConfig): configuration for torchao quantization, full list: https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
+      `push_to_hub` (bool): whether to push the checkpoint to huggingface hub or not
+    """
+    # first merge the lora weights
+    arguments = dict(locals())
+    arguments["save_directory"] = save_directory + "-local"
+    arguments["model"]        = self
+    arguments["tokenizer"]    = tokenizer
+    arguments["push_to_hub"]  = False # We save ourselves
+    arguments["save_method"] = "merged_16bit" # Must be 16bit
+    del arguments["self"]
+    del arguments["torchao_config"]
+    new_save_directory, old_username = unsloth_save_model(**arguments)
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer, TorchAoConfig
+    from torchao import quantize_
+    if torchao_config is None:
+        from torchao.quantization import Int8DynamicActivationInt8WeightConfig
+        torchao_config = Int8DynamicActivationInt8WeightConfig()
+    quantization_config = TorchAoConfig(quant_type=torchao_config)
+
+    tokenizer = AutoTokenizer.from_pretrained(new_save_directory)
+    model = AutoModelForCausalLM.from_pretrained(
+        new_save_directory,
+        torch_dtype="auto",
+        device_map="auto",
+        quantization_config=quantization_config,
+    )
+
+    if push_to_hub:
+        save_to = save_directory
+        # torchao does not support safe_serialization right now
+        model.push_to_hub(save_to, safe_serialization=False)
+        tokenizer.push_to_hub(save_to)
+        pass
+    pass
+pass
+
 # Corrected function to save LoRA to a custom directory
 def save_lora_to_custom_dir(model, tokenizer, save_directory):
     # Create the custom directory if it doesn't exist
@@ -2597,6 +2646,7 @@ def patch_saving_functions(model, vision = False):
             model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged,                model)
             model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
             model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
+            model.save_pretrained_torchao   = types.MethodType(unsloth_save_pretrained_torchao,                  model)
             model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
             model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
         pass
