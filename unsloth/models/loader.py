@@ -575,9 +575,22 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
         # Gemma 3
         elif "gemma-3" in lowered_model_name:
-            if transformers_version < Version("4.50.0.dev0"):
-                raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+            if "gemma-3n" in lowered_model_name:
+                if transformers_version < Version("4.53.0"):
+                    raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
+                os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                    "float16;torch.float16;torch.float16;"\
+                    "if name.endswith('norm'): "\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
+                    ";"\
+                    "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
+            else:
+                if transformers_version < Version("4.50.0.dev0"):
+                    raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+
             # Set norms to float32 since anyways they get upcasted to float32
+            # common in both gemma-3 and gemma-3n
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         # Cohere
         elif "c4ai-command-a-03-2025" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
@@ -598,19 +611,6 @@ class FastModel(FastBaseModel):
         # Olmo 2
         elif "olmo-2" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
-        # Gemma 3N
-        elif "gemma-3n" in lowered_model_name:
-            if transformers_version < Version("4.53.0"):
-                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "float16;torch.float16;torch.float16;"\
-                "if name.endswith('norm'): "\
-                "module._pre_set_compute_dtype = torch.float32\n"\
-                ";"\
-                "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
-            # Set norms to float32 since anyways they get upcasted to float32
-            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         elif "falcon-h1" in lowered_model_name:
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
