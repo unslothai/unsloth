@@ -191,6 +191,12 @@ if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
         del vllm_block_pool_logger
     except:
         pass
+    try:
+        from vllm.lora.models import logger as vllm_lora_model_logger
+        vllm_lora_model_logger.addFilter(HideLoggingMessage("Regarding multimodal models, vLLM currently only supports adding"))
+        del vllm_lora_model_logger
+    except:
+        pass
 pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
