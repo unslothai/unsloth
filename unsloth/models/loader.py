@@ -47,6 +47,7 @@ import importlib.util
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT   = transformers_version >= Version("4.37")
 SUPPORTS_GEMMA     = transformers_version >= Version("4.38")
@@ -437,12 +438,11 @@ class FastLanguageModel(FastLlamaModel):
 
         if load_in_4bit:
             # Fix up bitsandbytes config
-            config = model.config.to_dict()
-            torch_dtype = config.get("dtype") or config.get("torch_dtype")
+            compute_dtype = dtype_from_config(model.config)
             quantization_config = \
             {
-                # Sometimes torch_dtype is not a string!!
-                "bnb_4bit_compute_dtype"           : torch_dtype,
+                # Sometimes compute_dtype is not a string!!
+                "bnb_4bit_compute_dtype"           : compute_dtype,
                 "bnb_4bit_quant_type"              : "nf4",
                 "bnb_4bit_use_double_quant"        : True,
                 "llm_int8_enable_fp32_cpu_offload" : False,
@@ -889,12 +889,11 @@ class FastModel(FastBaseModel):
 
         if load_in_4bit:
             # Fix up bitsandbytes config
-            config = model.config.to_dict()
-            torch_dtype = config.get("dtype") or config.get("torch_dtype")
+            compute_dtype = dtype_from_config(model.config)
             quantization_config = \
             {
-                # Sometimes torch_dtype is not a string!!
-                "bnb_4bit_compute_dtype"           : torch_dtype,
+                # Sometimes compute_dtype is not a string!!
+                "bnb_4bit_compute_dtype"           : compute_dtype,
                 "bnb_4bit_quant_type"              : "nf4",
                 "bnb_4bit_use_double_quant"        : True,
                 "llm_int8_enable_fp32_cpu_offload" : False,

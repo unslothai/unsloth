@@ -234,7 +234,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
     pass
 
-    # Edit bf16, fp16 by checking model's torch_dtype directly
+    # Edit bf16, fp16 by checking model's dtype/torch_dtype directly
     extra_args = ""
     if "args" in call_args and "model" in call_args:
         mixed_precision = \
@@ -247,7 +247,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"\
         "    force_float32 = True\n"\
         "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"\
-        "dtype = getattr(model.config, 'torch_dtype', None)\n"\
+        "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"\
         "if dtype is None: dtype = model.get_input_embeddings().dtype\n"\
         "from unsloth_zoo.utils import _get_dtype\n"\
         "dtype = _get_dtype(dtype)\n"\
