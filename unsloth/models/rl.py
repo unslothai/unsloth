@@ -390,9 +390,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"\
         "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
         "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
-        "        data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer, mlm = False, mlm_probability = 0.0)\n"\
+        "        data_collator = TransformersDataCollatorForLanguageModeling(\n"\
+        "            __tokenizer,\n"\
+        "            mlm = False,\n"\
+        "            mlm_probability = 0.0,\n"\
+        "            pad_to_multiple_of = locals().get('pad_to_multiple_of', None),\n"\
+        "        )\n"\
         "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
-        "        data_collator = DataCollatorForSeq2Seq(__tokenizer)\n"\
+        "        data_collator = DataCollatorForSeq2Seq(\n"\
+        "            __tokenizer,\n"\
+        "            pad_to_multiple_of = locals().get('pad_to_multiple_of', None),\n"\
+        "        )\n"\
         "else:\n"\
         "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"\
         "    if hasattr(args, 'dataset_text_field'): args.dataset_text_field = ''\n"\
@@ -404,9 +412,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
         "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"\
         "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
-        "            data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
+        "            data_collator = DataCollatorForSeq2Seq(\n"\
+        "                __tokenizer.tokenizer,\n"\
+        "                pad_to_multiple_of = locals().get('pad_to_multiple_of', None),\n"\
+        "            )\n"\
         "        else:\n"\
-        "            data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False, mlm_probability = 0.0)\n"
+        "            data_collator = TransformersDataCollatorForLanguageModeling(\n"\
+        "                __tokenizer.tokenizer,\n"\
+        "                mlm = False,\n"\
+        "                mlm_probability = 0.0,\n"\
+        "                pad_to_multiple_of = locals().get('pad_to_multiple_of', None),\n"\
+        "            )\n"
         extra_args += pad_check
     pass
 
@@ -568,6 +584,18 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    from multiprocessing import cpu_count\n"\
         "    dataset_num_proc = max(cpu_count()+4, 2)\n"
         extra_args += num_proc_check
+    pass
+
+    # Add padding if flex attention is added
+    if "pad_to_multiple_of" in call_args:
+        pad_to_multiple_of = \
+        "if os.environ.get('UNSLOTH_ENABLE_FLEX_ATTENTION', '0') == '1':\n"\
+        "    from unsloth_zoo.flex_attention import HAS_FLEX_ATTENTION\n"\
+        "    if HAS_FLEX_ATTENTION and pad_to_multiple_of is None:\n"\
+        "        from unsloth_zoo.flex_attention import FLEX_ATTENTION_BLOCK_SIZE\n"\
+        "        pad_to_multiple_of = FLEX_ATTENTION_BLOCK_SIZE\n"\
+        "\n"
+        extra_args += pad_to_multiple_of
     pass
 
     # Check for loss_type = dr_grpo and scale_rewards for GRPO
