@@ -15,6 +15,8 @@
 from .llama import *
 import os
 from ._utils import __version__
+from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -230,7 +232,7 @@ def MistralForCausalLM_fast_forward(
                     attention_mask = attention_mask.expand(bsz, 1, q_len, q_len)
                 attention_mask = attention_mask + causal_mask_values[None, None, :, :]
 
-            attention_mask = attention_mask.to(dtype=_get_dtype(self.config.torch_dtype))
+            attention_mask = attention_mask.to(dtype=_get_dtype(dtype_from_config(self.config)))
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
@@ -324,7 +326,7 @@ def MistralForCausalLM_fast_forward(
         pass
         logits = self.lm_head(hidden_states.to(lm_head.dtype))
     pass
-    logits = logits.to(_get_dtype(self.config.torch_dtype))
+    logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
     loss = None
     if labels is not None:
