@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from unsloth_zoo.utils import Version
+from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -549,7 +550,7 @@ def unsloth_save_model(
     from collections import OrderedDict
     state_dict = OrderedDict()
 
-    torch_dtype = internal_model.config.torch_dtype
+    torch_dtype = dtype_from_config(internal_model.config)
     if type(torch_dtype) is str:
         if   torch_dtype ==  "float16": torch_dtype = torch.float16
         elif torch_dtype == "bfloat16": torch_dtype = torch.bfloat16
@@ -1880,7 +1881,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    model_dtype = self.config.torch_dtype
+    model_dtype = dtype_from_config(self.config)
     model_type  = self.config.model_type
     if type(model_dtype) is str:
         assert(model_dtype == "float16" or model_dtype == "bfloat16")
@@ -2058,7 +2059,7 @@ def unsloth_push_to_hub_gguf(
     for _ in range(3):
         gc.collect()
 
-    model_dtype = self.config.torch_dtype
+    model_dtype = dtype_from_config(self.config)
     model_type  = self.config.model_type
     if type(model_dtype) is str:
         assert(model_dtype == "float16" or model_dtype == "bfloat16")
@@ -2155,11 +2156,15 @@ def unsloth_save_pretrained_torchao(
     quantization_config = TorchAoConfig(quant_type=torchao_config)
 
     tokenizer = AutoTokenizer.from_pretrained(new_save_directory)
+    if HAS_TORCH_DTYPE:
+        kwargs = {"torch_dtype" : "auto"}
+    else:
+        kwargs = {"dtype" : "auto"}
     model = AutoModelForCausalLM.from_pretrained(
         new_save_directory,
-        torch_dtype="auto",
         device_map="auto",
         quantization_config=quantization_config,
+        **kwargs,
     )
 
     if push_to_hub:
