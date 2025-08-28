@@ -639,7 +639,7 @@ class FastModel(FastBaseModel):
                 # Set down projection compute dtype to be float32 for float16 machines
                 # Set norms to float32 since anyways they get upcasted to float32
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                    "torch.float16;torch.bfloat16;torch.float16;"\
+                    "torch.float16;torch.float32;torch.float16;"\
                     "if ('down_projs' in name) and hasattr(module, 'weight') and "\
                     "torch.amax(dequantize_module_weight(module)) >= 0:"\
                     "module._pre_set_compute_dtype = torch.float32\n"\
