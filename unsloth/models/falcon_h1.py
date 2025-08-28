@@ -583,7 +583,7 @@ def _fast_prepare_inputs_for_generation(
     position_ids=None,
     use_cache=True,
     **kwargs,):
-    # Overwitten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
+    # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
     empty_past_kv = past_key_values is None
 
     # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
