@@ -566,7 +566,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         num_proc_check = \
         "if dataset_num_proc is None:\n"\
         "    from multiprocessing import cpu_count\n"\
-        "    dataset_num_proc = min(cpu_count()*2, 2)\n"
+        "    dataset_num_proc = max(cpu_count()+4, 2)\n"
         extra_args += num_proc_check
     pass
 
