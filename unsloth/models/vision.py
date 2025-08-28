@@ -441,9 +441,7 @@ class FastBaseModel:
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
         torch_dtype = dtype
-        # Sometimes we use float32 like in GPT OSS weirdly
-        if do_forced_float32 and torch_dtype != torch.float32:
-            torch_dtype = torch.bfloat16
+        if do_forced_float32: torch_dtype = torch.bfloat16
 
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
