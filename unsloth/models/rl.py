@@ -394,12 +394,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "            __tokenizer,\n"\
         "            mlm = False,\n"\
         "            mlm_probability = 0.0,\n"\
-        "            pad_to_multiple_of = locals().get('pad_to_multiple_of', None),\n"\
+        "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"\
         "        )\n"\
         "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
         "        data_collator = DataCollatorForSeq2Seq(\n"\
         "            __tokenizer,\n"\
-        "            pad_to_multiple_of = locals().get('pad_to_multiple_of', None),\n"\
+        "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"\
         "        )\n"\
         "else:\n"\
         "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"\
@@ -414,14 +414,14 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
         "            data_collator = DataCollatorForSeq2Seq(\n"\
         "                __tokenizer.tokenizer,\n"\
-        "                pad_to_multiple_of = locals().get('pad_to_multiple_of', None),\n"\
+        "                pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"\
         "            )\n"\
         "        else:\n"\
         "            data_collator = TransformersDataCollatorForLanguageModeling(\n"\
         "                __tokenizer.tokenizer,\n"\
         "                mlm = False,\n"\
         "                mlm_probability = 0.0,\n"\
-        "                pad_to_multiple_of = locals().get('pad_to_multiple_of', None),\n"\
+        "                pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"\
         "            )\n"
         extra_args += pad_check
     pass
