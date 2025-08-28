@@ -14,6 +14,8 @@
 
 from .llama import *
 from ._utils import __version__
+from unsloth_zoo.hf_utils import dtype_from_config
+from unsloth_zoo.utils import _get_dtype
 try:
     from transformers.models.cohere.modeling_cohere import (
         CohereAttention,
@@ -401,7 +403,7 @@ def CohereModel_fast_forward_inference(
     out_weights = tuple(torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT))
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
-    hidden_states = hidden_states.to(self.config.torch_dtype)
+    hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
     if bsz != 1:
