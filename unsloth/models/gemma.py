@@ -14,6 +14,8 @@
 
 from .llama import *
 from ._utils import __version__
+from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 import math
 
 try:
@@ -152,7 +154,7 @@ def GemmaModel_fast_forward_inference(
     out_weights = tuple(torch.empty_like(self.model.layers[0].input_layernorm.weight, dtype = torch.float32, device = torch.device(x)) for x in range(DEVICE_COUNT))
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
-    hidden_states = hidden_states.to(self.config.torch_dtype)
+    hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
     hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
@@ -246,7 +248,7 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
 
-        # The difference is we do division explicity instead of t * (1/x) ie we do t/x.
+        # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
         freq_exponents = (2.0 / self.dim) * (
             torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
@@ -310,7 +312,7 @@ class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):
         # in FP32. They are applied (multiplied) in FP32 as well.
         self.current_rope_size = seq_len
 
-        # The difference is we do division explicity instead of t * (1/x) ie we do t/x.
+        # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
         freq_exponents = (2.0 / self.dim) * (
             torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
