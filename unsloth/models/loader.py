@@ -47,6 +47,7 @@ import importlib.util
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT   = transformers_version >= Version("4.37")
 SUPPORTS_GEMMA     = transformers_version >= Version("4.38")
@@ -145,10 +146,8 @@ class FastLanguageModel(FastLlamaModel):
         if token is None: token = get_token()
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
-        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16)
-
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+        assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16
+                or dtype == torch.float32)
 
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
@@ -367,6 +366,9 @@ class FastLanguageModel(FastLlamaModel):
             )
         pass
 
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
+
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
             os.path.exists(os.path.join(old_model_name, "tokenizer.json")) and \
@@ -436,12 +438,11 @@ class FastLanguageModel(FastLlamaModel):
 
         if load_in_4bit:
             # Fix up bitsandbytes config
-            config = model.config.to_dict()
-            torch_dtype = config.get("dtype") or config.get("torch_dtype")
+            compute_dtype = dtype_from_config(model.config)
             quantization_config = \
             {
-                # Sometimes torch_dtype is not a string!!
-                "bnb_4bit_compute_dtype"           : torch_dtype,
+                # Sometimes compute_dtype is not a string!!
+                "bnb_4bit_compute_dtype"           : compute_dtype,
                 "bnb_4bit_quant_type"              : "nf4",
                 "bnb_4bit_use_double_quant"        : True,
                 "llm_int8_enable_fp32_cpu_offload" : False,
@@ -574,9 +575,22 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
         # Gemma 3
         elif "gemma-3" in lowered_model_name:
-            if transformers_version < Version("4.50.0.dev0"):
-                raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+            if "gemma-3n" in lowered_model_name:
+                if transformers_version < Version("4.53.0"):
+                    raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
+                os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                    "float16;torch.float16;torch.float16;"\
+                    "if name.endswith('norm'): "\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
+                    ";"\
+                    "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
+            else:
+                if transformers_version < Version("4.50.0.dev0"):
+                    raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+
             # Set norms to float32 since anyways they get upcasted to float32
+            # common in both gemma-3 and gemma-3n
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         # Cohere
         elif "c4ai-command-a-03-2025" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
@@ -597,24 +611,11 @@ class FastModel(FastBaseModel):
         # Olmo 2
         elif "olmo-2" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
-        # Gemma 3N
-        elif "gemma-3n" in lowered_model_name:
-            if transformers_version < Version("4.53.0"):
-                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
-            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "torch.float16;torch.float16;torch.float16;"\
-                "if name.endswith('norm'): "\
-                "module._pre_set_compute_dtype = torch.float32\n"\
-                ";"\
-                "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
-            # Set norms to float32 since anyways they get upcasted to float32
-            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         elif "falcon-h1" in lowered_model_name:
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                "torch.float16;torch.float32;torch.float16;"\
+                "float16;torch.float32;torch.float16;"\
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"\
                 ";"\
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
@@ -638,23 +639,13 @@ class FastModel(FastBaseModel):
                 # Set down projection compute dtype to be float32 for float16 machines
                 # Set norms to float32 since anyways they get upcasted to float32
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                    "torch.float16;torch.bfloat16;torch.bfloat16;"\
-                    "if ('_proj' in name) and hasattr(module, 'weight') and "\
+                    "torch.float16;torch.bfloat16;torch.float16;"\
+                    "if ('down_projs' in name) and hasattr(module, 'weight') and "\
                     "torch.amax(dequantize_module_weight(module)) >= 0:"\
-                    "module._pre_set_compute_dtype = torch.bfloat16\n"\
-                    "\n"\
-                    "if hasattr(module, 'weight'):"\
-                    "module._pre_set_compute_dtype = torch.bfloat16\n"\
-                    "\n"\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
+                    ""\
                     "if ('mlp.router' in name) and hasattr(module, 'weight'):"\
-                    "module._pre_set_compute_dtype = torch.bfloat16\n"\
-                    "\n"\
-                    "if ('self_attn' in name) and hasattr(module, 'sinks'):"\
-                    "module.sinks._pre_set_compute_dtype = torch.bfloat16\n"\
-                    "\n"\
-                    "if ('embed_tokens' in name or 'lm_head' in name) and hasattr(module, 'weight'):"\
-                    "module._pre_set_compute_dtype = torch.bfloat16\n"\
-                    "\n"\
+                    "module._pre_set_compute_dtype = torch.float32\n"\
                     ";"
             # Set norms to float32 since anyways they get upcasted to float32
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
@@ -790,8 +781,7 @@ class FastModel(FastBaseModel):
         model_types = ["siglip"] + model_types
 
         # Set forced float32 env flag
-        if "UNSLOTH_FORCE_FLOAT32" not in os.environ:
-            os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
+        os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         do_forced_float32 = False
         for model_type_arch in model_types:
             if model_type_arch != "siglip": break
@@ -899,12 +889,11 @@ class FastModel(FastBaseModel):
 
         if load_in_4bit:
             # Fix up bitsandbytes config
-            config = model.config.to_dict()
-            torch_dtype = config.get("dtype") or config.get("torch_dtype")
+            compute_dtype = dtype_from_config(model.config)
             quantization_config = \
             {
-                # Sometimes torch_dtype is not a string!!
-                "bnb_4bit_compute_dtype"           : torch_dtype,
+                # Sometimes compute_dtype is not a string!!
+                "bnb_4bit_compute_dtype"           : compute_dtype,
                 "bnb_4bit_quant_type"              : "nf4",
                 "bnb_4bit_use_double_quant"        : True,
                 "llm_int8_enable_fp32_cpu_offload" : False,
