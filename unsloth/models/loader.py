@@ -149,9 +149,6 @@ class FastLanguageModel(FastLlamaModel):
         assert (dtype is None or dtype == torch.float16 or dtype == torch.bfloat16
                 or dtype == torch.float32)
 
-        if use_gradient_checkpointing == "unsloth":
-            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
-
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise ImportError(
@@ -368,6 +365,9 @@ class FastLanguageModel(FastLlamaModel):
                 *args, **kwargs,
             )
         pass
+
+        if use_gradient_checkpointing == "unsloth":
+            patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
 
         # Check if this is local model since the tokenizer gets overwritten
         if  os.path.exists(os.path.join(old_model_name, "tokenizer_config.json")) and \
