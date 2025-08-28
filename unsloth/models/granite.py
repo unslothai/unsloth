@@ -15,6 +15,8 @@
 from .llama import *
 import os
 from ._utils import __version__
+from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -375,7 +377,7 @@ def GraniteModel_fast_forward_inference(
 ):
     input_ids = input_ids[:,:self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
-    hidden_states = hidden_states.to(self.config.torch_dtype)
+    hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     hidden_states *= self.model.embedding_multiplier
     residual_multiplier = \
         self.residual_multiplier \
