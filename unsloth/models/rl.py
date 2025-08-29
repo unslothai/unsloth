@@ -893,11 +893,12 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             source
         )
         # Prefer using unsloth's sampling params and fallback to trl's if not found
-        source = re.sub(
-            r"sampling_params\s*=\s*sampling_params",
-            r"sampling_params = getattr(self.args, 'vllm_sampling_params', sampling_params)",
-            source
-        )
+        # We'll enable this later separately when combining both this and GRPOConfig params
+        # source = re.sub(
+        #     r"sampling_params\s*=\s*sampling_params",
+        #     r"sampling_params = getattr(self.args, 'vllm_sampling_params', sampling_params)",
+        #     source
+        # )
 
         # Skip if no changes done
         if source == original_source: continue
