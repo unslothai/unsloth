@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from ._utils import (
+    _prepare_model_for_qat,
     is_bfloat16_supported,
     is_vLLM_available,
     HAS_FLASH_ATTENTION,
@@ -109,6 +110,7 @@ class FastLanguageModel(FastLlamaModel):
         random_state               = 3407,
         max_lora_rank              = 64,
         disable_log_stats          = True,
+        qat_scheme                 = None,
         *args, **kwargs,
     ):
         # Login to allow private models
@@ -119,7 +121,7 @@ class FastLanguageModel(FastLlamaModel):
                 login(token = token)
             except:
                 pass
-        if load_in_8bit or full_finetuning:
+        if load_in_8bit or full_finetuning or qat_scheme is not None:
             return FastModel.from_pretrained(
                 model_name                 = model_name,
                 max_seq_length             = max_seq_length,
@@ -138,6 +140,7 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+                qat_scheme                 = qat_scheme,
                 *args, **kwargs,
             )
         pass
@@ -521,6 +524,7 @@ class FastModel(FastBaseModel):
         whisper_language           = None,
         whisper_task               = None,
         unsloth_force_compile      = False,
+        qat_scheme                 = None,
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -557,6 +561,13 @@ class FastModel(FastBaseModel):
                 "If you want 8bit finetuning, set both `load_in_4bit = False` and `load_in_8bit = True`"
             )
         pass
+
+        if qat_scheme is not None and not full_finetuning:
+            raise ValueError(
+                "Specifying `qat_scheme` in `FastLanguageModel.from_pretrained(...)` is only "
+                "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
+                "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
+            )
 
         old_model_name = model_name
         if not use_exact_model_name:
@@ -922,6 +933,13 @@ class FastModel(FastBaseModel):
             # Patch it as well!
             model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing, trust_remote_code  = trust_remote_code)
         pass
+
+        # Apply QAT if specified
+        if qat_scheme is not None:
+            print("Unsloth: Applying QAT to mitigate quantization degradation")
+            model = _prepare_model_for_qat(model, qat_scheme)
+        pass
+
         return model, tokenizer
     pass
 pass
