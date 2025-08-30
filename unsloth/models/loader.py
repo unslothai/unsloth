@@ -77,6 +77,7 @@ from ._utils import (
     patch_compiled_autograd,
     process_vision_info,
     unsloth_compile_transformers,
+    fast_inference_setup,
 )
 
 global FORCE_FLOAT32
@@ -139,6 +140,15 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+
+                # Pass vLLM/inference parameters
+                fast_inference             = fast_inference,
+                gpu_memory_utilization     = gpu_memory_utilization,
+                float8_kv_cache            = float8_kv_cache,
+                random_state               = random_state,
+                max_lora_rank              = max_lora_rank,
+                disable_log_stats          = disable_log_stats,
+
                 *args, **kwargs,
             )
         pass
@@ -362,6 +372,15 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+
+                # Pass vLLM/inference parameters
+                fast_inference             = fast_inference,
+                gpu_memory_utilization     = gpu_memory_utilization,
+                float8_kv_cache            = float8_kv_cache,
+                random_state               = random_state,
+                max_lora_rank              = max_lora_rank,
+                disable_log_stats          = disable_log_stats,
+
                 *args, **kwargs,
             )
         pass
@@ -380,26 +399,7 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
-            if not is_vLLM_available():
-                print("Unsloth: vLLM is not installed! Will use Unsloth inference!")
-                fast_inference = False
-            pass
-            from unsloth_zoo.vllm_utils import (
-                patch_vllm,
-                vllm_dynamic_quant_supported,
-            )
-            patch_vllm()
-            if model_name.endswith("unsloth-bnb-4bit"):
-                if not vllm_dynamic_quant_supported(model_name, model_config):
-                    # Instead use -bnb-4bit variant
-                    print(
-                        f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
-                        f"we do not yet support fast inference for {model_name}"
-                    )
-                    model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
-                pass
-            pass
-        pass
+            fast_inference = fast_inference_setup(model_name, model_config)
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
@@ -521,6 +521,15 @@ class FastModel(FastBaseModel):
         whisper_language           = None,
         whisper_task               = None,
         unsloth_force_compile      = False,
+
+        # Add the missing vLLM/inference parameters
+        fast_inference             = False, # uses vLLM
+        gpu_memory_utilization     = 0.5,
+        float8_kv_cache            = False,
+        random_state               = 3407,
+        max_lora_rank              = 64,
+        disable_log_stats          = True,
+
         *args, **kwargs,
     ):
         if token is None: token = get_token()
@@ -872,6 +881,15 @@ class FastModel(FastBaseModel):
             supports_sdpa     = supports_sdpa,
             whisper_language  = whisper_language,
             whisper_task      = whisper_task,
+
+            # Pass vLLM/inference parameters
+            fast_inference         = fast_inference,
+            gpu_memory_utilization = gpu_memory_utilization,
+            float8_kv_cache        = float8_kv_cache,
+            random_state           = random_state,
+            max_lora_rank          = max_lora_rank,
+            disable_log_stats      = disable_log_stats,
+
             *args, **kwargs,
         )
 
