@@ -15,6 +15,8 @@
 from .llama import *
 import os
 from ._utils import __version__
+from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -230,7 +232,7 @@ def MistralForCausalLM_fast_forward(
                     attention_mask = attention_mask.expand(bsz, 1, q_len, q_len)
                 attention_mask = attention_mask + causal_mask_values[None, None, :, :]
 
-            attention_mask = attention_mask.to(dtype=_get_dtype(self.config.torch_dtype))
+            attention_mask = attention_mask.to(dtype=_get_dtype(dtype_from_config(self.config)))
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
@@ -298,7 +300,7 @@ def MistralForCausalLM_fast_forward(
         # < 1024 Normal Unsloth uses less VRAM!
         if bsz * q_len <= 1024: RETURN_LOGITS = True
 
-        if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
+        if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and os.environ.get("UNSLOTH_ENABLE_CCE", "1") != "0" and labels is not None:
             n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
             logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
             loss = fused_linear_cross_entropy(
@@ -324,7 +326,7 @@ def MistralForCausalLM_fast_forward(
         pass
         logits = self.lm_head(hidden_states.to(lm_head.dtype))
     pass
-    logits = logits.to(_get_dtype(self.config.torch_dtype))
+    logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
     loss = None
     if labels is not None:

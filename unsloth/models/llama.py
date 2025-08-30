@@ -24,6 +24,7 @@ from ._utils import move_to_device
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
@@ -783,7 +784,7 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    inputs_embeds = inputs_embeds.to(_get_dtype(self.config.torch_dtype))
+    inputs_embeds = inputs_embeds.to(_get_dtype(dtype_from_config(self.config)))
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
@@ -1057,7 +1058,7 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         mlp_size = self.config.intermediate_size
 
         X = self.model.embed_tokens(input_ids)
-        X = X.to(_get_dtype(self.config.torch_dtype))
+        X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert(q_len == 1)
         # Get saved buffers to reduce memory movement
@@ -1274,7 +1275,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states.to(dtype))
         pass
 
-        logits = logits.to(_get_dtype(self.config.torch_dtype))
+        logits = logits.to(_get_dtype(dtype_from_config(self.config)))
         loss = None
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
@@ -1754,7 +1755,7 @@ def unsloth_fast_generate(
 ):
     FastLlamaModel.for_inference(self)
 
-    dtype = _get_dtype(self.config.torch_dtype)
+    dtype = _get_dtype(dtype_from_config(self.config))
 
     if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
         if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
@@ -2023,12 +2024,14 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
+        kwargs = add_dtype_kwargs(dtype, kwargs)
+
         raise_handler = RaiseUninitialized()
         if num_labels is not None:
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
                 device_map              = device_map,
-                torch_dtype             = dtype,
+                # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
                 num_labels              = num_labels,
                 #quantization_config     = bnb_config,
                 token                   = token,
@@ -2041,7 +2044,7 @@ class FastLlamaModel:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map              = device_map,
-                torch_dtype             = dtype,
+                # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
                 # quantization_config     = bnb_config,
                 token                   = token,
                 max_position_embeddings = max_position_embeddings,

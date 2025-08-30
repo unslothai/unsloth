@@ -43,6 +43,7 @@ from transformers.models.llama.modeling_llama import logger
 from transformers import __version__ as transformers_version
 from triton import __version__ as triton_version
 from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 import types
@@ -82,6 +83,7 @@ VLLM_NON_LORA_VLM = [
 
 from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
+from transformers import GenerationConfig, CompileConfig, HybridCache
 
 _compile_config = CompileConfig(
     fullgraph = False,
@@ -128,7 +130,7 @@ def unsloth_base_fast_generate(
     bsz = input_ids.shape[0]
 
     FastBaseModel.for_inference(self)
-    dtype = _get_dtype(getattr(self.config, "dtype", None) or getattr(self.config, "torch_dtype", None))
+    dtype = _get_dtype(dtype_from_config(self.config))
 
     # Check if VLM
     is_vlm = any(
@@ -482,11 +484,7 @@ class FastBaseModel:
         torch_dtype = dtype
         if do_forced_float32: torch_dtype = torch.bfloat16
 
-        if HAS_TORCH_DTYPE:
-            kwargs["torch_dtype"] = torch_dtype
-        else:
-            # Transformers removed torch_dtype
-            kwargs["dtype"] = torch_dtype
+        kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
         raise_handler = RaiseUninitialized()
         if not fast_inference:
@@ -809,9 +807,7 @@ class FastBaseModel:
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         float32_mixed_precision = True
-        if _get_dtype(
-                getattr(model.config, "dtype", None) or getattr(model.config, "torch_dtype", None)
-            ) == torch.bfloat16 and full_finetuning:
+        if _get_dtype(dtype_from_config(model.config)) == torch.bfloat16 and full_finetuning:
             # Use bfloat16 precision for full finetuning
             float32_mixed_precision = False
 
