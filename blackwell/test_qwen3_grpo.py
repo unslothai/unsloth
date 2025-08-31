@@ -416,7 +416,6 @@ sampling_params = SamplingParams(
     max_tokens=1024,
 )
 
-model.gradient_checkpointing_disable() # This is required if using transformers >= 4.53.0 and `use_cache=True`
 
 output = (
     model.fast_generate(
