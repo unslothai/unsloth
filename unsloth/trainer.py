@@ -74,7 +74,7 @@ class UnslothTrainingArguments(TrainingArguments):
         
         # Warn if eval_steps is set but eval_strategy is not "steps"
         if (hasattr(self, 'eval_steps') and self.eval_steps is not None and 
-            hasattr(self, 'eval_strategy') and self.eval_strategy != "steps"):
+            getattr(self, 'eval_strategy', None) != "steps"):
             import warnings
             warnings.warn(
                 "eval_steps is set but will be ignored because eval_strategy is not set to 'steps'. "
