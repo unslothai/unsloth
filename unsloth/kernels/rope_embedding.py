@@ -15,7 +15,7 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_gpu_device
+from .utils import calculate_settings, torch_gpu_device, torch_device_stream
 ROPE_GROUP_SIZE : int = 4
 
 def _rope_embedding(
@@ -156,8 +156,7 @@ def fast_rope_embedding(Q, K, cos, sin):
     Q = Fast_RoPE_Embedding.apply(Q.transpose(1, 2), cos, sin).transpose(1, 2)
     K = Fast_RoPE_Embedding.apply(K.transpose(1, 2), cos, sin).transpose(1, 2)
     # synchronize before cat to avoid race condition
-    torch.cuda.current_stream(Q.device).synchronize()
-
+    torch_device_stream(Q.device).synchronize()
     return Q, K
 pass
 
@@ -201,6 +200,6 @@ pass
 def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     Q = Slow_RoPE_Embedding.apply(Q, cos, sin, position_ids)
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
-    torch.cuda.current_stream(Q.device).synchronize()
+    torch_device_stream(Q.device).synchronize()
     return Q, K
 pass
