@@ -124,6 +124,8 @@ from .import_fixes import fix_xformers_performance_issue
 fix_xformers_performance_issue(); del fix_xformers_performance_issue;
 from .import_fixes import fix_vllm_aimv2_issue
 fix_vllm_aimv2_issue(); del fix_vllm_aimv2_issue;
+from .import_fixes import ignore_logger_messages
+ignore_logger_messages(); del ignore_logger_messages;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -212,7 +214,7 @@ elif DEVICE_TYPE == "xpu":
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.8.8"):
+    if Version(unsloth_zoo_version) < Version("2025.9.1"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"

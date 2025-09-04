@@ -17,7 +17,15 @@ import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
 from packaging.version import Version
+import logging
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1"
+
+# Ignore logging messages
+class HideLoggingMessage(logging.Filter):
+    __slots__ = "text",
+    def __init__(self, text): self.text = text
+    def filter(self, x): return not (self.text in x.getMessage())
+pass
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
 # MUST do this at the start primarily due to tensorflow causing issues
@@ -116,4 +124,14 @@ def fix_vllm_aimv2_issue():
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
+pass
+
+def ignore_logger_messages():
+    # Ignore Environment variable `HF_TOKEN` is set
+    try:
+        from huggingface_hub._login import logger as huggingface_hub_logger
+        huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
+        del huggingface_hub_logger
+    except:
+        pass
 pass

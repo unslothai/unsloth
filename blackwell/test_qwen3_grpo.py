@@ -415,7 +415,8 @@ sampling_params = SamplingParams(
     top_k=50,
     max_tokens=1024,
 )
-model.disable_gradient_checkpointing()
+
+
 output = (
     model.fast_generate(
         [text],
