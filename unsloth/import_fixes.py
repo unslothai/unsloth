@@ -129,7 +129,7 @@ pass
 def ignore_logger_messages():
     # Ignore Environment variable `HF_TOKEN` is set
     try:
-        from huggingface_hub._login.utils import logger as huggingface_hub_logger
+        from huggingface_hub._login import logger as huggingface_hub_logger
         huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
         del huggingface_hub_logger
     except:
