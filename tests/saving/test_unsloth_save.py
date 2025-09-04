@@ -17,7 +17,7 @@ model_to_test = [
     "unsloth/Phi-4-mini-instruct-bnb-4bit",
     "unsloth/Qwen2.5-0.5B",
     # Vision Models
-    "unsloth/gemma-3-1b-it",
+    "unsloth/gemma-3-4b-it",
     "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
     "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit"
 ]
@@ -182,27 +182,31 @@ def test_save_torchao(model, tokenizer, temp_save_dir: str):
         push_to_hub=False,
     )
 
-    # Check model files
-    assert os.path.isdir(save_path), f"Directory {save_path} does not exist."
-    assert os.path.isfile(os.path.join(save_path, "config.json")), "config.json not found."
+    weight_files_16bit = [f for f in os.listdir(save_path) if f.endswith(".bin") or f.endswith(".safetensors")]
+    total_16bit_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files_16bit)
+    save_file_sizes["merged_16bit"][model.config._name_or_path] = total_16bit_size
 
-    weight_files = [f for f in os.listdir(save_path) if f.endswith(".bin") or f.endswith(".safetensors")]
+    torchao_save_path = save_path + "-torchao"
+
+    # Check model files
+    assert os.path.isdir(torchao_save_path), f"Directory {torchao_save_path} does not exist."
+    assert os.path.isfile(os.path.join(torchao_save_path, "config.json")), "config.json not found."
+
+    weight_files = [f for f in os.listdir(torchao_save_path) if f.endswith(".bin") or f.endswith(".safetensors")]
     assert len(weight_files) > 0, "No weight files found in the save directory."
 
     # Check tokenizer files
     for file in tokenizer_files:
-        assert os.path.isfile(os.path.join(save_path, file)), f"{file} not found in the save directory."
+        assert os.path.isfile(os.path.join(torchao_save_path, file)), f"{file} not found in the save directory."
 
     # Store the size of the model files
-    total_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files)
+    total_size = sum(os.path.getsize(os.path.join(torchao_save_path, f)) for f in weight_files)
     save_file_sizes["torchao"][model.config._name_or_path] = total_size
 
-    # merged_16bit tests are not running yet, so we can't test this for now
-    # TODO: enable this after merged_16bit is fixed
-    # assert total_size < save_file_sizes["merged_16bit"][model.config._name_or_path], "torchao files are larger than merged 16bit files."
+    assert total_size < save_file_sizes["merged_16bit"][model.config._name_or_path], "torchao files are larger than merged 16bit files."
 
     # Check config to see if it is quantized with torchao
-    config_path = os.path.join(save_path, "config.json")
+    config_path = os.path.join(torchao_save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
