@@ -17,7 +17,7 @@ model_to_test = [
     "unsloth/Phi-4-mini-instruct-bnb-4bit",
     "unsloth/Qwen2.5-0.5B",
     # Vision Models
-    "unsloth/gemma-3-1b-it",
+    "unsloth/gemma-3-4b-it",
     "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
     "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit"
 ]
@@ -26,6 +26,7 @@ model_to_test = [
 save_file_sizes = {}
 save_file_sizes["merged_16bit"] = {}
 save_file_sizes["merged_4bit"] = {}
+save_file_sizes["torchao"] = {}
 
 tokenizer_files = [
     "tokenizer_config.json",
@@ -168,7 +169,7 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
         load_in_4bit=True,
     )
 
-@pytest.mark.skipif(importlib.util.find_spec("torchao") is None)
+@pytest.mark.skipif(importlib.util.find_spec("torchao") is None, reason="require torchao to be installed")
 def test_save_torchao(model, tokenizer, temp_save_dir: str):
     save_path = os.path.join(temp_save_dir, "unsloth_torchao", model.config._name_or_path.replace("/", "_"))
 
@@ -178,38 +179,45 @@ def test_save_torchao(model, tokenizer, temp_save_dir: str):
         save_path,
         tokenizer=tokenizer,
         torchao_config=torchao_config,
+        push_to_hub=False,
     )
 
-    # Check model files
-    assert os.path.isdir(save_path), f"Directory {save_path} does not exist."
-    assert os.path.isfile(os.path.join(save_path, "config.json")), "config.json not found."
+    weight_files_16bit = [f for f in os.listdir(save_path) if f.endswith(".bin") or f.endswith(".safetensors")]
+    total_16bit_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files_16bit)
+    save_file_sizes["merged_16bit"][model.config._name_or_path] = total_16bit_size
 
-    weight_files = [f for f in os.listdir(save_path) if f.endswith(".bin") or f.endswith(".safetensors")]
+    torchao_save_path = save_path + "-torchao"
+
+    # Check model files
+    assert os.path.isdir(torchao_save_path), f"Directory {torchao_save_path} does not exist."
+    assert os.path.isfile(os.path.join(torchao_save_path, "config.json")), "config.json not found."
+
+    weight_files = [f for f in os.listdir(torchao_save_path) if f.endswith(".bin") or f.endswith(".safetensors")]
     assert len(weight_files) > 0, "No weight files found in the save directory."
 
     # Check tokenizer files
     for file in tokenizer_files:
-        assert os.path.isfile(os.path.join(save_path, file)), f"{file} not found in the save directory."
+        assert os.path.isfile(os.path.join(torchao_save_path, file)), f"{file} not found in the save directory."
 
     # Store the size of the model files
-    total_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files)
-    save_file_sizes["merged_4bit"][model.config._name_or_path] = total_size
+    total_size = sum(os.path.getsize(os.path.join(torchao_save_path, f)) for f in weight_files)
+    save_file_sizes["torchao"][model.config._name_or_path] = total_size
 
-    print(f"Total size of merged_4bit files: {total_size} bytes")
+    assert total_size < save_file_sizes["merged_16bit"][model.config._name_or_path], "torchao files are larger than merged 16bit files."
 
-    assert total_size < save_file_sizes["merged_16bit"][model.config._name_or_path], "Merged 4bit files are larger than merged 16bit files."
-
-    # Check config to see if it is 4bit
-    config_path = os.path.join(save_path, "config.json")
+    # Check config to see if it is quantized with torchao
+    config_path = os.path.join(torchao_save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
     assert "quantization_config" in config, "Quantization config not found in the model config."
 
     # Test loading the model from the saved path
+    # can't set `load_in_4bit` to True because the model is torchao quantized
+    # can't quantize again with bitsandbytes
     loaded_model, loaded_tokenizer = FastModel.from_pretrained(
         save_path,
         max_seq_length=128,
         dtype=None,
-        load_in_4bit=True,
+        load_in_4bit=False,
     )

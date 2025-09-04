@@ -2862,7 +2862,7 @@ extra_eos_tokens = None,
         jinja_template, flags = re.MULTILINE | re.DOTALL,
     )
 
-    # Check jinja tempate for bos
+    # Check jinja template for bos
     if always_bos_token:
         if not jinja_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
             jinja_template = "{{ bos_token }}" + jinja_template
