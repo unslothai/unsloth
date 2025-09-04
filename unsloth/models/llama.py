@@ -1236,7 +1236,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             # < 1024 Normal Unsloth uses less VRAM!
             if bsz*q_len <= 1024: RETURN_LOGITS = True
 
-            if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
+            if not RETURN_LOGITS and labels is not None:
 
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
 
@@ -1259,7 +1259,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     mask                 = None,
                     n_items              = n_items,
                     scaling              = getattr(self, "accelerator_scaler", None),
-                    target_gb            = 1,
+                    target_gb            = None,
                     torch_compile        = True,
                     logit_softcapping    = logit_softcapping,
                 )
