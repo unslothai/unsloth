@@ -7,7 +7,7 @@ name = "unsloth"
 dynamic = ["version"]
 description = "2-5X faster LLM finetuning"
 readme = "README.md"
-requires-python = ">=3.9,<=3.13"
+requires-python = ">=3.9,<3.14"
 license = {text = "Apache-2.0"}
 keywords = ["ai", "llm",]
 authors = [
