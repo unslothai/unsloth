@@ -2516,7 +2516,6 @@ def unsloth_save_pretrained_torchao(
     """
     # first merge the lora weights
     arguments = dict(locals())
-    arguments["save_directory"] = save_directory + "-local"
     arguments["model"]        = self
     arguments["tokenizer"]    = tokenizer
     arguments["push_to_hub"]  = False # We save ourselves
@@ -2527,7 +2526,7 @@ def unsloth_save_pretrained_torchao(
     for _ in range(3):
         gc.collect()
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer, TorchAoConfig
+    from transformers import AutoModel, AutoTokenizer, TorchAoConfig
     from torchao import quantize_
     if torchao_config is None:
         from torchao.quantization import Int8DynamicActivationInt8WeightConfig
@@ -2539,21 +2538,23 @@ def unsloth_save_pretrained_torchao(
         kwargs = {"torch_dtype" : "auto"}
     else:
         kwargs = {"dtype" : "auto"}
-    model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModel.from_pretrained(
         arguments["save_directory"],
         device_map = "auto",
         quantization_config = quantization_config,
         **kwargs,
     )
 
+    torchao_save_directory = save_directory + "-torchao"
+
     if push_to_hub:
         if token is None and push_to_hub: token = get_token()
         # torchao does not support safe_serialization right now
-        model.push_to_hub(save_directory, safe_serialization = False, token = token)
-        tokenizer.push_to_hub(save_directory, token = token)
+        model.push_to_hub(torchao_save_directory, safe_serialization = False, token = token)
+        tokenizer.push_to_hub(torchao_save_directory, token = token)
     else:
-        model.save_pretrained(save_directory, safe_serialization=False)
-        tokenizer.save_pretrained(save_directory)
+        model.save_pretrained(torchao_save_directory, safe_serialization=False)
+        tokenizer.save_pretrained(torchao_save_directory)
     pass
     for _ in range(3):
         gc.collect()
@@ -2671,6 +2672,7 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged, model)
         model.push_to_hub_gguf       = types.MethodType(save_to_gguf_generic,                   model)
         model.save_pretrained_gguf   = types.MethodType(save_to_gguf_generic,                   model)
+        model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao,       model)
     pass
     return model
 pass
