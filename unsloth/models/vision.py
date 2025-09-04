@@ -218,6 +218,9 @@ def unsloth_base_fast_generate(
         if (swa == 0 or type(swa) is not int) \
             and (getattr(self, "_can_compile_fullgraph", True) is True):
             cache_implementation = "static"
+        elif (swa == 0 or type(swa) is not int):
+            # llama vision doesn't have swa and not compatible with static
+            cache_implementation = None
         else:
             cache_implementation = "hybrid"
 
