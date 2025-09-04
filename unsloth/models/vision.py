@@ -206,7 +206,7 @@ def unsloth_base_fast_generate(
     # Fix generation_config
     # Use hybrid if sliding window seen, otherwise try static
     cache_implementation = getattr(self.config, "cache_implementation", None)
-    if getattr(self, "_supports_static_cache", True):
+    if getattr(self, "_supports_static_cache", getattr(self, "_can_compile_fullgraph", True)):
         if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
             cache_implementation = "static"
         else:
@@ -218,9 +218,6 @@ def unsloth_base_fast_generate(
         if (swa == 0 or type(swa) is not int) \
             and (getattr(self, "_can_compile_fullgraph", True) is True):
             cache_implementation = "static"
-        elif (swa == 0 or type(swa) is not int):
-            # llama vision doesn't have swa and not compatible with static
-            cache_implementation = None
         else:
             cache_implementation = "hybrid"
 
