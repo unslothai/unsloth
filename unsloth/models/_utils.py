@@ -317,6 +317,14 @@ try:
 except:
     pass
 
+# Environment variable `HF_TOKEN` is set
+try:
+    from huggingface_hub._login.utils import logger as huggingface_hub_logger
+    huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
+    del huggingface_hub_logger
+except:
+    pass
+
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
