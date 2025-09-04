@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.8.10"
+__version__ = "2025.9.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -314,14 +314,6 @@ try:
     from transformers.utils.generic import logger as trainer_logger
     trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
     del trainer_logger
-except:
-    pass
-
-# Environment variable `HF_TOKEN` is set
-try:
-    from huggingface_hub._login.utils import logger as huggingface_hub_logger
-    huggingface_hub_logger.addFilter(HideLoggingMessage("`HF_TOKEN`"))
-    del huggingface_hub_logger
 except:
     pass
 
