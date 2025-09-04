@@ -234,7 +234,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         )
     pass
 
-    # Edit bf16, fp16 by checking model's torch_dtype directly
+    # Edit bf16, fp16 by checking model's dtype/torch_dtype directly
     extra_args = ""
     if "args" in call_args and "model" in call_args:
         mixed_precision = \
@@ -247,7 +247,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"\
         "    force_float32 = True\n"\
         "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"\
-        "dtype = getattr(model.config, 'torch_dtype', None)\n"\
+        "dtype = getattr(model.config, 'dtype', None) or getattr(model.config, 'torch_dtype', None)\n"\
         "if dtype is None: dtype = model.get_input_embeddings().dtype\n"\
         "from unsloth_zoo.utils import _get_dtype\n"\
         "dtype = _get_dtype(dtype)\n"\
@@ -390,9 +390,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"\
         "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
         "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"\
-        "        data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer, mlm = False, mlm_probability = 0.0)\n"\
+        "        data_collator = TransformersDataCollatorForLanguageModeling(\n"\
+        "            __tokenizer,\n"\
+        "            mlm = False,\n"\
+        "            mlm_probability = 0.0,\n"\
+        "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"\
+        "        )\n"\
         "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"\
-        "        data_collator = DataCollatorForSeq2Seq(__tokenizer)\n"\
+        "        data_collator = DataCollatorForSeq2Seq(\n"\
+        "            __tokenizer,\n"\
+        "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"\
+        "        )\n"\
         "else:\n"\
         "    if hasattr(args, 'remove_unused_columns'): args.remove_unused_columns = False\n"\
         "    if hasattr(args, 'dataset_text_field'): args.dataset_text_field = ''\n"\
@@ -404,9 +412,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "if not isinstance(data_collator, UnslothVisionDataCollator):\n"\
         "    if not hasattr(__tokenizer, 'pad') and hasattr(__tokenizer, 'tokenizer'):\n"\
         "        if isinstance(data_collator, DataCollatorForSeq2Seq):\n"\
-        "            data_collator = DataCollatorForSeq2Seq(__tokenizer.tokenizer)\n"\
+        "            data_collator = DataCollatorForSeq2Seq(\n"\
+        "                __tokenizer.tokenizer,\n"\
+        "                pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"\
+        "            )\n"\
         "        else:\n"\
-        "            data_collator = TransformersDataCollatorForLanguageModeling(__tokenizer.tokenizer, mlm = False, mlm_probability = 0.0)\n"
+        "            data_collator = TransformersDataCollatorForLanguageModeling(\n"\
+        "                __tokenizer.tokenizer,\n"\
+        "                mlm = False,\n"\
+        "                mlm_probability = 0.0,\n"\
+        "                pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"\
+        "            )\n"
         extra_args += pad_check
     pass
 
@@ -497,7 +513,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "fp16"                          : False,
         "include_tokens_per_second"     : False,
         "include_num_input_tokens_seen" : False,
-        "auto_find_batch_size"          : True, # Auto /2 batch size
+        "auto_find_batch_size"          : False, # Auto /2 batch size - too many people complained so removing
         "dataloader_pin_memory"         : True,
         # Might fail so disable for now
         # "dataloader_persistent_workers" : True, # Keeps dataloader in RAM
@@ -516,7 +532,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # https://verl.readthedocs.io/en/latest/examples/config.html
     if trainer_file == "grpo_trainer":
         replacements = {
-            "beta" : 0.001,
+            "loss_type" : "bnpo",           # Default GRPO paper
+            "beta" : 0.001,                 # Recommended as seen in verl
+            "auto_find_batch_size" : False, # Cannot work on GRPO
         }
         for k, v in replacements.items():
             x = f"{k}( = [^,\n]{{1,}})?,\n"
@@ -529,9 +547,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Warn on too large or too small learning rate
     if " learning_rate" in call_args:
         learning_rate_check = \
-        "if learning_rate < 1e-7: raise FloatingPointError(f'Unsloth: Your learning rate of `{learning_rate}` is too small and less than 1e-7! "\
+        "if learning_rate < 1e-7: print(f'Unsloth: Your learning rate of `{learning_rate}` is too small and less than 1e-7! "\
         "Consider increasing it, otherwise gradient updates will be close to 0!')\n"\
-        "if learning_rate > 1: raise OverflowError(f'Unsloth: Your learning rate of `{learning_rate}` is way too larger > 1! "\
+        "if learning_rate > 1: print(f'Unsloth: Your learning rate of `{learning_rate}` is way too larger > 1! "\
         "Consider decreasing it to 1e-1, otherwise gradient updates will explode!')\n"
         extra_args += learning_rate_check
     pass
@@ -566,8 +584,20 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         num_proc_check = \
         "if dataset_num_proc is None:\n"\
         "    from multiprocessing import cpu_count\n"\
-        "    dataset_num_proc = min(cpu_count()*2, 2)\n"
+        "    dataset_num_proc = max(cpu_count()+4, 2)\n"
         extra_args += num_proc_check
+    pass
+
+    # Add padding if flex attention is added
+    if "pad_to_multiple_of" in call_args:
+        pad_to_multiple_of = \
+        "if os.environ.get('UNSLOTH_ENABLE_FLEX_ATTENTION', '0') == '1':\n"\
+        "    from unsloth_zoo.flex_attention import HAS_FLEX_ATTENTION\n"\
+        "    if HAS_FLEX_ATTENTION and pad_to_multiple_of is None:\n"\
+        "        from unsloth_zoo.flex_attention import FLEX_ATTENTION_BLOCK_SIZE\n"\
+        "        pad_to_multiple_of = FLEX_ATTENTION_BLOCK_SIZE\n"\
+        "\n"
+        extra_args += pad_to_multiple_of
     pass
 
     # Check for loss_type = dr_grpo and scale_rewards for GRPO
@@ -586,9 +616,12 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "        print('Unsloth: The Dr GRPO paper recommends setting `scale_rewards` to False! Will override. Set it to `None` to force False.')\n"\
         "        scale_rewards = False\n"\
         "elif loss_type.lower() == 'dapo':\n"\
-        "    print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True`')\n"\
-        "    print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28`')\n"\
-        "    print('Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term')\n"\
+        "    if mask_truncated_completions != True:\n"\
+        "        print('Unsloth: The DAPO paper recommends `mask_truncated_completions = True`')\n"\
+        "    if epsilon_high != 0.28:\n"\
+        "        print('Unsloth: The DAPO paper recommends `epsilon_high = 0.28`')\n"\
+        "    if beta != 0.0:\n"\
+        "        print('Unsloth: The DAPO paper recommends setting `beta = 0.0` to remove the KL term')\n"\
         "    mask_truncated_completions = True\n"\
         "    epsilon_high = 0.28\n"\
         "    beta = 0.0\n"\
@@ -693,6 +726,13 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         original_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask"]'
         new_text = 'self._signature_columns = ["input_ids", "attention_mask", "completion_mask","labels"]'
         RLTrainer_source = RLTrainer_source.replace(original_text, new_text)
+
+        # Temporary patch _is_vlm to False
+        # as of 0.22 it only exists in sfttrainer
+        oriignal_is_vlm_text = 'self._is_vlm = True'
+        new_is_vlm_text = 'self._is_vlm = False'
+        RLTrainer_source = RLTrainer_source.replace(oriignal_is_vlm_text, new_is_vlm_text)
+
 
     # Remove multiple doc strings
     if __RLConfig_doc__ != "" and RLTrainer_source.count(__RLTrainer_doc__) == 2:

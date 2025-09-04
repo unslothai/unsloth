@@ -16,6 +16,7 @@ from .llama import *
 import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -480,7 +481,7 @@ def _FalconH1_fast_forward_inference(attention_fast_forward_inference=FalconH1At
         X = self.model.embed_tokens(input_ids)
         X = X * self.config.embedding_multiplier
 
-        X = X.to(_get_dtype(self.config.torch_dtype))
+        X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert(q_len == 1)
         # Get saved buffers to reduce memory movement
@@ -582,7 +583,7 @@ def _fast_prepare_inputs_for_generation(
     position_ids=None,
     use_cache=True,
     **kwargs,):
-    # Overwitten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
+    # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
     empty_past_kv = past_key_values is None
 
     # If we have cache: let's slice `input_ids` through `cache_position`, to keep only the unprocessed tokens
