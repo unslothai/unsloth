@@ -1,1789 +1,0 @@
-🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
-INFO 09-04 13:20:23 [__init__.py:241] Automatically detected platform cuda.
-🦥 Unsloth Zoo will now patch everything to make training faster!
-==((====))==  Unsloth 2025.9.1: Fast Llama patching. Transformers: 4.55.4. vLLM: 0.10.1.1.
-   \\   /|    NVIDIA H100 80GB HBM3. Num GPUs = 1. Max memory: 79.209 GB. Platform: Linux.
-O^O/ \_/ \    Torch: 2.7.1+cu126. CUDA: 9.0. CUDA Toolkit: 12.6. Triton: 3.3.1
-\        /    Bfloat16 = TRUE. FA [Xformers = 0.0.31. FA2 = False]
- "-____-"     Free license: http://github.com/unslothai/unsloth
-Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-  0%|          | 0/518 [00:00<?, ?it/s]  0%|          | 1/518 [00:00<04:34,  1.88it/s]  1%|          | 3/518 [00:00<01:35,  5.41it/s]  1%|          | 5/518 [00:00<01:01,  8.38it/s]  1%|▏         | 7/518 [00:00<00:46, 11.05it/s]  2%|▏         | 9/518 [00:00<00:39, 12.90it/s]  2%|▏         | 11/518 [00:01<00:35, 14.17it/s]  3%|▎         | 13/518 [00:01<00:33, 14.97it/s]  3%|▎         | 15/518 [00:01<00:31, 15.82it/s]  3%|▎         | 17/518 [00:01<00:31, 15.84it/s]  4%|▎         | 19/518 [00:01<00:30, 16.60it/s]  4%|▍         | 21/518 [00:01<00:28, 17.46it/s]  4%|▍         | 23/518 [00:02<01:03,  7.85it/s]  5%|▍         | 25/518 [00:02<00:52,  9.44it/s]  5%|▌         | 28/518 [00:02<00:40, 12.12it/s]  6%|▌         | 30/518 [00:02<00:36, 13.36it/s]  6%|▋         | 33/518 [00:02<00:31, 15.34it/s]  7%|▋         | 36/518 [00:02<00:28, 16.89it/s]  7%|▋         | 38/518 [00:03<00:27, 17.16it/s]  8%|▊         | 40/518 [00:03<00:26, 17.79it/s]  8%|▊         | 43/518 [00:03<00:25, 18.76it/s]  9%|▊         | 45/518 [00:03<00:24, 19.02it/s]  9%|▉         | 48/518 [00:03<00:24, 19.14it/s] 10%|▉         | 50/518 [00:03<00:24, 19.20it/s] 10%|█         | 52/518 [00:03<00:24, 19.40it/s] 11%|█         | 55/518 [00:03<00:23, 20.08it/s] 11%|█         | 58/518 [00:03<00:22, 20.40it/s] 12%|█▏        | 61/518 [00:04<00:22, 20.41it/s] 12%|█▏        | 64/518 [00:04<00:22, 20.47it/s] 13%|█▎        | 67/518 [00:04<00:22, 20.50it/s] 14%|█▎        | 70/518 [00:04<00:21, 20.53it/s] 14%|█▍        | 73/518 [00:04<00:21, 20.67it/s] 15%|█▍        | 76/518 [00:04<00:21, 20.74it/s] 15%|█▌        | 79/518 [00:04<00:20, 21.08it/s] 16%|█▌        | 82/518 [00:05<00:20, 20.80it/s] 16%|█▋        | 85/518 [00:05<00:20, 20.84it/s] 17%|█▋        | 88/518 [00:05<00:20, 20.76it/s] 18%|█▊        | 91/518 [00:05<00:20, 21.01it/s] 18%|█▊        | 94/518 [00:05<00:20, 20.85it/s] 19%|█▊        | 97/518 [00:05<00:19, 21.24it/s] 19%|█▉        | 100/518 [00:05<00:19, 21.32it/s] 20%|█▉        | 103/518 [00:06<00:19, 21.27it/s] 20%|██        | 106/518 [00:06<00:19, 21.38it/s] 21%|██        | 109/518 [00:06<00:19, 21.41it/s] 22%|██▏       | 112/518 [00:06<00:19, 21.07it/s] 22%|██▏       | 115/518 [00:06<00:18, 21.37it/s] 23%|██▎       | 118/518 [00:06<00:19, 21.04it/s] 23%|██▎       | 121/518 [00:06<00:18, 21.31it/s] 24%|██▍       | 124/518 [00:07<00:18, 21.53it/s] 25%|██▍       | 127/518 [00:07<00:18, 21.29it/s] 25%|██▌       | 130/518 [00:07<00:18, 21.40it/s] 26%|██▌       | 133/518 [00:07<00:18, 21.05it/s] 26%|██▋       | 136/518 [00:07<00:18, 21.16it/s] 27%|██▋       | 139/518 [00:07<00:17, 21.11it/s] 27%|██▋       | 142/518 [00:07<00:17, 21.01it/s] 28%|██▊       | 145/518 [00:08<00:18, 20.72it/s] 29%|██▊       | 148/518 [00:08<00:17, 21.05it/s] 29%|██▉       | 151/518 [00:08<00:17, 20.40it/s] 30%|██▉       | 154/518 [00:08<00:17, 21.01it/s] 30%|███       | 157/518 [00:08<00:17, 21.20it/s] 31%|███       | 160/518 [00:08<00:16, 21.50it/s] 31%|███▏      | 163/518 [00:08<00:16, 21.52it/s] 32%|███▏      | 166/518 [00:09<00:16, 21.11it/s] 33%|███▎      | 169/518 [00:09<00:16, 21.08it/s] 33%|███▎      | 172/518 [00:09<00:16, 21.25it/s] 34%|███▍      | 175/518 [00:09<00:16, 21.26it/s] 34%|███▍      | 178/518 [00:09<00:15, 21.33it/s] 35%|███▍      | 181/518 [00:09<00:15, 21.82it/s] 36%|███▌      | 184/518 [00:09<00:15, 21.95it/s] 36%|███▌      | 187/518 [00:10<00:15, 21.97it/s] 37%|███▋      | 190/518 [00:10<00:14, 21.99it/s] 37%|███▋      | 193/518 [00:10<00:14, 22.02it/s] 38%|███▊      | 196/518 [00:10<00:14, 22.16it/s] 38%|███▊      | 199/518 [00:10<00:14, 21.68it/s] 39%|███▉      | 202/518 [00:10<00:14, 21.74it/s] 40%|███▉      | 205/518 [00:10<00:14, 21.39it/s] 40%|████      | 208/518 [00:11<00:14, 21.48it/s] 41%|████      | 211/518 [00:11<00:14, 21.33it/s] 41%|████▏     | 214/518 [00:11<00:14, 20.98it/s] 42%|████▏     | 217/518 [00:11<00:14, 21.04it/s] 42%|████▏     | 220/518 [00:11<00:13, 21.40it/s] 43%|████▎     | 223/518 [00:11<00:13, 21.11it/s] 44%|████▎     | 226/518 [00:11<00:13, 21.09it/s] 44%|████▍     | 229/518 [00:12<00:14, 20.54it/s] 45%|████▍     | 232/518 [00:12<00:13, 20.74it/s] 45%|████▌     | 235/518 [00:12<00:13, 21.39it/s] 46%|████▌     | 238/518 [00:12<00:13, 21.07it/s] 47%|████▋     | 241/518 [00:12<00:12, 21.59it/s] 47%|████▋     | 244/518 [00:13<00:21, 12.81it/s] 48%|████▊     | 247/518 [00:13<00:18, 14.46it/s] 48%|████▊     | 250/518 [00:13<00:16, 15.94it/s] 49%|████▉     | 253/518 [00:13<00:15, 17.39it/s] 49%|████▉     | 256/518 [00:13<00:13, 18.76it/s] 50%|█████     | 259/518 [00:13<00:13, 19.75it/s] 51%|█████     | 262/518 [00:13<00:12, 20.81it/s] 51%|█████     | 265/518 [00:14<00:11, 21.47it/s] 52%|█████▏    | 268/518 [00:14<00:11, 21.45it/s] 52%|█████▏    | 271/518 [00:14<00:11, 21.80it/s] 53%|█████▎    | 274/518 [00:14<00:10, 22.22it/s] 53%|█████▎    | 277/518 [00:14<00:10, 22.27it/s] 54%|█████▍    | 280/518 [00:14<00:10, 22.17it/s] 55%|█████▍    | 283/518 [00:14<00:10, 22.47it/s] 55%|█████▌    | 286/518 [00:14<00:10, 22.29it/s] 56%|█████▌    | 289/518 [00:15<00:10, 22.26it/s] 56%|█████▋    | 292/518 [00:15<00:10, 22.22it/s] 57%|█████▋    | 295/518 [00:15<00:09, 22.84it/s] 58%|█████▊    | 298/518 [00:15<00:09, 22.92it/s] 58%|█████▊    | 301/518 [00:15<00:09, 22.19it/s] 59%|█████▊    | 304/518 [00:15<00:09, 22.04it/s] 59%|█████▉    | 307/518 [00:15<00:09, 21.98it/s] 60%|█████▉    | 310/518 [00:16<00:09, 21.97it/s] 60%|██████    | 313/518 [00:16<00:09, 22.22it/s] 61%|██████    | 316/518 [00:16<00:08, 22.54it/s] 62%|██████▏   | 319/518 [00:16<00:08, 22.88it/s] 62%|██████▏   | 322/518 [00:16<00:09, 19.88it/s] 63%|██████▎   | 325/518 [00:16<00:09, 20.64it/s] 63%|██████▎   | 328/518 [00:16<00:09, 20.64it/s] 64%|██████▍   | 331/518 [00:17<00:08, 20.90it/s] 64%|██████▍   | 334/518 [00:17<00:08, 21.26it/s] 65%|██████▌   | 337/518 [00:17<00:08, 21.54it/s] 66%|██████▌   | 340/518 [00:17<00:08, 21.50it/s] 66%|██████▌   | 343/518 [00:17<00:07, 21.90it/s] 67%|██████▋   | 346/518 [00:17<00:07, 21.62it/s] 67%|██████▋   | 349/518 [00:17<00:07, 22.12it/s] 68%|██████▊   | 352/518 [00:17<00:07, 22.12it/s] 69%|██████▊   | 355/518 [00:18<00:07, 21.68it/s] 69%|██████▉   | 358/518 [00:18<00:07, 21.43it/s] 70%|██████▉   | 361/518 [00:18<00:07, 21.72it/s] 70%|███████   | 364/518 [00:18<00:06, 22.13it/s] 71%|███████   | 367/518 [00:18<00:06, 21.77it/s] 71%|███████▏  | 370/518 [00:18<00:06, 22.05it/s] 72%|███████▏  | 373/518 [00:18<00:06, 22.15it/s] 73%|███████▎  | 376/518 [00:19<00:06, 22.29it/s] 73%|███████▎  | 379/518 [00:19<00:06, 22.31it/s] 74%|███████▎  | 382/518 [00:19<00:06, 22.06it/s] 74%|███████▍  | 385/518 [00:19<00:06, 21.88it/s] 75%|███████▍  | 388/518 [00:19<00:06, 21.65it/s] 75%|███████▌  | 391/518 [00:19<00:05, 22.03it/s] 76%|███████▌  | 394/518 [00:19<00:05, 22.06it/s] 77%|███████▋  | 397/518 [00:20<00:05, 22.33it/s] 77%|███████▋  | 400/518 [00:20<00:05, 21.93it/s] 78%|███████▊  | 403/518 [00:20<00:05, 21.98it/s] 78%|███████▊  | 406/518 [00:20<00:05, 21.56it/s] 79%|███████▉  | 409/518 [00:20<00:04, 22.20it/s] 80%|███████▉  | 412/518 [00:20<00:04, 22.35it/s] 80%|████████  | 415/518 [00:20<00:04, 22.57it/s] 81%|████████  | 418/518 [00:20<00:04, 22.63it/s] 81%|████████▏ | 421/518 [00:21<00:04, 22.06it/s] 82%|████████▏ | 424/518 [00:21<00:04, 22.08it/s] 82%|████████▏ | 427/518 [00:21<00:04, 21.89it/s] 83%|████████▎ | 430/518 [00:21<00:03, 22.57it/s] 84%|████████▎ | 433/518 [00:21<00:03, 22.65it/s] 84%|████████▍ | 436/518 [00:21<00:03, 23.24it/s] 85%|████████▍ | 439/518 [00:21<00:03, 22.85it/s] 85%|████████▌ | 442/518 [00:22<00:03, 22.62it/s] 86%|████████▌ | 445/518 [00:22<00:03, 22.40it/s] 86%|████████▋ | 448/518 [00:22<00:03, 22.68it/s] 87%|████████▋ | 451/518 [00:22<00:02, 23.00it/s] 88%|████████▊ | 454/518 [00:22<00:02, 22.61it/s] 88%|████████▊ | 457/518 [00:22<00:02, 22.97it/s] 89%|████████▉ | 460/518 [00:22<00:02, 22.86it/s] 89%|████████▉ | 463/518 [00:22<00:02, 22.74it/s] 90%|████████▉ | 466/518 [00:23<00:02, 23.14it/s] 91%|█████████ | 469/518 [00:23<00:02, 22.80it/s] 91%|█████████ | 472/518 [00:23<00:02, 22.60it/s] 92%|█████████▏| 475/518 [00:23<00:01, 22.98it/s] 92%|█████████▏| 478/518 [00:23<00:01, 23.03it/s] 93%|█████████▎| 481/518 [00:23<00:01, 22.72it/s] 93%|█████████▎| 484/518 [00:23<00:01, 22.44it/s] 94%|█████████▍| 487/518 [00:24<00:01, 22.56it/s] 95%|█████████▍| 490/518 [00:24<00:01, 22.96it/s] 95%|█████████▌| 493/518 [00:24<00:01, 22.68it/s] 96%|█████████▌| 496/518 [00:24<00:00, 22.35it/s] 96%|█████████▋| 499/518 [00:24<00:00, 22.99it/s] 97%|█████████▋| 502/518 [00:24<00:00, 23.01it/s] 97%|█████████▋| 505/518 [00:24<00:00, 22.88it/s] 98%|█████████▊| 508/518 [00:24<00:00, 22.71it/s] 99%|█████████▊| 511/518 [00:25<00:00, 22.59it/s] 99%|█████████▉| 514/518 [00:25<00:00, 22.32it/s]100%|█████████▉| 517/518 [00:25<00:00, 22.98it/s]100%|██████████| 518/518 [00:25<00:00, 20.41it/s]
-Unsloth 2025.9.1 patched 28 layers with 28 QKV layers, 28 O layers and 28 MLP layers.
-==((====))==  Unsloth - 2x faster free finetuning | Num GPUs used = 1
-   \\   /|    Num examples = 9,846 | Num Epochs = 1 | Total steps = 10
-O^O/ \_/ \    Batch size per device = 2 | Gradient accumulation steps = 4
-\        /    Data Parallel GPUs = 1 | Total batch size (2 x 4 x 1) = 8
- "-____-"     Trainable parameters = 24,313,856 of 3,237,063,680 (0.75% trained)
-  0%|          | 0/10 [00:00<?, ?it/s] 10%|█         | 1/10 [00:01<00:11,  1.31s/it] 20%|██        | 2/10 [00:02<00:09,  1.17s/it] 30%|███       | 3/10 [00:03<00:07,  1.02s/it] 40%|████      | 4/10 [00:04<00:05,  1.07it/s] 50%|█████     | 5/10 [00:04<00:04,  1.14it/s] 60%|██████    | 6/10 [00:05<00:03,  1.18it/s] 70%|███████   | 7/10 [00:06<00:02,  1.19it/s] 80%|████████  | 8/10 [00:07<00:01,  1.21it/s] 90%|█████████ | 9/10 [00:08<00:00,  1.22it/s]100%|██████████| 10/10 [00:08<00:00,  1.24it/s]                                               100%|██████████| 10/10 [00:09<00:00,  1.24it/s]100%|██████████| 10/10 [00:09<00:00,  1.06it/s]
-Unsloth: Will smartly offload gradients to save VRAM!
-{'train_runtime': 9.4264, 'train_samples_per_second': 8.487, 'train_steps_per_second': 1.061, 'train_loss': 1.5298221588134766, 'epoch': 0.01}
-  0%|          | 0/518 [00:00<?, ?it/s]  0%|          | 2/518 [00:00<00:27, 18.86it/s]  1%|          | 4/518 [00:00<00:26, 19.27it/s]  1%|          | 6/518 [00:00<00:26, 19.30it/s]  2%|▏         | 8/518 [00:00<00:26, 19.54it/s]  2%|▏         | 10/518 [00:00<00:26, 19.45it/s]  2%|▏         | 12/518 [00:00<00:25, 19.52it/s]  3%|▎         | 14/518 [00:00<00:26, 19.30it/s]  3%|▎         | 17/518 [00:00<00:25, 19.71it/s]  4%|▎         | 19/518 [00:00<00:25, 19.70it/s]  4%|▍         | 22/518 [00:01<00:41, 12.05it/s]  5%|▍         | 24/518 [00:01<00:37, 13.01it/s]  5%|▌         | 26/518 [00:01<00:35, 13.98it/s]  6%|▌         | 29/518 [00:01<00:30, 15.88it/s]  6%|▌         | 31/518 [00:01<00:29, 16.73it/s]  7%|▋         | 34/518 [00:02<00:26, 17.94it/s]  7%|▋         | 37/518 [00:02<00:25, 18.58it/s]  8%|▊         | 40/518 [00:02<00:24, 19.24it/s]  8%|▊         | 43/518 [00:02<00:24, 19.57it/s]  9%|▊         | 45/518 [00:02<00:24, 19.66it/s]  9%|▉         | 47/518 [00:02<00:24, 19.61it/s]  9%|▉         | 49/518 [00:02<00:24, 19.32it/s] 10%|█         | 52/518 [00:02<00:23, 19.48it/s] 11%|█         | 55/518 [00:03<00:23, 19.76it/s] 11%|█         | 58/518 [00:03<00:23, 19.97it/s] 12%|█▏        | 61/518 [00:03<00:22, 20.16it/s] 12%|█▏        | 64/518 [00:03<00:22, 20.22it/s] 13%|█▎        | 67/518 [00:03<00:22, 20.08it/s] 14%|█▎        | 70/518 [00:03<00:22, 19.77it/s] 14%|█▍        | 72/518 [00:03<00:22, 19.42it/s] 14%|█▍        | 74/518 [00:04<00:22, 19.31it/s] 15%|█▍        | 76/518 [00:04<00:22, 19.42it/s] 15%|█▌        | 78/518 [00:04<00:22, 19.48it/s] 16%|█▌        | 81/518 [00:04<00:22, 19.84it/s] 16%|█▌        | 84/518 [00:04<00:21, 20.23it/s] 17%|█▋        | 87/518 [00:04<00:21, 20.12it/s] 17%|█▋        | 90/518 [00:04<00:21, 19.92it/s] 18%|█▊        | 93/518 [00:04<00:21, 20.13it/s] 19%|█▊        | 96/518 [00:05<00:20, 20.18it/s] 19%|█▉        | 99/518 [00:05<00:20, 20.34it/s] 20%|█▉        | 102/518 [00:05<00:20, 20.31it/s] 20%|██        | 105/518 [00:05<00:20, 19.97it/s] 21%|██        | 107/518 [00:05<00:20, 19.62it/s] 21%|██        | 109/518 [00:05<00:21, 19.30it/s] 21%|██▏       | 111/518 [00:05<00:20, 19.39it/s] 22%|██▏       | 113/518 [00:05<00:20, 19.46it/s] 22%|██▏       | 116/518 [00:06<00:20, 19.84it/s] 23%|██▎       | 119/518 [00:06<00:19, 20.09it/s] 24%|██▎       | 122/518 [00:06<00:19, 20.32it/s] 24%|██▍       | 125/518 [00:06<00:19, 20.46it/s] 25%|██▍       | 128/518 [00:06<00:19, 20.20it/s] 25%|██▌       | 131/518 [00:06<00:19, 20.35it/s] 26%|██▌       | 134/518 [00:07<00:18, 20.48it/s] 26%|██▋       | 137/518 [00:07<00:18, 20.35it/s] 27%|██▋       | 140/518 [00:07<00:18, 20.27it/s] 28%|██▊       | 143/518 [00:07<00:18, 20.36it/s] 28%|██▊       | 146/518 [00:07<00:18, 20.13it/s] 29%|██▉       | 149/518 [00:07<00:18, 20.15it/s] 29%|██▉       | 152/518 [00:07<00:18, 20.05it/s] 30%|██▉       | 155/518 [00:08<00:17, 20.24it/s] 31%|███       | 158/518 [00:08<00:18, 19.90it/s] 31%|███       | 160/518 [00:08<00:18, 19.74it/s] 31%|███▏      | 162/518 [00:08<00:18, 19.70it/s] 32%|███▏      | 164/518 [00:08<00:18, 19.43it/s] 32%|███▏      | 166/518 [00:08<00:18, 19.37it/s] 32%|███▏      | 168/518 [00:08<00:18, 19.30it/s] 33%|███▎      | 170/518 [00:08<00:17, 19.43it/s] 33%|███▎      | 172/518 [00:08<00:17, 19.34it/s] 34%|███▎      | 174/518 [00:09<00:18, 18.57it/s] 34%|███▍      | 177/518 [00:09<00:17, 19.18it/s] 35%|███▍      | 179/518 [00:09<00:17, 18.99it/s] 35%|███▍      | 181/518 [00:09<00:17, 19.09it/s] 36%|███▌      | 184/518 [00:09<00:16, 19.66it/s] 36%|███▌      | 187/518 [00:09<00:16, 19.85it/s] 37%|███▋      | 190/518 [00:09<00:16, 20.17it/s] 37%|███▋      | 193/518 [00:09<00:16, 20.26it/s] 38%|███▊      | 196/518 [00:10<00:15, 20.49it/s] 38%|███▊      | 199/518 [00:10<00:15, 20.45it/s] 39%|███▉      | 202/518 [00:10<00:15, 20.66it/s] 40%|███▉      | 205/518 [00:10<00:15, 20.38it/s] 40%|████      | 208/518 [00:10<00:15, 19.99it/s] 41%|████      | 211/518 [00:10<00:15, 19.97it/s] 41%|████▏     | 214/518 [00:11<00:15, 20.09it/s] 42%|████▏     | 217/518 [00:11<00:14, 20.12it/s] 42%|████▏     | 220/518 [00:11<00:14, 20.23it/s] 43%|████▎     | 223/518 [00:11<00:14, 20.34it/s] 44%|████▎     | 226/518 [00:11<00:14, 20.08it/s] 44%|████▍     | 229/518 [00:11<00:14, 19.63it/s] 45%|████▍     | 231/518 [00:11<00:14, 19.64it/s] 45%|████▍     | 233/518 [00:11<00:14, 19.63it/s] 46%|████▌     | 236/518 [00:12<00:14, 19.91it/s] 46%|████▌     | 238/518 [00:12<00:14, 19.68it/s] 46%|████▋     | 240/518 [00:12<00:14, 19.68it/s] 47%|████▋     | 243/518 [00:12<00:13, 20.11it/s] 47%|████▋     | 246/518 [00:12<00:23, 11.40it/s] 48%|████▊     | 249/518 [00:13<00:20, 13.34it/s] 49%|████▊     | 252/518 [00:13<00:17, 14.96it/s] 49%|████▉     | 255/518 [00:13<00:16, 16.37it/s] 50%|████▉     | 258/518 [00:13<00:14, 17.61it/s] 50%|█████     | 260/518 [00:13<00:14, 17.98it/s] 51%|█████     | 263/518 [00:13<00:13, 18.95it/s] 51%|█████▏    | 266/518 [00:13<00:13, 19.31it/s] 52%|█████▏    | 269/518 [00:14<00:12, 19.52it/s] 53%|█████▎    | 272/518 [00:14<00:12, 20.00it/s] 53%|█████▎    | 275/518 [00:14<00:12, 20.15it/s] 54%|█████▎    | 278/518 [00:14<00:11, 20.27it/s] 54%|█████▍    | 281/518 [00:14<00:11, 20.22it/s] 55%|█████▍    | 284/518 [00:14<00:11, 20.43it/s] 55%|█████▌    | 287/518 [00:14<00:11, 20.55it/s] 56%|█████▌    | 290/518 [00:15<00:11, 20.46it/s] 57%|█████▋    | 293/518 [00:15<00:10, 20.60it/s] 57%|█████▋    | 296/518 [00:15<00:10, 20.83it/s] 58%|█████▊    | 299/518 [00:15<00:10, 20.93it/s] 58%|█████▊    | 302/518 [00:15<00:10, 20.64it/s] 59%|█████▉    | 305/518 [00:15<00:10, 20.62it/s] 59%|█████▉    | 308/518 [00:15<00:10, 20.62it/s] 60%|██████    | 311/518 [00:16<00:10, 20.45it/s] 61%|██████    | 314/518 [00:16<00:09, 20.69it/s] 61%|██████    | 317/518 [00:16<00:09, 21.00it/s] 62%|██████▏   | 320/518 [00:16<00:09, 20.86it/s] 62%|██████▏   | 323/518 [00:16<00:10, 18.09it/s] 63%|██████▎   | 326/518 [00:16<00:10, 18.73it/s] 63%|██████▎   | 328/518 [00:17<00:10, 18.90it/s] 64%|██████▍   | 331/518 [00:17<00:09, 19.15it/s] 64%|██████▍   | 334/518 [00:17<00:09, 19.43it/s] 65%|██████▌   | 337/518 [00:17<00:09, 19.96it/s] 66%|██████▌   | 340/518 [00:17<00:08, 19.93it/s] 66%|██████▌   | 343/518 [00:17<00:08, 19.86it/s] 67%|██████▋   | 346/518 [00:17<00:08, 19.90it/s] 67%|██████▋   | 349/518 [00:18<00:08, 20.14it/s] 68%|██████▊   | 352/518 [00:18<00:08, 20.08it/s] 69%|██████▊   | 355/518 [00:18<00:08, 20.27it/s] 69%|██████▉   | 358/518 [00:18<00:07, 20.12it/s] 70%|██████▉   | 361/518 [00:18<00:07, 19.91it/s] 70%|███████   | 364/518 [00:18<00:07, 20.19it/s] 71%|███████   | 367/518 [00:18<00:07, 20.28it/s] 71%|███████▏  | 370/518 [00:19<00:07, 20.31it/s] 72%|███████▏  | 373/518 [00:19<00:07, 19.97it/s] 73%|███████▎  | 376/518 [00:19<00:07, 20.28it/s] 73%|███████▎  | 379/518 [00:19<00:06, 20.31it/s] 74%|███████▎  | 382/518 [00:19<00:06, 19.92it/s] 74%|███████▍  | 384/518 [00:19<00:06, 19.88it/s] 75%|███████▍  | 386/518 [00:19<00:06, 19.84it/s] 75%|███████▍  | 388/518 [00:20<00:06, 19.69it/s] 75%|███████▌  | 390/518 [00:20<00:06, 19.46it/s] 76%|███████▌  | 392/518 [00:20<00:06, 19.52it/s] 76%|███████▌  | 394/518 [00:20<00:06, 19.58it/s] 77%|███████▋  | 397/518 [00:20<00:06, 20.03it/s] 77%|███████▋  | 399/518 [00:20<00:05, 19.99it/s] 77%|███████▋  | 401/518 [00:20<00:05, 19.58it/s] 78%|███████▊  | 404/518 [00:20<00:05, 19.32it/s] 79%|███████▊  | 407/518 [00:20<00:05, 19.58it/s] 79%|███████▉  | 410/518 [00:21<00:05, 19.61it/s] 80%|███████▉  | 412/518 [00:21<00:05, 19.67it/s] 80%|████████  | 415/518 [00:21<00:05, 19.92it/s] 81%|████████  | 418/518 [00:21<00:04, 20.06it/s] 81%|████████▏ | 421/518 [00:21<00:04, 19.42it/s] 82%|████████▏ | 423/518 [00:21<00:04, 19.36it/s] 82%|████████▏ | 426/518 [00:21<00:04, 19.43it/s] 83%|████████▎ | 429/518 [00:22<00:04, 19.82it/s] 83%|████████▎ | 432/518 [00:22<00:04, 19.91it/s] 84%|████████▍ | 434/518 [00:22<00:04, 19.73it/s] 84%|████████▍ | 437/518 [00:22<00:04, 19.92it/s] 85%|████████▍ | 439/518 [00:22<00:04, 19.58it/s] 85%|████████▌ | 441/518 [00:22<00:03, 19.34it/s] 86%|████████▌ | 443/518 [00:22<00:03, 19.40it/s] 86%|████████▌ | 445/518 [00:22<00:03, 19.20it/s] 86%|████████▋ | 448/518 [00:23<00:03, 19.72it/s] 87%|████████▋ | 451/518 [00:23<00:03, 19.89it/s] 88%|████████▊ | 454/518 [00:23<00:03, 20.23it/s] 88%|████████▊ | 457/518 [00:23<00:02, 20.38it/s] 89%|████████▉ | 460/518 [00:23<00:02, 20.32it/s] 89%|████████▉ | 463/518 [00:23<00:02, 20.20it/s] 90%|████████▉ | 466/518 [00:23<00:02, 20.37it/s] 91%|█████████ | 469/518 [00:24<00:02, 19.97it/s] 91%|█████████ | 472/518 [00:24<00:02, 20.03it/s] 92%|█████████▏| 475/518 [00:24<00:02, 20.04it/s] 92%|█████████▏| 478/518 [00:24<00:02, 19.97it/s] 93%|█████████▎| 480/518 [00:24<00:01, 19.93it/s] 93%|█████████▎| 482/518 [00:24<00:01, 19.41it/s] 93%|█████████▎| 484/518 [00:24<00:01, 19.50it/s] 94%|█████████▍| 487/518 [00:25<00:01, 19.71it/s] 94%|█████████▍| 489/518 [00:25<00:01, 19.71it/s] 95%|█████████▍| 492/518 [00:25<00:01, 19.97it/s] 96%|█████████▌| 495/518 [00:25<00:01, 19.97it/s] 96%|█████████▌| 498/518 [00:25<00:00, 20.21it/s] 97%|█████████▋| 501/518 [00:25<00:00, 20.16it/s] 97%|█████████▋| 504/518 [00:25<00:00, 20.18it/s] 98%|█████████▊| 507/518 [00:26<00:00, 19.89it/s] 98%|█████████▊| 510/518 [00:26<00:00, 20.12it/s] 99%|█████████▉| 513/518 [00:26<00:00, 20.03it/s]100%|█████████▉| 516/518 [00:26<00:00, 20.20it/s]100%|██████████| 518/518 [00:26<00:00, 19.51it/s]
-merge and save to local disk
-DEBUG prepare_saving: input dtype from config = bfloat16, type = <class 'str'>
-DEBUG prepare_saving: final output_dtype = torch.bfloat16, type = <class 'torch.dtype'>
-DEBUG: Found 196 lora_A, 196 lora_B, 196 modules, 196 scaling
-DEBUG: Files before save_pretrained: ['special_tokens_map.json', 'chat_template.jinja', 'tokenizer.json', 'tokenizer_config.json']
-DEBUG: Files after save_pretrained: ['config.json', 'special_tokens_map.json', 'chat_template.jinja', 'tokenizer.json', 'generation_config.json', 'tokenizer_config.json']
-DEBUG: config.json - Size: 0.00 MB
-DEBUG: special_tokens_map.json - Size: 0.00 MB
-DEBUG: chat_template.jinja - Size: 0.00 MB
-DEBUG: tokenizer.json - Size: 16.41 MB
-DEBUG: generation_config.json - Size: 0.00 MB
-DEBUG: tokenizer_config.json - Size: 0.05 MB
-Found HuggingFace hub cache directory: /mnt/disks/unslothai/.cache/huggingface/hub
-Checking cache directory for required files...
-Cache check failed: model-00001-of-00002.safetensors not found in local cache.
-Not all required files found in cache. Will proceed with downloading.
-Unsloth: Merging weights into 16bit:   0%|          | 0/2 [00:00<?, ?it/s]DEBUG _merge_and_overwrite_lora: output_dtype = torch.bfloat16, type = <class 'torch.dtype'>
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 0
-DEBUG: Saving 1 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 0
-DEBUG: Saving 2 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.0.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 1
-DEBUG: Saving 3 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.0.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 2
-DEBUG: Saving 4 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.0.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 3
-DEBUG: Saving 5 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 3
-DEBUG: Saving 6 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.0.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 4
-DEBUG: Saving 7 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.0.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 5
-DEBUG: Saving 8 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.0.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 6
-DEBUG: Saving 9 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.0.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 7
-DEBUG: Saving 10 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 7
-DEBUG: Saving 11 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.1.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 8
-DEBUG: Saving 12 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.1.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 9
-DEBUG: Saving 13 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.1.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 10
-DEBUG: Saving 14 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 10
-DEBUG: Saving 15 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.1.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 11
-DEBUG: Saving 16 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.1.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 12
-DEBUG: Saving 17 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.1.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 13
-DEBUG: Saving 18 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.1.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 14
-DEBUG: Saving 19 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 14
-DEBUG: Saving 20 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.10.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 15
-DEBUG: Saving 21 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.10.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 16
-DEBUG: Saving 22 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.10.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 17
-DEBUG: Saving 23 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 17
-DEBUG: Saving 24 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.10.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 18
-DEBUG: Saving 25 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.10.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 19
-DEBUG: Saving 26 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.10.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 20
-DEBUG: Saving 27 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.10.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 21
-DEBUG: Saving 28 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 21
-DEBUG: Saving 29 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.11.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 22
-DEBUG: Saving 30 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.11.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 23
-DEBUG: Saving 31 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.11.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 24
-DEBUG: Saving 32 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 24
-DEBUG: Saving 33 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.11.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 25
-DEBUG: Saving 34 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.11.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 26
-DEBUG: Saving 35 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.11.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 27
-DEBUG: Saving 36 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.11.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 28
-DEBUG: Saving 37 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 28
-DEBUG: Saving 38 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.12.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 29
-DEBUG: Saving 39 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.12.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 30
-DEBUG: Saving 40 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.12.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 31
-DEBUG: Saving 41 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 31
-DEBUG: Saving 42 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.12.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 32
-DEBUG: Saving 43 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.12.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 33
-DEBUG: Saving 44 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.12.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 34
-DEBUG: Saving 45 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.12.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 35
-DEBUG: Saving 46 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 35
-DEBUG: Saving 47 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.13.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 36
-DEBUG: Saving 48 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.13.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 37
-DEBUG: Saving 49 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.13.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 38
-DEBUG: Saving 50 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 38
-DEBUG: Saving 51 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.13.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 39
-DEBUG: Saving 52 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.13.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 40
-DEBUG: Saving 53 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.13.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 41
-DEBUG: Saving 54 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.13.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 42
-DEBUG: Saving 55 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 42
-DEBUG: Saving 56 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.14.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 43
-DEBUG: Saving 57 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.14.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 44
-DEBUG: Saving 58 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.14.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 45
-DEBUG: Saving 59 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 45
-DEBUG: Saving 60 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.14.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 46
-DEBUG: Saving 61 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.14.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 47
-DEBUG: Saving 62 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.14.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 48
-DEBUG: Saving 63 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.14.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 49
-DEBUG: Saving 64 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 49
-DEBUG: Saving 65 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.15.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 50
-DEBUG: Saving 66 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.15.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 51
-DEBUG: Saving 67 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.15.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 52
-DEBUG: Saving 68 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 52
-DEBUG: Saving 69 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.15.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 53
-DEBUG: Saving 70 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.15.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 54
-DEBUG: Saving 71 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.15.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 55
-DEBUG: Saving 72 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.15.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 56
-DEBUG: Saving 73 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 56
-DEBUG: Saving 74 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.16.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 57
-DEBUG: Saving 75 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.16.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 58
-DEBUG: Saving 76 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.16.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 59
-DEBUG: Saving 77 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 59
-DEBUG: Saving 78 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.16.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 60
-DEBUG: Saving 79 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.16.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 61
-DEBUG: Saving 80 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.16.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 62
-DEBUG: Saving 81 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.16.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 63
-DEBUG: Saving 82 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 63
-DEBUG: Saving 83 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.17.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 64
-DEBUG: Saving 84 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.17.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 65
-DEBUG: Saving 85 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.17.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 66
-DEBUG: Saving 86 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 66
-DEBUG: Saving 87 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.17.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 67
-DEBUG: Saving 88 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.17.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 68
-DEBUG: Saving 89 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.17.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 69
-DEBUG: Saving 90 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.17.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 70
-DEBUG: Saving 91 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 70
-DEBUG: Saving 92 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.18.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 71
-DEBUG: Saving 93 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.18.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 72
-DEBUG: Saving 94 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.18.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 73
-DEBUG: Saving 95 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 73
-DEBUG: Saving 96 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.18.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 74
-DEBUG: Saving 97 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.18.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 75
-DEBUG: Saving 98 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.18.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 76
-DEBUG: Saving 99 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.18.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 77
-DEBUG: Saving 100 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 77
-DEBUG: Saving 101 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.19.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 78
-DEBUG: Saving 102 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.19.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 79
-DEBUG: Saving 103 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.19.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 80
-DEBUG: Saving 104 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 80
-DEBUG: Saving 105 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.19.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 81
-DEBUG: Saving 106 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.19.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 82
-DEBUG: Saving 107 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.19.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 83
-DEBUG: Saving 108 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.19.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 84
-DEBUG: Saving 109 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 84
-DEBUG: Saving 110 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.2.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 85
-DEBUG: Saving 111 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.2.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 86
-DEBUG: Saving 112 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.2.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 87
-DEBUG: Saving 113 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 87
-DEBUG: Saving 114 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.2.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 88
-DEBUG: Saving 115 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.2.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 89
-DEBUG: Saving 116 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.2.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 90
-DEBUG: Saving 117 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.2.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 91
-DEBUG: Saving 118 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.20.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 92
-DEBUG: Saving 119 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.20.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 93
-DEBUG: Saving 120 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.20.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 94
-DEBUG: Saving 121 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.20.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 95
-DEBUG: Saving 122 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.20.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 96
-DEBUG: Saving 123 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.20.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 97
-DEBUG: Saving 124 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 97
-DEBUG: Saving 125 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.3.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 98
-DEBUG: Saving 126 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.3.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 99
-DEBUG: Saving 127 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.3.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 100
-DEBUG: Saving 128 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 100
-DEBUG: Saving 129 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.3.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 101
-DEBUG: Saving 130 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.3.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 102
-DEBUG: Saving 131 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.3.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 103
-DEBUG: Saving 132 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.3.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 104
-DEBUG: Saving 133 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 104
-DEBUG: Saving 134 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.4.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 105
-DEBUG: Saving 135 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.4.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 106
-DEBUG: Saving 136 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.4.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 107
-DEBUG: Saving 137 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 107
-DEBUG: Saving 138 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.4.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 108
-DEBUG: Saving 139 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.4.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 109
-DEBUG: Saving 140 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.4.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 110
-DEBUG: Saving 141 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.4.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 111
-DEBUG: Saving 142 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 111
-DEBUG: Saving 143 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.5.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 112
-DEBUG: Saving 144 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.5.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 113
-DEBUG: Saving 145 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.5.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 114
-DEBUG: Saving 146 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 114
-DEBUG: Saving 147 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.5.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 115
-DEBUG: Saving 148 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.5.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 116
-DEBUG: Saving 149 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.5.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 117
-DEBUG: Saving 150 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.5.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 118
-DEBUG: Saving 151 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 118
-DEBUG: Saving 152 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.6.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 119
-DEBUG: Saving 153 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.6.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 120
-DEBUG: Saving 154 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.6.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 121
-DEBUG: Saving 155 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 121
-DEBUG: Saving 156 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.6.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 122
-DEBUG: Saving 157 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.6.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 123
-DEBUG: Saving 158 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.6.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 124
-DEBUG: Saving 159 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.6.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 125
-DEBUG: Saving 160 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 125
-DEBUG: Saving 161 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.7.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 126
-DEBUG: Saving 162 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.7.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 127
-DEBUG: Saving 163 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.7.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 128
-DEBUG: Saving 164 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 128
-DEBUG: Saving 165 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.7.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 129
-DEBUG: Saving 166 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.7.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 130
-DEBUG: Saving 167 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.7.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 131
-DEBUG: Saving 168 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.7.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 132
-DEBUG: Saving 169 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 132
-DEBUG: Saving 170 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.8.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 133
-DEBUG: Saving 171 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.8.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 134
-DEBUG: Saving 172 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.8.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 135
-DEBUG: Saving 173 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 135
-DEBUG: Saving 174 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.8.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 136
-DEBUG: Saving 175 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.8.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 137
-DEBUG: Saving 176 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.8.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 138
-DEBUG: Saving 177 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.8.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 139
-DEBUG: Saving 178 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 139
-DEBUG: Saving 179 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.9.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 140
-DEBUG: Saving 180 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.9.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 141
-DEBUG: Saving 181 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.9.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 142
-DEBUG: Saving 182 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 142
-DEBUG: Saving 183 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.9.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 143
-DEBUG: Saving 184 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.9.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-Unsloth: Merging weights into 16bit:  50%|█████     | 1/2 [00:25<00:25, 25.04s/it]DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 144
-DEBUG: Saving 185 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.9.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 145
-DEBUG: Saving 186 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.9.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 146
-DEBUG: Saving 187 tensors to ./unsloth_out/merged_llama_text_model/model-00001-of-00002.safetensors
-DEBUG _merge_and_overwrite_lora: output_dtype = torch.bfloat16, type = <class 'torch.dtype'>
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 0
-DEBUG: Saving 1 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.20.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 1
-DEBUG: Saving 2 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 1
-DEBUG: Saving 3 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 1
-DEBUG: Saving 4 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.21.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 2
-DEBUG: Saving 5 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.21.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 3
-DEBUG: Saving 6 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.21.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 4
-DEBUG: Saving 7 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 4
-DEBUG: Saving 8 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.21.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 5
-DEBUG: Saving 9 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.21.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 6
-DEBUG: Saving 10 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.21.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 7
-DEBUG: Saving 11 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.21.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 8
-DEBUG: Saving 12 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 8
-DEBUG: Saving 13 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.22.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 9
-DEBUG: Saving 14 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.22.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 10
-DEBUG: Saving 15 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.22.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 11
-DEBUG: Saving 16 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 11
-DEBUG: Saving 17 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.22.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 12
-DEBUG: Saving 18 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.22.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 13
-DEBUG: Saving 19 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.22.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 14
-DEBUG: Saving 20 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.22.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 15
-DEBUG: Saving 21 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 15
-DEBUG: Saving 22 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.23.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 16
-DEBUG: Saving 23 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.23.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 17
-DEBUG: Saving 24 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.23.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 18
-DEBUG: Saving 25 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 18
-DEBUG: Saving 26 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.23.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 19
-DEBUG: Saving 27 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.23.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 20
-DEBUG: Saving 28 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.23.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 21
-DEBUG: Saving 29 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.23.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 22
-DEBUG: Saving 30 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 22
-DEBUG: Saving 31 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.24.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 23
-DEBUG: Saving 32 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.24.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 24
-DEBUG: Saving 33 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.24.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 25
-DEBUG: Saving 34 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 25
-DEBUG: Saving 35 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.24.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 26
-DEBUG: Saving 36 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.24.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 27
-DEBUG: Saving 37 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.24.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 28
-DEBUG: Saving 38 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.24.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 29
-DEBUG: Saving 39 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 29
-DEBUG: Saving 40 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.25.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 30
-DEBUG: Saving 41 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.25.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 31
-DEBUG: Saving 42 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.25.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 32
-DEBUG: Saving 43 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 32
-DEBUG: Saving 44 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.25.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 33
-DEBUG: Saving 45 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.25.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 34
-DEBUG: Saving 46 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.25.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 35
-DEBUG: Saving 47 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.25.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 36
-DEBUG: Saving 48 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 36
-DEBUG: Saving 49 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.26.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 37
-DEBUG: Saving 50 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.26.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 38
-DEBUG: Saving 51 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.26.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 39
-DEBUG: Saving 52 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 39
-DEBUG: Saving 53 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.26.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-Unsloth: Merging weights into 16bit: 100%|██████████| 2/2 [00:32<00:00, 14.51s/it]Unsloth: Merging weights into 16bit: 100%|██████████| 2/2 [00:32<00:00, 16.09s/it]
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 40
-DEBUG: Saving 54 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.26.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 41
-DEBUG: Saving 55 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.26.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 42
-DEBUG: Saving 56 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.26.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 43
-DEBUG: Saving 57 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 43
-DEBUG: Saving 58 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.27.mlp.down_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 8192])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 44
-DEBUG: Saving 59 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.27.mlp.gate_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 45
-DEBUG: Saving 60 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.27.mlp.up_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([8192, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 46
-DEBUG: Saving 61 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 46
-DEBUG: Saving 62 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.27.self_attn.k_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 47
-DEBUG: Saving 63 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.27.self_attn.o_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 48
-DEBUG: Saving 64 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.27.self_attn.q_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([3072, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 49
-DEBUG: Saving 65 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Merging LoRA for key model.layers.27.self_attn.v_proj.weight
-DEBUG: After merge, W dtype = torch.float32, shape = torch.Size([1024, 3072])
-DEBUG: Before output_dtype conversion: W.dtype = torch.float32
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 50
-DEBUG: Saving 66 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-DEBUG: Before output_dtype conversion: W.dtype = torch.bfloat16
-DEBUG: After conversion to output_dtype: W_converted.dtype = torch.bfloat16
-DEBUG: After reload from temp file: W.dtype = torch.bfloat16
-DEBUG: Total merged keys: 50
-DEBUG: Saving 67 tensors to ./unsloth_out/merged_llama_text_model/model-00002-of-00002.safetensors
-Loading merged model in 4 bit for perplexity test
-==((====))==  Unsloth 2025.9.1: Fast Llama patching. Transformers: 4.55.4. vLLM: 0.10.1.1.
-   \\   /|    NVIDIA H100 80GB HBM3. Num GPUs = 1. Max memory: 79.209 GB. Platform: Linux.
-O^O/ \_/ \    Torch: 2.7.1+cu126. CUDA: 9.0. CUDA Toolkit: 12.6. Triton: 3.3.1
-\        /    Bfloat16 = TRUE. FA [Xformers = 0.0.31. FA2 = False]
- "-____-"     Free license: http://github.com/unslothai/unsloth
-Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:03<00:03,  3.06s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:04<00:00,  1.87s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:04<00:00,  2.05s/it]
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-  0%|          | 0/518 [00:00<?, ?it/s]  0%|          | 2/518 [00:00<00:26, 19.31it/s]  1%|          | 5/518 [00:00<00:23, 21.88it/s]  2%|▏         | 8/518 [00:00<00:22, 22.46it/s]  2%|▏         | 11/518 [00:00<00:22, 22.97it/s]  3%|▎         | 14/518 [00:00<00:21, 23.19it/s]  3%|▎         | 17/518 [00:00<00:21, 22.95it/s]  4%|▍         | 20/518 [00:00<00:21, 23.09it/s]  4%|▍         | 23/518 [00:01<00:21, 22.98it/s]  5%|▌         | 26/518 [00:01<00:21, 23.25it/s]  6%|▌         | 29/518 [00:01<00:20, 23.57it/s]  6%|▌         | 32/518 [00:01<00:20, 23.36it/s]  7%|▋         | 35/518 [00:01<00:20, 23.46it/s]  7%|▋         | 38/518 [00:01<00:20, 23.43it/s]  8%|▊         | 41/518 [00:01<00:20, 23.31it/s]  8%|▊         | 44/518 [00:01<00:20, 23.55it/s]  9%|▉         | 47/518 [00:02<00:19, 23.66it/s] 10%|▉         | 50/518 [00:02<00:19, 23.53it/s] 10%|█         | 53/518 [00:02<00:19, 23.46it/s] 11%|█         | 56/518 [00:02<00:19, 23.52it/s] 11%|█▏        | 59/518 [00:02<00:19, 23.51it/s] 12%|█▏        | 62/518 [00:02<00:19, 23.54it/s] 13%|█▎        | 65/518 [00:02<00:19, 23.69it/s] 13%|█▎        | 68/518 [00:02<00:19, 23.58it/s] 14%|█▎        | 71/518 [00:03<00:19, 23.45it/s] 14%|█▍        | 74/518 [00:03<00:18, 23.59it/s] 15%|█▍        | 77/518 [00:03<00:18, 23.53it/s] 15%|█▌        | 80/518 [00:03<00:18, 23.57it/s] 16%|█▌        | 83/518 [00:03<00:18, 23.75it/s] 17%|█▋        | 86/518 [00:03<00:18, 23.90it/s] 17%|█▋        | 89/518 [00:03<00:17, 23.95it/s] 18%|█▊        | 92/518 [00:03<00:17, 23.83it/s] 18%|█▊        | 95/518 [00:04<00:17, 24.04it/s] 19%|█▉        | 98/518 [00:04<00:17, 24.13it/s] 19%|█▉        | 101/518 [00:04<00:17, 23.94it/s] 20%|██        | 104/518 [00:04<00:17, 23.85it/s] 21%|██        | 107/518 [00:04<00:17, 23.86it/s] 21%|██        | 110/518 [00:04<00:17, 23.89it/s] 22%|██▏       | 113/518 [00:04<00:16, 23.90it/s] 22%|██▏       | 116/518 [00:04<00:16, 23.98it/s] 23%|██▎       | 119/518 [00:05<00:16, 24.19it/s] 24%|██▎       | 122/518 [00:05<00:16, 24.10it/s] 24%|██▍       | 125/518 [00:05<00:16, 23.98it/s] 25%|██▍       | 128/518 [00:05<00:16, 23.75it/s] 25%|██▌       | 131/518 [00:05<00:16, 23.39it/s] 26%|██▌       | 134/518 [00:05<00:16, 23.61it/s] 26%|██▋       | 137/518 [00:05<00:16, 23.34it/s] 27%|██▋       | 140/518 [00:05<00:16, 23.37it/s] 28%|██▊       | 143/518 [00:06<00:16, 23.33it/s] 28%|██▊       | 146/518 [00:06<00:15, 23.25it/s] 29%|██▉       | 149/518 [00:06<00:15, 23.26it/s] 29%|██▉       | 152/518 [00:06<00:15, 22.93it/s] 30%|██▉       | 155/518 [00:06<00:15, 23.03it/s] 31%|███       | 158/518 [00:06<00:15, 23.05it/s] 31%|███       | 161/518 [00:06<00:15, 23.22it/s] 32%|███▏      | 164/518 [00:06<00:15, 23.20it/s] 32%|███▏      | 167/518 [00:07<00:15, 23.39it/s] 33%|███▎      | 170/518 [00:07<00:14, 23.39it/s] 33%|███▎      | 173/518 [00:07<00:14, 23.52it/s] 34%|███▍      | 176/518 [00:07<00:14, 23.73it/s] 35%|███▍      | 179/518 [00:07<00:14, 23.56it/s] 35%|███▌      | 182/518 [00:07<00:14, 23.77it/s] 36%|███▌      | 185/518 [00:07<00:14, 23.74it/s] 36%|███▋      | 188/518 [00:07<00:13, 23.82it/s] 37%|███▋      | 191/518 [00:08<00:13, 23.99it/s] 37%|███▋      | 194/518 [00:08<00:13, 23.92it/s] 38%|███▊      | 197/518 [00:08<00:13, 23.74it/s] 39%|███▊      | 200/518 [00:08<00:13, 23.86it/s] 39%|███▉      | 203/518 [00:08<00:13, 23.89it/s] 40%|███▉      | 206/518 [00:08<00:13, 23.92it/s] 40%|████      | 209/518 [00:08<00:13, 23.61it/s] 41%|████      | 212/518 [00:09<00:12, 23.74it/s] 42%|████▏     | 215/518 [00:09<00:12, 23.96it/s] 42%|████▏     | 218/518 [00:09<00:12, 23.93it/s] 43%|████▎     | 221/518 [00:09<00:12, 23.86it/s] 43%|████▎     | 224/518 [00:09<00:12, 23.53it/s] 44%|████▍     | 227/518 [00:09<00:12, 23.72it/s] 44%|████▍     | 230/518 [00:09<00:12, 23.32it/s] 45%|████▍     | 233/518 [00:09<00:12, 23.43it/s] 46%|████▌     | 236/518 [00:10<00:11, 23.65it/s] 46%|████▌     | 239/518 [00:10<00:11, 23.33it/s] 47%|████▋     | 242/518 [00:10<00:11, 23.35it/s] 47%|████▋     | 245/518 [00:10<00:13, 20.86it/s] 48%|████▊     | 248/518 [00:10<00:12, 21.51it/s] 48%|████▊     | 251/518 [00:10<00:12, 22.22it/s] 49%|████▉     | 254/518 [00:10<00:11, 22.45it/s] 50%|████▉     | 257/518 [00:10<00:11, 22.77it/s] 50%|█████     | 260/518 [00:11<00:11, 22.99it/s] 51%|█████     | 263/518 [00:11<00:10, 23.23it/s] 51%|█████▏    | 266/518 [00:11<00:10, 23.26it/s] 52%|█████▏    | 269/518 [00:11<00:10, 23.31it/s] 53%|█████▎    | 272/518 [00:11<00:10, 23.35it/s] 53%|█████▎    | 275/518 [00:11<00:10, 23.54it/s] 54%|█████▎    | 278/518 [00:11<00:10, 23.71it/s] 54%|█████▍    | 281/518 [00:11<00:10, 23.56it/s] 55%|█████▍    | 284/518 [00:12<00:09, 23.73it/s] 55%|█████▌    | 287/518 [00:12<00:09, 23.76it/s] 56%|█████▌    | 290/518 [00:12<00:09, 23.67it/s] 57%|█████▋    | 293/518 [00:12<00:09, 23.60it/s] 57%|█████▋    | 296/518 [00:12<00:09, 23.61it/s] 58%|█████▊    | 299/518 [00:12<00:09, 23.36it/s] 58%|█████▊    | 302/518 [00:12<00:09, 23.11it/s] 59%|█████▉    | 305/518 [00:13<00:09, 23.27it/s] 59%|█████▉    | 308/518 [00:13<00:08, 23.51it/s] 60%|██████    | 311/518 [00:13<00:08, 23.65it/s] 61%|██████    | 314/518 [00:13<00:08, 23.73it/s] 61%|██████    | 317/518 [00:13<00:08, 23.72it/s] 62%|██████▏   | 320/518 [00:13<00:08, 23.68it/s] 62%|██████▏   | 323/518 [00:13<00:09, 20.76it/s] 63%|██████▎   | 326/518 [00:13<00:08, 21.65it/s] 64%|██████▎   | 329/518 [00:14<00:08, 22.34it/s] 64%|██████▍   | 332/518 [00:14<00:08, 22.76it/s] 65%|██████▍   | 335/518 [00:14<00:08, 22.83it/s] 65%|██████▌   | 338/518 [00:14<00:07, 22.96it/s] 66%|██████▌   | 341/518 [00:14<00:07, 23.15it/s] 66%|██████▋   | 344/518 [00:14<00:07, 23.30it/s] 67%|██████▋   | 347/518 [00:14<00:07, 23.35it/s] 68%|██████▊   | 350/518 [00:14<00:07, 23.48it/s] 68%|██████▊   | 353/518 [00:15<00:07, 23.40it/s] 69%|██████▊   | 356/518 [00:15<00:06, 23.49it/s] 69%|██████▉   | 359/518 [00:15<00:06, 23.38it/s] 70%|██████▉   | 362/518 [00:15<00:06, 23.42it/s] 70%|███████   | 365/518 [00:15<00:06, 23.63it/s] 71%|███████   | 368/518 [00:15<00:06, 23.75it/s] 72%|███████▏  | 371/518 [00:15<00:06, 23.63it/s] 72%|███████▏  | 374/518 [00:15<00:06, 23.79it/s] 73%|███████▎  | 377/518 [00:16<00:05, 23.87it/s] 73%|███████▎  | 380/518 [00:16<00:05, 23.85it/s] 74%|███████▍  | 383/518 [00:16<00:05, 23.71it/s] 75%|███████▍  | 386/518 [00:16<00:05, 23.53it/s] 75%|███████▌  | 389/518 [00:16<00:05, 23.33it/s] 76%|███████▌  | 392/518 [00:16<00:05, 23.22it/s] 76%|███████▋  | 395/518 [00:16<00:05, 23.34it/s] 77%|███████▋  | 398/518 [00:17<00:05, 23.61it/s] 77%|███████▋  | 401/518 [00:17<00:04, 23.54it/s] 78%|███████▊  | 404/518 [00:17<00:04, 23.40it/s] 79%|███████▊  | 407/518 [00:17<00:04, 23.48it/s] 79%|███████▉  | 410/518 [00:17<00:04, 23.50it/s] 80%|███████▉  | 413/518 [00:17<00:04, 23.49it/s] 80%|████████  | 416/518 [00:17<00:04, 23.31it/s] 81%|████████  | 419/518 [00:17<00:04, 23.29it/s] 81%|████████▏ | 422/518 [00:18<00:04, 23.21it/s] 82%|████████▏ | 425/518 [00:18<00:04, 23.24it/s] 83%|████████▎ | 428/518 [00:18<00:03, 23.34it/s] 83%|████████▎ | 431/518 [00:18<00:03, 23.42it/s] 84%|████████▍ | 434/518 [00:18<00:03, 23.25it/s] 84%|████████▍ | 437/518 [00:18<00:03, 23.30it/s] 85%|████████▍ | 440/518 [00:18<00:03, 23.16it/s] 86%|████████▌ | 443/518 [00:18<00:03, 23.29it/s] 86%|████████▌ | 446/518 [00:19<00:03, 23.34it/s] 87%|████████▋ | 449/518 [00:19<00:02, 23.46it/s] 87%|████████▋ | 452/518 [00:19<00:02, 23.24it/s] 88%|████████▊ | 455/518 [00:19<00:02, 23.35it/s] 88%|████████▊ | 458/518 [00:19<00:02, 23.33it/s] 89%|████████▉ | 461/518 [00:19<00:02, 23.30it/s] 90%|████████▉ | 464/518 [00:19<00:02, 23.41it/s] 90%|█████████ | 467/518 [00:19<00:02, 23.54it/s] 91%|█████████ | 470/518 [00:20<00:02, 23.59it/s] 91%|█████████▏| 473/518 [00:20<00:01, 23.46it/s] 92%|█████████▏| 476/518 [00:20<00:01, 23.41it/s] 92%|█████████▏| 479/518 [00:20<00:01, 23.52it/s] 93%|█████████▎| 482/518 [00:20<00:01, 23.36it/s] 94%|█████████▎| 485/518 [00:20<00:01, 23.36it/s] 94%|█████████▍| 488/518 [00:20<00:01, 23.28it/s] 95%|█████████▍| 491/518 [00:20<00:01, 23.39it/s] 95%|█████████▌| 494/518 [00:21<00:01, 23.62it/s] 96%|█████████▌| 497/518 [00:21<00:00, 23.67it/s] 97%|█████████▋| 500/518 [00:21<00:00, 23.66it/s] 97%|█████████▋| 503/518 [00:21<00:00, 23.63it/s] 98%|█████████▊| 506/518 [00:21<00:00, 23.57it/s] 98%|█████████▊| 509/518 [00:21<00:00, 23.59it/s] 99%|█████████▉| 512/518 [00:21<00:00, 23.48it/s] 99%|█████████▉| 515/518 [00:22<00:00, 23.59it/s]100%|██████████| 518/518 [00:22<00:00, 23.85it/s]100%|██████████| 518/518 [00:22<00:00, 23.41it/s]
-Computing 8-bit model perplexity in subprocess...
-🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
-INFO 09-04 13:22:46 [__init__.py:241] Automatically detected platform cuda.
-🦥 Unsloth Zoo will now patch everything to make training faster!
-==((====))==  Unsloth 2025.9.1: Fast Llama patching. Transformers: 4.55.4. vLLM: 0.10.1.1.
-   \\   /|    NVIDIA H100 80GB HBM3. Num GPUs = 1. Max memory: 79.209 GB. Platform: Linux.
-O^O/ \_/ \    Torch: 2.7.1+cu126. CUDA: 9.0. CUDA Toolkit: 12.6. Triton: 3.3.1
-\        /    Bfloat16 = TRUE. FA [Xformers = 0.0.31. FA2 = False]
- "-____-"     Free license: http://github.com/unslothai/unsloth
-Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.30it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.22it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00,  2.01it/s]
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-  0%|          | 0/518 [00:00<?, ?it/s]  0%|          | 1/518 [00:01<12:32,  1.46s/it]  1%|          | 4/518 [00:01<02:35,  3.30it/s]  2%|▏         | 8/518 [00:01<01:09,  7.38it/s]  2%|▏         | 12/518 [00:01<00:43, 11.62it/s]  3%|▎         | 16/518 [00:01<00:31, 15.88it/s]  4%|▍         | 20/518 [00:02<00:25, 19.87it/s]  5%|▍         | 24/518 [00:02<00:21, 23.49it/s]  6%|▌         | 29/518 [00:02<00:17, 28.07it/s]  7%|▋         | 34/518 [00:02<00:15, 31.66it/s]  7%|▋         | 38/518 [00:02<00:14, 33.31it/s]  8%|▊         | 43/518 [00:02<00:13, 36.18it/s]  9%|▉         | 48/518 [00:02<00:12, 37.37it/s] 10%|█         | 52/518 [00:02<00:12, 37.53it/s] 11%|█         | 57/518 [00:02<00:11, 40.32it/s] 12%|█▏        | 62/518 [00:03<00:11, 41.32it/s] 13%|█▎        | 67/518 [00:03<00:10, 41.20it/s] 14%|█▍        | 72/518 [00:03<00:10, 41.96it/s] 15%|█▍        | 77/518 [00:03<00:10, 42.22it/s] 16%|█▌        | 82/518 [00:03<00:10, 42.33it/s] 17%|█▋        | 87/518 [00:03<00:10, 42.39it/s] 18%|█▊        | 92/518 [00:03<00:09, 43.06it/s] 19%|█▊        | 97/518 [00:03<00:09, 43.73it/s] 20%|█▉        | 102/518 [00:03<00:09, 43.76it/s] 21%|██        | 107/518 [00:04<00:09, 43.82it/s] 22%|██▏       | 112/518 [00:04<00:09, 43.16it/s] 23%|██▎       | 117/518 [00:04<00:09, 44.31it/s] 24%|██▎       | 122/518 [00:04<00:09, 43.49it/s] 25%|██▍       | 127/518 [00:04<00:08, 44.22it/s] 25%|██▌       | 132/518 [00:04<00:08, 44.04it/s] 26%|██▋       | 137/518 [00:04<00:08, 43.62it/s] 27%|██▋       | 142/518 [00:04<00:08, 43.85it/s] 28%|██▊       | 147/518 [00:04<00:08, 44.51it/s] 29%|██▉       | 152/518 [00:05<00:08, 44.17it/s] 30%|███       | 157/518 [00:05<00:07, 45.66it/s] 31%|███▏      | 162/518 [00:05<00:07, 45.92it/s] 32%|███▏      | 167/518 [00:05<00:07, 44.98it/s] 33%|███▎      | 172/518 [00:05<00:07, 45.20it/s] 34%|███▍      | 177/518 [00:05<00:07, 44.93it/s] 35%|███▌      | 182/518 [00:05<00:07, 45.40it/s] 36%|███▌      | 187/518 [00:05<00:07, 46.34it/s] 37%|███▋      | 192/518 [00:05<00:07, 46.30it/s] 38%|███▊      | 198/518 [00:06<00:06, 47.95it/s] 39%|███▉      | 203/518 [00:06<00:06, 47.64it/s] 40%|████      | 208/518 [00:06<00:06, 46.29it/s] 41%|████      | 213/518 [00:06<00:06, 47.22it/s] 42%|████▏     | 218/518 [00:06<00:06, 47.16it/s] 43%|████▎     | 223/518 [00:06<00:06, 46.98it/s] 44%|████▍     | 228/518 [00:06<00:06, 45.90it/s] 45%|████▍     | 233/518 [00:06<00:06, 44.80it/s] 46%|████▌     | 238/518 [00:06<00:06, 45.53it/s] 47%|████▋     | 244/518 [00:07<00:06, 42.82it/s] 48%|████▊     | 249/518 [00:07<00:06, 42.96it/s] 49%|████▉     | 254/518 [00:07<00:05, 44.16it/s] 50%|█████     | 260/518 [00:07<00:05, 46.73it/s] 51%|█████▏    | 266/518 [00:07<00:05, 48.51it/s] 53%|█████▎    | 272/518 [00:07<00:05, 48.58it/s] 54%|█████▎    | 278/518 [00:07<00:04, 48.47it/s] 55%|█████▍    | 284/518 [00:07<00:04, 49.23it/s] 56%|█████▌    | 289/518 [00:08<00:04, 48.48it/s] 57%|█████▋    | 295/518 [00:08<00:04, 49.66it/s] 58%|█████▊    | 300/518 [00:08<00:04, 49.28it/s] 59%|█████▉    | 305/518 [00:08<00:04, 48.41it/s] 60%|█████▉    | 310/518 [00:08<00:04, 47.97it/s] 61%|██████    | 316/518 [00:08<00:04, 49.54it/s] 62%|██████▏   | 322/518 [00:08<00:04, 45.67it/s] 63%|██████▎   | 327/518 [00:08<00:04, 46.10it/s] 64%|██████▍   | 332/518 [00:08<00:03, 46.53it/s] 65%|██████▌   | 337/518 [00:09<00:03, 46.71it/s] 66%|██████▌   | 342/518 [00:09<00:03, 47.26it/s] 67%|██████▋   | 347/518 [00:09<00:03, 47.74it/s] 68%|██████▊   | 352/518 [00:09<00:03, 48.05it/s] 69%|██████▉   | 357/518 [00:09<00:03, 46.87it/s] 70%|███████   | 363/518 [00:09<00:03, 48.28it/s] 71%|███████   | 368/518 [00:09<00:03, 47.62it/s] 72%|███████▏  | 373/518 [00:09<00:03, 48.26it/s] 73%|███████▎  | 379/518 [00:09<00:02, 49.49it/s] 74%|███████▍  | 384/518 [00:10<00:02, 49.19it/s] 75%|███████▌  | 389/518 [00:10<00:02, 47.67it/s] 76%|███████▌  | 394/518 [00:10<00:02, 46.96it/s] 77%|███████▋  | 400/518 [00:10<00:02, 47.58it/s] 78%|███████▊  | 405/518 [00:10<00:02, 47.71it/s] 79%|███████▉  | 410/518 [00:10<00:02, 47.51it/s] 80%|████████  | 415/518 [00:10<00:02, 48.02it/s] 81%|████████  | 420/518 [00:10<00:02, 47.75it/s] 82%|████████▏ | 425/518 [00:10<00:01, 47.26it/s] 83%|████████▎ | 431/518 [00:10<00:01, 48.94it/s] 84%|████████▍ | 437/518 [00:11<00:01, 49.96it/s] 85%|████████▌ | 442/518 [00:11<00:01, 47.99it/s] 86%|████████▋ | 447/518 [00:11<00:01, 48.48it/s] 87%|████████▋ | 453/518 [00:11<00:01, 48.66it/s] 89%|████████▊ | 459/518 [00:11<00:01, 49.55it/s] 90%|████████▉ | 464/518 [00:11<00:01, 49.36it/s] 91%|█████████ | 470/518 [00:11<00:00, 48.99it/s] 92%|█████████▏| 476/518 [00:11<00:00, 50.23it/s] 93%|█████████▎| 482/518 [00:12<00:00, 48.93it/s] 94%|█████████▍| 488/518 [00:12<00:00, 50.06it/s] 95%|█████████▌| 494/518 [00:12<00:00, 49.67it/s] 97%|█████████▋| 500/518 [00:12<00:00, 50.45it/s] 98%|█████████▊| 506/518 [00:12<00:00, 49.76it/s] 99%|█████████▊| 511/518 [00:12<00:00, 48.99it/s]100%|█████████▉| 517/518 [00:12<00:00, 49.96it/s]100%|██████████| 518/518 [00:12<00:00, 40.63it/s]
-Loading merged model in 16 bit for perplexity test
-==((====))==  Unsloth 2025.9.1: Fast Llama patching. Transformers: 4.55.4. vLLM: 0.10.1.1.
-   \\   /|    NVIDIA H100 80GB HBM3. Num GPUs = 1. Max memory: 79.209 GB. Platform: Linux.
-O^O/ \_/ \    Torch: 2.7.1+cu126. CUDA: 9.0. CUDA Toolkit: 12.6. Triton: 3.3.1
-\        /    Bfloat16 = TRUE. FA [Xformers = 0.0.31. FA2 = False]
- "-____-"     Free license: http://github.com/unslothai/unsloth
-Unsloth: Fast downloading is enabled - ignore downloading bars which are red colored!
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:00<00:00,  1.28it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  2.15it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.95it/s]
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-dtype of dtype before calling split is <class 'torch.dtype'>
-dtype of string_dtype is <class 'str'>
-  0%|          | 0/518 [00:00<?, ?it/s]  1%|          | 4/518 [00:00<00:13, 37.27it/s]  2%|▏         | 9/518 [00:00<00:12, 41.36it/s]  3%|▎         | 14/518 [00:00<00:11, 43.19it/s]  4%|▎         | 19/518 [00:00<00:11, 44.44it/s]  5%|▍         | 24/518 [00:00<00:11, 42.71it/s]  6%|▌         | 29/518 [00:00<00:11, 43.58it/s]  7%|▋         | 34/518 [00:00<00:11, 43.49it/s]  8%|▊         | 39/518 [00:00<00:10, 43.85it/s]  8%|▊         | 44/518 [00:01<00:10, 44.95it/s]  9%|▉         | 49/518 [00:01<00:10, 45.10it/s] 10%|█         | 54/518 [00:01<00:10, 44.52it/s] 11%|█▏        | 59/518 [00:01<00:10, 45.00it/s] 12%|█▏        | 64/518 [00:01<00:10, 45.27it/s] 13%|█▎        | 69/518 [00:01<00:09, 45.56it/s] 14%|█▍        | 74/518 [00:01<00:09, 45.42it/s] 15%|█▌        | 79/518 [00:01<00:09, 45.65it/s] 16%|█▌        | 84/518 [00:01<00:09, 46.09it/s] 17%|█▋        | 89/518 [00:01<00:09, 46.11it/s] 18%|█▊        | 94/518 [00:02<00:09, 44.96it/s] 19%|█▉        | 99/518 [00:02<00:09, 44.48it/s] 20%|██        | 104/518 [00:02<00:09, 44.66it/s] 21%|██        | 109/518 [00:02<00:09, 44.91it/s] 22%|██▏       | 114/518 [00:02<00:08, 44.89it/s] 23%|██▎       | 119/518 [00:02<00:08, 45.55it/s] 24%|██▍       | 124/518 [00:02<00:08, 45.57it/s] 25%|██▍       | 129/518 [00:02<00:08, 45.42it/s] 26%|██▌       | 134/518 [00:02<00:08, 45.54it/s] 27%|██▋       | 139/518 [00:03<00:08, 45.54it/s] 28%|██▊       | 144/518 [00:03<00:08, 45.08it/s] 29%|██▉       | 149/518 [00:03<00:08, 45.28it/s] 30%|██▉       | 154/518 [00:03<00:08, 44.19it/s] 31%|███       | 159/518 [00:03<00:08, 44.18it/s] 32%|███▏      | 164/518 [00:03<00:08, 43.95it/s] 33%|███▎      | 169/518 [00:03<00:07, 44.26it/s] 34%|███▎      | 174/518 [00:03<00:07, 44.72it/s] 35%|███▍      | 179/518 [00:04<00:07, 44.22it/s] 36%|███▌      | 184/518 [00:04<00:07, 44.75it/s] 36%|███▋      | 189/518 [00:04<00:07, 44.51it/s] 37%|███▋      | 194/518 [00:04<00:07, 44.72it/s] 38%|███▊      | 199/518 [00:04<00:07, 44.73it/s] 39%|███▉      | 204/518 [00:04<00:06, 44.93it/s] 40%|████      | 209/518 [00:04<00:07, 43.49it/s] 41%|████▏     | 214/518 [00:04<00:06, 44.25it/s] 42%|████▏     | 219/518 [00:04<00:06, 44.53it/s] 43%|████▎     | 224/518 [00:05<00:06, 44.86it/s] 44%|████▍     | 229/518 [00:05<00:06, 43.97it/s] 45%|████▌     | 234/518 [00:05<00:06, 44.03it/s] 46%|████▌     | 239/518 [00:05<00:06, 43.09it/s] 47%|████▋     | 244/518 [00:05<00:06, 39.43it/s] 48%|████▊     | 249/518 [00:05<00:06, 40.93it/s] 49%|████▉     | 254/518 [00:05<00:06, 41.91it/s] 50%|█████     | 259/518 [00:05<00:05, 43.23it/s] 51%|█████     | 264/518 [00:05<00:05, 43.80it/s] 52%|█████▏    | 269/518 [00:06<00:05, 44.14it/s] 53%|█████▎    | 274/518 [00:06<00:05, 44.34it/s] 54%|█████▍    | 279/518 [00:06<00:05, 44.57it/s] 55%|█████▍    | 284/518 [00:06<00:05, 44.93it/s] 56%|█████▌    | 289/518 [00:06<00:05, 44.70it/s] 57%|█████▋    | 294/518 [00:06<00:04, 45.38it/s] 58%|█████▊    | 299/518 [00:06<00:04, 45.61it/s] 59%|█████▊    | 304/518 [00:06<00:04, 45.25it/s] 60%|█████▉    | 309/518 [00:06<00:04, 45.37it/s] 61%|██████    | 314/518 [00:07<00:04, 45.66it/s] 62%|██████▏   | 319/518 [00:07<00:04, 46.03it/s] 63%|██████▎   | 324/518 [00:07<00:04, 40.73it/s] 64%|██████▎   | 329/518 [00:07<00:04, 42.28it/s] 64%|██████▍   | 334/518 [00:07<00:04, 43.33it/s] 65%|██████▌   | 339/518 [00:07<00:04, 44.42it/s] 66%|██████▋   | 344/518 [00:07<00:03, 44.67it/s] 67%|██████▋   | 349/518 [00:07<00:03, 45.48it/s] 68%|██████▊   | 354/518 [00:07<00:03, 45.21it/s] 69%|██████▉   | 359/518 [00:08<00:03, 44.82it/s] 70%|███████   | 364/518 [00:08<00:03, 44.77it/s] 71%|███████   | 369/518 [00:08<00:03, 45.11it/s] 72%|███████▏  | 374/518 [00:08<00:03, 45.53it/s] 73%|███████▎  | 379/518 [00:08<00:03, 46.08it/s] 74%|███████▍  | 384/518 [00:08<00:02, 46.03it/s] 75%|███████▌  | 389/518 [00:08<00:02, 45.14it/s] 76%|███████▌  | 394/518 [00:08<00:02, 45.81it/s] 77%|███████▋  | 399/518 [00:08<00:02, 45.79it/s] 78%|███████▊  | 404/518 [00:09<00:02, 45.10it/s] 79%|███████▉  | 409/518 [00:09<00:02, 45.24it/s] 80%|███████▉  | 414/518 [00:09<00:02, 45.36it/s] 81%|████████  | 419/518 [00:09<00:02, 45.53it/s] 82%|████████▏ | 424/518 [00:09<00:02, 45.22it/s] 83%|████████▎ | 429/518 [00:09<00:01, 45.63it/s] 84%|████████▍ | 434/518 [00:09<00:01, 45.42it/s] 85%|████████▍ | 439/518 [00:09<00:01, 45.34it/s] 86%|████████▌ | 444/518 [00:09<00:01, 45.20it/s] 87%|████████▋ | 449/518 [00:10<00:01, 45.85it/s] 88%|████████▊ | 454/518 [00:10<00:01, 45.56it/s] 89%|████████▊ | 459/518 [00:10<00:01, 45.89it/s] 90%|████████▉ | 464/518 [00:10<00:01, 45.64it/s] 91%|█████████ | 469/518 [00:10<00:01, 45.42it/s] 92%|█████████▏| 474/518 [00:10<00:00, 45.85it/s] 92%|█████████▏| 479/518 [00:10<00:00, 45.94it/s] 93%|█████████▎| 484/518 [00:10<00:00, 45.17it/s] 94%|█████████▍| 489/518 [00:10<00:00, 45.34it/s] 95%|█████████▌| 494/518 [00:11<00:00, 45.57it/s] 96%|█████████▋| 499/518 [00:11<00:00, 45.80it/s] 97%|█████████▋| 504/518 [00:11<00:00, 45.53it/s] 98%|█████████▊| 509/518 [00:11<00:00, 45.30it/s] 99%|█████████▉| 514/518 [00:11<00:00, 45.71it/s]100%|██████████| 518/518 [00:11<00:00, 44.75it/s]
-
-==== MODEL COMPARISON REPORT ====
-
-Comparison Table:
-                     Model  Perplexity
-         Base model 4 bits   11.335933
-               Qlora model    9.812984
-    merged model load 4bit    9.977276
- merged model loaded 8bits    9.995002
-merged model loaded 16bits    9.972926
