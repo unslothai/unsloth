@@ -2116,6 +2116,7 @@ def unsloth_push_to_hub_gguf(
     pass
 
     if fix_bos_token:
+
         logger.warning(
             "Unsloth: ##### The current model auto adds a BOS token.\n"\
             "Unsloth: ##### We removed it in GGUF's chat template for you."
@@ -2511,7 +2512,7 @@ def unsloth_save_pretrained_torchao(
     Args
       `save_directory`: local folder path or huggingface hub ID when `push_to_hub` is set to True, e.g. `my_model`
       `torchao_config` (TorchAOBaseConfig): configuration for torchao quantization, full list: https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
-      `push_to_hub` (bool): whether to push the checkpoint to huggingface hub or not
+      `push_to_hub` (bool): whether to push the checkpoint to huggingface hub or save locally
     """
     # first merge the lora weights
     arguments = dict(locals())
@@ -2550,7 +2551,9 @@ def unsloth_save_pretrained_torchao(
         # torchao does not support safe_serialization right now
         model.push_to_hub(save_directory, safe_serialization = False, token = token)
         tokenizer.push_to_hub(save_directory, token = token)
-        pass
+    else:
+        model.save_pretrained(save_directory, safe_serialization=False)
+        tokenizer.save_pretrained(save_directory)
     pass
     for _ in range(3):
         gc.collect()
