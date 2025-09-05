@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.8.9"
+__version__ = "2025.9.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -173,6 +173,7 @@ if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
         from vllm.executor.executor_base import logger as vllm_executor_logger
         vllm_executor_logger.addFilter(HideLoggingMessage("to fall asleep"))
         vllm_executor_logger.addFilter(HideLoggingMessage("to wake up"))
+        vllm_executor_logger.addFilter(HideLoggingMessage("Executor is not sleeping"))
         del vllm_executor_logger
     except:
         pass

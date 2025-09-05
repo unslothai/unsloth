@@ -174,6 +174,8 @@ else:
     cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 pass
 
+torch_device_stream = torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
+
 torch_mm = torch.mm
 torch_mv = torch.mv
 torch_matmul = torch.matmul

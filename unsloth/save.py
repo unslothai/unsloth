@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from unsloth_zoo.utils import Version
+from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -549,7 +550,7 @@ def unsloth_save_model(
     from collections import OrderedDict
     state_dict = OrderedDict()
 
-    torch_dtype = internal_model.config.torch_dtype
+    torch_dtype = dtype_from_config(internal_model.config)
     if type(torch_dtype) is str:
         if   torch_dtype ==  "float16": torch_dtype = torch.float16
         elif torch_dtype == "bfloat16": torch_dtype = torch.bfloat16
@@ -1880,7 +1881,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         gc.collect()
 
-    model_dtype = self.config.torch_dtype
+    model_dtype = dtype_from_config(self.config)
     model_type  = self.config.model_type
     if type(model_dtype) is str:
         assert(model_dtype == "float16" or model_dtype == "bfloat16")
@@ -2058,7 +2059,7 @@ def unsloth_push_to_hub_gguf(
     for _ in range(3):
         gc.collect()
 
-    model_dtype = self.config.torch_dtype
+    model_dtype = dtype_from_config(self.config)
     model_type  = self.config.model_type
     if type(model_dtype) is str:
         assert(model_dtype == "float16" or model_dtype == "bfloat16")
@@ -2115,12 +2116,14 @@ def unsloth_push_to_hub_gguf(
     pass
 
     if fix_bos_token:
+
         logger.warning(
             "Unsloth: ##### The current model auto adds a BOS token.\n"\
             "Unsloth: ##### We removed it in GGUF's chat template for you."
         )
     pass
 pass
+
 
 # Corrected function to save LoRA to a custom directory
 def save_lora_to_custom_dir(model, tokenizer, save_directory):
@@ -2496,6 +2499,68 @@ def unsloth_generic_push_to_hub_merged(
 pass
 
 
+def unsloth_save_pretrained_torchao(
+    self,
+    save_directory       : Union[str, os.PathLike],
+    tokenizer            = None,
+    torchao_config       = None,
+    push_to_hub          : bool = False,
+    token                : Optional[Union[str, bool]] = None,
+):
+    """Quantizes the model with torchao and saves a torchao quantized checkpoint
+
+    Args
+      `save_directory`: local folder path or huggingface hub ID when `push_to_hub` is set to True, e.g. `my_model`
+      `torchao_config` (TorchAOBaseConfig): configuration for torchao quantization, full list: https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
+      `push_to_hub` (bool): whether to push the checkpoint to huggingface hub or save locally
+    """
+    # first merge the lora weights
+    arguments = dict(locals())
+    arguments["model"]        = self
+    arguments["tokenizer"]    = tokenizer
+    arguments["push_to_hub"]  = False # We save ourselves
+    arguments["save_method"]  = "merged_16bit" # Must be 16bit
+    del arguments["self"]
+    del arguments["torchao_config"]
+    unsloth_generic_save(**arguments)
+    for _ in range(3):
+        gc.collect()
+
+    from transformers import AutoModel, AutoTokenizer, TorchAoConfig
+    from torchao import quantize_
+    if torchao_config is None:
+        from torchao.quantization import Int8DynamicActivationInt8WeightConfig
+        torchao_config = Int8DynamicActivationInt8WeightConfig()
+    quantization_config = TorchAoConfig(quant_type = torchao_config)
+
+    tokenizer = AutoTokenizer.from_pretrained(arguments["save_directory"])
+    if HAS_TORCH_DTYPE:
+        kwargs = {"torch_dtype" : "auto"}
+    else:
+        kwargs = {"dtype" : "auto"}
+    model = AutoModel.from_pretrained(
+        arguments["save_directory"],
+        device_map = "auto",
+        quantization_config = quantization_config,
+        **kwargs,
+    )
+
+    torchao_save_directory = save_directory + "-torchao"
+
+    if push_to_hub:
+        if token is None and push_to_hub: token = get_token()
+        # torchao does not support safe_serialization right now
+        model.push_to_hub(torchao_save_directory, safe_serialization = False, token = token)
+        tokenizer.push_to_hub(torchao_save_directory, token = token)
+    else:
+        model.save_pretrained(torchao_save_directory, safe_serialization=False)
+        tokenizer.save_pretrained(torchao_save_directory)
+    pass
+    for _ in range(3):
+        gc.collect()
+pass
+
+
 def not_implemented_save(*args, **kwargs):
     raise NotImplementedError("Unsloth: Sorry GGUF is currently not supported for vision models!")
 pass
@@ -2593,10 +2658,11 @@ def patch_saving_functions(model, vision = False):
     if not vision:
         if hasattr(model, "config"):
             # Counteract tokenizers
-            model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,                    model)
-            model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged,                model)
+            model.push_to_hub_merged     = types.MethodType(unsloth_generic_push_to_hub_merged,            model)
+            model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged,        model)
             model.push_to_hub_gguf       = types.MethodType(unsloth_push_to_hub_gguf,                      model)
             model.save_pretrained_gguf   = types.MethodType(unsloth_save_pretrained_gguf,                  model)
+            model.save_pretrained_torchao   = types.MethodType(unsloth_save_pretrained_torchao,            model)
             model.push_to_hub_ggml       = types.MethodType(unsloth_convert_lora_to_ggml_and_push_to_hub,  model)
             model.save_pretrained_ggml   = types.MethodType(unsloth_convert_lora_to_ggml_and_save_locally, model)
         pass
@@ -2606,6 +2672,7 @@ def patch_saving_functions(model, vision = False):
         model.save_pretrained_merged = types.MethodType(unsloth_generic_save_pretrained_merged, model)
         model.push_to_hub_gguf       = types.MethodType(save_to_gguf_generic,                   model)
         model.save_pretrained_gguf   = types.MethodType(save_to_gguf_generic,                   model)
+        model.save_pretrained_torchao = types.MethodType(unsloth_save_pretrained_torchao,       model)
     pass
     return model
 pass

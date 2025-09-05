@@ -24,6 +24,7 @@ from ._utils import move_to_device
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
@@ -159,6 +160,10 @@ def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **
     if past_key_values is not None:
         # Check for uninitialized DynamicCache
         if len(past_key_values) == 0:
+            past_key_values = None
+            kwargs["past_key_values"] = None
+        # New since 4.56
+        elif hasattr(past_key_values, "get_seq_length") and past_key_values.get_seq_length() == 0:
             past_key_values = None
             kwargs["past_key_values"] = None
         else:
@@ -783,7 +788,7 @@ def LlamaModel_fast_forward(
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
-    inputs_embeds = inputs_embeds.to(_get_dtype(self.config.torch_dtype))
+    inputs_embeds = inputs_embeds.to(_get_dtype(dtype_from_config(self.config)))
 
     # Normalized from Gemma
     IS_GEMMA   = self.config.model_type.startswith("gemma")
@@ -1052,7 +1057,7 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         mlp_size = self.config.intermediate_size
 
         X = self.model.embed_tokens(input_ids)
-        X = X.to(_get_dtype(self.config.torch_dtype))
+        X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert(q_len == 1)
         # Get saved buffers to reduce memory movement
@@ -1226,7 +1231,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             # < 1024 Normal Unsloth uses less VRAM!
             if bsz*q_len <= 1024: RETURN_LOGITS = True
 
-            if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
+            if not RETURN_LOGITS and labels is not None:
 
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
 
@@ -1249,7 +1254,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     mask                 = None,
                     n_items              = n_items,
                     scaling              = getattr(self, "accelerator_scaler", None),
-                    target_gb            = 1,
+                    target_gb            = None,
                     torch_compile        = True,
                     logit_softcapping    = logit_softcapping,
                 )
@@ -1269,7 +1274,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states.to(dtype))
         pass
 
-        logits = logits.to(_get_dtype(self.config.torch_dtype))
+        logits = logits.to(_get_dtype(dtype_from_config(self.config)))
         loss = None
         logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
         logit_scaling     = getattr(self.config, "logit_scale", 0)
@@ -1749,7 +1754,7 @@ def unsloth_fast_generate(
 ):
     FastLlamaModel.for_inference(self)
 
-    dtype = _get_dtype(self.config.torch_dtype)
+    dtype = _get_dtype(dtype_from_config(self.config))
 
     if hasattr(self, "config") and hasattr(self.config, "max_position_embeddings"):
         if "input_ids" in kwargs and kwargs["input_ids"] is not None and "max_new_tokens" in kwargs:
@@ -1827,7 +1832,7 @@ class FastLlamaModel:
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
+        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.llama.modeling_llama
@@ -2018,12 +2023,14 @@ class FastLlamaModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit: kwargs["quantization_config"] = bnb_config
 
+        kwargs = add_dtype_kwargs(dtype, kwargs)
+
         raise_handler = RaiseUninitialized()
         if num_labels is not None:
             model = AutoModelForSequenceClassification.from_pretrained(
                 model_name,
                 device_map              = device_map,
-                torch_dtype             = dtype,
+                # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
                 num_labels              = num_labels,
                 #quantization_config     = bnb_config,
                 token                   = token,
@@ -2036,7 +2043,7 @@ class FastLlamaModel:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 device_map              = device_map,
-                torch_dtype             = dtype,
+                # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
                 # quantization_config     = bnb_config,
                 token                   = token,
                 max_position_embeddings = max_position_embeddings,
@@ -2827,7 +2834,7 @@ class FastLlamaModel:
             for idx, layer in enumerate(model.model.model.layers):
 
                 if model_type != "falcon_h1":
-                    # LoRAMLP.apply doesn't have functionality for gate and down mutlipliers yet.
+                    # LoRAMLP.apply doesn't have functionality for gate and down multipliers yet.
                     # Don't patch falcon h1 for the time being.
 
                     # MLP patching
