@@ -254,10 +254,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     function = function.replace(line_to_replace, replacement_lines)
 
-    function = function.replace(
-        "logits_to_keep,",
-        "#logits_to_keep,",
-    )
+    # function = function.replace(
+    #     "logits_to_keep,",
+    #     "#logits_to_keep,",
+    # )
 
     # Always between max_prompt_length and use_vllm
     found = re.findall(
