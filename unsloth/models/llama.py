@@ -21,6 +21,7 @@ from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__
 from ._utils import move_to_device
+from ._utils import _prepare_model_for_qat
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
@@ -114,45 +115,6 @@ torch_nn_functional_softmax = torch.nn.functional.softmax
 # SDPA has GQA internally
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
-
-def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.Module:
-    """
-    Apply QAT + LoRA during fine-tuning.
-
-    On a high level, this means fake quantizing the base (frozen) model during LoRA training.
-    Fake quantization refers to simulating quantization numerics in high precision (e.g. bf16).
-    This helps mitigate quantization degradations when the model is quantized after training.
-
-    For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
-    """
-    try:
-        from torchao.quantization import (
-            Float8DynamicActivationFloat8WeightConfig,
-            Float8DynamicActivationInt4WeightConfig,
-            PerRow,
-            quantize_,
-        )
-        from torchao.quantization.qat import QATConfig
-    except ImportError as e:
-        print(
-            "Please install torchao nightly for the latest QAT features:\n"
-            "  pip install --pre torchao --index-url https://download.pytorch.org/whl/nightly/cu126"
-        )
-        raise e
-    pass
-    filter_fn = None
-    if qat_scheme == "fp8-int4":
-        group_size = 128
-        base_config = Float8DynamicActivationInt4WeightConfig(group_size=group_size)
-        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
-    elif qat_scheme == "fp8-fp8":
-        base_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
-    else:
-        raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
-    pass
-    quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
-    return model
-pass
 
 # Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **kwargs,):
@@ -1870,6 +1832,7 @@ class FastLlamaModel:
         disable_log_stats = False,
         unsloth_vllm_standby = False,
         num_labels =  None,
+        qat_scheme = None,
         **kwargs,
     ):
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "0"
