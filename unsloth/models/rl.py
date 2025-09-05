@@ -113,6 +113,12 @@ from contextlib import nullcontext
 from torch.nn import functional as F
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 
+{create_completion_attention_mask_code}
+
+{calculate_pad_tokens_in_prompt_code}
+
+{left_pack_padding_code}
+
 torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : False,
@@ -122,10 +128,6 @@ torch_compile_options = {{
 }}
 
 {selective_log_softmax_code}
-
-{create_completion_attention_mask_code}
-{calculate_pad_tokens_in_prompt_code}
-{left_pack_padding_code}
 
 {RL_pre}
 
