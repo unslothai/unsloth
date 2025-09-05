@@ -736,6 +736,25 @@ intel-gpu-torch270 = [
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.7.0%2Bxpu-cp313-cp313-linux_x86_64.whl#sha256=25d8277b7f01d42e2e014ccbab57a2692b6ec4eff8dcf894eda1b297407cf97a ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
 ]
 
+rocmonlytorch280 = [
+    "packaging",
+    "ninja",
+    "xformers>=0.0.32.post2 ; python_version>='3.9' and platform_system == 'Linux'",
+]
+rocm-torch280 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.47.0",
+    "unsloth[rocmonlytorch280]",
+]
+rocm-mi-torch280 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.47.0",
+    "unsloth[rocmonlytorch280]",
+    "packaging ; platform_system == 'Linux'",
+    "ninja ; platform_system == 'Linux'",
+    "flash-attn>=2.8.3 ; platform_system == 'Linux'",
+]
+
 [project.urls]
 homepage = "http://www.unsloth.ai"
 documentation = "https://github.com/unslothai/unsloth"
