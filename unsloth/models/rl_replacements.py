@@ -245,6 +245,20 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
     )
 
+    # Left pad prompt before calculation old and ref hidden states
+    line_to_replace = "batch_size = self.args.per_device_train_batch_size if mode == \"train\" else self.args.per_device_eval_batch_size"
+
+    # The new lines you want to insert
+    replacement_lines = """batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)"""
+
+    function = function.replace(line_to_replace, replacement_lines)
+
+    function = function.replace(
+        "logits_to_keep,",
+        "#logits_to_keep,",
+    )
+
     # Always between max_prompt_length and use_vllm
     found = re.findall(
         r"\n(([ ]{8,})if self\.max_prompt_length is not None:.*?"\
@@ -282,7 +296,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         # Generate completions using either vLLM or regular generation
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
-    pass
+
+
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
