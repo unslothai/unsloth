@@ -521,7 +521,7 @@ def LlamaAttention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
 
     kv_seq_len = K.shape[-2]
-    if past_key_value is not None:
+    if past_key_value and past_key_value[0] is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
     if position_embeddings:
@@ -545,7 +545,7 @@ def LlamaAttention_fast_forward(
     # )
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
-    if past_key_value is not None:
+    if past_key_value and past_key_value[0] is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
     pass
@@ -760,7 +760,7 @@ def LlamaModel_fast_forward(
 
     past_key_values_length = 0
 
-    if past_key_values is not None:
+    if past_key_values and past_key_values[0][0] is not None:
         past_key_values_length = past_key_values[0][0].shape[2]
         seq_length_with_past = seq_length_with_past + past_key_values_length
     pass
@@ -1167,7 +1167,7 @@ def CausalLM_fast_forward(fast_forward_inference):
         logits_to_keep: Optional[int] = 0,
         *args, **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-        if past_key_values is not None:
+        if past_key_values and past_key_values[0][0] is not None:
             outputs = fast_forward_inference(
                 self,
                 input_ids,
