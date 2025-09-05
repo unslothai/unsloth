@@ -162,6 +162,10 @@ def _fast_prepare_inputs_for_generation(self, input_ids, attention_mask=None, **
         if len(past_key_values) == 0:
             past_key_values = None
             kwargs["past_key_values"] = None
+        # New since 4.56
+        elif hasattr(past_key_values, "get_seq_length") and past_key_values.get_seq_length() == 0:
+            past_key_values = None
+            kwargs["past_key_values"] = None
         else:
             bs, cache_length = input_ids.shape
             input_ids = input_ids[:,[-1]]
@@ -1232,7 +1236,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             # < 1024 Normal Unsloth uses less VRAM!
             if bsz*q_len <= 1024: RETURN_LOGITS = True
 
-            if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
+            if not RETURN_LOGITS and labels is not None:
 
                 n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
 
@@ -1255,7 +1259,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     mask                 = None,
                     n_items              = n_items,
                     scaling              = getattr(self, "accelerator_scaler", None),
-                    target_gb            = 1,
+                    target_gb            = None,
                     torch_compile        = True,
                     logit_softcapping    = logit_softcapping,
                 )
@@ -1833,7 +1837,7 @@ class FastLlamaModel:
 
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
+        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.llama.modeling_llama
@@ -2825,7 +2829,7 @@ class FastLlamaModel:
             for idx, layer in enumerate(model.model.model.layers):
 
                 if model_type != "falcon_h1":
-                    # LoRAMLP.apply doesn't have functionality for gate and down mutlipliers yet.
+                    # LoRAMLP.apply doesn't have functionality for gate and down multipliers yet.
                     # Don't patch falcon h1 for the time being.
 
                     # MLP patching
