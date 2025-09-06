@@ -400,7 +400,9 @@ class FastLanguageModel(FastLlamaModel):
                 pass
             pass
         pass
-
+        
+        tokenizer_name = kwargs.pop('tokenizer_name', tokenizer_name)
+        
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
