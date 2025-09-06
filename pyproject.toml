@@ -736,23 +736,25 @@ intel-gpu-torch270 = [
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.7.0%2Bxpu-cp313-cp313-linux_x86_64.whl#sha256=25d8277b7f01d42e2e014ccbab57a2692b6ec4eff8dcf894eda1b297407cf97a ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
 ]
 
-rocmonlytorch280 = [
+rocm-torch280 = [
     "packaging",
+    "pytorch-triton-rocm",
     "ninja",
     "xformers>=0.0.32.post2 ; python_version>='3.9' and platform_system == 'Linux'",
-]
-rocm-torch280 = [
     "unsloth[huggingface]",
     "bitsandbytes @ https://electron271.github.io/bitsandbytes-index/permalinks/58e54b665bdece11/bitsandbytes-0.48.0.dev0-py3-none-manylinux_2_24_x86_64.whl#sha256=58e54b665bdece110efdc03c9bb5944d954b1fbe9322e867df7340e6eb9ac6fa ; platform_system == 'Linux' and python_version >= '3.9' and platform_machine == 'x86_64'",
-    "unsloth[rocmonlytorch280]",
-]
-rocm-mi-torch280 = [
-    "unsloth[huggingface]",
-    "bitsandbytes @ https://electron271.github.io/bitsandbytes-index/permalinks/58e54b665bdece11/bitsandbytes-0.48.0.dev0-py3-none-manylinux_2_24_x86_64.whl#sha256=58e54b665bdece110efdc03c9bb5944d954b1fbe9322e867df7340e6eb9ac6fa ; platform_system == 'Linux' and python_version >= '3.9' and platform_machine == 'x86_64'",
-    "unsloth[rocmonlytorch280]",
-    "packaging ; platform_system == 'Linux'",
-    "ninja ; platform_system == 'Linux'",
-    "flash-attn>=2.8.3 ; platform_system == 'Linux'",
+
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.4.0-cp39-cp39-linux_x86_64.whl#sha256=7f26455680a068b04456c6977348d404ff31d2fef1d7472e980483db7acbe462 ; platform_system == 'Linux' and python_version == '3.9' and platform_machine == 'x86_64'"
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.4.0-cp310-cp310-linux_x86_64.whl#sha256=1ee0a5cf569175e63b43bc334dcaaf6f9b0d88eb455a452869c2bab14e1f7eb4 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'"
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.4.0-cp311-cp311-linux_x86_64.whl#sha256=b0362725d8e16d185251e3dcd48455ebf9cdaad2c26052bb47ef08a1d687ed20 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'"
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.4.0-cp312-cp312-linux_x86_64.whl#sha256=7afe951b9fc38f1a5b3a7b98bebbaa092bf51e6192b699b4fade9b1ad6fc9c2c ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'"
+    "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.4.0-cp313-cp313-linux_x86_64.whl#sha256=1e7ccba3501fcd38e8cd8415f97a654043370e1fdc5a936bb75abe1bebeb94c9 ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'"
+
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.8.0%2Brocm6.4-cp39-cp39-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.9' and platform_machine == 'x86_64'"
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.8.0%2Brocm6.4-cp310-cp310-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'"
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.8.0%2Brocm6.4-cp311-cp311-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'"
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.8.0%2Brocm6.4-cp312-cp312-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'"
+    "torch @ https://download.pytorch.org/whl/rocm6.4/torch-2.8.0%2Brocm6.4-cp313-cp313-manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'"
 ]
 
 [project.urls]
