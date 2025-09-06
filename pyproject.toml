@@ -741,7 +741,7 @@ rocm-torch280 = [
     "pytorch-triton-rocm",
     "ninja",
     "unsloth[huggingface]",
-    "bitsandbytes @ https://electron271.github.io/bitsandbytes-index/permalinks/58e54b665bdece11/bitsandbytes-0.48.0.dev0-py3-none-manylinux_2_24_x86_64.whl#sha256=58e54b665bdece110efdc03c9bb5944d954b1fbe9322e867df7340e6eb9ac6fa ; platform_system == 'Linux' and python_version >= '3.9' and platform_machine == 'x86_64'",
+    "bitsandbytes @ https://electron271.github.io/bitsandbytes-index/permalinks/3d9e33199fa63295/bitsandbytes-0.48.0.dev0-py3-none-manylinux_2_24_x86_64.whl#sha256=3d9e33199fa632953a2d779fda5ad9544ea193c0a8d264dd30e961298720fff2 ; platform_system == 'Linux' and python_version >= '3.9' and platform_machine == 'x86_64'",
 
     "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.4.0-cp39-cp39-linux_x86_64.whl#sha256=7f26455680a068b04456c6977348d404ff31d2fef1d7472e980483db7acbe462 ; platform_system == 'Linux' and python_version == '3.9' and platform_machine == 'x86_64'",
     "pytorch_triton_rocm @ https://download.pytorch.org/whl/pytorch_triton_rocm-3.4.0-cp310-cp310-linux_x86_64.whl#sha256=1ee0a5cf569175e63b43bc334dcaaf6f9b0d88eb455a452869c2bab14e1f7eb4 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
