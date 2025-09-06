@@ -740,7 +740,6 @@ rocm-torch280 = [
     "packaging",
     "pytorch-triton-rocm",
     "ninja",
-    "xformers>=0.0.32.post2 ; python_version>='3.9' and platform_system == 'Linux'",
     "unsloth[huggingface]",
     "bitsandbytes @ https://electron271.github.io/bitsandbytes-index/permalinks/58e54b665bdece11/bitsandbytes-0.48.0.dev0-py3-none-manylinux_2_24_x86_64.whl#sha256=58e54b665bdece110efdc03c9bb5944d954b1fbe9322e867df7340e6eb9ac6fa ; platform_system == 'Linux' and python_version >= '3.9' and platform_machine == 'x86_64'",
 
