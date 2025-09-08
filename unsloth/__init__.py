@@ -91,11 +91,23 @@ DEVICE_COUNT : int = get_device_count()
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
-if DEVICE_TYPE == "cuda" and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
+if (DEVICE_TYPE == "cuda") and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0"):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-
+elif (DEVICE_TYPE == "cuda") and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="1") and \
+    ("expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")):
+    warnings.warn(
+        "Unsloth: `UNSLOTH_VLLM_STANDBY` is on, but `expandable_segments` is on.\n"\
+        "We will remove `expandable_segments`."
+        stacklevel = 2,
+    )
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = re.sub(
+        r"expandable\_segments\:True\,?",
+        "",
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"],
+    )
+pass
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
 torch_version = str(re.match(r"[0-9\.]{3,}", str(torch.__version__)).group(0)).split(".")
