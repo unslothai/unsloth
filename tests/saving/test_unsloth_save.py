@@ -22,6 +22,15 @@ model_to_test = [
     "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit"
 ]
 
+torchao_models = [
+    "unsloth/tinyllama",
+    "unsloth/Qwen2.5-0.5B-Instruct",
+    #"unsloth/Phi-4-mini-instruct",
+    #"unsloth/Qwen2.5-0.5B",
+    # Skip the -bnb-4bit variants since they're already quantized
+]
+
+
 # Variables
 save_file_sizes = {}
 save_file_sizes["merged_16bit"] = {}
@@ -55,6 +64,32 @@ def loaded_model_tokenizer(request):
     )
 
     return model, tokenizer
+
+@pytest.fixture(scope="session", params=torchao_models)
+def fp16_model_tokenizer(request):
+    """Load model in FP16 for TorchAO quantization"""
+    model_name = request.param
+    print(f"Loading model in FP16 for TorchAO: {model_name}")
+
+    model, tokenizer = FastModel.from_pretrained(
+        model_name,
+        max_seq_length=128,
+        dtype=None,
+        load_in_4bit=False,  # No BnB quantization
+    )
+
+    # Apply LoRA
+    model = FastModel.get_peft_model(
+        model,
+        r=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_alpha=16,
+        use_gradient_checkpointing="unsloth",
+    )
+
+    return model, tokenizer
+
+
 
 @pytest.fixture(scope="session")
 def model(loaded_model_tokenizer):
@@ -170,7 +205,8 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
     )
 
 @pytest.mark.skipif(importlib.util.find_spec("torchao") is None, reason="require torchao to be installed")
-def test_save_torchao(model, tokenizer, temp_save_dir: str):
+def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
+    model, tokenizer = fp16_model_tokenizer
     save_path = os.path.join(temp_save_dir, "unsloth_torchao", model.config._name_or_path.replace("/", "_"))
 
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig
@@ -215,9 +251,78 @@ def test_save_torchao(model, tokenizer, temp_save_dir: str):
     # Test loading the model from the saved path
     # can't set `load_in_4bit` to True because the model is torchao quantized
     # can't quantize again with bitsandbytes
-    loaded_model, loaded_tokenizer = FastModel.from_pretrained(
+    import torch.serialization
+    with torch.serialization.safe_globals([getattr]):
+        loaded_model, loaded_tokenizer = FastModel.from_pretrained(
+            torchao_save_path,
+            max_seq_length=128,
+            dtype=None,
+            load_in_4bit=False,
+        )
+
+@pytest.mark.skipif(importlib.util.find_spec("torchao") is None, reason="require torchao to be installed")
+def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
+    model, tokenizer = fp16_model_tokenizer
+    model_name = model.config._name_or_path
+
+    print(f"Testing TorchAO save and inference for: {model_name}")
+
+    save_path = os.path.join(temp_save_dir, "torchao_models", model_name.replace("/", "_"))
+
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig
+    torchao_config = Int8DynamicActivationInt8WeightConfig()
+
+    # Save with TorchAO
+    model.save_pretrained_torchao(
         save_path,
-        max_seq_length=128,
-        dtype=None,
-        load_in_4bit=False,
+        tokenizer=tokenizer,
+        torchao_config=torchao_config,
+        push_to_hub=False,
     )
+
+    torchao_save_path = save_path + "-torchao"
+
+    # Verify files exist
+    assert os.path.isdir(torchao_save_path), f"TorchAO directory {torchao_save_path} does not exist."
+
+    # Load with safe globals
+    import torch.serialization
+    with torch.serialization.safe_globals([getattr]):
+        loaded_model, loaded_tokenizer = FastModel.from_pretrained(
+            torchao_save_path,
+            max_seq_length=128,
+            dtype=None,
+            load_in_4bit=False,
+        )
+
+
+    FastModel.for_inference(loaded_model) # Enable native 2x faster inference
+
+    messages = [
+        {"role": "user", "content": "Continue the fibonnaci sequence: 1, 1, 2, 3, 5, 8,"},
+    ]
+    inputs = loaded_tokenizer.apply_chat_template(
+        messages,
+        tokenize = True,
+        add_generation_prompt = True, # Must add for generation
+        return_tensors = "pt",
+    ).to("cuda")
+
+    outputs = loaded_model.generate(  # ← Use loaded_model, not model
+        input_ids=inputs,
+        max_new_tokens=64,
+        use_cache=False,  # Avoid cache issues
+        temperature=1.5,
+        min_p=0.1,
+        do_sample=True,
+        pad_token_id=loaded_tokenizer.pad_token_id or loaded_tokenizer.eos_token_id,
+    )
+
+    #Decode with the LOADED tokenizer
+    generated_text = loaded_tokenizer.decode(outputs[0], skip_special_tokens=True)
+    input_text = loaded_tokenizer.decode(inputs[0], skip_special_tokens=True)
+    response_part = generated_text[len(input_text):].strip()
+
+    print(f"Input: {input_text}")
+    print(f"Full output: {generated_text}")
+    print(f"Response only: {response_part}")
