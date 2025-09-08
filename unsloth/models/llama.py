@@ -2986,6 +2986,7 @@ class FastLlamaModel:
             _for_inference(m)
             m = m.model
         _for_inference(m)
+        model.eval() # to turn off training on modules deeper in
 
         # Since transformers 4.53, must turn off explicitly
         for module in model.modules():
@@ -3030,6 +3031,7 @@ class FastLlamaModel:
             _for_training(m)
             m = m.model
         _for_training(m)
+        model.train() # to turn on training on modules deeper in
 
         # Since transformers 4.53, must turn on explicitly
         for module in model.modules():
