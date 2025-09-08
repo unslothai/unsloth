@@ -736,7 +736,7 @@ class FastBaseModel:
                 # vLLM does not support LoRA on vision layers
                 # https://github.com/vllm-project/vllm/blob/main/vllm/lora/models.py#L471-L477
                 # TODO: Update this once vLLM V1 supports LoRA on vision layers (possibly not happening)
-                raise RuntimeError("Unsloth: Finetuning vision layers is not supported for fast_inference!")
+                raise RuntimeError("Unsloth: Finetuning vision layers is not supported for fast_inference. Only text layers are supported!")
             if model.config.model_type in VLLM_NON_LORA_VLM:
                 # mllama is still only in vllm v0 https://arc.net/l/quote/llwkfgmu
                 # https://docs.vllm.ai/en/stable/models/supported_models.html#text-generation_1
