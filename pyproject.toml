@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.9.1",
+    "unsloth_zoo>=2025.9.3",
     "torch>=2.4.0",
     "xformers>=0.0.27.post2",
     "bitsandbytes",
@@ -58,7 +58,7 @@ exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2025.9.1",
+    "unsloth_zoo>=2025.9.3",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1",
@@ -363,7 +363,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.9.1",
+    "unsloth_zoo>=2025.9.3",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1",
