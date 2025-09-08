@@ -99,7 +99,7 @@ elif (DEVICE_TYPE == "cuda") and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="
     ("expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")):
     warnings.warn(
         "Unsloth: `UNSLOTH_VLLM_STANDBY` is on, but `expandable_segments` is on.\n"\
-        "We will remove `expandable_segments`."
+        "We will remove `expandable_segments`.",
         stacklevel = 2,
     )
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = re.sub(
