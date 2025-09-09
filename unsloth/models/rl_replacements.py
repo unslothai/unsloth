@@ -245,6 +245,17 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False",
     )
 
+    # Left pad prompt before calculation old and ref hidden states
+    line_to_replace = "batch_size = self.args.per_device_train_batch_size if mode == \"train\" else self.args.per_device_eval_batch_size"
+
+    # The new multi-line string that will replace the line above
+    replacement_lines = """batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        if not has_images:
+            # Left pad prompt before calculation old and ref hidden states
+            prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)"""
+
+    function = function.replace(line_to_replace, replacement_lines)
+
     # Always between max_prompt_length and use_vllm
     found = re.findall(
         r"\n(([ ]{8,})if self\.max_prompt_length is not None:.*?"\
@@ -282,7 +293,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         # Generate completions using either vLLM or regular generation
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
-    pass
+
+
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
@@ -366,42 +378,54 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             pixel_attention_mask, image_sizes = kwargs.get('pixel_attention_mask',None), kwargs.get('image_sizes',None)
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-            with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
-                # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-                logits = model(
-                    input_ids = input_ids,
-                    attention_mask = attention_mask,
-                    pixel_values = pixel_values,
-                    image_grid_thw = image_grid_thw,
-                    pixel_attention_mask = pixel_attention_mask,
-                    image_sizes = image_sizes,
-                    #logits_to_keep = logits_to_keep + 1,
-                ).logits
-                pass
+            if pixel_values is None: 
+                with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
+                    # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+                    logits = model(
+                        input_ids = input_ids,
+                        attention_mask = attention_mask,
+                        pixel_values = pixel_values,
+                        image_grid_thw = image_grid_thw,
+                        pixel_attention_mask = pixel_attention_mask,
+                        image_sizes = image_sizes,
+                        #logits_to_keep = logits_to_keep + 1,
+                    ).logits
+            else:
+                with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
+                    logits = model(
+                            input_ids = input_ids,
+                            attention_mask = attention_mask,
+                            pixel_values = pixel_values,
+                            image_grid_thw = image_grid_thw,
+                            pixel_attention_mask = pixel_attention_mask,
+                            image_sizes = image_sizes,
+                            logits_to_keep = logits_to_keep + 1,
+                        ).logits
+            entropies = None
 
-                entropies = None
+            with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
                 if compute_entropy:
                     from trl.trainer.utils import entropy_from_logits
                     entropies = entropy_from_logits(logits)
-                #breakpoint()
-                # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-                return logits, entropies  # logps, entropies
-                # input_ids = input_ids[:, -logits_to_keep:]
-                # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
-                # See https://github.com/huggingface/trl/issues/2770
-                # logits = logits[:, -logits_to_keep:]
-                # return logits
-                # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
-                # logits = logits / self.temperature
-                # logps = selective_log_softmax(logits, input_ids)
+            #breakpoint()
+            # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+            return logits, entropies  # logps, entropies
+            # input_ids = input_ids[:, -logits_to_keep:]
+            # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
+            # See https://github.com/huggingface/trl/issues/2770
+            # logits = logits[:, -logits_to_keep:]
+            # return logits
+            # See https://huggingface.co/blog/the_n_implementation_details_of_rlhf_with_ppo#policy-training-implementation-details
+            # logits = logits / self.temperature
+            # logps = selective_log_softmax(logits, input_ids)
 
-                # row_indices, col_indices = torch.where(logps < -20)
+            # row_indices, col_indices = torch.where(logps < -20)
 
-                # # Method 1: Check if tensors have elements
-                # if len(row_indices) > 0 and len(col_indices) > 0:
-                #     breakpoint()  # Breakpoint triggered here
-                #     print("Found high values!")
-                # return  logps #  compute logprobs for the input tokens
+            # # Method 1: Check if tensors have elements
+            # if len(row_indices) > 0 and len(col_indices) > 0:
+            #     breakpoint()  # Breakpoint triggered here
+            #     print("Found high values!")
+            # return  logps #  compute logprobs for the input tokens
         pass
     pass
 
