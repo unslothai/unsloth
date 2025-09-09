@@ -375,7 +375,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     image_grid_thw = image_grid_thw,
                     pixel_attention_mask = pixel_attention_mask,
                     image_sizes = image_sizes,
-                    logits_to_keep = logits_to_keep + 1,
+                    #logits_to_keep = logits_to_keep + 1,
                 ).logits
                 pass
 
