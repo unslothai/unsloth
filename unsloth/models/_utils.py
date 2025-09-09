@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.9.1"
+__version__ = "2025.9.2"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1576,3 +1576,36 @@ def patch_peft_fast_inference(model):
 
 def error_out_no_vllm(*args, **kwargs):
     raise NotImplementedError("Unsloth: vLLM is not yet supported for fast inference for this model! Please use `.generate` instead")
+
+
+def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.Module:
+    """
+    Transform a model for Quantization-Aware Training (QAT) during fine-tuning.
+
+    On a high level, this means fake quantizing the base (frozen) model during training.
+    Fake quantization refers to simulating quantization numerics in high precision (e.g. bf16).
+    This helps mitigate quantization degradations when the model is quantized after training.
+
+    QAT can be optionally combined with LoRA fine-tuning to for additional throughput improvement.
+    For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
+    """
+    from torchao.quantization import (
+        Float8DynamicActivationInt4WeightConfig,
+        Float8DynamicActivationFloat8WeightConfig,
+        PerRow,
+        quantize_,
+    )
+    from torchao.quantization.qat import QATConfig
+    filter_fn = None
+    if qat_scheme == "fp8-int4":
+        group_size = 128
+        base_config = Float8DynamicActivationInt4WeightConfig()
+        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+    elif qat_scheme == "fp8-fp8":
+        base_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
+    else:
+        raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
+    pass
+    quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
+    return model
+pass
