@@ -254,7 +254,9 @@ class FastLanguageModel(FastLlamaModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
+            print("is_peft", model_name)
             model_name = peft_config.base_model_name_or_path
+            print("is_peft", model_name)
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             model_config = AutoConfig.from_pretrained(
