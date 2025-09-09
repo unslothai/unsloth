@@ -706,7 +706,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Selective log softmax
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
 
-    #GRPO masking code
+    # GRPO masking code
     create_completion_attention_mask_code = inspect.getsource(create_completion_attention_mask)
     calculate_pad_tokens_in_prompt_code = inspect.getsource(calculate_pad_tokens_in_prompt)
     left_pack_padding_code = inspect.getsource(left_pack_padding)
