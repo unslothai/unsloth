@@ -500,7 +500,7 @@ class FastBaseModel:
             )
 
             if fast_inference:
-                fast_inference = fast_inference_setup(model_name, model_config)
+                fast_inference, model_name = fast_inference_setup(model_name, model_config)
 
             allowed_args = inspect.getfullargspec(load_vllm).args
             load_vllm_kwargs = dict(

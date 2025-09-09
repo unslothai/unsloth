@@ -402,7 +402,7 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if fast_inference:
-            fast_inference = fast_inference_setup(model_name, model_config)
+            fast_inference, model_name = fast_inference_setup(model_name, model_config)
 
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,

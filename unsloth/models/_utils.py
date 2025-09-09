@@ -1559,7 +1559,7 @@ def fast_inference_setup(model_name, model_config):
             model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
         pass
     pass
-    return fast_inference
+    return fast_inference, model_name
 
 def patch_peft_fast_inference(model):
     vllm_engine = getattr(model.model, "vllm_engine", None)
