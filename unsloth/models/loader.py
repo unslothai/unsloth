@@ -527,6 +527,7 @@ class FastModel(FastBaseModel):
         qat_scheme                 = None,
         *args, **kwargs,
     ):
+        print("model_name", model_name)
         if token is None: token = get_token()
         # Login to allow private models
         if token is not None:
