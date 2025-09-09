@@ -20,6 +20,7 @@ from ._utils import (
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
     get_transformers_model_type,
+    extract_model_type_from_config,
 )
 from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
@@ -254,9 +255,7 @@ class FastLanguageModel(FastLlamaModel):
         # Get base model for PEFT:
         if is_peft:
             # Check base model again for PEFT
-            print("is_peft", model_name)
             model_name = peft_config.base_model_name_or_path
-            print("is_peft", model_name)
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
             model_config = AutoConfig.from_pretrained(
@@ -529,7 +528,6 @@ class FastModel(FastBaseModel):
         qat_scheme                 = None,
         *args, **kwargs,
     ):
-        print("model_name", model_name)
         if token is None: token = get_token()
         # Login to allow private models
         if token is not None:

@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.9.2"
+__version__ = "2025.9.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
     "is_vLLM_available",
+    "extract_model_type_from_config",
 
     "prepare_model_for_kbit_training",
     "xformers",
@@ -1560,4 +1561,34 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
     pass
     quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
     return model
+pass
+
+
+def extract_model_type_from_config(config):
+    """ Gets model_type from config file - can be PEFT or normal HF """
+    model_type = None
+    from peft import PeftConfig
+    if issubclass(type(config), PeftConfig):
+        model_type_list = re.finditer(r"transformers\.models\.([^\.]{2,})\.modeling_\1", str(config))
+        model_type_list = list(model_type_list)
+        # Use transformers.models.gpt_oss.modeling_gpt_oss
+        if len(model_type_list) != 0:
+            model_type = model_type_list[0].group(1)
+        elif hasattr(config, "auto_mapping"):
+            # Use GptOssForCausalLM
+            model_type = config.auto_mapping.get("base_model_class", None)
+            if model_type is None:
+                # Last resort use model name unsloth/gpt-oss-20b-unsloth-bnb-4bit
+                model_type = config.base_model_name_or_path
+                model_type = os.path.split(model_type)[-1]
+    else:
+        
+    if model_type is None:
+        raise TypeError(f"Unsloth: Cannot determine model type for config file: {str(config)}")
+
+    # Standardize model_type
+    model_type = model_type.lower()
+    model_type = model_type.replace("_", "-")
+    model_type = model_type.replace("/", "-")
+    return model_type
 pass
