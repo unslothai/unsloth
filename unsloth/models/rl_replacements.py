@@ -249,7 +249,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     line_to_replace = "batch_size = self.args.per_device_train_batch_size if mode == \"train\" else self.args.per_device_eval_batch_size"
 
     # The new multi-line string that will replace the line above
-    replacement_lines = """batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+    replacement_lines = """
+        batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
         if not has_images:
             # Left pad prompt before calculation old and ref hidden states
             prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)"""
