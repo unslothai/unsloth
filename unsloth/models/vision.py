@@ -46,6 +46,10 @@ from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
+
+from unsloth_zoo.utils import Version
+from transformers import __version__ as transformers_version
+
 import types
 import functools
 import os
@@ -70,8 +74,6 @@ __all__ = [
 
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
-global PROMPT_LOOPKUP
-PROMPT_LOOPKUP = dict()
 
 from transformers import GenerationConfig, CompileConfig, HybridCache
 
@@ -162,15 +164,6 @@ def unsloth_base_fast_generate(
     key = NUM_LOGITS_TO_KEEP[arch]
     if key is not None and key not in kwargs:
         kwargs[key] = 1
-    global PROMPT_LOOPKUP
-    if arch not in PROMPT_LOOPKUP:
-        # Only works for VLMs and not LLMs!
-        if is_vlm:
-            PROMPT_LOOPKUP[arch] = False
-        else:
-            PROMPT_LOOPKUP[arch] = True
-    if bsz == 1 and PROMPT_LOOPKUP[arch]:
-        kwargs["prompt_lookup_num_tokens"] = 3
 
     # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
@@ -219,7 +212,10 @@ def unsloth_base_fast_generate(
             and (getattr(self, "_can_compile_fullgraph", True) is True):
             cache_implementation = "static"
         else:
-            cache_implementation = "hybrid"
+            if Version(transformers_version) < Version("4.56.0.dev0"):
+                cache_implementation = "hybrid"
+            else:
+                cache_implementation = "static"
 
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
@@ -231,18 +227,8 @@ def unsloth_base_fast_generate(
             kwargs["compile_config"] = _compile_config
     pass
 
-    try:
-        with torch.inference_mode(), autocaster:
-            output = self._old_generate(*args, **kwargs)
-    except:
-        PROMPT_LOOPKUP[arch] = False
-        kwargs.pop("prompt_lookup_num_tokens", None)
-        with torch.inference_mode(), autocaster:
-            output = self._old_generate(*args, **kwargs)
-    finally:
-        pass
-        # return_lora_modules(self, state_dict, torch.float32)
-    pass
+    with torch.inference_mode(), autocaster:
+        output = self._old_generate(*args, **kwargs)
 
     FastBaseModel.for_training(self)
     return output
