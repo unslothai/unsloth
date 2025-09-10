@@ -84,7 +84,7 @@ global FORCE_FLOAT32
 FORCE_FLOAT32 = [
     "gemma3",
     "gemma3n",
-    "gptoss",
+    "gpt_oss",
 ]
 
 class FastLanguageModel(FastLlamaModel):
@@ -204,7 +204,6 @@ class FastLanguageModel(FastLlamaModel):
             is_peft = False
         pass
         model_types = get_transformers_model_type(model_config or peft_config)
-        print("model_types", model_types)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
@@ -501,9 +500,9 @@ pass
 
 # Must be alphabetically sorted for each entry
 DISABLE_COMPILE_MODEL_NAMES = [
-    "ayavision",
+    "aya_vision",
     "modernbert",
-    "granite,llavanext,siglipvisionmodel", # Granite-vision 3
+    "granite,llava_next", # Granite-vision 3
 ]
 
 
@@ -620,7 +619,6 @@ class FastModel(FastBaseModel):
         pass
         model_types = get_transformers_model_type(model_config or peft_config)
         model_types_all = ",".join(model_types)
-        print("model_types", model_types)
 
         # Check versions
         lowered_model_name = model_name.lower()
@@ -631,7 +629,7 @@ class FastModel(FastBaseModel):
         if "pixtral" in model_types_all and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
         # Qwen 2.5
-        elif "qwen25" in model_types_all and transformers_version < Version("4.49.0"):
+        elif "qwen2_5" in model_types_all and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
         # Gemma 3
         elif "gemma3" in model_types_all:
@@ -671,7 +669,7 @@ class FastModel(FastBaseModel):
         # Olmo 2
         elif "olmo2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
-        elif "falconh1" in model_types_all:
+        elif "falcon_h1" in model_types_all:
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
@@ -679,7 +677,7 @@ class FastModel(FastBaseModel):
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"\
                 ";"\
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
-        elif "gptoss" in model_types_all:
+        elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             if not load_in_4bit:
                 # Only upcast MoE biases for MXFP4, not BnB
