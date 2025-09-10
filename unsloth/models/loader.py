@@ -20,7 +20,6 @@ from ._utils import (
     HAS_FLASH_ATTENTION_SOFTCAPPING,
     USE_MODELSCOPE,
     get_transformers_model_type,
-    extract_model_type_from_config,
 )
 from .granite import FastGraniteModel
 from .llama   import FastLlamaModel, logger
@@ -204,8 +203,7 @@ class FastLanguageModel(FastLlamaModel):
             peft_error = str(error)
             is_peft = False
         pass
-        model_types = extract_model_type_from_config(model_config or peft_config)
-        print("model_types", model_types)
+        model_types = get_transformers_model_type(model_config or peft_config)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
@@ -581,6 +579,12 @@ class FastModel(FastBaseModel):
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
 
+        # Check modelscope
+        if USE_MODELSCOPE and not os.path.exists(model_name):
+            from modelscope import snapshot_download
+            model_name = snapshot_download(model_name)
+        pass
+
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
         was_disabled = are_progress_bars_disabled()
@@ -613,9 +617,8 @@ class FastModel(FastBaseModel):
             peft_error = str(error)
             is_peft = False
         pass
-        model_types = extract_model_type_from_config(model_config or peft_config)
+        model_types = get_transformers_model_type(model_config or peft_config)
         model_types_all = ",".join(model_types)
-        print("model_types", model_types)
 
         # Check versions
         lowered_model_name = model_name.lower()
@@ -719,11 +722,6 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
         pass
 
-        if USE_MODELSCOPE and not os.path.exists(model_name):
-            from modelscope import snapshot_download
-            model_name = snapshot_download(model_name)
-        pass
-
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
 
@@ -793,15 +791,7 @@ class FastModel(FastBaseModel):
         else:
             redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
-        # Get model types like Gemma3 etc
-        model_types = get_transformers_model_type(
-            model_name        = model_name,
-            token             = token,
-            revision          = revision,
-            trust_remote_code = trust_remote_code,
-        )
         model_types = ["siglip"] + model_types
-
         # Set forced float32 env flag
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         do_forced_float32 = False

@@ -18,7 +18,6 @@ __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
     "is_vLLM_available",
-    "extract_model_type_from_config",
 
     "prepare_model_for_kbit_training",
     "xformers",
@@ -1561,57 +1560,4 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
     pass
     quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
     return model
-pass
-
-
-def extract_model_type_from_config(config):
-    """ Gets model_type from config file - can be PEFT or normal HF """
-    if config is None:
-        raise TypeError(f"Unsloth: Cannot determine model type for config file: {str(config)}")
-    model_types = None
-    from peft import PeftConfig
-    if issubclass(type(config), PeftConfig):
-        model_type_list = re.finditer(r"transformers\.models\.([^\.]{2,})\.modeling_\1", str(config))
-        model_type_list = list(model_type_list)
-        # Use transformers.models.gpt_oss.modeling_gpt_oss
-        if len(model_type_list) != 0:
-            model_type = model_type_list[0].group(1)
-            model_types = [model_type]
-        elif hasattr(config, "auto_mapping"):
-            # Use GptOssForCausalLM
-            model_type = config.auto_mapping.get("base_model_class", None)
-            if model_type is None:
-                # Last resort use model name unsloth/gpt-oss-20b-unsloth-bnb-4bit
-                model_type = config.base_model_name_or_path
-                model_type = os.path.split(model_type)[-1]
-            model_types = [model_type]
-    else:
-        from collections.abc import Mapping, Sequence
-        def find_values(data, target_key):
-            stack = [data]
-            while stack:
-                obj = stack.pop()
-                if isinstance(obj, Mapping):
-                    # Emit values for matches
-                    if target_key in obj:
-                        yield obj[target_key]
-                    # Keep walking into nested values
-                    stack.extend(obj.values())
-                elif isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
-                    # Walk sequences (lists/tuples/sets), but not strings/bytes
-                    stack.extend(obj)
-        model_types = list(find_values(getattr(config, "to_dict", lambda *args, **kwargs: {})(), "model_type"))
-    pass
-    if model_types is None:
-        raise TypeError(f"Unsloth: Cannot determine model type for config file: {str(config)}")
-    # Standardize model_type
-    final_model_types = []
-    for model_type in model_types:
-        model_type = model_type.lower()
-        model_type = model_type.replace("_", "")
-        model_type = model_type.replace("-", "")
-        model_type = model_type.replace("/", "")
-        model_type = model_type.replace(".", "")
-        final_model_types.append(model_type)
-    return tuple(sorted(final_model_types))
 pass
