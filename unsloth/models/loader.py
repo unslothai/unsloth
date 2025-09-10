@@ -205,6 +205,7 @@ class FastLanguageModel(FastLlamaModel):
             is_peft = False
         pass
         model_types = extract_model_type_from_config(model_config or peft_config)
+        print("model_types", model_types)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
@@ -614,6 +615,7 @@ class FastModel(FastBaseModel):
         pass
         model_types = extract_model_type_from_config(model_config or peft_config)
         model_types_all = ",".join(model_types)
+        print("model_types", model_types)
 
         # Check versions
         lowered_model_name = model_name.lower()
