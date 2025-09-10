@@ -33,7 +33,11 @@ from .rl_replacements import (
     RL_CONFIG_CHANGES,
     RL_METRICS_CHANGES,
 )
+
 selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
+create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"] 
+calculate_pad_tokens_in_prompt = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"] 
+left_pack_padding = RL_REPLACEMENTS["left_pack_padding"]
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -111,6 +115,12 @@ from contextlib import nullcontext
 from torch.nn import functional as F
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 
+{create_completion_attention_mask_code}
+
+{calculate_pad_tokens_in_prompt_code}
+
+{left_pack_padding_code}
+
 torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : False,
@@ -120,6 +130,7 @@ torch_compile_options = {{
 }}
 
 {selective_log_softmax_code}
+
 {RL_pre}
 
 @dataclass
@@ -700,6 +711,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Selective log softmax
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
 
+    # GRPO masking code
+    create_completion_attention_mask_code = inspect.getsource(create_completion_attention_mask)
+    calculate_pad_tokens_in_prompt_code = inspect.getsource(calculate_pad_tokens_in_prompt)
+    left_pack_padding_code = inspect.getsource(left_pack_padding)
+
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
@@ -725,6 +741,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_post  = max_seq_length_post,
 
         selective_log_softmax_code = selective_log_softmax_code,
+        create_completion_attention_mask_code = create_completion_attention_mask_code, 
+        calculate_pad_tokens_in_prompt_code = calculate_pad_tokens_in_prompt_code,
+        left_pack_padding_code = left_pack_padding_code,
+
     )
 
     if RLTrainer_name == "SFTTrainer":
