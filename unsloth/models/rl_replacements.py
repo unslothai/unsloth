@@ -25,7 +25,7 @@ import re
 import torch
 import inspect
 from collections import defaultdict
-from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
+from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
 from unsloth import DEVICE_TYPE
 
 RL_EXTRA_ARGS      = defaultdict(list)
@@ -379,21 +379,26 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             pixel_attention_mask, image_sizes = kwargs.get('pixel_attention_mask',None), kwargs.get('image_sizes',None)
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-            if pixel_values is None: 
-                with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
-                    # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-                    logits = model(
-                        input_ids = input_ids,
-                        attention_mask = attention_mask,
-                        pixel_values = pixel_values,
-                        image_grid_thw = image_grid_thw,
-                        pixel_attention_mask = pixel_attention_mask,
-                        image_sizes = image_sizes,
-                        #logits_to_keep = logits_to_keep + 1,
-                    ).logits
-            else:
-                with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
-                    logits = model(
+           
+            unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper=False)
+
+            with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
+                with torch.inference_mode():
+                    if pixel_values is None: 
+                        attention_mask =  input_ids != self.processing_class.pad_token_id
+                        attention_mask = attention_mask.to(attention_mask.dtype)
+                        # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
+                        logits = unwrapped_model(
+                            input_ids = input_ids,
+                            attention_mask = attention_mask,
+                            pixel_values = pixel_values,
+                            image_grid_thw = image_grid_thw,
+                            pixel_attention_mask = pixel_attention_mask,
+                            image_sizes = image_sizes,
+                            #logits_to_keep = logits_to_keep + 1,
+                        ).logits
+                    else:
+                        logits = unwrapped_model(
                             input_ids = input_ids,
                             attention_mask = attention_mask,
                             pixel_values = pixel_values,
@@ -402,13 +407,16 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             image_sizes = image_sizes,
                             logits_to_keep = logits_to_keep + 1,
                         ).logits
-            entropies = None
+                    
 
-            with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
+                entropies = None
                 if compute_entropy:
                     from trl.trainer.utils import entropy_from_logits
                     entropies = entropy_from_logits(logits)
+
+
             #breakpoint()
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
             # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             return logits, entropies  # logps, entropies
             # input_ids = input_ids[:, -logits_to_keep:]
