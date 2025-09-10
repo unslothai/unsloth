@@ -44,6 +44,8 @@ torch_compile_options = {
 }
 
 from trl import __version__ as trl_version
+from unsloth_zoo.utils import Version
+trl_version = Version(trl_version)
 
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
@@ -804,7 +806,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             " " * 12 + "if (getattr(args, 'use_vllm', False) == False):\n" + \
             " " * 16 + "args.use_vllm = True\n"
 
-            if "grpo" in trainer_file and trl_version >= "0.18":
+            if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
                 vllm_setter += \
                 " " * 12 + "args.vllm_mode='colocate'\n"
@@ -850,26 +852,27 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params # Add spaces
 
             # count the indentation of last line of sampling_params.
-            last_line = sampling_params.split("\n")[-1]
-            last_prev_line = sampling_params.split("\n")[-2]
-            last_prev_indentation = len(last_prev_line) - len(last_prev_line.lstrip())
-            last_indentation = len(last_line) - len(last_line.lstrip())
+            splitted_sampling_params = sampling_params.split("\n")
+            if len(splitted_sampling_params) >= 2:
+                last_line = splitted_sampling_params[-1]
+                last_prev_line = splitted_sampling_params[-2]
+                last_prev_indentation = len(last_prev_line) - len(last_prev_line.lstrip())
+                last_indentation = len(last_line) - len(last_line.lstrip())
 
+                # Add extra arguments to SamplingParams
+                extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
+                # Backwards replace
+                to_replace = ",\n" + " "*last_prev_indentation + extra + ",\n" + " "*last_indentation + ")"
+                sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
+                # Strip multiple commas
+                sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
-            # Add extra arguments to SamplingParams
-            extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
-            # Backwards replace
-            to_replace = ",\n" + " "*last_prev_indentation + extra + ",\n" + " "*last_indentation + ")"
-            sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
-            # Strip multiple commas
-            sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
-
-            new_vllm_part = \
-                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
-                f"\n{' '*8}else:\n"
+                new_vllm_part = \
+                    f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
+                    f"\n{' '*8}else:\n"
         pass
 
-        if trl_version >= "0.18":
+        if trl_version >= Version("0.18.0"):
             # Replace LLM init with already existing vLLM engine for colocate mode
             vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
             vllm_llm_replacement = "self.llm = model.vllm_engine\n"
@@ -881,7 +884,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             )
 
         init = init.replace(vllm_part, new_vllm_part)
-
     pass
 
     # Search for vLLM calling in all child functions
