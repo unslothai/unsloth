@@ -736,7 +736,7 @@ intel-gpu-torch270 = [
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.7.0%2Bxpu-cp313-cp313-linux_x86_64.whl#sha256=25d8277b7f01d42e2e014ccbab57a2692b6ec4eff8dcf894eda1b297407cf97a ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
 ]
 
-rocm-torch280 = [
+rocm64-torch280 = [
     "packaging",
     "pytorch-triton-rocm",
     "ninja",
