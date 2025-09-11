@@ -413,7 +413,7 @@ class FastLanguageModel(FastLlamaModel):
             quantization_config = \
             {
                 # Sometimes torch_dtype is not a string!!
-                "bnb_4bit_compute_dtype"           : model.config.to_dict()["torch_dtype"],
+                "bnb_4bit_compute_dtype"           : model.config.to_dict().get("torch_dtype", "bfloat16" if is_bfloat16_supported() else "float16"),
                 "bnb_4bit_quant_type"              : "nf4",
                 "bnb_4bit_use_double_quant"        : True,
                 "llm_int8_enable_fp32_cpu_offload" : False,
