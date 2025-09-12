@@ -24,6 +24,7 @@ __all__ = [
     "xformers_attention",
     "xformers_version",
     "__version__",
+    "importlib_version",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "USE_MODELSCOPE",
@@ -81,6 +82,7 @@ import re
 import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
+from importlib.metadata import version as importlib_version
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
 from unsloth_zoo.tokenizer_utils import (
