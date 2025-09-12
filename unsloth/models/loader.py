@@ -408,7 +408,9 @@ class FastLanguageModel(FastLlamaModel):
                 pass
             pass
         pass
-
+        
+        tokenizer_name = kwargs.pop('tokenizer_name', tokenizer_name)
+        
         model, tokenizer = dispatch_model.from_pretrained(
             model_name        = model_name,
             max_seq_length    = max_seq_length,
@@ -864,6 +866,8 @@ class FastModel(FastBaseModel):
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
+
+        tokenizer_name = kwargs.pop('tokenizer_name', tokenizer_name)    
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name        = model_name,
