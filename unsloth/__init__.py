@@ -14,7 +14,7 @@
 
 import warnings, importlib, sys
 from packaging.version import Version
-import os, re, subprocess, inspect
+import os, re, subprocess, inspect, functools
 import numpy as np
 
 # Fix some issues before importing other packages
@@ -69,9 +69,12 @@ except Exception as exception:
     raise exception
 pass
 
+@functools.cache
 def is_hip():
     return bool(getattr(getattr(torch, "version", None), "hip", None))
+pass
 
+@functools.cache
 def get_device_type():
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
@@ -83,6 +86,7 @@ def get_device_type():
 pass
 DEVICE_TYPE : str = get_device_type()
 
+@functools.cache
 def get_device_count():
     if DEVICE_TYPE in ("cuda", "hip"):
         return torch.cuda.device_count()
@@ -137,7 +141,6 @@ pass
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
-from packaging.version import Version
 from .import_fixes import fix_xformers_performance_issue
 fix_xformers_performance_issue(); del fix_xformers_performance_issue;
 from .import_fixes import fix_vllm_aimv2_issue
