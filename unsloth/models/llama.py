@@ -1853,6 +1853,8 @@ class FastLlamaModel:
                 if major_version < 7:
                     print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
                     fast_inference = False
+            elif DEVICE_TYPE == "hip":
+                fast_inference = True
             if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") == "0":
                 raise RuntimeError("Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!")
         pass
@@ -1865,6 +1867,14 @@ class FastLlamaModel:
             gpu_stats = torch.cuda.get_device_properties(0)
             gpu_version = torch.version.cuda
             gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
+
+            from importlib.metadata import version as importlib_version
+            try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except: vllm_version = ""
+        elif DEVICE_TYPE == "hip":
+            gpu_stats = torch.cuda.get_device_properties(0)
+            gpu_version = torch.version.hip
+            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
 
             from importlib.metadata import version as importlib_version
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
