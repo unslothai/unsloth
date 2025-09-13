@@ -204,7 +204,7 @@ class FastLanguageModel(FastLlamaModel):
             is_peft = False
         pass
         model_types = get_transformers_model_type(model_config or peft_config)
-        print("207", model_types_all)
+        print("207", model_types)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
