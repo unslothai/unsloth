@@ -204,7 +204,6 @@ class FastLanguageModel(FastLlamaModel):
             is_peft = False
         pass
         model_types = get_transformers_model_type(model_config or peft_config)
-        print("207", model_types)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
@@ -620,11 +619,11 @@ class FastModel(FastBaseModel):
         pass
         model_types = get_transformers_model_type(model_config or peft_config)
         model_types_all = ",".join(model_types)
-        print("623", model_types_all)
 
         # Check versions
         lowered_model_name = model_name.lower()
-        os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
+        if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
+            os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
         LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
         NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
         # Pixtral
