@@ -14,7 +14,7 @@
 
 import warnings, importlib, sys
 from packaging.version import Version
-import os, re, subprocess, inspect
+import os, re, subprocess, inspect, functools
 import numpy as np
 
 # Fix some issues before importing other packages
@@ -69,8 +69,16 @@ except Exception as exception:
     raise exception
 pass
 
+@functools.cache
+def is_hip():
+    return bool(getattr(getattr(torch, "version", None), "hip", None))
+pass
+
+@functools.cache
 def get_device_type():
     if hasattr(torch, "cuda") and torch.cuda.is_available():
+        if is_hip():
+            return "hip"
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
@@ -78,8 +86,9 @@ def get_device_type():
 pass
 DEVICE_TYPE : str = get_device_type()
 
+@functools.cache
 def get_device_count():
-    if DEVICE_TYPE == "cuda":
+    if DEVICE_TYPE in ("cuda", "hip"):
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
@@ -91,11 +100,12 @@ DEVICE_COUNT : int = get_device_count()
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
-if (DEVICE_TYPE == "cuda") and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0"):
+# TODO(billishyahao): need to add hip related optimization...
+if (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0"):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-elif (DEVICE_TYPE == "cuda") and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="1") and \
+elif (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="1") and \
     ("expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")):
     warnings.warn(
         "Unsloth: `UNSLOTH_VLLM_STANDBY` is on, but requires `expandable_segments` to be off.\n"\
@@ -131,7 +141,6 @@ pass
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
-from packaging.version import Version
 from .import_fixes import fix_xformers_performance_issue
 fix_xformers_performance_issue(); del fix_xformers_performance_issue;
 from .import_fixes import fix_vllm_aimv2_issue
@@ -153,6 +162,8 @@ if DEVICE_TYPE == "cuda":
         def is_bf16_supported(): return SUPPORTS_BFLOAT16
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
+elif DEVICE_TYPE == "hip":
+    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
@@ -217,6 +228,9 @@ if DEVICE_TYPE == "cuda":
                 "Also try `sudo ldconfig /usr/local/cuda-xx.x` - find the latest cuda version.\n"\
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
+    pass
+elif DEVICE_TYPE == "hip":
+    # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
     # currently intel xpu will not support bnb, will add support in the future

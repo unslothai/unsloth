@@ -24,6 +24,7 @@ __all__ = [
     "xformers_attention",
     "xformers_version",
     "__version__",
+    "importlib_version",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "USE_MODELSCOPE",
@@ -81,6 +82,7 @@ import re
 import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
+from importlib.metadata import version as importlib_version
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
 from unsloth_zoo.tokenizer_utils import (
@@ -452,7 +454,7 @@ pass
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 torch_version = torch.__version__
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE in ("cuda", "hip"):
     if Version(torch_version) < Version("2.4.0"):
         torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
         torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
@@ -506,7 +508,7 @@ pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE in ("cuda", "hip"):
     import bitsandbytes as bnb
 
 from transformers import AutoTokenizer
@@ -565,6 +567,44 @@ if DEVICE_TYPE == "cuda":
         # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
     pass
+elif DEVICE_TYPE == "hip":
+    SUPPORTS_BFLOAT16 = True
+    if _is_package_available("flash_attn"):
+        # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
+        try:
+            try:
+                # See https://github.com/unslothai/unsloth/issues/1437
+                from flash_attn.flash_attn_interface import flash_attn_gpu
+            except:
+                from flash_attn.flash_attn_interface import flash_attn_cuda
+            HAS_FLASH_ATTENTION = True
+
+            # Also check for softcapping
+            from flash_attn import __version__ as flash_attn_version
+            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
+            if not HAS_FLASH_ATTENTION_SOFTCAPPING:
+                print(
+                    "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
+                    "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
+                    "To update flash-attn, do the below:\n"\
+                    '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
+                )
+        except:
+            print(
+                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
+                "A possible explanation is you have a new CUDA version which isn't\n"\
+                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
+                "We shall now use Xformers instead, which does not have any performance hits!\n"\
+                "We found this negligible impact by benchmarking on 1x A100."
+            )
+
+            # Stop Flash Attention from importing!
+            import transformers.utils.import_utils
+            transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+            import transformers.utils
+            transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+
+            HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
 
