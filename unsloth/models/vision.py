@@ -646,6 +646,7 @@ class FastBaseModel:
             "lora_dropout"      : lora_dropout,
             "bias"              : bias,
             "task_type"         : task_type,
+            "modules_to_save"   : modules_to_save, # why it was missed in unsloth...
             "use_rslora"        : use_rslora,
             "init_lora_weights" : init_lora_weights,
             "loftq_config"      : loftq_config,
