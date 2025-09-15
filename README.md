@@ -38,25 +38,30 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 - See detailed documentation for Unsloth [here](https://docs.unsloth.ai/)
 
 ## ⚡ Quickstart
-
-- **Install with pip (recommended)** for Linux devices:
+### Linux or WSL:
 ```
 pip install unsloth
 ```
-For Windows install instructions, see [here](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
+### Windows
+For Windows, ```pip install unsloth``` works only if you have Pytorch installed. For more info, read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
+### Docker
+Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
 
 ## 🦥 Unsloth.ai News
-- 📣 **gpt-oss** by OpenAI: For details on our bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
+- 📣 **Memory-efficient RL** We're introducing even better RL. Our new kernels & algos allows faster RL with 50% less VRAM & 10× more context. [Read blog](https://docs.unsloth.ai/new/memory-efficient-rl)
+- 📣 **gpt-oss** by OpenAI: For details on [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training), long-context training, bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
 - 📣 **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
 - 📣 **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
 - 📣 **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
 - 📣 Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & KL Divergence.
 - 📣 [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (BERT, diffusion, Cohere, Mamba), FFT, etc. MultiGPU coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
-- 📣 Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
-- 📣 [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - run or fine-tune them [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
+
 <details>
   <summary>Click for more news</summary>
 
+
+- 📣 [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - run or fine-tune them [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
+- 📣 Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 Introducing Unsloth [Dynamic 4-bit Quantization](https://unsloth.ai/blog/dynamic-4bit)! We dynamically opt not to quantize certain parameters and this greatly increases accuracy while only using <10% more VRAM than BnB 4-bit. See our collection on [Hugging Face here.](https://huggingface.co/collections/unsloth/unsloth-4-bit-dynamic-quants-67503bb873f89e15276c44e7)
 - 📣 **[Llama 4](https://unsloth.ai/blog/llama4)** by Meta, including Scout & Maverick are now supported.
 
@@ -226,6 +231,21 @@ else: raise RuntimeError(f"Torch = {v} too new!")
 x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
+### Docker Installation
+You can use our pre-built Docker container with all dependencies to use Unsloth instantly with no setup required.
+[Read our guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
+
+**This container requires installing [NVIDIA's Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)**.
+
+```bash
+docker run -d -e JUPYTER_PASSWORD="mypassword" \
+  -p 8888:8888 -p 2222:22 \
+  -v $(pwd)/work:/workspace/work \
+  --gpus all \
+  unsloth/unsloth
+```
+
+Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
 
 ## 📜 Documentation
 - Go to our official [Documentation](https://docs.unsloth.ai) for saving to GGUF, checkpointing, evaluation and more!
