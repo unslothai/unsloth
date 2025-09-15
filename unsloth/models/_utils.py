@@ -614,6 +614,18 @@ from transformers.models.llama.modeling_llama import logger
 # Get Xformers
 try:
     from xformers import __version__ as xformers_version
+    # [TODO] Xformers does NOT work on RTX 50x (12), B200 (10), Jetson (11)
+    # See https://github.com/facebookresearch/xformers/issues/1329
+    # CUDA error (/workspace/xfrm2/third_party/flash-attention/hopper/flash_fwd_launch_template.h:188)
+    major_version, minor_version = torch.cuda.get_device_capability()
+    if (
+        f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and \
+        (xformers_version in (Version("0.0.32.post2"),)
+    ):
+        raise NotImplementedError(
+            "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet."
+        )
+    pass
     # Temporarily disable 0.0.27 and higher - inference issues
     if False: #Version(xformers_version) >= Version("0.0.27"):
         raise ImportError(
@@ -661,7 +673,9 @@ try:
     pass
     import xformers.ops.fmha as xformers
     xformers_attention = xformers.memory_efficient_attention
-except:
+except Exception as e:
+    print("========\nSwitching to SDPA PyTorch native attention which is slightly slower.\n========\n")
+    print(str(e))
     xformers = None
     xformers_attention = None
     xformers_version = None
