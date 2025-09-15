@@ -622,7 +622,8 @@ class FastModel(FastBaseModel):
 
         # Check versions
         lowered_model_name = model_name.lower()
-        os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
+        if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
+            os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
         LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
         NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
         # Pixtral
