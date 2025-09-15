@@ -95,6 +95,9 @@ For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwe
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
 
 ## 💾 Install Unsloth
+> [!warning]
+> Python 3.14 does not support Unsloth. Use 3.13 or lower.
+
 You can also see our documentation for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
 
 ### Pip Installation
