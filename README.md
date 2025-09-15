@@ -146,6 +146,13 @@ SFTConfig(
 
 For **advanced installation instructions** or if you see weird errors during installations:
 
+First try using an isolated environment via then `pip install unsloth`
+```bash
+python -m venv unsloth
+source unsloth/bin/activate
+pip install unsloth
+```
+
 1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
 2. Confirm if CUDA is installed correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
 3. Install `xformers` manually via:
