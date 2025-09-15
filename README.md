@@ -38,14 +38,16 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 - See detailed documentation for Unsloth [here](https://docs.unsloth.ai/)
 
 ## ⚡ Quickstart
-### Linux or WSL:
-```
+### Linux or WSL
+```bash
 pip install unsloth
 ```
 ### Windows
-For Windows, ```pip install unsloth``` works only if you have Pytorch installed. For more info, read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
+For Windows, `pip install unsloth` works only if you have Pytorch installed. For more info, read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
 ### Docker
 Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
+### Blackwell
+For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) for more details.
 
 ## 🦥 Unsloth.ai News
 - 📣 **Memory-efficient RL** We're introducing even better RL. Our new kernels & algos allows faster RL with 50% less VRAM & 10× more context. [Read blog](https://docs.unsloth.ai/new/memory-efficient-rl)
@@ -145,8 +147,14 @@ For **advanced installation instructions** or if you see weird errors during ins
 
 1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
 2. Confirm if CUDA is installed correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
-3. Install `xformers` manually. You can try installing `vllm` and seeing if `vllm` succeeds. Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs.
-4. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 
+3. Install `xformers` manually via:
+```bash
+pip install ninja
+pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+```
+Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs and ignore `xformers`
+5. You can try installing `vllm` and seeing if `vllm` succeeds.
+6. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 
 5. Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
 
 ### Conda Installation (Optional)
@@ -216,18 +224,26 @@ Or, run the below manually in a Python REPL:
 try: import torch
 except: raise ImportError('Install torch via `pip install torch`')
 from packaging.version import Version as V
-v = V(torch.__version__)
+import re
+v = V(re.match(r"[0-9\.]{3,}", torch.__version__).group(0))
 cuda = str(torch.version.cuda)
 is_ampere = torch.cuda.get_device_capability()[0] >= 8
-if cuda != "12.1" and cuda != "11.8" and cuda != "12.4": raise RuntimeError(f"CUDA = {cuda} not supported!")
+USE_ABI = torch._C._GLIBCXX_USE_CXX11_ABI
+if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
 elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
 elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
 elif v  < V('2.3.0'): x = 'cu{}{}-torch220'
 elif v  < V('2.4.0'): x = 'cu{}{}-torch230'
 elif v  < V('2.5.0'): x = 'cu{}{}-torch240'
-elif v  < V('2.6.0'): x = 'cu{}{}-torch250'
+elif v  < V('2.5.1'): x = 'cu{}{}-torch250'
+elif v <= V('2.5.1'): x = 'cu{}{}-torch251'
+elif v  < V('2.7.0'): x = 'cu{}{}-torch260'
+elif v  < V('2.7.9'): x = 'cu{}{}-torch270'
+elif v  < V('2.8.0'): x = 'cu{}{}-torch271'
+elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
 else: raise RuntimeError(f"Torch = {v} too new!")
+if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
