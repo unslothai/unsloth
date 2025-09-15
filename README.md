@@ -153,8 +153,9 @@ For **advanced installation instructions** or if you see weird errors during ins
   pip install ninja
   pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
   ```
-  Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs and ignore `xformers`
-5. You can try installing `vllm` and seeing if `vllm` succeeds.
+    Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs and ignore `xformers`
+
+5. For GRPO runs, you can try installing `vllm` and seeing if `vllm` succeeds.
 6. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 
 5. Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
 
