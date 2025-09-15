@@ -84,7 +84,7 @@ import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
-
+from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
 )
@@ -607,8 +607,6 @@ elif DEVICE_TYPE == "hip":
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
-
-from transformers.models.llama.modeling_llama import logger
 
 # =============================================
 # Get Xformers
