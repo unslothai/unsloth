@@ -108,8 +108,6 @@ pip install --upgrade --force-reinstall --no-cache-dir unsloth unsloth_zoo
 ```
 See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip-installation) for advanced pip install instructions.
 ### Windows Installation
-> [!warning]
-> Python 3.13 does not support Unsloth. Use 3.12, 3.11 or 3.10
 
 1. **Install NVIDIA Video Driver:**
   You should install the latest version of your GPUs driver. Download drivers here: [NVIDIA GPU Drive](https://www.nvidia.com/Download/index.aspx).
