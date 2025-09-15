@@ -621,7 +621,11 @@ try:
         (Version(xformers_version) in (Version("0.0.32.post2"),))
     ):
         raise NotImplementedError(
-            "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet."
+            "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet. Please build from source via\n"\
+            "```\n"\
+            "pip install ninja\n"\
+            "pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"\
+            "```\n"
         )
     # Temporarily disable 0.0.27 and higher - inference issues
     if False: #Version(xformers_version) >= Version("0.0.27"):
