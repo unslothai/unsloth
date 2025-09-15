@@ -78,6 +78,7 @@ NUM_LOGITS_TO_KEEP = dict()
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
+    "mistral3"
 ]
 VLLM_NON_LORA_VLM = [
     "mllama"
