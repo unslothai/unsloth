@@ -617,13 +617,12 @@ try:
     # CUDA error (/workspace/xfrm2/third_party/flash-attention/hopper/flash_fwd_launch_template.h:188)
     major_version, minor_version = torch.cuda.get_device_capability()
     if (
-        f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and \
-        (xformers_version in (Version("0.0.32.post2"),)
+        (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and \
+        (Version(xformers_version) in (Version("0.0.32.post2"),))
     ):
         raise NotImplementedError(
             "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet."
         )
-    pass
     # Temporarily disable 0.0.27 and higher - inference issues
     if False: #Version(xformers_version) >= Version("0.0.27"):
         raise ImportError(
