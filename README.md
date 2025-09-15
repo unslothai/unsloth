@@ -38,25 +38,32 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 - See detailed documentation for Unsloth [here](https://docs.unsloth.ai/)
 
 ## ⚡ Quickstart
-
-- **Install with pip (recommended)** for Linux devices:
-```
+### Linux or WSL
+```bash
 pip install unsloth
 ```
-For Windows install instructions, see [here](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
+### Windows
+For Windows, `pip install unsloth` works only if you have Pytorch installed. For more info, read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
+### Docker
+Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
+### Blackwell
+For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwell Guide](https://docs.unsloth.ai/basics/training-llms-with-blackwell-rtx-50-series-and-unsloth) for more details.
 
 ## 🦥 Unsloth.ai News
-- 📣 **gpt-oss** by OpenAI: For details on our bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
+- 📣 **Memory-efficient RL** We're introducing even better RL. Our new kernels & algos allows faster RL with 50% less VRAM & 10× more context. [Read blog](https://docs.unsloth.ai/new/memory-efficient-rl)
+- 📣 **gpt-oss** by OpenAI: For details on [Unsloth Flex Attention](https://docs.unsloth.ai/new/long-context-gpt-oss-training), long-context training, bug fixes, [Read our Guide](https://docs.unsloth.ai/basics/gpt-oss). 20B works on a 14GB GPU and 120B on 65GB VRAM. [gpt-oss uploads](https://huggingface.co/collections/unsloth/gpt-oss-6892433695ce0dee42f31681).
 - 📣 **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
 - 📣 **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
 - 📣 **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
 - 📣 Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & KL Divergence.
 - 📣 [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (BERT, diffusion, Cohere, Mamba), FFT, etc. MultiGPU coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
-- 📣 Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
-- 📣 [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - run or fine-tune them [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
+
 <details>
   <summary>Click for more news</summary>
 
+
+- 📣 [DeepSeek-R1](https://unsloth.ai/blog/deepseek-r1) - run or fine-tune them [with our guide](https://unsloth.ai/blog/deepseek-r1). All model uploads: [here](https://huggingface.co/collections/unsloth/deepseek-r1-all-versions-678e1c48f5d2fce87892ace5).
+- 📣 Introducing Long-context [Reasoning (GRPO)](https://unsloth.ai/blog/grpo) in Unsloth. Train your own reasoning model with just 5GB VRAM. Transform Llama, Phi, Mistral etc. into reasoning LLMs!
 - 📣 Introducing Unsloth [Dynamic 4-bit Quantization](https://unsloth.ai/blog/dynamic-4bit)! We dynamically opt not to quantize certain parameters and this greatly increases accuracy while only using <10% more VRAM than BnB 4-bit. See our collection on [Hugging Face here.](https://huggingface.co/collections/unsloth/unsloth-4-bit-dynamic-quants-67503bb873f89e15276c44e7)
 - 📣 **[Llama 4](https://unsloth.ai/blog/llama4)** by Meta, including Scout & Maverick are now supported.
 
@@ -88,6 +95,9 @@ For Windows install instructions, see [here](https://docs.unsloth.ai/get-started
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
 
 ## 💾 Install Unsloth
+> [!warning]
+> Python 3.14 does not support Unsloth. Use 3.13 or lower.
+
 You can also see our documentation for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
 
 ### Pip Installation
@@ -101,8 +111,6 @@ pip install --upgrade --force-reinstall --no-cache-dir unsloth unsloth_zoo
 ```
 See [here](https://github.com/unslothai/unsloth/edit/main/README.md#advanced-pip-installation) for advanced pip install instructions.
 ### Windows Installation
-> [!warning]
-> Python 3.13 does not support Unsloth. Use 3.12, 3.11 or 3.10
 
 1. **Install NVIDIA Video Driver:**
   You should install the latest version of your GPUs driver. Download drivers here: [NVIDIA GPU Drive](https://www.nvidia.com/Download/index.aspx).
@@ -138,10 +146,24 @@ SFTConfig(
 
 For **advanced installation instructions** or if you see weird errors during installations:
 
+First try using an isolated environment via then `pip install unsloth`
+```bash
+python -m venv unsloth
+source unsloth/bin/activate
+pip install unsloth
+```
+
 1. Install `torch` and `triton`. Go to https://pytorch.org to install it. For example `pip install torch torchvision torchaudio triton`
 2. Confirm if CUDA is installed correctly. Try `nvcc`. If that fails, you need to install `cudatoolkit` or CUDA drivers.
-3. Install `xformers` manually. You can try installing `vllm` and seeing if `vllm` succeeds. Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs.
-4. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 
+3. Install `xformers` manually via:
+  ```bash
+  pip install ninja
+  pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+  ```
+    Check if `xformers` succeeded with `python -m xformers.info` Go to https://github.com/facebookresearch/xformers. Another option is to install `flash-attn` for Ampere GPUs and ignore `xformers`
+
+5. For GRPO runs, you can try installing `vllm` and seeing if `pip install vllm` succeeds.
+6. Double check that your versions of Python, CUDA, CUDNN, `torch`, `triton`, and `xformers` are compatible with one another. The [PyTorch Compatibility Matrix](https://github.com/pytorch/pytorch/blob/main/RELEASE.md#release-compatibility-matrix) may be useful. 
 5. Finally, install `bitsandbytes` and check it with `python -m bitsandbytes`
 
 ### Conda Installation (Optional)
@@ -211,21 +233,44 @@ Or, run the below manually in a Python REPL:
 try: import torch
 except: raise ImportError('Install torch via `pip install torch`')
 from packaging.version import Version as V
-v = V(torch.__version__)
+import re
+v = V(re.match(r"[0-9\.]{3,}", torch.__version__).group(0))
 cuda = str(torch.version.cuda)
 is_ampere = torch.cuda.get_device_capability()[0] >= 8
-if cuda != "12.1" and cuda != "11.8" and cuda != "12.4": raise RuntimeError(f"CUDA = {cuda} not supported!")
+USE_ABI = torch._C._GLIBCXX_USE_CXX11_ABI
+if cuda not in ("11.8", "12.1", "12.4", "12.6", "12.8"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 if   v <= V('2.1.0'): raise RuntimeError(f"Torch = {v} too old!")
 elif v <= V('2.1.1'): x = 'cu{}{}-torch211'
 elif v <= V('2.1.2'): x = 'cu{}{}-torch212'
 elif v  < V('2.3.0'): x = 'cu{}{}-torch220'
 elif v  < V('2.4.0'): x = 'cu{}{}-torch230'
 elif v  < V('2.5.0'): x = 'cu{}{}-torch240'
-elif v  < V('2.6.0'): x = 'cu{}{}-torch250'
+elif v  < V('2.5.1'): x = 'cu{}{}-torch250'
+elif v <= V('2.5.1'): x = 'cu{}{}-torch251'
+elif v  < V('2.7.0'): x = 'cu{}{}-torch260'
+elif v  < V('2.7.9'): x = 'cu{}{}-torch270'
+elif v  < V('2.8.0'): x = 'cu{}{}-torch271'
+elif v  < V('2.8.9'): x = 'cu{}{}-torch280'
 else: raise RuntimeError(f"Torch = {v} too new!")
+if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 x = x.format(cuda.replace(".", ""), "-ampere" if is_ampere else "")
 print(f'pip install --upgrade pip && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git"')
 ```
+### Docker Installation
+You can use our pre-built Docker container with all dependencies to use Unsloth instantly with no setup required.
+[Read our guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
+
+**This container requires installing [NVIDIA's Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)**.
+
+```bash
+docker run -d -e JUPYTER_PASSWORD="mypassword" \
+  -p 8888:8888 -p 2222:22 \
+  -v $(pwd)/work:/workspace/work \
+  --gpus all \
+  unsloth/unsloth
+```
+
+Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
 
 ## 📜 Documentation
 - Go to our official [Documentation](https://docs.unsloth.ai) for saving to GGUF, checkpointing, evaluation and more!
