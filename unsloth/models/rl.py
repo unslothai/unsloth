@@ -33,7 +33,6 @@ from .rl_replacements import (
     RL_CONFIG_CHANGES,
     RL_METRICS_CHANGES,
 )
-selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -100,6 +99,11 @@ def PatchRL(FastLanguageModel):
 pass
 
 
+selective_log_softmax            = RL_REPLACEMENTS["selective_log_softmax"]
+calculate_pad_tokens_in_prompt   = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
+create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
+left_pack_padding                = RL_REPLACEMENTS["left_pack_padding"]
+
 RLTrainer_replacement = '''
 import os
 from typing import *
@@ -120,6 +124,10 @@ torch_compile_options = {{
 }}
 
 {selective_log_softmax_code}
+{calculate_pad_tokens_in_prompt_code}
+{create_completion_attention_mask_code}
+{left_pack_padding_code}
+
 {RL_pre}
 
 @dataclass
@@ -697,8 +705,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
     pass
 
-    # Selective log softmax
+    # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    calculate_pad_tokens_in_prompt_code = inspect.getsource(calculate_pad_tokens_in_prompt)
+    create_completion_attention_mask_code = inspect.getsource(create_completion_attention_mask)
+    left_pack_padding_code = inspect.getsource(left_pack_padding)
 
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
@@ -724,7 +735,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_call  = max_seq_length_call,
         max_seq_length_post  = max_seq_length_post,
 
-        selective_log_softmax_code = selective_log_softmax_code,
+        selective_log_softmax_code            = selective_log_softmax_code,
+        calculate_pad_tokens_in_prompt_code   = calculate_pad_tokens_in_prompt_code,
+        create_completion_attention_mask_code = create_completion_attention_mask_code,
+        left_pack_padding_code                = left_pack_padding_code,
     )
 
     if RLTrainer_name == "SFTTrainer":
