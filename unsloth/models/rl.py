@@ -550,7 +550,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     pass
 
     # Warn on too large or too small learning rate
-    if " learning_rate" in call_args:
+    if "learning_rate" in call_args:
         learning_rate_check = \
         "if learning_rate < 1e-7: print(f'Unsloth: Your learning rate of `{learning_rate}` is too small and less than 1e-7! "\
         "Consider increasing it, otherwise gradient updates will be close to 0!')\n"\
@@ -937,6 +937,13 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             r"\1, lora_request = self.model.load_lora('" + lora_name + r"', load_tensors = True))",
             source
         )
+        # Prefer using unsloth's sampling params and fallback to trl's if not found
+        # We'll enable this later separately when combining both this and GRPOConfig params
+        # source = re.sub(
+        #     r"sampling_params\s*=\s*sampling_params",
+        #     r"sampling_params = getattr(self.args, 'vllm_sampling_params', sampling_params)",
+        #     source
+        # )
 
         # Skip if no changes done
         if source == original_source: continue
