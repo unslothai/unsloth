@@ -84,6 +84,7 @@ from ._utils import (
 global FORCE_FLOAT32
 FORCE_FLOAT32 = [
     "gemma3",
+    "gemma3n",
     "gpt_oss",
 ]
 
@@ -187,6 +188,8 @@ class FastLanguageModel(FastLlamaModel):
 
         autoconfig_error = None
         peft_error = None
+        model_config = None
+        peft_config = None
         try:
             model_config = AutoConfig.from_pretrained(
                 model_name,
@@ -210,8 +213,12 @@ class FastLanguageModel(FastLlamaModel):
             peft_error = str(error)
             is_peft = False
         pass
-
-        # Both config.json and adapter_config.json should not exist!
+        model_types = get_transformers_model_type(model_config or peft_config)
+        if len(model_types) == 1:
+            model_type = model_types[0]
+        else:
+            # Leave as tuple if more than one arch
+            model_type = model_types
 
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
@@ -275,8 +282,6 @@ class FastLanguageModel(FastLlamaModel):
         pass
 
         if not was_disabled: enable_progress_bars()
-
-        model_type = model_config.model_type
 
         if model_type == "llama":
             scaling_type = None
@@ -358,7 +363,7 @@ class FastLanguageModel(FastLlamaModel):
         #     dispatch_model = FastGraniteModel
         else:
             return FastModel.from_pretrained(
-                model_name                 = model_name,
+                model_name                 = old_model_name,
                 max_seq_length             = max_seq_length,
                 dtype                      = dtype,
                 load_in_4bit               = load_in_4bit,
@@ -493,10 +498,11 @@ except:
     from transformers import AutoModelForVision2Seq
 pass
 
+# Must be alphabetically sorted for each entry
 DISABLE_COMPILE_MODEL_NAMES = [
-    "aya-vision",
+    "aya_vision",
     "modernbert",
-    "granite-vision",
+    "granite,llava_next", # Granite-vision 3
 ]
 
 
@@ -582,20 +588,62 @@ class FastModel(FastBaseModel):
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
 
+        # Check modelscope
+        if USE_MODELSCOPE and not os.path.exists(model_name):
+            from modelscope import snapshot_download
+            model_name = snapshot_download(model_name)
+        pass
+
+        # First check if it's a normal model via AutoConfig
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
+        was_disabled = are_progress_bars_disabled()
+        disable_progress_bars()
+
+        autoconfig_error = None
+        peft_error = None
+        model_config = None
+        peft_config = None
+        try:
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+            )
+            is_model = True
+        except Exception as error:
+            autoconfig_error = str(error)
+            is_model = False
+        try:
+            peft_config = PeftConfig.from_pretrained(
+                model_name,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+            )
+            is_peft = True
+        except Exception as error:
+            peft_error = str(error)
+            is_peft = False
+        pass
+        model_types = get_transformers_model_type(model_config or peft_config)
+        model_types_all = ",".join(model_types)
+
         # Check versions
         lowered_model_name = model_name.lower()
-        os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
+        if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
+            os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
         LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
         NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
         # Pixtral
-        if "pixtral" in lowered_model_name and transformers_version < Version("4.49.0"):
+        if "pixtral" in model_types_all and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Pixtral only works on transformers >= 4.49.0." + LATEST)
         # Qwen 2.5
-        elif "qwen2.5" in lowered_model_name and transformers_version < Version("4.49.0"):
+        elif "qwen2_5" in model_types_all and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
         # Gemma 3
-        elif "gemma-3" in lowered_model_name:
-            if "gemma-3n" in lowered_model_name:
+        elif "gemma3" in model_types_all:
+            if "gemma3n" in model_types_all:
                 if transformers_version < Version("4.53.0"):
                     raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
                 os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
@@ -613,10 +661,10 @@ class FastModel(FastBaseModel):
             # common in both gemma-3 and gemma-3n
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         # Cohere
-        elif "c4ai-command-a-03-2025" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
+        elif "cohere2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY)
         # Sesame
-        elif "csm-1b" in lowered_model_name:
+        elif "csm" in model_types_all:
             os.environ["UNSLOTH_COMPILE_DISABLE"] = "1" # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1" # Sesame fails
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
@@ -624,14 +672,14 @@ class FastModel(FastBaseModel):
                 "if name.endswith(('_proj', 'fc1', 'fc2', 'codebook', 'head')): module.to(torch.float16)"\
                 ";"
         # Granite 4
-        elif 'granite-4' in lowered_model_name:
+        elif 'granitemoehybrid' in model_types_all:
             # Granite-4 rms norms are stored as 16 bit, but we upcast
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
         # Olmo 2
-        elif "olmo-2" in lowered_model_name and transformers_version < Version("4.50.0.dev0"):
+        elif "olmo2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError("Unsloth: OLMo-2 only works on transformers >= 4.50.0." + NIGHTLY)
-        elif "falcon-h1" in lowered_model_name:
+        elif "falcon_h1" in model_types_all:
             # Falcon must use float32 Triton ie TRITON_F32_DEFAULT = 'ieee'
             # since Mamba kernels error out on using lower precision
             os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
@@ -639,7 +687,7 @@ class FastModel(FastBaseModel):
                 "if name.endswith(('q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj', 'head')): module.to(torch.float16)"\
                 ";"\
                 "os.environ['TRITON_F32_DEFAULT'] = 'ieee'"
-        elif "gpt-oss" in lowered_model_name:
+        elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             if not load_in_4bit:
                 # Only upcast MoE biases for MXFP4, not BnB
@@ -683,44 +731,6 @@ class FastModel(FastBaseModel):
             # All other models need to disable static cache
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
         pass
-
-        if USE_MODELSCOPE and not os.path.exists(model_name):
-            from modelscope import snapshot_download
-            model_name = snapshot_download(model_name)
-        pass
-
-        # First check if it's a normal model via AutoConfig
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
-        was_disabled = are_progress_bars_disabled()
-        disable_progress_bars()
-
-        autoconfig_error = None
-        peft_error = None
-        try:
-            model_config = AutoConfig.from_pretrained(
-                model_name,
-                token = token,
-                revision = revision,
-                trust_remote_code = trust_remote_code,
-            )
-            is_model = True
-        except Exception as error:
-            autoconfig_error = str(error)
-            is_model = False
-        try:
-            peft_config = PeftConfig.from_pretrained(
-                model_name,
-                token = token,
-                revision = revision,
-                trust_remote_code = trust_remote_code,
-            )
-            is_peft = True
-        except Exception as error:
-            peft_error = str(error)
-            is_peft = False
-        pass
-
-        # Both config.json and adapter_config.json should not exist!
 
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
@@ -791,15 +801,7 @@ class FastModel(FastBaseModel):
         else:
             redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
-        # Get model types like Gemma3 etc
-        model_types = get_transformers_model_type(
-            model_name        = model_name,
-            token             = token,
-            revision          = revision,
-            trust_remote_code = trust_remote_code,
-        )
         model_types = ["siglip"] + model_types
-
         # Set forced float32 env flag
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         do_forced_float32 = False
@@ -807,8 +809,8 @@ class FastModel(FastBaseModel):
             if model_type_arch != "siglip": break
         global FORCE_FLOAT32
         for disable_name in FORCE_FLOAT32:
-            if (disable_name.lower() == model_type_arch.lower().replace("-", "_") or \
-                disable_name.lower() in model_name.lower()) and \
+            if (disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "") or \
+                disable_name.lower() in model_types_all) and \
                 ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16 # Change to bfloat16 loading
@@ -817,7 +819,6 @@ class FastModel(FastBaseModel):
         # Patch gradient checkpointing
         if use_gradient_checkpointing == "unsloth":
             patch_unsloth_smart_gradient_checkpointing(dtype = dtype)
-
         with redirector:
             patch_loss_functions(torch_compile = False)
             model_types, supports_sdpa = unsloth_compile_transformers(
@@ -854,7 +855,7 @@ class FastModel(FastBaseModel):
             )
         pass
         # Fix SDPA
-        if "gemma-3n" in lowered_model_name:
+        if "gemma3n" in model_types_all:
             supports_sdpa = False
         pass
 

@@ -28,7 +28,7 @@ pass
 from ..kernels import (
     post_patch_loss_function,
 )
-from ._utils import __version__
+from ._utils import __version__, importlib_version
 from ._utils import *
 from ..save import patch_saving_functions
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -86,6 +86,7 @@ VLLM_NON_LORA_VLM = [
 
 from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
+
 from transformers import GenerationConfig, CompileConfig, HybridCache
 
 _compile_config = CompileConfig(
@@ -324,15 +325,18 @@ class FastBaseModel:
             gpu_stats = torch.cuda.get_device_properties(0)
             gpu_version = torch.version.cuda
             gpu_stats_snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-
-            from importlib.metadata import version as importlib_version
+            try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except: vllm_version = ""
+        elif DEVICE_TYPE == "hip":
+            gpu_stats = torch.cuda.get_device_properties(0)
+            gpu_version = torch.version.hip
+            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
             try:    vllm_version = f" vLLM: {importlib_version('vllm')}."
             except: vllm_version = ""
         elif DEVICE_TYPE == "xpu":
             gpu_stats = torch.xpu.get_device_properties(0)
             gpu_version = torch.version.xpu
             gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-
             # TODO: After adding vLLM support for XPU, changed this
             vllm_version = ""
         else:
@@ -556,7 +560,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE == "cuda":  torch.cuda.empty_cache()
+            if DEVICE_TYPE in ("cuda", "hip"):  torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu": torch.xpu.empty_cache()
         pass
 
@@ -648,7 +652,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE == "cuda":
+            if DEVICE_TYPE in ("cuda", "hip"):
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
@@ -734,7 +738,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE == "cuda":
+            if DEVICE_TYPE in ("cuda", "hip"):
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
@@ -750,6 +754,7 @@ class FastBaseModel:
             "lora_dropout"      : lora_dropout,
             "bias"              : bias,
             "task_type"         : task_type,
+            "modules_to_save"   : modules_to_save,
             "use_rslora"        : use_rslora,
             "init_lora_weights" : init_lora_weights,
             "loftq_config"      : loftq_config,
@@ -770,7 +775,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE == "cuda":
+            if DEVICE_TYPE in ("cuda", "hip"):
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
@@ -836,7 +841,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE == "cuda":
+            if DEVICE_TYPE in ("cuda", "hip"):
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()

@@ -33,7 +33,6 @@ from .rl_replacements import (
     RL_CONFIG_CHANGES,
     RL_METRICS_CHANGES,
 )
-selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -44,6 +43,8 @@ torch_compile_options = {
 }
 
 from trl import __version__ as trl_version
+from unsloth_zoo.utils import Version
+trl_version = Version(trl_version)
 
 def vLLMSamplingParams(**kwargs):
     from vllm import SamplingParams
@@ -98,6 +99,11 @@ def PatchRL(FastLanguageModel):
 pass
 
 
+selective_log_softmax            = RL_REPLACEMENTS["selective_log_softmax"]
+calculate_pad_tokens_in_prompt   = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
+create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
+left_pack_padding                = RL_REPLACEMENTS["left_pack_padding"]
+
 RLTrainer_replacement = '''
 import os
 from typing import *
@@ -118,6 +124,10 @@ torch_compile_options = {{
 }}
 
 {selective_log_softmax_code}
+{calculate_pad_tokens_in_prompt_code}
+{create_completion_attention_mask_code}
+{left_pack_padding_code}
+
 {RL_pre}
 
 @dataclass
@@ -535,6 +545,9 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
             "loss_type" : "bnpo",           # Default GRPO paper
             "beta" : 0.001,                 # Recommended as seen in verl
             "auto_find_batch_size" : False, # Cannot work on GRPO
+            # [TODO] See https://fengyao.notion.site/off-policy-rl
+            # https://github.com/huggingface/trl/pull/3867 (August 7th)
+            "vllm_importance_sampling_correction" : False,
         }
         for k, v in replacements.items():
             x = f"{k}( = [^,\n]{{1,}})?,\n"
@@ -692,8 +705,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
     pass
 
-    # Selective log softmax
+    # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    calculate_pad_tokens_in_prompt_code = inspect.getsource(calculate_pad_tokens_in_prompt)
+    create_completion_attention_mask_code = inspect.getsource(create_completion_attention_mask)
+    left_pack_padding_code = inspect.getsource(left_pack_padding)
 
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
@@ -719,7 +735,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_call  = max_seq_length_call,
         max_seq_length_post  = max_seq_length_post,
 
-        selective_log_softmax_code = selective_log_softmax_code,
+        selective_log_softmax_code            = selective_log_softmax_code,
+        calculate_pad_tokens_in_prompt_code   = calculate_pad_tokens_in_prompt_code,
+        create_completion_attention_mask_code = create_completion_attention_mask_code,
+        left_pack_padding_code                = left_pack_padding_code,
     )
 
     if RLTrainer_name == "SFTTrainer":
@@ -804,7 +823,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             " " * 12 + "if (getattr(args, 'use_vllm', False) == False):\n" + \
             " " * 16 + "args.use_vllm = True\n"
 
-            if "grpo" in trainer_file and trl_version >= "0.18":
+            if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
                 vllm_setter += \
                 " " * 12 + "args.vllm_mode='colocate'\n"
@@ -850,26 +869,27 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params # Add spaces
 
             # count the indentation of last line of sampling_params.
-            last_line = sampling_params.split("\n")[-1]
-            last_prev_line = sampling_params.split("\n")[-2]
-            last_prev_indentation = len(last_prev_line) - len(last_prev_line.lstrip())
-            last_indentation = len(last_line) - len(last_line.lstrip())
+            splitted_sampling_params = sampling_params.split("\n")
+            if len(splitted_sampling_params) >= 2:
+                last_line = splitted_sampling_params[-1]
+                last_prev_line = splitted_sampling_params[-2]
+                last_prev_indentation = len(last_prev_line) - len(last_prev_line.lstrip())
+                last_indentation = len(last_line) - len(last_line.lstrip())
 
+                # Add extra arguments to SamplingParams
+                extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
+                # Backwards replace
+                to_replace = ",\n" + " "*last_prev_indentation + extra + ",\n" + " "*last_indentation + ")"
+                sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
+                # Strip multiple commas
+                sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
-            # Add extra arguments to SamplingParams
-            extra = "**getattr(getattr(args, 'vllm_sampling_params', vLLMSamplingParams()), '_set_kwargs', {})"
-            # Backwards replace
-            to_replace = ",\n" + " "*last_prev_indentation + extra + ",\n" + " "*last_indentation + ")"
-            sampling_params = to_replace.join(sampling_params.rsplit(")", 1))
-            # Strip multiple commas
-            sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
-
-            new_vllm_part = \
-                f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
-                f"\n{' '*8}else:\n"
+                new_vllm_part = \
+                    f"\n{' '*8}if {args}.use_vllm:\n{sampling_params}"\
+                    f"\n{' '*8}else:\n"
         pass
 
-        if trl_version >= "0.18":
+        if trl_version >= Version("0.18.0"):
             # Replace LLM init with already existing vLLM engine for colocate mode
             vllm_llm_init_pattern = r"self\.llm\s*=\s*LLM\(.*?\)*\)\s*?\n(?!,)"
             vllm_llm_replacement = "self.llm = model.vllm_engine\n"
@@ -881,7 +901,6 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             )
 
         init = init.replace(vllm_part, new_vllm_part)
-
     pass
 
     # Search for vLLM calling in all child functions
