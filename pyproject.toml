@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.9.6",
+    "unsloth_zoo>=2025.9.7",
     "torch>=2.4.0",
     "xformers>=0.0.27.post2",
     "bitsandbytes",
@@ -30,7 +30,7 @@ dependencies = [
     "triton-windows ; platform_system == 'Windows'",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1",
+    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,<=4.55.4",
     "datasets>=3.4.1,<4.0.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -58,10 +58,10 @@ exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 huggingface = [
-    "unsloth_zoo>=2025.9.6",
+    "unsloth_zoo>=2025.9.7",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1",
+    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,<=4.55.4",
     "datasets>=3.4.1,<4.0.0",
     "sentencepiece>=0.2.0",
     "tqdm",
@@ -363,10 +363,10 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2025.9.6",
+    "unsloth_zoo>=2025.9.7",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1",
+    "transformers>=4.51.3,!=4.47.0,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,<=4.55.4",
     "datasets>=3.4.1,<4.0.0",
     "sentencepiece>=0.2.0",
     "tqdm",
