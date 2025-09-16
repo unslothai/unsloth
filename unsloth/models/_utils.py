@@ -683,8 +683,12 @@ try:
     pass
     import xformers.ops.fmha as xformers
     xformers_attention = xformers.memory_efficient_attention
+except ModuleNotFoundError:
+    xformers = None
+    xformers_attention = None
+    xformers_version = None
 except Exception as e:
-    print("========\nSwitching to SDPA PyTorch native attention which is slightly slower.\n========\n")
+    print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
     print(str(e))
     xformers = None
     xformers_attention = None
