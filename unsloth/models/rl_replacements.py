@@ -415,7 +415,6 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     entropies = entropy_from_logits(logits)
 
 
-            #breakpoint()
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
             # logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             return logits, entropies  # logps, entropies
