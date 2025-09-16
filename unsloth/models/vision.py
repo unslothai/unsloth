@@ -75,6 +75,16 @@ __all__ = [
 global NUM_LOGITS_TO_KEEP
 NUM_LOGITS_TO_KEEP = dict()
 
+VLLM_SUPPORTED_VLM = [
+    "qwen2_5_vl",
+    "gemma3",
+]
+VLLM_NON_LORA_VLM = [
+    "mllama"
+]
+
+from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
+HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
 from transformers import GenerationConfig, CompileConfig, HybridCache
 
 _compile_config = CompileConfig(
@@ -254,14 +264,50 @@ class FastBaseModel:
         supports_sdpa     = True,
         whisper_language  = None,
         whisper_task      = None,
+        fast_inference   = False,
+        gpu_memory_utilization = 0.5,
+        float8_kv_cache   = False,
+        random_state      = 3407,
+        max_lora_rank     = 64,
+        disable_log_stats = False,
+        unsloth_vllm_standby = False,
         **kwargs,
     ):
+        if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
+            raise RuntimeError("Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!")
+        pass
+
         if model_types is None:
             raise RuntimeError(
                 "Unsloth: Please use FastModel or FastVisionModel and not use FastBaseModel directly!"
             )
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
+
+        is_vlm = (auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText])
+        is_whisper = (whisper_language is not None and whisper_task is not None)
+        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
+
+        model_type_arch = model_types[0]
+        if model_type_arch == "siglip":
+            for model_type_arch in model_types:
+                if model_type_arch != "siglip": break
+
+        vllm_enable_lora = True
+
+        if is_vlm and fast_inference:
+            if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
+                raise RuntimeError(
+                    f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3 among vision models. "
+                    f"Found architectures: {', '.join(model_types)}!"
+                )
+
+        if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
+            # mllama is still only in vllm v0 https://arc.net/l/quote/llwkfgmu
+            # https://docs.vllm.ai/en/stable/models/supported_models.html#text-generation_1
+            # vLLM V0 does not support LoRA on multi modal models.
+            # TODO: Update this once vLLM V1 supports Llama 3.2 aka mllama
+            vllm_enable_lora = False
 
         os.environ["UNSLOTH_USE_NEW_MODEL"] = "1"
         if trust_remote_code:
@@ -295,11 +341,6 @@ class FastBaseModel:
             raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
 
         max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
-
-        model_type_arch = model_types[0]
-        if model_type_arch == "siglip":
-            for model_type_arch in model_types:
-                if model_type_arch != "siglip": break
 
         statistics = \
         f"==((====))==  Unsloth {__version__}: Fast {model_type_arch.title()} patching. Transformers: {transformers_version}.{vllm_version}\n"\
@@ -435,17 +476,68 @@ class FastBaseModel:
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
         raise_handler = RaiseUninitialized()
-        model = auto_model.from_pretrained(
-            model_name,
-            device_map              = device_map,
-            # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
-            # quantization_config   = bnb_config,
-            token                   = token,
-            trust_remote_code       = trust_remote_code,
-            # attn_implementation   = attn_implementation,
-            **kwargs,
-        )
+        if not fast_inference:
+            model = auto_model.from_pretrained(
+                model_name,
+                device_map              = device_map,
+                # torch_dtype           = torch_dtype, # Transformers removed torch_dtype
+                # quantization_config   = bnb_config,
+                token                   = token,
+                trust_remote_code       = trust_remote_code,
+                # attn_implementation   = attn_implementation,
+                **kwargs,
+            )
+            model.fast_generate = model.generate
+            model.fast_generate_batches = error_out_no_vllm
+        else:
+            from unsloth_zoo.vllm_utils import (
+                load_vllm,
+                get_vllm_state_dict,
+                convert_vllm_to_huggingface,
+                generate_batches,
+            )
+            model_config = AutoConfig.from_pretrained(
+                model_name,
+                token = token,
+                attn_implementation = "sdpa" if supports_sdpa else "eager",
+            )
+
+            if fast_inference:
+                fast_inference, model_name = fast_inference_setup(model_name, model_config)
+
+            allowed_args = inspect.getfullargspec(load_vllm).args
+            load_vllm_kwargs = dict(
+                model_name             = model_name,
+                config                 = model_config,
+                gpu_memory_utilization = gpu_memory_utilization,
+                max_seq_length         = max_seq_length,
+                dtype                  = dtype,
+                float8_kv_cache        = float8_kv_cache,
+                enable_lora            = vllm_enable_lora,
+                max_lora_rank          = max_lora_rank,
+                disable_log_stats      = disable_log_stats,
+                use_bitsandbytes       = load_in_4bit,
+                unsloth_vllm_standby   = unsloth_vllm_standby,
+                is_vision_model        = is_vlm,
+            )
+            for allowed_arg in allowed_args:
+                if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
+                    load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
+            pass
+
+            # Load vLLM first
+            llm = load_vllm(**load_vllm_kwargs)
+
+            # Convert to HF format
+            _, quant_state_dict = get_vllm_state_dict(llm, config = model_config, is_vision_model = True)
+            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config, is_vision_model = True)
+            model.vllm_engine = llm
+            model.fast_generate = model.vllm_engine.generate
+            model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
+        pass
+
         raise_handler.remove()
+
         # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
@@ -472,9 +564,6 @@ class FastBaseModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        is_vlm = (auto_model is AutoModelForVision2Seq)
-        is_whisper = (whisper_language is not None and whisper_task is not None)
-        auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
         if (whisper_language and whisper_task) or auto_model.__name__.endswith("ForConditionalGeneration"):
            tokenizer = auto_processor.from_pretrained(
                 tokenizer_name,
@@ -627,6 +716,23 @@ class FastBaseModel:
             assert(type(target_modules) in (list, tuple, str,))
         pass
 
+        if hasattr(model, "vllm_engine"):
+            if hasattr(model.vllm_engine, "llm_engine") and hasattr(model.vllm_engine.llm_engine, "vllm_config") and getattr(model.vllm_engine.llm_engine.vllm_config, "lora_config", None) is None:
+                # If vLLM is being used but lora is not enabled, throw an error
+                # Ref https://github.com/vllm-project/vllm/blob/51ba839555a5d122eadd91e9c16463ac288f5fa1/vllm/v1/engine/processor.py#L148-L151
+                raise RuntimeError("Unsloth: LoRA is not enabled for this model!")
+            if finetune_vision_layers:
+                # vLLM does not support LoRA on vision layers
+                # https://github.com/vllm-project/vllm/blob/main/vllm/lora/models.py#L471-L477
+                # TODO: Update this once vLLM V1 supports LoRA on vision layers (possibly not happening)
+                raise RuntimeError("Unsloth: Finetuning vision layers is not supported for fast_inference. Only text layers are supported!")
+            if model.config.model_type in VLLM_NON_LORA_VLM:
+                # mllama is still only in vllm v0 https://arc.net/l/quote/llwkfgmu
+                # https://docs.vllm.ai/en/stable/models/supported_models.html#text-generation_1
+                # vLLM V0 does not support LoRA on multi modal models.
+                # TODO: Update this once vLLM V1 supports Llama 3.2 aka mllama
+                raise RuntimeError("Unsloth: LoRA finetuning for Llama 3.2 aka mllama models is not supported with fast_inference!")
+
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
@@ -646,6 +752,7 @@ class FastBaseModel:
             "lora_dropout"      : lora_dropout,
             "bias"              : bias,
             "task_type"         : task_type,
+            "modules_to_save"   : modules_to_save,
             "use_rslora"        : use_rslora,
             "init_lora_weights" : init_lora_weights,
             "loftq_config"      : loftq_config,
@@ -672,6 +779,7 @@ class FastBaseModel:
                 torch.xpu.empty_cache()
         pass
         patch_saving_functions(model, vision = True)
+        patch_peft_fast_inference(model)
 
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
