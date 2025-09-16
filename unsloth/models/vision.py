@@ -636,24 +636,17 @@ class FastBaseModel:
                 torch.xpu.empty_cache()
         pass
         max_seq_length = model.max_seq_length
-        # if we pass loftq_config = None we will get an error
+        # If we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model)
-        lora_config_dict = {
-            "r"                 : r,
-            "lora_alpha"        : lora_alpha,
-            "target_modules"    : target_modules,
-            "target_parameters" : kwargs.get("target_parameters", None),
-            "lora_dropout"      : lora_dropout,
-            "bias"              : bias,
-            "task_type"         : task_type,
-            "modules_to_save"   : modules_to_save,
-            "use_rslora"        : use_rslora,
-            "init_lora_weights" : init_lora_weights,
-            "loftq_config"      : loftq_config,
-        }
+
+        # Get only allowed parameters for LoraConfig
+        local_variables = { **locals(), **kwargs, }
+        del local_variables["kwargs"]
+        allowed_parameters = inspect.signature(LoraConfig).parameters.keys()
         lora_config = LoraConfig(
-            **{k:v for k,v in lora_config_dict.items() if k in LoraConfig.__doc__},
+            **{ k : v for k, v in local_variables.items() if k in allowed_parameters },
         )
+        print(lora_config)
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
