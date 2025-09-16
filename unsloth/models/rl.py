@@ -33,7 +33,6 @@ from .rl_replacements import (
     RL_CONFIG_CHANGES,
     RL_METRICS_CHANGES,
 )
-selective_log_softmax = RL_REPLACEMENTS["selective_log_softmax"]
 
 torch_compile_options = {
     "epilogue_fusion"   : True,
@@ -100,6 +99,11 @@ def PatchRL(FastLanguageModel):
 pass
 
 
+selective_log_softmax            = RL_REPLACEMENTS["selective_log_softmax"]
+calculate_pad_tokens_in_prompt   = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
+create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
+left_pack_padding                = RL_REPLACEMENTS["left_pack_padding"]
+
 RLTrainer_replacement = '''
 import os
 from typing import *
@@ -120,6 +124,10 @@ torch_compile_options = {{
 }}
 
 {selective_log_softmax_code}
+{calculate_pad_tokens_in_prompt_code}
+{create_completion_attention_mask_code}
+{left_pack_padding_code}
+
 {RL_pre}
 
 @dataclass
@@ -550,7 +558,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     pass
 
     # Warn on too large or too small learning rate
-    if " learning_rate" in call_args:
+    if "learning_rate" in call_args:
         learning_rate_check = \
         "if learning_rate < 1e-7: print(f'Unsloth: Your learning rate of `{learning_rate}` is too small and less than 1e-7! "\
         "Consider increasing it, otherwise gradient updates will be close to 0!')\n"\
@@ -697,8 +705,11 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         RL_pre = RL_pre + "\n" + inspect.getsource(vLLMSamplingParams)
     pass
 
-    # Selective log softmax
+    # Selective log softmax and other functions
     selective_log_softmax_code = inspect.getsource(selective_log_softmax)
+    calculate_pad_tokens_in_prompt_code = inspect.getsource(calculate_pad_tokens_in_prompt)
+    create_completion_attention_mask_code = inspect.getsource(create_completion_attention_mask)
+    left_pack_padding_code = inspect.getsource(left_pack_padding)
 
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
@@ -724,7 +735,10 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         max_seq_length_call  = max_seq_length_call,
         max_seq_length_post  = max_seq_length_post,
 
-        selective_log_softmax_code = selective_log_softmax_code,
+        selective_log_softmax_code            = selective_log_softmax_code,
+        calculate_pad_tokens_in_prompt_code   = calculate_pad_tokens_in_prompt_code,
+        create_completion_attention_mask_code = create_completion_attention_mask_code,
+        left_pack_padding_code                = left_pack_padding_code,
     )
 
     if RLTrainer_name == "SFTTrainer":
@@ -937,6 +951,13 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             r"\1, lora_request = self.model.load_lora('" + lora_name + r"', load_tensors = True))",
             source
         )
+        # Prefer using unsloth's sampling params and fallback to trl's if not found
+        # We'll enable this later separately when combining both this and GRPOConfig params
+        # source = re.sub(
+        #     r"sampling_params\s*=\s*sampling_params",
+        #     r"sampling_params = getattr(self.args, 'vllm_sampling_params', sampling_params)",
+        #     source
+        # )
 
         # Skip if no changes done
         if source == original_source: continue

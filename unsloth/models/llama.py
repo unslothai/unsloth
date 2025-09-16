@@ -2574,7 +2574,7 @@ class FastLlamaModel:
                 raise NotImplementedError("Unsloth: Currently fast inference does not work with using biases for LoRA.")
         pass
 
-        #d oes not get lora yet, so get name from model, not base model
+        # Does not get lora yet, so get name from model, not base model
         is_classification = "Classification" in str(type(model))
 
         arguments = dict(
@@ -2694,17 +2694,7 @@ class FastLlamaModel:
             clean_gpu_cache()
         pass
 
-        # Patch for fast inference
-        if vllm_engine is not None:
-            model.vllm_engine = vllm_engine
-            model.fast_generate = vllm_fast_generate
-            model.fast_generate_batches = vllm_fast_generate_batches
-
-            # Also saving and loading LoRA
-            from unsloth_zoo.vllm_utils import save_lora, load_lora
-            model.save_lora = functools.partial(save_lora, model)
-            model.load_lora = functools.partial(load_lora, model)
-        pass
+        patch_peft_fast_inference(model)
 
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
@@ -2916,18 +2906,7 @@ class FastLlamaModel:
             clean_gpu_cache()
         pass
 
-        # Patch for fast inference
-        vllm_engine = getattr(model.model, "vllm_engine", None)
-        if vllm_engine is not None:
-            model.vllm_engine = model.model.vllm_engine
-            model.fast_generate = model.model.fast_generate
-            model.fast_generate_batches = model.model.fast_generate_batches
-
-            # Also saving and loading LoRA
-            from unsloth_zoo.vllm_utils import save_lora, load_lora
-            model.save_lora = functools.partial(save_lora, model)
-            model.load_lora = functools.partial(load_lora, model)
-        pass
+        patch_peft_fast_inference(model)
 
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
