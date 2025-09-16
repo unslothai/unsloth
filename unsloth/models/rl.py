@@ -110,6 +110,7 @@ import numpy as np
 from contextlib import nullcontext
 from torch.nn import functional as F
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
+from transformers.training_args import ParallelMode
 
 torch_compile_options = {{
     "epilogue_fusion"   : True,
@@ -160,6 +161,11 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
     ):
         if args is None: args = Unsloth{RLConfig_name}()
 {RLTrainer_extra_args}
+        # [TODO] Fix up DataParallel multiplying batch sizes
+        # [TODO] DDP works, but DP seems to not work? [TODO]
+        if getattr(args, "parallel_mode", None) == ParallelMode.NOT_DISTRIBUTED and args.n_gpu > 1:
+            if getattr(args, "_n_gpu", 1) != 1:
+                args._n_gpu = 1
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
 {RLTrainer_post}
 pass

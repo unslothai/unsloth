@@ -1200,7 +1200,8 @@ def CausalLM_fast_forward(fast_forward_inference):
 
             if not RETURN_LOGITS and labels is not None:
 
-                n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
+                n_items = kwargs.get("num_items_in_batch", None)
+                if n_items is None: n_items = kwargs.get("n_items", None)
 
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
@@ -1264,12 +1265,14 @@ def CausalLM_fast_forward(fast_forward_inference):
             shift_labels[..., :-1] = labels[..., 1:]
             shift_labels[..., -1] = -100
             # shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
+            n_items = kwargs.get("num_items_in_batch", None)
+            if n_items is None: n_items = kwargs.get("n_items", None)
             loss = fast_cross_entropy_loss(
                 logits = shift_logits,
                 labels = shift_labels,
                 logit_softcapping = logit_softcapping,
                 logit_scaling     = logit_scaling,
-                n_items           = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None),
+                n_items           = n_items,
             )
         else:
             if logit_scaling != 0:
