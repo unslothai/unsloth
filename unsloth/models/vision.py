@@ -646,7 +646,6 @@ class FastBaseModel:
         lora_config = LoraConfig(
             **{ k : v for k, v in local_variables.items() if k in allowed_parameters },
         )
-        print(lora_config)
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
