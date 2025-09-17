@@ -97,15 +97,15 @@ class SyntheticDataKit:
                 engine_args["dtype"] = "auto"
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
-        if "compilation_config" in engine_args:
-            # Cannot parse in vllm serve
-            engine_args["compilation_config"] = '"' + str(engine_args["compilation_config"]) + '"'
 
         subprocess_commands = [
             "vllm", "serve", str(model_name),
         ]
         for key, value in engine_args.items():
             flag  = key.replace("_", "-")
+            if key == "compilation_config":
+                subprocess_commands += ["--" + '"' + str(value) + '"',]
+                continue
             which = str(value).replace("torch.", "")
             if which == "True":
                 # Ignore --enforce-eager True
