@@ -90,7 +90,7 @@ else:
 
 
 if DEVICE_COUNT > 1:
-    if DEVICE_TYPE == "cuda":
+    if DEVICE_TYPE in ("cuda", "hip"):
         torch_gpu_device = torch.cuda.device
     elif DEVICE_TYPE == "xpu":
         torch_gpu_device = torch.xpu.device
@@ -173,6 +173,8 @@ else:
     cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
     cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 pass
+
+torch_device_stream = torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
 
 torch_mm = torch.mm
 torch_mv = torch.mv
@@ -310,7 +312,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         return out.t() if is_transposed else out
     pass
 # NVIDIA GPU Default Logic
-elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
+elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
@@ -511,7 +513,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
         return out
     pass
-elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
+elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     def fast_gemv(X, W, quant_state, out = None):
         if quant_state is None: return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1

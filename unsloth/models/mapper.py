@@ -816,6 +816,11 @@ if not has_mps:
             "microsoft/Phi-4-mini-reasoning",
             "unsloth/phi-4-mini-reasoning-bnb-4bit",
         ),
+        "unsloth/Phi-4-mini-instruct-unsloth-bnb-4bit" : (
+            "unsloth/Phi-4-mini-instruct",
+            "microsoft/Phi-4-mini-instruct",
+            "unsloth/Phi-4-mini-instruct-bnb-4bit",
+        ),
         "unsloth/orpheus-3b-0.1-pretrained-unsloth-bnb-4bit" : (
             "unsloth/orpheus-3b-0.1-pretrained",
             "canopylabs/orpheus-3b-0.1-pretrained",
@@ -944,6 +949,16 @@ if not has_mps:
             "unsloth/Qwen3-4B-Thinking-2507",
             "Qwen/Qwen3-4B-Thinking-2507",
             "unsloth/Qwen3-4B-Thinking-2507-bnb-4bit",
+        ),
+        "unsloth/gemma-3-270m-it-unsloth-bnb-4bit" : (
+            "unsloth/gemma-3-270m-it",
+            "google/gemma-3-270m-it",
+            "unsloth/gemma-3-270m-it-bnb-4bit",
+        ),
+        "unsloth/gemma-3-270m-unsloth-bnb-4bit" : (
+            "unsloth/gemma-3-270m",
+            "google/gemma-3-270m",
+            "unsloth/gemma-3-270m-bnb-4bit",
         ),
     }
 else:
