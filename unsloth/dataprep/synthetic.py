@@ -104,7 +104,7 @@ class SyntheticDataKit:
         for key, value in engine_args.items():
             flag  = key.replace("_", "-")
             if key == "compilation_config":
-                subprocess_commands += ["--" + '"' + str(value) + '"',]
+                subprocess_commands += ["--" + flag, '"' + str(value) + '"',]
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
