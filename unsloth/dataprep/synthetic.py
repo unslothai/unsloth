@@ -28,6 +28,7 @@ from unsloth_zoo.vllm_utils import (
     patch_vllm,
     delete_vllm,
 )
+from unsloth_zoo.log import logger 
 import numpy as np
 
 from .synthetic_configs import (
@@ -76,6 +77,7 @@ class SyntheticDataKit:
             return_args            = True,
             enable_lora            = False,
             use_bitsandbytes       = False,
+            compilation_config     = 3,
             **kwargs,
         )
         if "dtype" in engine_args:
@@ -95,15 +97,17 @@ class SyntheticDataKit:
                 engine_args["dtype"] = "auto"
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
-        if "compilation_config" in engine_args:
-            # Cannot parse in vllm serve
-            engine_args["compilation_config"] = 3
 
         subprocess_commands = [
             "vllm", "serve", str(model_name),
         ]
         for key, value in engine_args.items():
-            flag  = key.replace("_", "-")
+            flag = key.replace("_", "-")
+            if key == "compilation_config":
+                # [TODO] Unsure why subprocess doesn't process json properly
+                # Also -O3 breaks on T4!
+                # subprocess_commands += ["-O3",]
+                continue
             which = str(value).replace("torch.", "")
             if which == "True":
                 # Ignore --enforce-eager True
@@ -117,6 +121,7 @@ class SyntheticDataKit:
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass
+        logger.info(subprocess_commands)
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
