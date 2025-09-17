@@ -28,6 +28,7 @@ from unsloth_zoo.vllm_utils import (
     patch_vllm,
     delete_vllm,
 )
+from unsloth_zoo.log import logger 
 import numpy as np
 
 from .synthetic_configs import (
@@ -117,6 +118,7 @@ class SyntheticDataKit:
             else:
                 subprocess_commands += ["--" + flag, which,]
         pass
+        logger.info(subprocess_commands)
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
