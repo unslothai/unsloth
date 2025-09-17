@@ -38,7 +38,7 @@ def run(args):
     from unsloth import FastLanguageModel
     from datasets import load_dataset
     from transformers.utils import strtobool
-    from trl import SFTTrainer
+    from trl import SFTTrainer, SFTConfig
     from transformers import TrainingArguments
     from unsloth import is_bfloat16_supported
     import logging
@@ -100,7 +100,7 @@ def run(args):
     print("Data is formatted and ready!")
 
     # Configure training arguments
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         warmup_steps=args.warmup_steps,
@@ -115,17 +115,16 @@ def run(args):
         seed=args.seed,
         output_dir=args.output_dir,
         report_to=args.report_to,
+        max_length=args.max_seq_length,
+        dataset_num_proc=2,
+        packing=False,
     )
 
     # Initialize trainer
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=args.max_seq_length,
-        dataset_num_proc=2,
-        packing=False,
         args=training_args,
     )
 
@@ -182,7 +181,7 @@ if __name__ == "__main__":
     lora_group = parser.add_argument_group("🧠 LoRA Options", "These options are used to configure the LoRA model.")
     lora_group.add_argument('--r', type=int, default=16, help="Rank for Lora model, default is 16.  (common values: 8, 16, 32, 64, 128)")
     lora_group.add_argument('--lora_alpha', type=int, default=16, help="LoRA alpha parameter, default is 16. (common values: 8, 16, 32, 64, 128)")
-    lora_group.add_argument('--lora_dropout', type=float, default=0, help="LoRA dropout rate, default is 0.0 which is optimized.")
+    lora_group.add_argument('--lora_dropout', type=float, default=0.0, help="LoRA dropout rate, default is 0.0 which is optimized.")
     lora_group.add_argument('--bias', type=str, default="none", help="Bias setting for LoRA")
     lora_group.add_argument('--use_gradient_checkpointing', type=str, default="unsloth", help="Use gradient checkpointing")
     lora_group.add_argument('--random_state', type=int, default=3407, help="Random state for reproducibility, default is 3407.")

@@ -15,13 +15,13 @@
 import triton
 import triton.language as tl
 import torch
-from .utils import calculate_settings, torch_gpu_device
+from .utils import calculate_settings, torch_gpu_device, torch_device_stream
 ROPE_GROUP_SIZE : int = 4
 
 def _rope_embedding(
-    Q,     Q_row_stride,
-    cos, cos_row_stride,
-    sin, sin_row_stride,
+    Q,     Q_row_stride: tl.constexpr,
+    cos, cos_row_stride: tl.constexpr,
+    sin, sin_row_stride: tl.constexpr,
     seqlen,
     head_dim      : tl.constexpr,
     n_heads       : tl.constexpr,
@@ -93,7 +93,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         # [TODO] Changing blocksize to head_dim//2 seems to have
         # some concurrency / un-deterministic issues.
         BLOCK_SIZE, num_warps = calculate_settings(head_dim//2) # (head_dim//2)
-        
+
         # group_size = 4 # 4 or 8, too large group_size can hurt performance.
         div : int
         mod : int
@@ -155,6 +155,8 @@ pass
 def fast_rope_embedding(Q, K, cos, sin):
     Q = Fast_RoPE_Embedding.apply(Q.transpose(1, 2), cos, sin).transpose(1, 2)
     K = Fast_RoPE_Embedding.apply(K.transpose(1, 2), cos, sin).transpose(1, 2)
+    # synchronize before cat to avoid race condition
+    torch_device_stream(Q.device).synchronize()
     return Q, K
 pass
 
@@ -198,5 +200,6 @@ pass
 def inplace_rope_embedding(Q, K, cos, sin, position_ids):
     Q = Slow_RoPE_Embedding.apply(Q, cos, sin, position_ids)
     K = Slow_RoPE_Embedding.apply(K, cos, sin, position_ids)
+    torch_device_stream(Q.device).synchronize()
     return Q, K
 pass

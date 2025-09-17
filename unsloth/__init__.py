@@ -14,15 +14,19 @@
 
 import warnings, importlib, sys
 from packaging.version import Version
-import os, re, subprocess, inspect
+import os, re, subprocess, inspect, functools
 import numpy as np
+
+# Fix some issues before importing other packages
+from .import_fixes import fix_message_factory_issue
+fix_message_factory_issue(); del fix_message_factory_issue;
 
 # Check if modules that need patching are already imported
 critical_modules = ['trl', 'transformers', 'peft']
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
 # This check is critical because Unsloth optimizes these libraries by modifying
-# their code at import time. If they're imported first, the original (slower, 
+# their code at import time. If they're imported first, the original (slower,
 # more memory-intensive) implementations will be used instead of Unsloth's
 # optimized versions, potentially causing OOM errors or slower training.
 
@@ -50,27 +54,10 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 #    "pinned_use_cuda_host_register:True,"\
 #    "pinned_num_register_threads:8"
 
-# Hugging Face Hub faster downloads
-if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-pass
-
-# XET is slower in Colab - investigate why
-keynames = "\n" + "\n".join(os.environ.keys())
-if "HF_XET_HIGH_PERFORMANCE" not in os.environ:
-    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
-pass
-# Disable XET cache sine it eats too much space
-if "HF_XET_CHUNK_CACHE_SIZE_BYTES" not in os.environ:
-    os.environ["HF_XET_CHUNK_CACHE_SIZE_BYTES"] = "0"
-pass
-if "\nCOLAB_" in keynames:
-    os.environ["HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY"] = "0"
-pass
-
 # Log Unsloth is being used
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Try importing PyTorch and check version
 try:
     import torch
 except ModuleNotFoundError:
@@ -82,8 +69,16 @@ except Exception as exception:
     raise exception
 pass
 
+@functools.cache
+def is_hip():
+    return bool(getattr(getattr(torch, "version", None), "hip", None))
+pass
+
+@functools.cache
 def get_device_type():
     if hasattr(torch, "cuda") and torch.cuda.is_available():
+        if is_hip():
+            return "hip"
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
@@ -91,16 +86,41 @@ def get_device_type():
 pass
 DEVICE_TYPE : str = get_device_type()
 
+@functools.cache
+def get_device_count():
+    if DEVICE_TYPE in ("cuda", "hip"):
+        return torch.cuda.device_count()
+    elif DEVICE_TYPE == "xpu":
+        return torch.xpu.device_count()
+    else:
+        return 1
+pass
+
+DEVICE_COUNT : int = get_device_count()
+
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
-if DEVICE_TYPE == "cuda" and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
+# TODO(billishyahao): need to add hip related optimization...
+if (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0"):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-
+elif (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="1") and \
+    ("expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")):
+    warnings.warn(
+        "Unsloth: `UNSLOTH_VLLM_STANDBY` is on, but requires `expandable_segments` to be off.\n"\
+        "We will remove `expandable_segments`.",
+        stacklevel = 2,
+    )
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = re.sub(
+        r"expandable\_segments\:True\,?",
+        "",
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"],
+    )
+pass
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
-torch_version = str(torch.__version__).split(".")
+torch_version = str(re.match(r"[0-9\.]{3,}", str(torch.__version__)).group(0)).split(".")
 major_torch, minor_torch = torch_version[0], torch_version[1]
 major_torch, minor_torch = int(major_torch), int(minor_torch)
 if (major_torch < 2):
@@ -111,35 +131,22 @@ elif (major_torch == 2) and (minor_torch < 2):
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 pass
 
-# Fix Xformers performance issues since 0.0.25
+# CCE fails on Torch 2.8 and above
+# OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
+if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
+    os.environ["UNSLOTH_ENABLE_CCE"] = "0"
+pass
+
+# Fix other issues
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
-from packaging.version import Version
-try:
-    xformers_version = importlib_version("xformers")
-    if Version(xformers_version) < Version("0.0.29"):
-        xformers_location = importlib.util.find_spec("xformers").origin
-        xformers_location = os.path.split(xformers_location)[0]
-        cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
-
-        if cutlass.exists():
-            with open(cutlass, "r+") as f:
-                text = f.read()
-                # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
-                if "num_splits_key=-1," in text:
-                    text = text.replace("num_splits_key=-1,", "num_splits_key=None,")
-                    f.seek(0)
-                    f.write(text)
-                    f.truncate()
-                    print("Unsloth: Patching Xformers to fix some performance issues.")
-                pass
-            pass
-        pass
-    pass
-except:
-    pass
-pass
+from .import_fixes import fix_xformers_performance_issue
+fix_xformers_performance_issue(); del fix_xformers_performance_issue;
+from .import_fixes import fix_vllm_aimv2_issue
+fix_vllm_aimv2_issue(); del fix_vllm_aimv2_issue;
+from .import_fixes import ignore_logger_messages
+ignore_logger_messages(); del ignore_logger_messages;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -155,12 +162,13 @@ if DEVICE_TYPE == "cuda":
         def is_bf16_supported(): return SUPPORTS_BFLOAT16
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
+elif DEVICE_TYPE == "hip":
+    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 pass
-
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
@@ -221,6 +229,9 @@ if DEVICE_TYPE == "cuda":
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
     pass
+elif DEVICE_TYPE == "hip":
+    # NO-OP for rocm device
+    pass
 elif DEVICE_TYPE == "xpu":
     # TODO: check triton for intel installed properly.
     pass
@@ -228,12 +239,11 @@ elif DEVICE_TYPE == "xpu":
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.4.1"):
-        pass
-        # print(
-        #     "Unsloth: Updating Unsloth-Zoo utilies to the latest version.\n"\
-        #     "To disable this, set `os.environ['UNSLOTH_DISABLE_AUTO_UPDATES'] = '1'`"
-        # )
+    if Version(unsloth_zoo_version) < Version("2025.9.6"):
+        print(
+            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
+            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
+        )
         # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
         #     try:
         #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")

@@ -78,7 +78,21 @@ class SyntheticDataKit:
             use_bitsandbytes       = False,
             **kwargs,
         )
-
+        if "dtype" in engine_args:
+            dtype_val = engine_args["dtype"]
+            if   dtype_val == torch.float16:  dtype_val = "float16"
+            elif dtype_val == torch.bfloat16: dtype_val = "bfloat16"
+            elif dtype_val == torch.float32:  dtype_val = "float32"
+            engine_args["dtype"] = dtype_val
+            # Convert torch.bfloat16, torch.float16, etc. to valid CLI string
+            if hasattr(dtype_val, "name"):
+                engine_args["dtype"] = dtype_val.name
+            elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
+                engine_args["dtype"] = dtype_val.split(".")[-1]
+            # Only allow valid vLLM choices
+            valid_dtypes = {"auto", "bfloat16", "float", "float16", "float32", "half"}
+            if engine_args["dtype"] not in valid_dtypes:
+                engine_args["dtype"] = "auto"
         if "device" in engine_args: del engine_args["device"]
         if "model"  in engine_args: del engine_args["model"]
         if "compilation_config" in engine_args:
@@ -216,7 +230,7 @@ class SyntheticDataKit:
         if not hasattr(self, "overlap") or not hasattr(self, "max_generation_tokens"):
             raise RuntimeError("Please use prepare_qa_generation first!")
 
-        with open(filename, "r") as f: text = f.read()
+        with open(filename, "r", encoding = "utf-8") as f: text = f.read()
 
         max_tokens = self.max_seq_length - self.max_generation_tokens*2 - 128 # -128 to reduce errors
         if max_tokens <= 5:
@@ -239,7 +253,7 @@ class SyntheticDataKit:
             chunked_text = self.tokenizer.decode(input_ids[left : right])
             new_filename = f"{filename}_{i}{extension}"
             all_filenames.append(new_filename)
-            with open(new_filename, "w") as f: f.write(chunked_text)
+            with open(new_filename, "w", encoding = "utf-8") as f: f.write(chunked_text)
         pass
         return all_filenames
     pass
@@ -281,7 +295,7 @@ class SyntheticDataKit:
             .replace("{cleanup_batch_size}", str(cleanup_batch_size))\
             .replace("{cleanup_temperature}", str(cleanup_temperature))
 
-        with open("synthetic_data_kit_config.yaml", "w") as f: f.write(config)
+        with open("synthetic_data_kit_config.yaml", "w", encoding = "utf-8") as f: f.write(config)
 
         self.overlap = overlap
     pass

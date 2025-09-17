@@ -18,7 +18,7 @@ MAX_FUSED_SIZE : int = 65536
 next_power_of_2 = triton.next_power_of_2
 import functools
 from typing import Optional
-from unsloth import DEVICE_TYPE
+from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -81,16 +81,20 @@ get_ptr = bnb.functional.get_ptr
 if DEVICE_TYPE == "xpu":
     # TODO: Changed here after adding XPU BNB support
     HAS_XPU_STREAM = True
+    def get_ptr(x: Optional[torch.Tensor]):
+        raise RuntimeError("XPU BNB support is not implemented yet. This function should not be called.")
+
 else:
     # NVIDIA-GPU logic here as default
     # https://github.com/bitsandbytes-foundation/bitsandbytes/pull/1330/files
     HAS_CUDA_STREAM = Version(bnb.__version__) > Version("0.43.3")
 
 
-if DEVICE_TYPE == "cuda" and torch.cuda.device_count() > 1:
-    torch_gpu_device = torch.cuda.device
-elif DEVICE_TYPE == "xpu" and torch.xpu.device_count() > 1:
-    torch_gpu_device = torch.xpu.device
+if DEVICE_COUNT > 1:
+    if DEVICE_TYPE in ("cuda", "hip"):
+        torch_gpu_device = torch.cuda.device
+    elif DEVICE_TYPE == "xpu":
+        torch_gpu_device = torch.xpu.device
 else:
     from contextlib import nullcontext
     def torch_gpu_device(device): return nullcontext()
@@ -98,7 +102,7 @@ else:
 
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu":
-    _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream 
+    _gpu_getCurrentRawStream = torch._C._xpu_getCurrentRawStream
 # NVIDIA GPU Default Logic
 else:
     _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
@@ -119,12 +123,12 @@ global ABSMAX_BUFFERS
 if DEVICE_TYPE == "xpu":
     _XPU_STREAMS = {
         (index := torch.xpu.device(i).idx) : ctypes.c_void_p(torch._C._xpu_getCurrentRawStream(index))
-        for i in range(torch.xpu.device_count())
+        for i in range(DEVICE_COUNT)
     }
-    XPU_STREAMS   = [None] * (max(_XPU_STREAMS.keys()) + 1)
+    XPU_STREAMS    = [None] * (max(_XPU_STREAMS.keys()) + 1)
     WEIGHT_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
     ABSMAX_BUFFERS = [None] * (max(_XPU_STREAMS.keys()) + 1)
-    for k, v in _XPU_STREAMS.items(): 
+    for k, v in _XPU_STREAMS.items():
         XPU_STREAMS[k] = v
     XPU_STREAMS = tuple(XPU_STREAMS)
     del _XPU_STREAMS
@@ -132,7 +136,7 @@ else:
     # NVIDIA GPU Default Logic
     _CUDA_STREAMS = {
         (index := torch.cuda.device(i).idx) : ctypes.c_void_p(torch._C._cuda_getCurrentRawStream(index))
-        for i in range(torch.cuda.device_count())
+        for i in range(DEVICE_COUNT)
     }
     CUDA_STREAMS   = [None] * (max(_CUDA_STREAMS.keys()) + 1)
     WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
@@ -140,7 +144,7 @@ else:
     for k, v in _CUDA_STREAMS.items(): CUDA_STREAMS[k] = v
     CUDA_STREAMS = tuple(CUDA_STREAMS)
     del _CUDA_STREAMS
-
+pass
 
 # Bitsandbytes operations
 ctypes_c_int   = ctypes.c_int
@@ -151,11 +155,17 @@ cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_
 cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
 cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
 
+
+torch_device_stream = torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
+
 torch_mm = torch.mm
 torch_mv = torch.mv
 torch_matmul = torch.matmul
 torch_addmm  = torch.addmm
 torch_empty  = torch.empty
+torch_float32  = torch.float32
+torch_float16  = torch.float16
+torch_bfloat16 = torch.bfloat16
 
 def QUANT_STATE(W): return getattr(W, "quant_state", None)
 
@@ -172,7 +182,7 @@ def get_lora_parameters(proj):
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None: adapter = getattr(proj, "active_adapter", ("default"))
     adapter = adapter[0]
-    
+
     return (
         W,
         getattr(W, "quant_state", None),
@@ -211,7 +221,7 @@ pass
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
-        # TODO: After adding XPU BNB support, check this function 
+        # TODO: After adding XPU BNB support, check this function
         if quant_state is None: return W
         if type(quant_state) is not list:
             # New quant_state as a class
@@ -261,7 +271,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             else:
                 assert(out.shape == shape)
                 assert(out.dtype == dtype)
-            out_absmax = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+            out_absmax = torch_empty(n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False)
         pass
 
         # NF4 dequantization of statistics
@@ -274,7 +284,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             out_absmax += offset
 
             # Dequantize W
-            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
+            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch_float16 else \
                  cdequantize_blockwise_bf16_nf4
             fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
                ctypes_c_int(blocksize), ctypes_c_int(out.numel()), XPU_STREAM,)
@@ -284,7 +294,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         return out.t() if is_transposed else out
     pass
 # NVIDIA GPU Default Logic
-elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
+elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
@@ -324,7 +334,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             ABSMAX_BUFFER = ABSMAX_BUFFERS[device_index]
             if WEIGHT_BUFFER is None:
                 WEIGHT_BUFFERS[device_index] = WEIGHT_BUFFER = torch_empty(size, dtype = dtype, device = device, requires_grad = False)
-                ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+                ABSMAX_BUFFERS[device_index] = ABSMAX_BUFFER = torch_empty(n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False)
 
             if size > WEIGHT_BUFFER.numel(): WEIGHT_BUFFER.resize_(size)
             if n_elements_absmax > ABSMAX_BUFFER.numel(): ABSMAX_BUFFER.resize_(n_elements_absmax)
@@ -337,7 +347,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             else:
                 assert(out.shape == shape)
                 assert(out.dtype == dtype)
-            out_absmax = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+            out_absmax = torch_empty(n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False)
         pass
 
         # NF4 dequantization of statistics
@@ -350,7 +360,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             out_absmax += offset
 
             # Dequantize W
-            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
+            fx = cdequantize_blockwise_fp16_nf4 if dtype == torch_float16 else \
                  cdequantize_blockwise_bf16_nf4
             fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
                ctypes_c_int(blocksize), ctypes_c_int(out.numel()), CUDA_STREAM,)
@@ -391,7 +401,7 @@ else:
         else:
             assert(out.shape == shape)
             assert(out.dtype == dtype)
-        out_absmax = torch_empty(n_elements_absmax, dtype = torch.float32, device = device, requires_grad = False)
+        out_absmax = torch_empty(n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False)
 
         # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
@@ -401,7 +411,7 @@ else:
         )
         out_absmax += offset
 
-        fx = cdequantize_blockwise_fp16_nf4 if dtype == torch.float16 else \
+        fx = cdequantize_blockwise_fp16_nf4 if dtype == torch_float16 else \
              cdequantize_blockwise_bf16_nf4
         fx(get_ptr(None), get_ptr(W), ptr_out_absmax, get_ptr(out),
            ctypes_c_int(blocksize), ctypes_c_int(out.numel()),)
@@ -466,7 +476,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
@@ -475,7 +485,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             df += offset
             absmax = df
 
-            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
+            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch_float16 else \
                 cgemm_4bit_inference_naive_bf16
 
             blocksize = ctypes_c_int32(blocksize)
@@ -485,7 +495,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
         return out
     pass
-elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
+elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     def fast_gemv(X, W, quant_state, out = None):
         if quant_state is None: return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
@@ -514,7 +524,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
         device = W.device
         device_index = device.index
         CUDA_STREAM = CUDA_STREAMS[device_index]
-        
+
         # assert(dtype == X.dtype)
         bout = shape[0]
 
@@ -537,7 +547,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         with torch_gpu_device(device):
             cdequantize_blockwise_fp32(
                 get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
@@ -546,8 +556,8 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
             df += offset
             absmax = df
 
-            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
-                cgemm_4bit_inference_naive_bf16
+            fx = cgemm_4bit_inference_naive_fp16 if dtype == torch_float16 else \
+                 cgemm_4bit_inference_naive_bf16
 
             blocksize = ctypes_c_int32(blocksize)
             fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
@@ -558,7 +568,7 @@ elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
     pass
 else:
     def fast_gemv(X, W, quant_state, out = None):
-        if quant_state is None: return torch.matmul(X, W, out = out)
+        if quant_state is None: return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1
         # From https://github.com/TimDettmers/bitsandbytes/blob/main/bitsandbytes/functional.py#L1469
         _, q_len, hd = X.shape
@@ -604,7 +614,7 @@ else:
         ldb = ctypes_c_int32(ldb)
         ldc = ctypes_c_int32(ldc)
 
-        df = torch_empty(absmax.shape, dtype = torch.float32, device = device)
+        df = torch_empty(absmax.shape, dtype = torch_float32, device = device)
         cdequantize_blockwise_fp32(
             get_ptr(code2), get_ptr(absmax), get_ptr(absmax2), get_ptr(df),
             ctypes_c_int(blocksize2), ctypes_c_int(df.numel()),
@@ -612,8 +622,8 @@ else:
         df += offset
         absmax = df
 
-        fx = cgemm_4bit_inference_naive_fp16 if dtype == torch.float16 else \
-            cgemm_4bit_inference_naive_bf16
+        fx = cgemm_4bit_inference_naive_fp16 if dtype == torch_float16 else \
+             cgemm_4bit_inference_naive_bf16
 
         blocksize = ctypes_c_int32(blocksize)
         fx(m, n, k, get_ptr(X), get_ptr(W), get_ptr(absmax), get_ptr(stats), get_ptr(out),
@@ -648,7 +658,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
             lora_A._fast_lora = lora_A.to(dtype)
             lora_B._fast_lora = lora_B.to(dtype)
         pass
-        
+
         if bsz == 1:
             out = out.view(out_dim)
             temp_lora = torch_mv(lora_A._fast_lora, X.ravel(), out = temp_lora)
@@ -688,6 +698,6 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         out.addmm_(XA, B.to(dtype), alpha = s)
         # out += (X @ A.to(dtype)) @ (s * B.to(dtype))
     pass
-    
+
     return out.view(batch, seq_len, -1) if reshape else out
 pass

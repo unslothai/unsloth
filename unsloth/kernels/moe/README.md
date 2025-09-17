@@ -1,6 +1,7 @@
 ## MoE Grouped GEMM
 
 Optimized implementation of `MoE MLP Block`.
+Licensed under AGPLv3.
 
 ### Background
 

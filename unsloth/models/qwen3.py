@@ -66,7 +66,7 @@ def Qwen3Attention_fast_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -111,12 +111,13 @@ def Qwen3Attention_fast_forward(
         # Extend RoPE dynamically to fit in VRA
         rotary_emb = self.rotary_emb
         rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
+        device_index = Q.device.index
 
         if position_ids is None:
             # Useful for LongRoPE
-            cos, sin = rotary_emb.get_cached(kv_seq_len)
+            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
         else:
-            cos, sin = rotary_emb(V, seq_len = kv_seq_len)
+            cos, sin = rotary_emb.get_cached(kv_seq_len, device_index)
     Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
@@ -126,7 +127,7 @@ def Qwen3Attention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and attention_mask is None):
+    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -184,7 +185,15 @@ def Qwen3Attention_fast_forward(
         Q, K, V = Q.contiguous(), K.contiguous(), V.contiguous()
         # Needs (batch_size, n_heads, seq_len, head_dim)
         # is_casual and attention_mask must not be both set!
-        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = False)
+        # when qlen==vlen and attn_mask is None, we should use causal attention
+        Q_len = Q.shape[-2]
+        K_len = K.shape[-2]
+        if attention_mask is None and Q_len == K_len:
+            is_causal = True
+        else:
+            is_causal = False
+
+        A = scaled_dot_product_attention(Q, K, V, attn_mask = attention_mask, is_causal = is_causal)
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
@@ -260,14 +269,14 @@ def Qwen3Attention_fast_forward_inference(
         self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads*head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
-        
+
         # Mistral Nemo 12b has weird dimensions
         if attention_size != hidden_size:
             self.temp_O = torch.empty((1, bsz, hidden_size), dtype = dtype, device = device)
         else:
             self.temp_O = self.temp_QA[1][:,:,:hidden_size]
         pass
-        
+
         self.attention = torch.empty((bsz, n_heads, 1, KV_CACHE_INCREMENT+seq_len), dtype = dtype, device = device)
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -297,7 +306,7 @@ def Qwen3Attention_fast_forward_inference(
     # Need to do it prior 2 steps before hitting full on short KV cache
     # or else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len)
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     cos = cos[position_ids].unsqueeze(1)
     sin = sin[position_ids].unsqueeze(1)
     h = self.half_head_dim
@@ -315,7 +324,7 @@ def Qwen3Attention_fast_forward_inference(
     RH_K[:,:,:,:h].neg_() #torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
-    
+
     # New KV cache
     # Kn = torch.cat([K1, Kn], dim = 2)
     # Vn = torch.cat([V1, Vn], dim = 2)
@@ -334,6 +343,14 @@ def Qwen3Attention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
     pass
+
+    # when qlen==vlen and attn_mask is None, we should use causal attention
+    Q_len = Qn.shape[-2]
+    K_len = Knn.shape[-2]
+    if attention_mask is None and Q_len == K_len:
+        is_causal = True
+    else:
+        is_causal = False
 
     # Grouped query attention
     _, _, cached_len, _ = Knn.shape
@@ -357,9 +374,9 @@ def Qwen3Attention_fast_forward_inference(
         A = torch_matmul(A, Vnn, out = Qn)
     else:
         if SDPA_HAS_GQA:
-            A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False, enable_gqa = True)
+            A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = is_causal, enable_gqa = True)
         else:
-            A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = False)
+            A = scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = is_causal)
     pass
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)

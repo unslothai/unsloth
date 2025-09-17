@@ -15,6 +15,8 @@
 from .llama import *
 import os
 from ._utils import __version__
+from unsloth_zoo.utils import _get_dtype
+from unsloth_zoo.hf_utils import dtype_from_config
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
@@ -51,7 +53,7 @@ def MistralAttention_fast_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     *args, **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    
+
     # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
@@ -83,12 +85,10 @@ def MistralAttention_fast_forward(
     # Extend RoPE dynamically to fit in VRAM
     self.rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
 
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
     if position_ids is None:
-        cos = self.rotary_emb.cos_cached
-        sin = self.rotary_emb.sin_cached
         Q, K = fast_rope_embedding(Q, K, cos, sin)
     else:
-        cos, sin = self.rotary_emb(V, seq_len = kv_seq_len)
         Q, K = inplace_rope_embedding(Q, K, cos, sin, position_ids)
     pass
 
@@ -99,7 +99,7 @@ def MistralAttention_fast_forward(
     past_key_value = (K, V) if use_cache else None
 
     # Attention module
-    if (not HAS_FLASH_ATTENTION and attention_mask is None):
+    if (not HAS_FLASH_ATTENTION and HAS_XFORMERS and attention_mask is None):
         # Xformers memory efficient attention
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
@@ -162,7 +162,7 @@ def MistralAttention_fast_forward(
         # Go back to (batch_size, seq_len, n_heads, head_dim)
         A = A.transpose(1, 2).contiguous()
     pass
-    
+
     attn_output = A.reshape(bsz, q_len, n_heads*head_dim)
     attn_output = self.apply_o(self, attn_output)
     attn_weights = None
@@ -191,15 +191,48 @@ def MistralForCausalLM_fast_forward(
     if causal_mask is None and past_key_values is None:
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
-        if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
-            causal_mask = xformers.attn_bias.LowerTriangularMask()
-        elif q_len <= sliding_window:
-            causal_mask = xformers.attn_bias.LowerTriangularMask()
+
+        if HAS_XFORMERS:
+            # Always create causal mask for xformers
+            if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
+                causal_mask = xformers.attn_bias.LowerTriangularMask()
+            elif q_len <= sliding_window:
+                causal_mask = xformers.attn_bias.LowerTriangularMask()
+            else:
+                causal_mask = xformers.attn_bias.BlockDiagonalCausalMask\
+                    .from_seqlens([q_len]*bsz)\
+                    .make_local_attention(window_size = sliding_window)
+
+            # If attention_mask exists, it will be handled in the attention forward
+
         else:
-            causal_mask = xformers.attn_bias.BlockDiagonalCausalMask\
-                .from_seqlens([q_len]*bsz)\
-                .make_local_attention(window_size = sliding_window)
-    pass
+            # Not using xformers - need to create attention masks
+            if sliding_window is None or sliding_window == "null" or sliding_window <= 0 or q_len <= sliding_window:
+                # Fully causal mask
+                causal_mask_values = torch.triu(torch.full((q_len, q_len), -torch.inf, device=input_ids.device), diagonal=1)
+            else:
+                # Sliding window attention
+                q_indices = torch.arange(q_len, device=input_ids.device).view(-1, 1)
+                k_indices = torch.arange(q_len, device=input_ids.device).view(1, -1)
+
+                causal_bool_mask = k_indices <= q_indices
+                window_bool_mask = (q_indices - k_indices) < sliding_window
+
+                causal_mask_values = torch.where(causal_bool_mask & window_bool_mask, 0.0, -torch.inf)
+
+            # Combine with existing attention_mask if present
+            if attention_mask is None:
+                attention_mask = causal_mask_values[None, None, :, :].expand(bsz, 1, q_len, q_len)
+            else:
+                # attention_mask should be [bsz, 1, q_len, q_len] or broadcastable
+                # Add causal mask to existing attention mask
+                if attention_mask.dim() == 2:
+                    # [bsz, seq_len] -> [bsz, 1, 1, seq_len]
+                    attention_mask = attention_mask[:, None, None, :]
+                    attention_mask = attention_mask.expand(bsz, 1, q_len, q_len)
+                attention_mask = attention_mask + causal_mask_values[None, None, :, :]
+
+            attention_mask = attention_mask.to(dtype=_get_dtype(dtype_from_config(self.config)))
 
     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
     output_hidden_states = (
@@ -238,7 +271,7 @@ def MistralForCausalLM_fast_forward(
     bsz, q_len, hd = hidden_states.shape
     lm_head = self.lm_head.weight
     lm_head_device = lm_head.device
-    
+
     # Move items to same device as lm_head
     hidden_states = hidden_states.to(lm_head_device)
     if labels is not None: labels = labels.to(lm_head_device)
@@ -267,21 +300,34 @@ def MistralForCausalLM_fast_forward(
         # < 1024 Normal Unsloth uses less VRAM!
         if bsz * q_len <= 1024: RETURN_LOGITS = True
 
-        if not RETURN_LOGITS and HAS_CUT_CROSS_ENTROPY and labels is not None:
+        if not RETURN_LOGITS and labels is not None:
             n_items = kwargs.get("num_items_in_batch", None) or kwargs.get("n_items", None)
             logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-            loss = fused_linear_cross_entropy(
-                hidden_states = hidden_states,
-                lm_weight = lm_head,
-                labels = labels,
-                num_items_in_batch = n_items,
-                logit_softcapping = logit_softcapping,
-            )
 
+            # loss = fused_linear_cross_entropy(
+            #     hidden_states = hidden_states,
+            #     lm_weight = lm_head,
+            #     labels = labels,
+            #     num_items_in_batch = n_items,
+            #     logit_softcapping = logit_softcapping,
+            # )
+            loss = unsloth_fused_ce_loss(
+                trainer              = None,
+                hidden_states        = hidden_states,
+                lm_head_weight       = lm_head,
+                lm_head_bias         = None,
+                labels               = labels,
+                mask                 = None,
+                n_items              = n_items,
+                scaling              = getattr(self, "accelerator_scaler", None),
+                target_gb            = None,
+                torch_compile        = True,
+                logit_softcapping    = logit_softcapping,
+            )
             if not return_dict:
                 output = (logits,) + outputs[1:]
                 return (loss,) + output if loss is not None else output
-            
+
             output = CausalLMOutputWithPast(
                 loss = loss,
                 logits = EMPTY_LOGITS,
@@ -293,7 +339,7 @@ def MistralForCausalLM_fast_forward(
         pass
         logits = self.lm_head(hidden_states.to(lm_head.dtype))
     pass
-    logits = logits.to(_get_dtype(self.config.torch_dtype))
+    logits = logits.to(_get_dtype(dtype_from_config(self.config)))
 
     loss = None
     if labels is not None:
@@ -370,7 +416,7 @@ class FastMistralModel(FastLlamaModel):
         MistralForCausalLM    .forward = MistralForCausalLM_fast_forward
         PeftModelForCausalLM  .forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(MistralForCausalLM)
-        
+
         # Solves https://github.com/unslothai/unsloth/issues/168
         # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
         # Inferene can now be CUDAGraphed, but we shall retain the old rotary embeddings.
