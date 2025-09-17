@@ -102,10 +102,9 @@ class SyntheticDataKit:
             "vllm", "serve", str(model_name),
         ]
         for key, value in engine_args.items():
-            flag  = key.replace("_", "-")
+            flag = key.replace("_", "-")
             if key == "compilation_config":
-                quoted_compilation_config = '"' + str(value) + '"'
-                subprocess_commands += ["--" + flag, "'" + quoted_compilation_config[1:-1] + "'",]
+                subprocess_commands += ["--" + flag, str(value),]
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
@@ -121,7 +120,6 @@ class SyntheticDataKit:
                 subprocess_commands += ["--" + flag, which,]
         pass
         logger.info(subprocess_commands)
-        print(subprocess_commands)
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
