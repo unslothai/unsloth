@@ -121,6 +121,7 @@ class SyntheticDataKit:
                 subprocess_commands += ["--" + flag, which,]
         pass
         logger.info(subprocess_commands)
+        print(subprocess_commands)
         vllm_process = subprocess.Popen(
             subprocess_commands,
             stdout = subprocess.PIPE,
