@@ -105,7 +105,8 @@ class SyntheticDataKit:
             flag = key.replace("_", "-")
             if key == "compilation_config":
                 # [TODO] Unsure why subprocess doesn't process json properly
-                subprocess_commands += ["-O3",]
+                # Also -O3 breaks on T4!
+                # subprocess_commands += ["-O3",]
                 continue
             which = str(value).replace("torch.", "")
             if which == "True":
