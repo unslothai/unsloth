@@ -77,6 +77,7 @@ class SyntheticDataKit:
             return_args            = True,
             enable_lora            = False,
             use_bitsandbytes       = False,
+            compilation_config     = 3,
             **kwargs,
         )
         if "dtype" in engine_args:
