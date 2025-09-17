@@ -99,7 +99,7 @@ class SyntheticDataKit:
         if "model"  in engine_args: del engine_args["model"]
         if "compilation_config" in engine_args:
             # Cannot parse in vllm serve
-            engine_args["compilation_config"] = 3
+            engine_args["compilation_config"] = "'" + str(engine_args["compilation_config"]) + "'"
 
         subprocess_commands = [
             "vllm", "serve", str(model_name),
