@@ -271,14 +271,17 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"\
         "if not force_float32 and (not float16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"\
         "if force_float32:\n"\
+        "    # Forced float32 training\n"\
         "    args.fp16 = False\n"\
         "    args.bf16 = False\n"\
         "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"\
         "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"\
+        "    # Mixed precision training\n"\
         "    args.fp16 = float16\n"\
         "    args.bf16 = not float16\n"\
         "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
         "elif mixed_precision_dtype == 'bfloat16':\n"\
+        "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n"\
         "    args.fp16 = False\n"\
         "    args.bf16 = False\n"\
         "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
