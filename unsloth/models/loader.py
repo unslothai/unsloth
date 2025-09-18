@@ -83,8 +83,8 @@ from ._utils import (
 
 global FORCE_FLOAT32
 FORCE_FLOAT32 = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
-    "gemma3n",
+    "gemma3,",
+    "gemma3n,",
     "gpt_oss",
 ]
 
@@ -627,7 +627,7 @@ class FastModel(FastBaseModel):
             is_peft = False
         pass
         model_types = get_transformers_model_type(model_config or peft_config)
-        model_types_all = ",".join(model_types)
+        model_types_all = ",".join(model_types) + ","
 
         # Check versions
         lowered_model_name = model_name.lower()
@@ -642,21 +642,22 @@ class FastModel(FastBaseModel):
         elif "qwen2_5" in model_types_all and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
         # Gemma 3
-        elif "gemma3" in model_types_all:
-            if "gemma3n" in model_types_all:
-                if transformers_version < Version("4.53.0"):
-                    raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
-                os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                    "float16;torch.float16;torch.float16;"\
-                    "if name.endswith('norm'): "\
-                    "module._pre_set_compute_dtype = torch.float32\n"\
-                    ";"\
-                    "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConv_Embed_forwards; patch_Gemma3nConv_Embed_forwards()"
-            else:
-                if transformers_version < Version("4.50.0.dev0"):
-                    raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
-
+        elif "gemma3," in model_types_all:
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+            # Set norms to float32 since anyways they get upcasted to float32
+            # common in both gemma-3 and gemma-3n
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        elif "gemma3n," in model_types_all:
+            if transformers_version < Version("4.53.0"):
+                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "float16;torch.float16;torch.float16;"\
+                "if name.endswith('norm'): "\
+                "module._pre_set_compute_dtype = torch.float32\n"\
+                ";"\
+                "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConv_Embed_forwards; patch_Gemma3nConv_Embed_forwards()"
             # Set norms to float32 since anyways they get upcasted to float32
             # common in both gemma-3 and gemma-3n
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
@@ -811,7 +812,7 @@ class FastModel(FastBaseModel):
         for disable_name in FORCE_FLOAT32:
             # add comma to model_types_all matching in case of exact match for end
             if (disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "") or \
-                disable_name.lower() in f'{model_types_all},') and \
+                disable_name.lower() in model_types_all) and \
                 ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16 # Change to bfloat16 loading
