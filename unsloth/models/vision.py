@@ -487,8 +487,9 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
-            model.fast_generate = model.generate
-            model.fast_generate_batches = error_out_no_vllm
+            if hasattr(model, 'generate'):
+                model.fast_generate = model.generate
+                model.fast_generate_batches = error_out_no_vllm
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
@@ -634,7 +635,7 @@ class FastBaseModel:
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
-        if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0":
+        if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0" and hasattr(model, 'generate'):
             if model.generate.__name__ != "unsloth_base_fast_generate":
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
