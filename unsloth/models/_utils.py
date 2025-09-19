@@ -339,7 +339,9 @@ class _RaiseUninitialized(logging.Handler):
         record_lower = str(record).lower()
         if ("some weights of" in record_lower) and \
             ("score.weight" not in record_lower) and \
-            ("classifier.weight" not in record_lower):
+            ("classifier.weight" not in record_lower) and \
+            ("cls.predictions" not in record_lower) and \
+            ("predictions.decoder" not in record_lower):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
