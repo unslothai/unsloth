@@ -956,6 +956,16 @@ __INT_TO_FLOAT_MAPPER = \
         "google/gemma-3-270m",
         "unsloth/gemma-3-270m-bnb-4bit",
     ),
+    "unsloth/Magistral-Small-2507-unsloth-bnb-4bit" : (
+        "unsloth/Magistral-Small-2507",
+        "mistralai/Magistral-Small-2507",
+        "unsloth/Magistral-Small-2507-bnb-4bit",
+    ),
+    "unsloth/Magistral-Small-2509-unsloth-bnb-4bit" : (
+        "unsloth/Magistral-Small-2509",
+        "mistralai/Magistral-Small-2509",
+        "unsloth/Magistral-Small-2509-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}

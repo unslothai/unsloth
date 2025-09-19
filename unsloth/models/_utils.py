@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.9.6"
+__version__ = "2025.9.7"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -339,7 +339,9 @@ class _RaiseUninitialized(logging.Handler):
         record_lower = str(record).lower()
         if ("some weights of" in record_lower) and \
             ("score.weight" not in record_lower) and \
-            ("classifier.weight" not in record_lower):
+            ("classifier.weight" not in record_lower) and \
+            ("cls.predictions" not in record_lower) and \
+            ("predictions.decoder" not in record_lower):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
@@ -1651,6 +1653,8 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
     from torchao.quantization import (
         Float8DynamicActivationInt4WeightConfig,
         Float8DynamicActivationFloat8WeightConfig,
+        Int8DynamicActivationInt4WeightConfig,
+        Int4WeightOnlyConfig,
         PerRow,
         quantize_,
     )
@@ -1662,6 +1666,14 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
         filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
     elif qat_scheme == "fp8-fp8":
         base_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
+    elif qat_scheme == "int8-int4":
+        group_size = 32
+        base_config = Int8DynamicActivationInt4WeightConfig(group_size=group_size)
+        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+    elif qat_scheme == "int4":
+        group_size = 128
+        base_config = Int4WeightOnlyConfig(group_size=group_size)
+        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
     else:
         raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
     pass

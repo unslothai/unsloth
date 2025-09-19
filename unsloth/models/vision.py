@@ -43,7 +43,12 @@ from transformers.models.llama.modeling_llama import logger
 from transformers import __version__ as transformers_version
 from triton import __version__ as triton_version
 from unsloth_zoo.utils import _get_dtype
-from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs
+from unsloth_zoo.hf_utils import (
+    dtype_from_config,
+    add_dtype_kwargs,
+    fix_lora_auto_mapping,
+    get_auto_processor,
+)
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
@@ -487,8 +492,9 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
-            model.fast_generate = model.generate
-            model.fast_generate_batches = error_out_no_vllm
+            if hasattr(model, 'generate'):
+                model.fast_generate = model.generate
+                model.fast_generate_batches = error_out_no_vllm
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
@@ -573,11 +579,18 @@ class FastBaseModel:
                 task         = whisper_task,
             )
         else:
-            tokenizer = auto_processor.from_pretrained(
-                tokenizer_name,
-                padding_side = "right",
-                token        = token,
-            )
+            try:
+                tokenizer = auto_processor.from_pretrained(
+                    tokenizer_name,
+                    padding_side = "right",
+                    token        = token,
+                )
+            except:
+                tokenizer = get_auto_processor(
+                    tokenizer_name,
+                    padding_side = "right",
+                    token        = token,
+                )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
@@ -634,7 +647,7 @@ class FastBaseModel:
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
         # Patch generate
-        if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0":
+        if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0" and hasattr(model, 'generate'):
             if model.generate.__name__ != "unsloth_base_fast_generate":
                 model._old_generate = model.generate
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
@@ -757,6 +770,8 @@ class FastBaseModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         model = _get_peft_model(model, lora_config)
+        # Fix LoraConfig.auto_mapping is None
+        fix_lora_auto_mapping(model)
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
@@ -802,6 +817,7 @@ class FastBaseModel:
             train_embedding            = full_finetuning,
             train_lm_head              = full_finetuning,
             float32_mixed_precision    = float32_mixed_precision,
+            patch_modules_to_save      = True,
         )
 
         from transformers.trainer import Trainer
