@@ -805,6 +805,7 @@ class FastBaseModel:
             train_embedding            = full_finetuning,
             train_lm_head              = full_finetuning,
             float32_mixed_precision    = float32_mixed_precision,
+            patch_modules_to_save      = True,
         )
 
         from transformers.trainer import Trainer
