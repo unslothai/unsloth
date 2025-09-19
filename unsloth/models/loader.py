@@ -83,7 +83,7 @@ from ._utils import (
 
 global FORCE_FLOAT32
 FORCE_FLOAT32 = [
-    "gemma3",
+    "gemma3,",  # Add comma bc gemma3 will match gemma3n
     "gemma3n",
     "gpt_oss",
 ]
@@ -652,7 +652,7 @@ class FastModel(FastBaseModel):
                     "if name.endswith('norm'): "\
                     "module._pre_set_compute_dtype = torch.float32\n"\
                     ";"\
-                    "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConvNormAct_forward; patch_Gemma3nConvNormAct_forward()"
+                    "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConv_Embed_forwards; patch_Gemma3nConv_Embed_forwards()"
             else:
                 if transformers_version < Version("4.50.0.dev0"):
                     raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
@@ -809,8 +809,9 @@ class FastModel(FastBaseModel):
             if model_type_arch != "siglip": break
         global FORCE_FLOAT32
         for disable_name in FORCE_FLOAT32:
+            # add comma to model_types_all matching in case of exact match for end
             if (disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "") or \
-                disable_name.lower() in model_types_all) and \
+                disable_name.lower() in f'{model_types_all},') and \
                 ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16 # Change to bfloat16 loading
@@ -870,7 +871,9 @@ class FastModel(FastBaseModel):
         pass
 
         # Check if VLM
-        is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
+        architectures = getattr(model_config, "architectures", None)
+        if architectures is None: architectures = []
+        is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
