@@ -25,7 +25,7 @@ from ._utils import _prepare_model_for_qat
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
-from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs
+from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs, fix_lora_auto_mapping
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
 
@@ -2632,6 +2632,8 @@ class FastLlamaModel:
         pass
 
         model = _get_peft_model(model, lora_config)
+        # Fix LoraConfig.auto_mapping is None
+        fix_lora_auto_mapping(model)
 
         # Apply QAT + LoRA if specified
         if qat_scheme is not None:
