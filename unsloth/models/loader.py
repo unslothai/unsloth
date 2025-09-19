@@ -871,7 +871,9 @@ class FastModel(FastBaseModel):
         pass
 
         # Check if VLM
-        is_vlm = any(x.endswith("ForConditionalGeneration") for x in model_config.architectures)
+        architectures = getattr(model_config, "architectures", None)
+        if architectures is None: architectures = []
+        is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         if auto_model is None:
             auto_model = AutoModelForVision2Seq if is_vlm else AutoModelForCausalLM
