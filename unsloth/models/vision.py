@@ -43,7 +43,12 @@ from transformers.models.llama.modeling_llama import logger
 from transformers import __version__ as transformers_version
 from triton import __version__ as triton_version
 from unsloth_zoo.utils import _get_dtype
-from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs, fix_lora_auto_mapping
+from unsloth_zoo.hf_utils import (
+    dtype_from_config,
+    add_dtype_kwargs,
+    fix_lora_auto_mapping,
+    get_auto_processor,
+)
 from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
@@ -574,11 +579,18 @@ class FastBaseModel:
                 task         = whisper_task,
             )
         else:
-            tokenizer = auto_processor.from_pretrained(
-                tokenizer_name,
-                padding_side = "right",
-                token        = token,
-            )
+            try:
+                tokenizer = auto_processor.from_pretrained(
+                    tokenizer_name,
+                    padding_side = "right",
+                    token        = token,
+                )
+            except:
+                tokenizer = get_auto_processor(
+                    tokenizer_name,
+                    padding_side = "right",
+                    token        = token,
+                )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
