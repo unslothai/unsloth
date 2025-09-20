@@ -871,7 +871,7 @@ class FastModel(FastBaseModel):
         # Fix SDPA issues
         for model_type in DISABLE_SDPA_MODEL_NAMES:
             if model_type in model_types_all:
-            supports_sdpa = False
+                supports_sdpa = False
         pass
 
         # Check if this is local model since the tokenizer gets overwritten
