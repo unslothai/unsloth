@@ -213,7 +213,7 @@ class FastLanguageModel(FastLlamaModel):
             peft_error = str(error)
             is_peft = False
         pass
-        model_types = get_transformers_model_type(model_config or peft_config)
+        model_types = get_transformers_model_type(peft_config or model_config)
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
@@ -403,7 +403,7 @@ class FastLanguageModel(FastLlamaModel):
 
             tokenizer_name = old_model_name
         else:
-            tokenizer_name = None
+            tokenizer_name = kwargs.pop("tokenizer_name", None)
         pass
 
         if fast_inference:
@@ -626,7 +626,7 @@ class FastModel(FastBaseModel):
             peft_error = str(error)
             is_peft = False
         pass
-        model_types = get_transformers_model_type(model_config or peft_config)
+        model_types = get_transformers_model_type(peft_config or model_config)
         model_types_all = ",".join(model_types)
 
         # Check versions
@@ -867,7 +867,7 @@ class FastModel(FastBaseModel):
 
             tokenizer_name = old_model_name
         else:
-            tokenizer_name = None
+            tokenizer_name = kwargs.pop("tokenizer_name", None)
         pass
 
         # Check if VLM
