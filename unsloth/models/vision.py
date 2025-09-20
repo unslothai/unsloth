@@ -242,6 +242,8 @@ def unsloth_base_fast_generate(
             kwargs["compile_config"] = _compile_config
     pass
 
+    kwargs["cache_implementation"] = "static"
+
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
 
