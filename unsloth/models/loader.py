@@ -403,7 +403,7 @@ class FastLanguageModel(FastLlamaModel):
 
             tokenizer_name = old_model_name
         else:
-            tokenizer_name = None
+            tokenizer_name = kwargs.pop("tokenizer_name", None)
         pass
 
         if fast_inference:
@@ -867,7 +867,7 @@ class FastModel(FastBaseModel):
 
             tokenizer_name = old_model_name
         else:
-            tokenizer_name = None
+            tokenizer_name = kwargs.pop("tokenizer_name", None)
         pass
 
         # Check if VLM
