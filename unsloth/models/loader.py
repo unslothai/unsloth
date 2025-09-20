@@ -82,11 +82,27 @@ from ._utils import (
 )
 
 global FORCE_FLOAT32
+# Forces float32 precision since float16 goes to infinity
 FORCE_FLOAT32 = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3,", # Add comma bc gemma3 will match gemma3n
     "gemma3n",
     "gpt_oss",
 ]
+
+global DISABLE_COMPILE_MODEL_NAMES
+# Must be alphabetically sorted for each entry
+DISABLE_COMPILE_MODEL_NAMES = [
+    "aya_vision",
+    "modernbert",
+    "granite,llava_next", # Granite-vision 3
+]
+
+global DISABLE_SDPA_MODEL_NAMES
+# Disables some SDPA modules since it's wrong
+DISABLE_SDPA_MODEL_NAMES = [
+    "gemma3,", # Add comma bc gemma3 will match gemma3n
+]
+
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
@@ -213,15 +229,26 @@ class FastLanguageModel(FastLlamaModel):
             peft_error = str(error)
             is_peft = False
         pass
-        model_types = get_transformers_model_type(peft_config or model_config)
+
+        # Old transformers versions check
+        both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
+
+        # Error out if both LoRA and normal model config exists.
+        if both_exist:
+            raise RuntimeError(
+                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
+                "You have 2 files `config.json` and `adapter_config.json`.\n"\
+                "We must only allow one config file.\n"\
+                "Please separate the LoRA and base models to 2 repos."
+            )
+        model_types = get_transformers_model_type(
+            peft_config if peft_config is not None else model_config
+        )
         if len(model_types) == 1:
             model_type = model_types[0]
         else:
             # Leave as tuple if more than one arch
             model_type = model_types
-
-        # Old transformers versions check
-        both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
 
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
@@ -240,17 +267,8 @@ class FastLanguageModel(FastLlamaModel):
             pass
         pass
 
-        # Error out if both LoRA and normal model config exists.
-        if both_exist:
-            raise RuntimeError(
-                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
-                "You have 2 files `config.json` and `adapter_config.json`.\n"\
-                "We must only allow one config file.\n"\
-                "Please separate the LoRA and base models to 2 repos."
-            )
-
-        elif not is_model and not is_peft:
-            error = autoconfig_error or peft_error
+        if not is_model and not is_peft:
+            error = autoconfig_error if autoconfig_error is not None else peft_error
             # Old transformers version
             if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
                 raise ImportError(
@@ -498,13 +516,6 @@ except:
     from transformers import AutoModelForVision2Seq
 pass
 
-# Must be alphabetically sorted for each entry
-DISABLE_COMPILE_MODEL_NAMES = [
-    "aya_vision",
-    "modernbert",
-    "granite,llava_next", # Granite-vision 3
-]
-
 
 class FastModel(FastBaseModel):
     @staticmethod
@@ -626,8 +637,20 @@ class FastModel(FastBaseModel):
             peft_error = str(error)
             is_peft = False
         pass
-        model_types = get_transformers_model_type(peft_config or model_config)
-        model_types_all = ",".join(model_types)
+        # Old transformers versions check
+        both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
+        # Error out if both LoRA and normal model config exists.
+        if both_exist:
+            raise RuntimeError(
+                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
+                "You have 2 files `config.json` and `adapter_config.json`.\n"\
+                "We must only allow one config file.\n"\
+                "Please separate the LoRA and base models to 2 repos."
+            )
+        model_types = get_transformers_model_type(
+            peft_config if peft_config is not None else model_config
+        )
+        model_types_all = ",".join(model_types) + ","
 
         # Check versions
         lowered_model_name = model_name.lower()
@@ -643,20 +666,22 @@ class FastModel(FastBaseModel):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
         # Gemma 3
         elif "gemma3" in model_types_all:
-            if "gemma3n" in model_types_all:
-                if transformers_version < Version("4.53.0"):
-                    raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
-                os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-                os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
-                    "float16;torch.float16;torch.float16;"\
-                    "if name.endswith('norm'): "\
-                    "module._pre_set_compute_dtype = torch.float32\n"\
-                    ";"\
-                    "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConv_Embed_forwards; patch_Gemma3nConv_Embed_forwards()"
-            else:
-                if transformers_version < Version("4.50.0.dev0"):
-                    raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
-
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
+            # Set norms to float32 since anyways they get upcasted to float32
+            # common in both gemma-3 and gemma-3n
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        # Gemma 3N
+        elif "gemma3n" in model_types_all:
+            if transformers_version < Version("4.53.0"):
+                raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
+            os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
+            os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = \
+                "float16;torch.float16;torch.float16;"\
+                "if name.endswith('norm'): "\
+                "module._pre_set_compute_dtype = torch.float32\n"\
+                ";"\
+                "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConv_Embed_forwards; patch_Gemma3nConv_Embed_forwards()"
             # Set norms to float32 since anyways they get upcasted to float32
             # common in both gemma-3 and gemma-3n
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
@@ -732,9 +757,6 @@ class FastModel(FastBaseModel):
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
         pass
 
-        # Old transformers versions check
-        both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
-
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32:
             # Check if folder exists locally
@@ -751,17 +773,8 @@ class FastModel(FastBaseModel):
             pass
         pass
 
-        # Error out if both LoRA and normal model config exists.
-        if both_exist:
-            raise RuntimeError(
-                "Unsloth: Your repo has a LoRA adapter and a base model.\n"\
-                "You have 2 files `config.json` and `adapter_config.json`.\n"\
-                "We must only allow one config file.\n"\
-                "Please separate the LoRA and base models to 2 repos."
-            )
-
-        elif not is_model and not is_peft:
-            error = autoconfig_error or peft_error
+        if not is_model and not is_peft:
+            error = autoconfig_error if autoconfig_error is not None else peft_error
             # Old transformers version
             if "rope_scaling" in error.lower() and not SUPPORTS_LLAMA31:
                 raise ImportError(
@@ -811,7 +824,7 @@ class FastModel(FastBaseModel):
         for disable_name in FORCE_FLOAT32:
             # add comma to model_types_all matching in case of exact match for end
             if (disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "") or \
-                disable_name.lower() in f'{model_types_all},') and \
+                disable_name.lower() in model_types_all) and \
                 ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16 # Change to bfloat16 loading
@@ -855,8 +868,9 @@ class FastModel(FastBaseModel):
                 unsloth_force_compile   = unsloth_force_compile,
             )
         pass
-        # Fix SDPA
-        if "gemma3n" in model_types_all:
+        # Fix SDPA issues
+        for model_type in DISABLE_SDPA_MODEL_NAMES:
+            if model_type in model_types_all:
             supports_sdpa = False
         pass
 
