@@ -217,8 +217,11 @@ def unsloth_base_fast_generate(
     if getattr(self, "_supports_static_cache", getattr(self, "_can_compile_fullgraph", True)):
         if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
             cache_implementation = "static"
-        else:
+        elif Version(transformers_version) < Version("4.56.0.dev0"):
             cache_implementation = None
+        else:
+            # Should work in latest transformers!
+            cache_implementation = "static"
     else:
         cache_implementation = None
     if cache_implementation is not None:
@@ -241,7 +244,7 @@ def unsloth_base_fast_generate(
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
     pass
-
+    print(cache_implementation)
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
 
