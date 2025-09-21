@@ -2170,6 +2170,9 @@ class FastLlamaModel:
             m = m.model
         pass
         m.max_seq_length = max_seq_length
+        # Save to modules as well
+        for module in model.modules():
+            module.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
@@ -2892,6 +2895,9 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model.max_seq_length = max_seq_length
+        # Save to modules as well
+        for module in model.modules():
+            module.max_seq_length = max_seq_length
 
         # Patch tokenizer to pad to the right
         internal_model = model

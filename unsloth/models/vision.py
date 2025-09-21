@@ -645,6 +645,9 @@ class FastBaseModel:
             m = m.model
         pass
         m.max_seq_length = max_seq_length
+        # Save to modules as well
+        for module in model.modules():
+            module.max_seq_length = max_seq_length
         m._saved_temp_tokenizer = tokenizer
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
@@ -780,6 +783,9 @@ class FastBaseModel:
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
         model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing, trust_remote_code = trust_remote_code)
         model.max_seq_length = max_seq_length
+        # Save to modules as well
+        for module in model.modules():
+            module.max_seq_length = max_seq_length
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
