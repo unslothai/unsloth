@@ -664,14 +664,7 @@ class FastModel(FastBaseModel):
         # Qwen 2.5
         elif "qwen2_5" in model_types_all and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
-        # Gemma 3
-        elif "gemma3" in model_types_all:
-            if transformers_version < Version("4.50.0.dev0"):
-                raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
-            # Set norms to float32 since anyways they get upcasted to float32
-            # common in both gemma-3 and gemma-3n
-            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
-        # Gemma 3N
+        # Gemma 3N must be beefore Gemma 3
         elif "gemma3n" in model_types_all:
             if transformers_version < Version("4.53.0"):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)
@@ -682,6 +675,13 @@ class FastModel(FastBaseModel):
                 "module._pre_set_compute_dtype = torch.float32\n"\
                 ";"\
                 "from unsloth_zoo.temporary_patches.gemma3n import patch_Gemma3nConv_Embed_forwards; patch_Gemma3nConv_Embed_forwards()"
+            # Set norms to float32 since anyways they get upcasted to float32
+            # common in both gemma-3 and gemma-3n
+            os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+        # Gemma 3
+        elif "gemma3" in model_types_all:
+            if transformers_version < Version("4.50.0.dev0"):
+                raise RuntimeError("Unsloth: Gemma 3 only works on transformers >= 4.50.0." + NIGHTLY)
             # Set norms to float32 since anyways they get upcasted to float32
             # common in both gemma-3 and gemma-3n
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
