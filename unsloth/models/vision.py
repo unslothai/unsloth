@@ -233,7 +233,7 @@ def unsloth_base_fast_generate(
             if Version(transformers_version) < Version("4.56.0.dev0"):
                 cache_implementation = "hybrid"
             else:
-                cache_implementation = None
+                cache_implementation = "static"
 
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
