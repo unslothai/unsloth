@@ -244,8 +244,6 @@ def unsloth_base_fast_generate(
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
     pass
-    # kwargs["cache_implementation"] = None
-    print(cache_implementation)
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
 
