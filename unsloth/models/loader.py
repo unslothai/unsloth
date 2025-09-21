@@ -868,7 +868,6 @@ class FastModel(FastBaseModel):
                 unsloth_force_compile   = unsloth_force_compile,
             )
         pass
-        print("supports_sdpa", supports_sdpa)
         # Fix SDPA issues
         for model_type in DISABLE_SDPA_MODEL_NAMES:
             if model_type in model_types_all:

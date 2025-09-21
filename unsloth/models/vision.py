@@ -422,8 +422,9 @@ class FastBaseModel:
         # Stop SDPA for some archs like Pixtral / Mistral3
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = "sdpa"
-        if not supports_sdpa and (os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0"):
-            print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager.")
+        if not supports_sdpa:
+            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
+                print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager.")
             del kwargs["attn_implementation"]
         pass
 
