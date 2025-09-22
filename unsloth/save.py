@@ -1088,26 +1088,28 @@ def save_to_gguf(
     # Step 2: Download and patch converter script
     print("Unsloth: Preparing converter script...")
     with use_local_gguf():
-        converter_path, supported_types = _download_convert_hf_to_gguf()
+        converter_path, supported_text_archs, supported_vision_archs = _download_convert_hf_to_gguf()
 
     # Step 3: Initial GGUF conversion
     print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
     print(f"This might take 3 minutes...")
 
     with use_local_gguf():
-        initial_files = convert_to_gguf(
+        initial_files, is_vlm_update = convert_to_gguf(
             model_name=model_name,
             input_folder=model_directory,
             model_dtype = model_dtype,
             quantization_type=first_conversion,
             converter_location=converter_path,
-            supported_types=supported_types,
+            supported_text_archs=supported_text_archs,
+            supported_vision_archs=supported_vision_archs,
             is_vlm=is_vlm,
             is_gpt_oss=is_gpt_oss,
             max_shard_size="50GB",
             print_output=print_output,
         )
-
+    # update is_vlm switch
+    is_vlm = is_vlm_update
     # Check conversion success
     for file in initial_files:
         if not os.path.exists(file):
@@ -1194,7 +1196,7 @@ def save_to_gguf(
     print(f"Unsloth: All GGUF conversions completed successfully!")
     print(f"Generated files: {all_saved_locations}")
 
-    return all_saved_locations, want_full_precision
+    return all_saved_locations, want_full_precision, is_vlm
 pass
 
 
@@ -1814,7 +1816,7 @@ def unsloth_save_pretrained_gguf(
     pass
 
     try:
-        all_file_locations, want_full_precision = save_to_gguf(
+        all_file_locations, want_full_precision, is_vlm_update = save_to_gguf(
             model_name=model_name,
             model_type=model_type,
             model_dtype=model_dtype,
@@ -1858,7 +1860,7 @@ def unsloth_save_pretrained_gguf(
         )
     pass
 
-    if is_vlm:
+    if is_vlm_update:
         print("\n")
         print(f"Unsloth: example usage for Multimodal LLMs: llama-mtmd-cli --m {all_file_locations[1]} --mmproj {all_file_locations[0]}")
         print("Unsloth: load image inside llama.cpp runner: /image test_image.jpg")
@@ -1874,7 +1876,7 @@ def unsloth_save_pretrained_gguf(
         "gguf_files": all_file_locations,
         "modelfile_location": modelfile_location,
         "want_full_precision": want_full_precision,
-        "is_vlm": is_vlm,
+        "is_vlm": is_vlm_update,
         "fix_bos_token": fix_bos_token,
     }
 pass
