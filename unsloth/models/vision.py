@@ -247,7 +247,7 @@ def unsloth_base_fast_generate(
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
 
-    FastBaseModel.for_training(self)
+    # FastBaseModel.for_training(self)
     return output
 pass
 
@@ -576,7 +576,7 @@ class FastBaseModel:
         if (whisper_language and whisper_task) or auto_model.__name__.endswith("ForConditionalGeneration"):
            tokenizer = auto_processor.from_pretrained(
                 tokenizer_name,
-                padding_side = "right",
+                padding_side = "left",
                 token        = token,
                 language     = whisper_language,
                 task         = whisper_task,
@@ -585,19 +585,19 @@ class FastBaseModel:
             try:
                 tokenizer = auto_processor.from_pretrained(
                     tokenizer_name,
-                    padding_side = "right",
+                    padding_side = "left",
                     token        = token,
                 )
             except:
                 tokenizer = get_auto_processor(
                     tokenizer_name,
-                    padding_side = "right",
+                    padding_side = "left",
                     token        = token,
                 )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
-            __tokenizer.padding_side = "right"
+            __tokenizer.padding_side = "left"
             # Check bos, eos, pad tokens
             if hasattr(__tokenizer, "bos_token"):
                 tokenizer.bos_token    = __tokenizer.bos_token
@@ -800,6 +800,11 @@ class FastBaseModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
         return model
     pass
 
@@ -835,12 +840,12 @@ class FastBaseModel:
         pass
         patch_saving_functions(model, vision = True)
 
-        # Patch tokenizer to pad to the right
+        # Patch tokenizer to pad to the left
         m = model
         while hasattr(m, "model"):
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                    m._saved_temp_tokenizer.tokenizer.padding_side = "right"
+                    m._saved_temp_tokenizer.tokenizer.padding_side = "left"
             pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
             m.is_loaded_in_8bit = True if not full_finetuning else False
@@ -848,7 +853,7 @@ class FastBaseModel:
         pass
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                m._saved_temp_tokenizer.tokenizer.padding_side = "right"
+                m._saved_temp_tokenizer.tokenizer.padding_side = "left"
         pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
@@ -864,6 +869,11 @@ class FastBaseModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
         return model
     pass
 
