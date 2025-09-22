@@ -2244,6 +2244,13 @@ class FastLlamaModel:
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
         pass
+        # Set weight[padding_idx] = 0
+        with torch.no_grad():
+            for name, module in model.named_modules():
+                if type(module) is torch.nn.Embedding:
+                    if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
+                        if module.padding_idx < module.weight.shape[0]:
+                            module.weight[module.padding_idx] = 0
         return model, tokenizer
     pass
 

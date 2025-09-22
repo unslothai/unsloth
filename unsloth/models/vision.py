@@ -876,6 +876,13 @@ class FastBaseModel:
             m.for_training  = functools.partial(FastBaseModel.for_training,  m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        # Set weight[padding_idx] = 0
+        with torch.no_grad():
+            for name, module in model.named_modules():
+                if type(module) is torch.nn.Embedding:
+                    if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
+                        if module.padding_idx < module.weight.shape[0]:
+                            module.weight[module.padding_idx] = 0
         return model
     pass
 
