@@ -116,6 +116,22 @@ from torch.nn import functional as F
 from transformers import DataCollatorForSeq2Seq, DataCollatorForLanguageModeling as TransformersDataCollatorForLanguageModeling
 from transformers.training_args import ParallelMode
 
+# Wrap trainer with padding to right and enable training mode
+import functools
+def prepare_for_training_mode(f):
+    @functools.wraps(f)
+    def wrapper(self, *args, **kwargs):
+        # Enable training mode
+        if hasattr(self, model) and hasattr(self.model, "for_training"):
+            self.model.for_training()
+        output = f(self, *args, **kwargs)
+        # Return inference mode
+        if hasattr(self, model) and hasattr(self.model, "for_inference"):
+            self.model.for_inference()
+        return output
+    return wrapper
+pass
+
 torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : False,
@@ -174,7 +190,11 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
         if getattr(args, "parallel_mode", None) == ParallelMode.NOT_DISTRIBUTED and args.n_gpu > 1:
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
+        if "model" in locals() and hasattr(model, "for_training"):
+            model.for_training()
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
+        if "model" in locals() and hasattr(model, "for_inference"):
+            model.for_inference()
 {RLTrainer_post}
 pass
 '''
@@ -460,7 +480,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
 
     # Add accelerator scaler to model
     if "model" in call_args:
-        neftune_check = \
+        accelerator_check = \
         "if hasattr(self, 'accelerator'):\n"\
         "    scaler = self.accelerator.scaler\n"\
         "    current_model = model\n"\
@@ -469,7 +489,16 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "        current_model = current_model.model\n"\
         "    current_model.accelerator_scaler = scaler\n"\
         "pass\n"
-        RLTrainer_post += neftune_check
+        RLTrainer_post += accelerator_check
+    pass
+
+    # Add enabling and disabling training modes
+    if "model" in call_args:
+        training_check = \
+        "if hasattr(self, 'train'):\n"\
+        "    self.train = prepare_for_training_mode(self.train)\n"\
+        "pass\n"
+        RLTrainer_post += training_check
     pass
 
     # Edit optional metrics
