@@ -1151,9 +1151,6 @@ def save_to_gguf(
                         print_output=print_output
                     )
                     all_saved_locations.append(quantized_file)
-                    all_saved_locations.remove(base_gguf)
-                    Path(base_gguf).unlink()
-
                 except Exception as e:
                     if IS_KAGGLE_ENVIRONMENT:
                         raise RuntimeError(
@@ -1180,6 +1177,11 @@ def save_to_gguf(
                         )
                     pass
                 pass
+            pass
+        pass
+        print("Unsloth: Model files cleanup...")
+        all_saved_locations.remove(base_gguf)
+        Path(base_gguf).unlink()
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
     pass
