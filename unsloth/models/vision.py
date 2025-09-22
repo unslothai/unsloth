@@ -83,6 +83,7 @@ NUM_LOGITS_TO_KEEP = dict()
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
+    "mistral3"
 ]
 VLLM_NON_LORA_VLM = [
     "mllama"
@@ -90,6 +91,7 @@ VLLM_NON_LORA_VLM = [
 
 from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
+
 from transformers import GenerationConfig, CompileConfig, HybridCache
 
 _compile_config = CompileConfig(
