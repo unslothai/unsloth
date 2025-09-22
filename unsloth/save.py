@@ -1090,7 +1090,7 @@ def save_to_gguf(
         converter_path, supported_types = _download_convert_hf_to_gguf()
 
     # Step 3: Initial GGUF conversion
-    print(f"Unsloth: [1] Converting model at {model_directory} into {first_conversion_dtype} GGUF format.")
+    print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
     print(f"This might take 3 minutes...")
 
     with use_local_gguf():
