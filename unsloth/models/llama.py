@@ -2231,6 +2231,11 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
 
         # Patch generate
         is_classification =  "Classification" in str(type(model))
@@ -2707,6 +2712,11 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
         return model
     pass
 
@@ -2922,6 +2932,11 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
         return model
     pass
 
