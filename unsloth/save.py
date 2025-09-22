@@ -35,6 +35,7 @@ from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
 from .template_mappers import CHAT_TEMPLATES, MODEL_TO_TEMPLATE_MAPPER
+from transformers import ProcessorMixin
 from huggingface_hub import HfApi
 try:
     from huggingface_hub import get_token
@@ -1651,7 +1652,7 @@ def unsloth_save_pretrained_gguf(
     self,
     save_directory       : Union[str, os.PathLike],
     tokenizer            = None,
-    quantization_method  : str = "fast_quantized",
+    quantization_method  = "fast_quantized",
     first_conversion     : str = None,
     push_to_hub          : bool = False,
     token                : Optional[Union[str, bool]] = None,
@@ -1723,6 +1724,9 @@ def unsloth_save_pretrained_gguf(
         )
         is_vlm = is_vlm or hasattr(self.config, "vision_config")
 
+    if is_vlm and isinstance(tokenizer, ProcessorMixin):
+        tokenizer = tokenizer.tokenizer
+
     is_gpt_oss = True if (hasattr(self.config, "architectures") and self.config.architectures == "GptOssForCausalLM") or (hasattr(self.config, "model_type") and self.config.model_type in ["gpt-oss", "gpt_oss"]) else False
     # Step 2: Prepare arguments for model saving
     arguments = dict(locals())
@@ -1787,10 +1791,25 @@ def unsloth_save_pretrained_gguf(
     print("Unsloth: Converting to GGUF format...")
 
     # Convert quantization_method to list if string
-    if isinstance(quantization_method, str):
-        quantization_methods = [quantization_method]
-    else:
-        quantization_methods = quantization_method
+    # Use old style quantization_method
+    quantization_methods = []
+    if quantization_method is not None:
+        # Convert quantization_method to list
+        if   isinstance(quantization_method, list):  pass
+        elif isinstance(quantization_method, str):   quantization_method = [ quantization_method, ]
+        elif isinstance(quantization_method, tuple): quantization_method = list(quantization_method)
+        else:
+            raise TypeError("Unsloth: quantization_method can only be a string or a list of strings")
+        pass
+        for i, quant_method in enumerate(quantization_method):
+            quant_method = quant_method.lower()
+            if   quant_method == "not_quantized":  quant_method = "f16"
+            elif quant_method == "fast_quantized": quant_method = "q8_0"
+            elif quant_method == "quantized":      quant_method = "q4_k_m"
+            elif quant_method is None:             quant_method = "q8_0"
+            quantization_methods.append(quant_method.lower())
+        pass
+    pass
 
     try:
         all_file_locations, want_full_precision = save_to_gguf(
@@ -1863,7 +1882,7 @@ def unsloth_push_to_hub_gguf(
     self,
     repo_id              : str,
     tokenizer            = None,
-    quantization_method  : str = "fast_quantized",
+    quantization_method  = "fast_quantized",
     first_conversion     : str = None,
     use_temp_dir         : Optional[bool] = None,
     commit_message       : Optional[str] = "Trained with Unsloth",
