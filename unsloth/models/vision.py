@@ -246,6 +246,13 @@ def unsloth_base_fast_generate(
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
     pass
+
+    # Delete cached Flex Attention masks to reset inference
+    for name, module in self.named_modules():
+        if hasattr(module, "_flex_attention_cache"):
+            del module._flex_attention_cache
+    pass
+
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
 
