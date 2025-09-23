@@ -957,7 +957,12 @@ class FastBaseModel:
             # Pad tokenizer to the left
             if hasattr(m, "_saved_temp_tokenizer"): m._saved_temp_tokenizer.padding_side = "right"
             # Set a flag for generation!
-            if hasattr(m, "_flag_for_generation"): del m._flag_for_generation
+            if hasattr(m, "_flag_for_generation"):
+                try:
+                    # Weirdly sometimes cannot succeed so do a try except
+                    del m._flag_for_generation
+                except:
+                    pass
         pass
         m = model
         while hasattr(m, "model"):
