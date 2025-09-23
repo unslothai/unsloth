@@ -664,7 +664,7 @@ class FastModel(FastBaseModel):
         # Qwen 2.5
         elif "qwen2_5" in model_types_all and transformers_version < Version("4.49.0"):
             raise RuntimeError("Unsloth: Qwen 2.5 only works on transformers >= 4.49.0." + LATEST)
-        # Gemma 3N must be beefore Gemma 3
+        # Gemma 3N must be before Gemma 3
         elif "gemma3n" in model_types_all:
             if transformers_version < Version("4.53.0"):
                 raise RuntimeError("Unsloth: Gemma 3N only works on transformers >= 4.53.0" + LATEST)

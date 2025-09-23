@@ -118,6 +118,7 @@ from transformers.training_args import ParallelMode
 
 # Wrap trainer with padding to right and enable training mode
 import functools
+from types import MethodType
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
@@ -496,7 +497,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         training_check = \
         "if hasattr(self, 'train'):\n"\
-        "    self.train = prepare_for_training_mode(self.train)\n"\
+        "    self.train = MethodType(prepare_for_training_mode(self.__class__.train), self)\n"\
         "pass\n"
         RLTrainer_post += training_check
     pass
