@@ -910,6 +910,7 @@ class FastModel(FastBaseModel):
             supports_sdpa     = supports_sdpa,
             whisper_language  = whisper_language,
             whisper_task      = whisper_task,
+            auto_config       = auto_config,
 
             # Pass vLLM/inference parameters
             fast_inference         = fast_inference,

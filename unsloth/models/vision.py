@@ -300,7 +300,9 @@ class FastBaseModel:
         supports_sdpa     = True,
         whisper_language  = None,
         whisper_task      = None,
-        fast_inference   = False,
+        auto_config       = None,
+        # vLLM parameters
+        fast_inference    = False,
         gpu_memory_utilization = 0.5,
         float8_kv_cache   = False,
         random_state      = 3407,
@@ -500,10 +502,27 @@ class FastBaseModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit:
             # Ignore load_in_4bit / load_in_8bit for MXFP4 - best to get config file
-            if "gpt-oss" in model_name.lower():
+            if "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower():
                 pass
             else:
                 kwargs["quantization_config"] = bnb_config
+        else:
+            # Try dequantizing the quantized model if it's a quantized model
+            if auto_config is None:
+                auto_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
+            if hasattr(auto_config, "quantization_config"):
+                from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
+                quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[auto_config["quant_method"]]
+                quantizer_kwargs = {}
+                if "dequantize" in inspect.signature(quantizer).parameters:
+                    quantizer_kwargs["dequantize"] = True
+                quantization_config = quantizer.from_dict(config, **quantizer_kwargs)
+                kwargs["quantization_config"] = quantization_config
+            pass
         pass
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
