@@ -941,6 +941,7 @@ class FastBaseModel:
                         if module.padding_idx < module.weight.shape[0]:
                             module.weight[module.padding_idx] = 0
         # Patch for torch.compiled inference
+        print("Precompiling")
         FastBaseModel.pre_compile_for_inference(model_type, model, tokenizer)
         return model
     pass
