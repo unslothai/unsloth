@@ -83,10 +83,13 @@ NUM_LOGITS_TO_KEEP = dict()
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
-    "mistral3"
+    "mistral3",
 ]
 VLLM_NON_LORA_VLM = [
-    "mllama"
+    "mllama",
+]
+PRE_COMPILE_INFERENCE = [
+    "gpt_oss",
 ]
 
 from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
@@ -250,11 +253,28 @@ def unsloth_base_fast_generate(
     # Delete cached Flex Attention masks to reset inference
     for name, module in self.named_modules():
         if hasattr(module, "_flex_attention_cache"):
-            del module._flex_attention_cache
+            try: del module._flex_attention_cache
+            except: pass
+        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
+        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
+            try: del module._cache
+            except: pass
     pass
 
+    # DO INFERENCE
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
+
+    # Delete cached Flex Attention masks to reset inference
+    for name, module in self.named_modules():
+        if hasattr(module, "_flex_attention_cache"):
+            try: del module._flex_attention_cache
+            except: pass
+        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
+        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
+            try: del module._cache
+            except: pass
+    pass
 
     # FastBaseModel.for_training(self)
     return output
@@ -674,6 +694,7 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             trust_remote_code  = trust_remote_code,
+            model_type = model_type_arch,
         )
         # Clear deleted GPU items
         for _ in range(3):
@@ -686,6 +707,31 @@ class FastBaseModel:
         return model, tokenizer
     pass
 
+    @staticmethod
+    def pre_compile_for_inference(model_type, model, tokenizer):
+        """
+        We need to invoke torch.compile to save VRAM usage and make it faster downstream.
+        Sometimes torch.compile can use 3GB weirdly on large batches, then it goes down to <1GB.
+        So we invoke torch.compile on short batches to reduce VRAM usage.
+        """
+        if model_type is None or model is None or tokenizer is None: return
+        if str(model_type).lower() not in PRE_COMPILE_INFERENCE: return
+        if getattr(tokenizer, "chat_template", None) is None: return
+        messages = [
+            [
+                 {"role": "user", "content": f"1+1"},
+            ],
+        ]*4
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt = True,
+            return_tensors = "pt",
+            return_dict = True,
+        ).to(model.device)
+        print(f"Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take a few minutes!")
+        _ = model.generate(**inputs, max_new_tokens = 3)
+        del inputs
+    pass
 
     @staticmethod
     def get_peft_model(
@@ -823,6 +869,7 @@ class FastBaseModel:
         model,
         use_gradient_checkpointing = True,
         trust_remote_code = False,
+        model_type = None,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
@@ -850,10 +897,12 @@ class FastBaseModel:
         patch_saving_functions(model, vision = True)
 
         # Patch tokenizer to pad to the left
+        tokenizer = None
         m = model
         while hasattr(m, "model"):
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
+                    tokenizer = m._saved_temp_tokenizer
                     m._saved_temp_tokenizer.tokenizer.padding_side = "left"
             pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
@@ -862,6 +911,7 @@ class FastBaseModel:
         pass
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
+                tokenizer = m._saved_temp_tokenizer
                 m._saved_temp_tokenizer.tokenizer.padding_side = "left"
         pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
@@ -890,6 +940,8 @@ class FastBaseModel:
                     if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
                         if module.padding_idx < module.weight.shape[0]:
                             module.weight[module.padding_idx] = 0
+        # Patch for torch.compiled inference
+        FastBaseModel.pre_compile_for_inference(model_type, model, tokenizer)
         return model
     pass
 
