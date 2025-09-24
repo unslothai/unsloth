@@ -760,7 +760,7 @@ class FastBaseModel:
             return_tensors = "pt",
             return_dict = True,
         ).to(model.device)
-        _ = model.generate(**inputs, max_new_tokens = 3)
+        _ = model.generate(**inputs, max_new_tokens = 1)
         # Do batched inference
         messages = [
             [
@@ -773,7 +773,7 @@ class FastBaseModel:
             return_tensors = "pt",
             return_dict = True,
         ).to(model.device)
-        _ = model.generate(**inputs, max_new_tokens = 3)
+        _ = model.generate(**inputs, max_new_tokens = 2)
         # Set we already pre compiled
         model._pre_compiled_for_inference = True
     pass
@@ -984,7 +984,7 @@ class FastBaseModel:
                         if module.padding_idx < module.weight.shape[0]:
                             module.weight[module.padding_idx] = 0
         # Patch for torch.compiled inference
-        # FastBaseModel.pre_compile_for_inference(model_type, model, tokenizer)
+        FastBaseModel.pre_compile_for_inference(model_type, model, tokenizer)
         return model
     pass
 
