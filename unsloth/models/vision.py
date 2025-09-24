@@ -511,7 +511,6 @@ class FastBaseModel:
             else:
                 kwargs["quantization_config"] = bnb_config
         else:
-            # Try dequantizing the quantized model if it's a quantized model
             if auto_config is None:
                 auto_config = AutoConfig.from_pretrained(
                     model_name,
@@ -523,8 +522,9 @@ class FastBaseModel:
                 quantization_config = auto_config.quantization_config
                 quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quantization_config["quant_method"]]
                 quantizer_kwargs = {}
-                if "dequantize" in inspect.signature(quantizer).parameters:
-                    quantizer_kwargs["dequantize"] = True
+                # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
+                # if "dequantize" in inspect.signature(quantizer).parameters:
+                #     quantizer_kwargs["dequantize"] = True
                 quantization_config = quantizer.from_dict(quantization_config, **quantizer_kwargs)
                 kwargs["quantization_config"] = quantization_config
             pass
