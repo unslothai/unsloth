@@ -525,7 +525,7 @@ class FastBaseModel:
                 quantizer_kwargs = {}
                 if "dequantize" in inspect.signature(quantizer).parameters:
                     quantizer_kwargs["dequantize"] = True
-                quantization_config = quantizer.from_dict(config, **quantizer_kwargs)
+                quantization_config = quantizer.from_dict(quantization_config, **quantizer_kwargs)
                 kwargs["quantization_config"] = quantization_config
             pass
         pass
