@@ -289,6 +289,7 @@ class FastBaseModel:
         dtype             = None,
         load_in_4bit      = True,
         load_in_8bit      = False,
+        load_in_16bit     = False,
         full_finetuning   = False,
         token             = None,
         device_map        = "sequential",
@@ -462,12 +463,13 @@ class FastBaseModel:
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
-            load_in_4bit = False
-            load_in_8bit = False
+            load_in_4bit  = False
+            load_in_8bit  = False
+            load_in_16bit = False
         pass
 
-        if load_in_4bit and load_in_8bit:
-            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit, not both!")
+        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
+            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!")
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit              = True,
@@ -481,6 +483,8 @@ class FastBaseModel:
                 load_in_8bit              = True,
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
+        elif load_in_16bit:
+            bnb_config = None
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
             print("Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
         pass
