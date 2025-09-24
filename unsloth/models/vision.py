@@ -733,7 +733,7 @@ class FastBaseModel:
             return_tensors = "pt",
             return_dict = True,
         ).to(model.device)
-        print(f"Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take a few minutes!")
+        print(f"🦥 Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take a ~ 3 minutes!")
         _ = model.generate(**inputs, max_new_tokens = 3)
         del inputs
         # Set we already pre compiled
