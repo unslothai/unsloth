@@ -727,7 +727,7 @@ class FastBaseModel:
         # Do single inference
         messages = [
             [
-                 {"role": "user", "content": f"1+1"},
+                 {"role": "user", "content": f"What is 1+1 equal to?"},
             ],
         ]*1
         inputs = tokenizer.apply_chat_template(
