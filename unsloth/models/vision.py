@@ -695,6 +695,7 @@ class FastBaseModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
             trust_remote_code  = trust_remote_code,
             model_type = model_type_arch,
+            tokenizer = tokenizer,
         )
         # Clear deleted GPU items
         for _ in range(3):
@@ -717,6 +718,10 @@ class FastBaseModel:
         if model_type is None or model is None or tokenizer is None: return
         if str(model_type).lower() not in PRE_COMPILE_INFERENCE: return
         if getattr(tokenizer, "chat_template", None) is None: return
+        # Check if already compiled and exit
+        for module in model.modules():
+            if hasattr(module, "_pre_compiled_for_inference"): return
+        pass
         messages = [
             [
                  {"role": "user", "content": f"1+1"},
@@ -731,6 +736,8 @@ class FastBaseModel:
         print(f"Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take a few minutes!")
         _ = model.generate(**inputs, max_new_tokens = 3)
         del inputs
+        # Set we already pre compiled
+        model._pre_compiled_for_inference = True
     pass
 
     @staticmethod
@@ -870,6 +877,7 @@ class FastBaseModel:
         use_gradient_checkpointing = True,
         trust_remote_code = False,
         model_type = None,
+        tokenizer = None,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
@@ -897,12 +905,10 @@ class FastBaseModel:
         patch_saving_functions(model, vision = True)
 
         # Patch tokenizer to pad to the left
-        tokenizer = None
         m = model
         while hasattr(m, "model"):
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                    tokenizer = m._saved_temp_tokenizer
                     m._saved_temp_tokenizer.tokenizer.padding_side = "left"
             pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
@@ -911,7 +917,6 @@ class FastBaseModel:
         pass
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                tokenizer = m._saved_temp_tokenizer
                 m._saved_temp_tokenizer.tokenizer.padding_side = "left"
         pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
@@ -941,7 +946,6 @@ class FastBaseModel:
                         if module.padding_idx < module.weight.shape[0]:
                             module.weight[module.padding_idx] = 0
         # Patch for torch.compiled inference
-        print(model_type, model, tokenizer)
         FastBaseModel.pre_compile_for_inference(model_type, model, tokenizer)
         return model
     pass
