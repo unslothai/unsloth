@@ -722,6 +722,22 @@ class FastBaseModel:
         for module in model.modules():
             if hasattr(module, "_pre_compiled_for_inference"): return
         pass
+        print(f"🦥 Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take 3 minutes or so!")
+        print("========= Pre compiling model for faster inference. Please be patient thank you! =========")
+        # Do single inference
+        messages = [
+            [
+                 {"role": "user", "content": f"1+1"},
+            ],
+        ]*1
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt = True,
+            return_tensors = "pt",
+            return_dict = True,
+        ).to(model.device)
+        _ = model.generate(**inputs, max_new_tokens = 3)
+        # Do batched inference
         messages = [
             [
                  {"role": "user", "content": f"1+1"},
@@ -733,10 +749,7 @@ class FastBaseModel:
             return_tensors = "pt",
             return_dict = True,
         ).to(model.device)
-        print(f"🦥 Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take 3 minutes or so!")
-        print("========= Pre compiling model for faster inference. Please be patient thank you! =========")
         _ = model.generate(**inputs, max_new_tokens = 3)
-        del inputs
         # Set we already pre compiled
         model._pre_compiled_for_inference = True
     pass
