@@ -516,7 +516,8 @@ class FastBaseModel:
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
-                quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[auto_config["quant_method"]]
+                quantization_config = auto_config.quantization_config
+                quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quantization_config["quant_method"]]
                 quantizer_kwargs = {}
                 if "dequantize" in inspect.signature(quantizer).parameters:
                     quantizer_kwargs["dequantize"] = True
