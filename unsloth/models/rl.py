@@ -963,6 +963,19 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             source = edit_function(function, source)
         pass
 
+        """
+        import torch
+        X = torch.ones((2, 2048, 201088), dtype = torch.bfloat16, device = "cuda")
+        X[torch.randperm(2, dtype = torch.int64, device = X.device)]
+
+        will error out in torch 2.8 AcceleratorError: CUDA error: invalid configuration argument
+        """
+        source = re.sub(
+            r"(\n[\s]{4,})generation_batch = shuffle_sequence_dict\(generation_batch\)\n",
+            r"\n\1try: generation_batch = shuffle_sequence_dict(generation_batch)\n\1except: pass\n",
+            source,
+        )
+
         # llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         source = re.sub(
             r"(\n[\s]{4,}).+?model_executor\.driver_worker.+?\n",
