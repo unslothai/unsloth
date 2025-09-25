@@ -761,7 +761,7 @@ pass
 
 
 def install_llama_cpp_clone_non_blocking():
-    full_command = ["git", "clone", "--recursive", "https://github.com/ggerganov/llama.cpp"]
+    full_command = ["git", "clone", "--recursive", "https://github.com/ggerganov/llama.cpp#b3345"]
     run_installer = subprocess.Popen(full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     return run_installer
 pass
