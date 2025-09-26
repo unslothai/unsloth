@@ -560,14 +560,15 @@ class FastBaseModel:
                 embed_tokens.to("cpu")
 
                 # Add hooks to move inputs to CPU and back to CUDA
-                def pre_hook(module, args):
-                    args[0]._old_device = args[0].device
-                    return (args[0].to("cpu", non_blocking = True))
-                def post_hook(module, args, output):
-                    old_device = getattr(args[0], "_old_device", "cuda")
-                    return output.to(old_device, non_blocking = True)
-                embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
-                embed_tokens.register_forward_hook    (post_hook, prepend = True)
+                # [TODO] Doesn't seem to work!
+                # def pre_hook(module, args):
+                #     args[0]._old_device = args[0].device
+                #     return (args[0].to("cpu", non_blocking = True))
+                # def post_hook(module, args, output):
+                #     old_device = getattr(args[0], "_old_device", "cuda")
+                #     return output.to(old_device, non_blocking = True)
+                # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
+                # embed_tokens.register_forward_hook    (post_hook, prepend = True)
                 # Must free GPU memory otherwise will not free!
                 torch.cuda.empty_cache()
                 gc.collect()
