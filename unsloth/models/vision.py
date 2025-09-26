@@ -302,6 +302,7 @@ class FastBaseModel:
         whisper_language  = None,
         whisper_task      = None,
         auto_config       = None,
+        offload_embedding = False,
         # vLLM parameters
         fast_inference    = False,
         gpu_memory_utilization = 0.5,
@@ -551,6 +552,15 @@ class FastBaseModel:
             if hasattr(model, 'generate'):
                 model.fast_generate = model.generate
                 model.fast_generate_batches = error_out_no_vllm
+            if offload_embedding:
+                embed_tokens = model.get_input_embeddings()
+                nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                embed_tokens.to("cpu")
+                # Must free GPU memory otherwise will not free!
+                torch.cuda.empty_cache()
+                gc.collect()
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,

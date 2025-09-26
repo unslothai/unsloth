@@ -123,6 +123,7 @@ class FastLanguageModel(FastLlamaModel):
         resize_model_vocab         = None,
         revision                   = None,
         use_exact_model_name       = False,
+        offload_embedding          = False,
 
         fast_inference             = False, # uses vLLM
         gpu_memory_utilization     = 0.5,
@@ -161,6 +162,7 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+                offload_embedding          = offload_embedding,
 
                 # Pass vLLM/inference parameters
                 fast_inference             = fast_inference,
@@ -401,6 +403,7 @@ class FastLanguageModel(FastLlamaModel):
                 return_logits              = False, # Return logits
                 fullgraph                  = True, # No graph breaks
                 use_exact_model_name       = use_exact_model_name,
+                offload_embedding          = offload_embedding,
 
                 # Pass vLLM/inference parameters
                 fast_inference             = fast_inference,
@@ -545,6 +548,7 @@ class FastModel(FastBaseModel):
         whisper_language           = None,
         whisper_task               = None,
         unsloth_force_compile      = False,
+        offload_embedding          = False,
 
         # Add the missing vLLM/inference parameters
         fast_inference             = False, # uses vLLM
@@ -918,6 +922,7 @@ class FastModel(FastBaseModel):
             whisper_language  = whisper_language,
             whisper_task      = whisper_task,
             auto_config       = model_config,
+            offload_embedding = offload_embedding,
 
             # Pass vLLM/inference parameters
             fast_inference         = fast_inference,
