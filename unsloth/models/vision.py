@@ -558,7 +558,6 @@ class FastBaseModel:
                 ngb = round(nbytes / 1024 / 1024 / 1024, 2)
                 print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
                 embed_tokens.to("cpu")
-                embed_tokens.weight.pin_memory()
 
                 # Add hooks to move inputs to CPU and back to CUDA
                 def pre_hook(module, args):
