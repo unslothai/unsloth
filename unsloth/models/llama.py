@@ -2170,6 +2170,9 @@ class FastLlamaModel:
             m = m.model
         pass
         m.max_seq_length = max_seq_length
+        # Save to modules as well
+        for module in model.modules():
+            module.max_seq_length = max_seq_length
 
         # We check the tokenizer first for errors
         if fix_tokenizer:
@@ -2228,6 +2231,11 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
 
         # Patch generate
         is_classification =  "Classification" in str(type(model))
@@ -2236,6 +2244,13 @@ class FastLlamaModel:
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
         pass
+        # Set weight[padding_idx] = 0
+        with torch.no_grad():
+            for name, module in model.named_modules():
+                if type(module) is torch.nn.Embedding:
+                    if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
+                        if module.padding_idx < module.weight.shape[0]:
+                            module.weight[module.padding_idx] = 0
         return model, tokenizer
     pass
 
@@ -2704,6 +2719,11 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
         return model
     pass
 
@@ -2892,6 +2912,9 @@ class FastLlamaModel:
             internal_model = internal_model.model
         pass
         internal_model.max_seq_length = max_seq_length
+        # Save to modules as well
+        for module in model.modules():
+            module.max_seq_length = max_seq_length
 
         # Patch tokenizer to pad to the right
         internal_model = model
@@ -2916,6 +2939,11 @@ class FastLlamaModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastLlamaModel.for_training,  model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
         return model
     pass
 
