@@ -83,13 +83,18 @@ NUM_LOGITS_TO_KEEP = dict()
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
+    "mistral3",
 ]
 VLLM_NON_LORA_VLM = [
-    "mllama"
+    "mllama",
+]
+PRE_COMPILE_INFERENCE = [
+    "gpt_oss",
 ]
 
 from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
+
 from transformers import GenerationConfig, CompileConfig, HybridCache
 
 _compile_config = CompileConfig(
@@ -217,8 +222,11 @@ def unsloth_base_fast_generate(
     if getattr(self, "_supports_static_cache", getattr(self, "_can_compile_fullgraph", True)):
         if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
             cache_implementation = "static"
-        else:
+        elif Version(transformers_version) < Version("4.56.0.dev0"):
             cache_implementation = None
+        else:
+            # Should work in latest transformers!
+            cache_implementation = "static"
     else:
         cache_implementation = None
     if cache_implementation is not None:
@@ -242,10 +250,33 @@ def unsloth_base_fast_generate(
             kwargs["compile_config"] = _compile_config
     pass
 
+    # Delete cached Flex Attention masks to reset inference
+    for name, module in self.named_modules():
+        if hasattr(module, "_flex_attention_cache"):
+            try: del module._flex_attention_cache
+            except: pass
+        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
+        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
+            try: del module._cache
+            except: pass
+    pass
+
+    # DO INFERENCE
     with torch.inference_mode(), autocaster:
         output = self._old_generate(*args, **kwargs)
 
-    FastBaseModel.for_training(self)
+    # Delete cached Flex Attention masks to reset inference
+    for name, module in self.named_modules():
+        if hasattr(module, "_flex_attention_cache"):
+            try: del module._flex_attention_cache
+            except: pass
+        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
+        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
+            try: del module._cache
+            except: pass
+    pass
+
+    # FastBaseModel.for_training(self)
     return output
 pass
 
@@ -258,6 +289,7 @@ class FastBaseModel:
         dtype             = None,
         load_in_4bit      = True,
         load_in_8bit      = False,
+        load_in_16bit     = False,
         full_finetuning   = False,
         token             = None,
         device_map        = "sequential",
@@ -269,7 +301,10 @@ class FastBaseModel:
         supports_sdpa     = True,
         whisper_language  = None,
         whisper_task      = None,
-        fast_inference   = False,
+        auto_config       = None,
+        offload_embedding = False,
+        # vLLM parameters
+        fast_inference    = False,
         gpu_memory_utilization = 0.5,
         float8_kv_cache   = False,
         random_state      = 3407,
@@ -421,19 +456,21 @@ class FastBaseModel:
         if not ("attn_implementation" in kwargs):
             kwargs["attn_implementation"] = "sdpa"
         if not supports_sdpa:
-            print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager.")
+            if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "0") == "0":
+                print(f"Unsloth: {model_type_arch.title()} does not support SDPA - switching to fast eager.")
             del kwargs["attn_implementation"]
         pass
 
         bnb_config = None
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print("Unsloth: You selected full finetuning support, but 4bit / 8bit is enabled - disabling LoRA / QLoRA.")
-            load_in_4bit = False
-            load_in_8bit = False
+            load_in_4bit  = False
+            load_in_8bit  = False
+            load_in_16bit = False
         pass
 
-        if load_in_4bit and load_in_8bit:
-            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit, not both!")
+        if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
+            raise RuntimeError("Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!")
         if load_in_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit              = True,
@@ -447,6 +484,8 @@ class FastBaseModel:
                 load_in_8bit              = True,
                 llm_int8_skip_modules     = SKIP_QUANTIZATION_MODULES.copy(),
             )
+        elif load_in_16bit:
+            bnb_config = None
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
             print("Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
         pass
@@ -468,10 +507,28 @@ class FastBaseModel:
         # Cannot be None, since HF now checks for the config
         if load_in_4bit:
             # Ignore load_in_4bit / load_in_8bit for MXFP4 - best to get config file
-            if "gpt-oss" in model_name.lower():
+            if "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower():
                 pass
             else:
                 kwargs["quantization_config"] = bnb_config
+        else:
+            if auto_config is None:
+                auto_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                )
+            if hasattr(auto_config, "quantization_config"):
+                from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
+                quantization_config = auto_config.quantization_config
+                quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quantization_config["quant_method"]]
+                quantizer_kwargs = {}
+                # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
+                # if "dequantize" in inspect.signature(quantizer).parameters:
+                #     quantizer_kwargs["dequantize"] = True
+                quantization_config = quantizer.from_dict(quantization_config, **quantizer_kwargs)
+                kwargs["quantization_config"] = quantization_config
+            pass
         pass
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
@@ -495,6 +552,26 @@ class FastBaseModel:
             if hasattr(model, 'generate'):
                 model.fast_generate = model.generate
                 model.fast_generate_batches = error_out_no_vllm
+            if offload_embedding:
+                embed_tokens = model.get_input_embeddings()
+                nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                embed_tokens.to("cpu")
+
+                # Add hooks to move inputs to CPU and back to CUDA
+                # [TODO] Doesn't seem to work!
+                # def pre_hook(module, args):
+                #     args[0]._old_device = args[0].device
+                #     return (args[0].to("cpu", non_blocking = True))
+                # def post_hook(module, args, output):
+                #     old_device = getattr(args[0], "_old_device", "cuda")
+                #     return output.to(old_device, non_blocking = True)
+                # embed_tokens.register_forward_pre_hook(pre_hook,  prepend = True)
+                # embed_tokens.register_forward_hook    (post_hook, prepend = True)
+                # Must free GPU memory otherwise will not free!
+                torch.cuda.empty_cache()
+                gc.collect()
         else:
             from unsloth_zoo.vllm_utils import (
                 load_vllm,
@@ -573,7 +650,7 @@ class FastBaseModel:
         if (whisper_language and whisper_task) or auto_model.__name__.endswith("ForConditionalGeneration"):
            tokenizer = auto_processor.from_pretrained(
                 tokenizer_name,
-                padding_side = "right",
+                padding_side = "left",
                 token        = token,
                 language     = whisper_language,
                 task         = whisper_task,
@@ -582,19 +659,19 @@ class FastBaseModel:
             try:
                 tokenizer = auto_processor.from_pretrained(
                     tokenizer_name,
-                    padding_side = "right",
+                    padding_side = "left",
                     token        = token,
                 )
             except:
                 tokenizer = get_auto_processor(
                     tokenizer_name,
-                    padding_side = "right",
+                    padding_side = "left",
                     token        = token,
                 )
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             # Add padding side as well
-            __tokenizer.padding_side = "right"
+            __tokenizer.padding_side = "left"
             # Check bos, eos, pad tokens
             if hasattr(__tokenizer, "bos_token"):
                 tokenizer.bos_token    = __tokenizer.bos_token
@@ -642,6 +719,9 @@ class FastBaseModel:
             m = m.model
         pass
         m.max_seq_length = max_seq_length
+        # Save to modules as well
+        for module in model.modules():
+            module.max_seq_length = max_seq_length
         m._saved_temp_tokenizer = tokenizer
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
@@ -659,6 +739,8 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
             trust_remote_code  = trust_remote_code,
+            model_type = model_type_arch,
+            tokenizer = tokenizer,
         )
         # Clear deleted GPU items
         for _ in range(3):
@@ -671,6 +753,51 @@ class FastBaseModel:
         return model, tokenizer
     pass
 
+    @staticmethod
+    def pre_compile_for_inference(model_type, model, tokenizer):
+        """
+        We need to invoke torch.compile to save VRAM usage and make it faster downstream.
+        Sometimes torch.compile can use 3GB weirdly on large batches, then it goes down to <1GB.
+        So we invoke torch.compile on short batches to reduce VRAM usage.
+        """
+        if model_type is None or model is None or tokenizer is None: return
+        if str(model_type).lower() not in PRE_COMPILE_INFERENCE: return
+        if getattr(tokenizer, "chat_template", None) is None: return
+        # Check if already compiled and exit
+        for module in model.modules():
+            if hasattr(module, "_pre_compiled_for_inference"): return
+        pass
+        print(f"🦥 Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take 3 minutes or so!")
+        print("========= Pre compiling model for faster inference. Please be patient thank you! =========")
+        # Do single inference
+        messages = [
+            [
+                 {"role": "user", "content": f"What is 1+1 equal to?"},
+            ],
+        ]*1
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt = True,
+            return_tensors = "pt",
+            return_dict = True,
+        ).to(model.device)
+        _ = model.generate(**inputs, max_new_tokens = 1)
+        # Do batched inference
+        messages = [
+            [
+                 {"role": "user", "content": f"1+1"},
+            ],
+        ]*4
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt = True,
+            return_tensors = "pt",
+            return_dict = True,
+        ).to(model.device)
+        _ = model.generate(**inputs, max_new_tokens = 2)
+        # Set we already pre compiled
+        model._pre_compiled_for_inference = True
+    pass
 
     @staticmethod
     def get_peft_model(
@@ -777,6 +904,9 @@ class FastBaseModel:
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
         model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing, trust_remote_code = trust_remote_code)
         model.max_seq_length = max_seq_length
+        # Save to modules as well
+        for module in model.modules():
+            module.max_seq_length = max_seq_length
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
@@ -791,6 +921,11 @@ class FastBaseModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
         return model
     pass
 
@@ -800,6 +935,8 @@ class FastBaseModel:
         model,
         use_gradient_checkpointing = True,
         trust_remote_code = False,
+        model_type = None,
+        tokenizer = None,
     ):
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
@@ -826,12 +963,12 @@ class FastBaseModel:
         pass
         patch_saving_functions(model, vision = True)
 
-        # Patch tokenizer to pad to the right
+        # Patch tokenizer to pad to the left
         m = model
         while hasattr(m, "model"):
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                    m._saved_temp_tokenizer.tokenizer.padding_side = "right"
+                    m._saved_temp_tokenizer.tokenizer.padding_side = "left"
             pass
             # Also set is_loaded_in_8bit to disable incorrect DDP
             m.is_loaded_in_8bit = True if not full_finetuning else False
@@ -839,7 +976,7 @@ class FastBaseModel:
         pass
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                m._saved_temp_tokenizer.tokenizer.padding_side = "right"
+                m._saved_temp_tokenizer.tokenizer.padding_side = "left"
         pass
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
@@ -855,6 +992,20 @@ class FastBaseModel:
         # Add for_inference and for_training
         model.for_training  = functools.partial(FastBaseModel.for_training,  model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
+        m = model
+        while hasattr(m, "model"):
+            m.for_training  = functools.partial(FastBaseModel.for_training,  m)
+            m.for_inference = functools.partial(FastBaseModel.for_inference, m)
+            m = m.model
+        # Set weight[padding_idx] = 0
+        with torch.no_grad():
+            for name, module in model.named_modules():
+                if type(module) is torch.nn.Embedding:
+                    if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
+                        if module.padding_idx < module.weight.shape[0]:
+                            module.weight[module.padding_idx] = 0
+        # Patch for torch.compiled inference
+        # FastBaseModel.pre_compile_for_inference(model_type, model, tokenizer)
         return model
     pass
 
@@ -922,7 +1073,12 @@ class FastBaseModel:
             # Pad tokenizer to the left
             if hasattr(m, "_saved_temp_tokenizer"): m._saved_temp_tokenizer.padding_side = "right"
             # Set a flag for generation!
-            if hasattr(m, "_flag_for_generation"): del m._flag_for_generation
+            if hasattr(m, "_flag_for_generation"):
+                try:
+                    # Weirdly sometimes cannot succeed so do a try except
+                    del m._flag_for_generation
+                except:
+                    pass
         pass
         m = model
         while hasattr(m, "model"):
