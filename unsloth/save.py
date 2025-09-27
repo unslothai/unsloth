@@ -12,11 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unsloth_zoo.utils import Version
-from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
-from peft.tuners.lora import Linear as Peft_Linear
+from unsloth.devices import has_mps
+
+if not has_mps():
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+    from peft.tuners.lora import Linear as Peft_Linear
+    from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
+    from unsloth_zoo.utils import Version
+    from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
+else:
+    from packaging.version import Version
 from typing import Optional, Callable, Union, List
 import sys
 import requests
@@ -26,12 +32,12 @@ import shutil
 import pickle
 import gc
 from transformers.models.llama.modeling_llama import logger
-from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
-from .tokenizer_utils import fix_sentencepiece_gguf
+if not has_mps():
+    from .tokenizer_utils import fix_sentencepiece_gguf
 from huggingface_hub import HfApi
 try:
     from huggingface_hub import get_token
@@ -2263,14 +2269,15 @@ pass
 
 
 from .models.loader_utils import get_model_name
-from unsloth_zoo.saving_utils import (
-    merge_and_overwrite_lora,
-    prepare_saving,
-)
-from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
-    convert_to_gguf as _convert_to_gguf,
-)
+if not has_mps():
+    from unsloth_zoo.saving_utils import (
+        merge_and_overwrite_lora,
+        prepare_saving,
+    )
+    from unsloth_zoo.llama_cpp import (
+        install_llama_cpp,
+        convert_to_gguf as _convert_to_gguf,
+    )
 
 @torch.inference_mode
 def save_to_gguf_generic(
