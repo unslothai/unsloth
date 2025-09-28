@@ -1728,8 +1728,7 @@ def unsloth_save_pretrained_gguf(
         )
         is_vlm = is_vlm or hasattr(self.config, "vision_config")
 
-    if is_vlm and isinstance(tokenizer, ProcessorMixin):
-        tokenizer = tokenizer.tokenizer
+    is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
     is_gpt_oss = True if (hasattr(self.config, "architectures") and self.config.architectures == "GptOssForCausalLM") or (hasattr(self.config, "model_type") and self.config.model_type in ["gpt-oss", "gpt_oss"]) else False
     # Step 2: Prepare arguments for model saving
@@ -1749,9 +1748,13 @@ def unsloth_save_pretrained_gguf(
     del arguments["is_gpt_oss"]
     del arguments["model_name"]
     del arguments["base_model_name"]
+    del arguments["is_processor"]
 
     # Step 3: Fix tokenizer BOS token if needed
-    fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
+    if is_processor:
+        fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer.tokenizer)
+    else:
+        fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
     # Step 4: Save/merge model to 16-bit format
     print(f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...')
@@ -1761,6 +1764,9 @@ def unsloth_save_pretrained_gguf(
 
     except Exception as e:
         raise RuntimeError(f"Failed to save/merge model: {e}")
+
+    if is_processor:
+        tokenizer = tokenizer.tokenizer
 
     # Use old chat template if the bos is removed
     if fix_bos_token:
