@@ -1849,9 +1849,15 @@ def unsloth_save_pretrained_gguf(
     ollama_success = False
     if all_file_locations:
         try:
-            modelfile = create_ollama_modelfile(tokenizer, base_model_name, ".")
+            if is_vlm_update:
+                modelfile = create_ollama_modelfile(tokenizer, base_model_name, ".")
+            else:
+                modelfile = create_ollama_modelfile(tokenizer, base_model_name, all_file_locations[0])
             if modelfile is not None:
-                modelfile_location = os.path.join(save_directory, "Modelfile")
+                if is_vlm:
+                    modelfile_location = os.path.join(save_directory, "Modelfile")
+                else:
+                    modelfile_location = os.path.join(os.getcwd(), "Modelfile")
                 with open(modelfile_location, "w", encoding = "utf-8") as file:
                     file.write(modelfile)
                 ollama_success = True
@@ -1873,9 +1879,13 @@ def unsloth_save_pretrained_gguf(
         print("Unsloth: Prompt model to describe the image")
     else:
         print(f'Unsloth: example usage for text only LLMs: llama-cli --model {all_file_locations[0]} -p "why is the sky blue?"')
-    if ollama_success:
+    if ollama_success and is_vlm_update:
         print(f"Unsloth: Saved Ollama Modelfile to {modelfile_location}")
         print("Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside save directory.")
+    if ollama_success and not is_vlm_update:
+        print("Unsloth: Saved Ollama Modelfile to current directory")
+        print("Unsloth: convert model to ollama format by running - ollama create model_name -f ./Modelfile - inside current directory.")
+
     #Return a dict with all needed info for push_to_hub
     return {
         "save_directory": save_directory,
