@@ -1061,9 +1061,9 @@ def save_to_gguf(
     # Print conversion info
     print_info = \
         f"==((====))==  Unsloth: Conversion from HF to GGUF information\n"\
-        f"   \\\\   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
-        f"O^O/ \\_/ \\    [1] Converting HF to GGUF {first_conversion_dtype} might take 3 minutes.\n"\
-        f"\\        /    [2] Converting GGUF {first_conversion_dtype} to {quantization_method} might take 10 minutes each.\n"\
+        f"   {chr(92)}{chr(92)}   /|    [0] Installing llama.cpp might take 3 minutes.\n"\
+        f"O^O/ {chr(92)}_/ {chr(92)}    [1] Converting HF to GGUF {first_conversion_dtype} might take 3 minutes.\n"\
+        f"{chr(92)}        /    [2] Converting GGUF {first_conversion_dtype} to {quantization_method} might take 10 minutes each.\n"\
         f' "-____-"     In total, you will have to wait at least 16 minutes.\n'
     print(print_info)
 
