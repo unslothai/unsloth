@@ -549,7 +549,7 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
-            if hasattr(model, 'generate'):
+            if hasattr(model, "generate"):
                 model.fast_generate = model.generate
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
@@ -612,8 +612,17 @@ class FastBaseModel:
             llm = load_vllm(**load_vllm_kwargs)
 
             # Convert to HF format
-            _, quant_state_dict = get_vllm_state_dict(llm, config = model_config, is_vision_model = True)
-            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config, is_vision_model = True)
+            _, quant_state_dict = get_vllm_state_dict(
+                llm,
+                config = model_config,
+                is_vision_model = True,
+            )
+            model = convert_vllm_to_huggingface(
+                quant_state_dict,
+                model_config,
+                dtype, bnb_config,
+                is_vision_model = True,
+            )
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
