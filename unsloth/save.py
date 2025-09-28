@@ -1502,13 +1502,16 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
         Creates an Ollama Modelfile.
         Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
     """
-    chat_template = MODEL_TO_TEMPLATE_MAPPER[base_model_name]
-    _, _, _, ollama_modelfile = CHAT_TEMPLATES[chat_template] if CHAT_TEMPLATES[chat_template] else None
-    tokenizer._ollama_modelfile = ollama_modelfile  # This comes from the unpacking above
-    modelfile = getattr(tokenizer, "_ollama_modelfile", None)
-    if modelfile is None:
-        logger.info("Unsloth: No ollama template found for model. Skipping Ollama Modelfile")
+    chat_template = MODEL_TO_TEMPLATE_MAPPER.get(base_model_name)
+    if not chat_template:
+        print(f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile")
         return None
+    _, _, _, ollama_modelfile = CHAT_TEMPLATES.get(chat_template)
+    if not ollama_modelfile:
+        print(f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile")
+        return None
+    tokenizer._ollama_modelfile = ollama_modelfile  # This comes from the unpacking above
+    modelfile = ollama_modelfile
 
     FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"
     EOS_TOKEN_REPLACER     = "⚫@✅#🦥__EOS_TOKEN__⚡@🦥#⛵"
