@@ -505,7 +505,7 @@ class FastBaseModel:
             bnb_config.get_loading_attributes = lambda *args, **kwargs: {}
 
         # Cannot be None, since HF now checks for the config
-        if load_in_4bit:
+        if load_in_4bit or load_in_8bit:
             # Ignore load_in_4bit / load_in_8bit for MXFP4 - best to get config file
             if "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower():
                 pass
