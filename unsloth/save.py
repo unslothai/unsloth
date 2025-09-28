@@ -2105,7 +2105,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             readme_content += "1. Place the `Modelfile` in the same directory as the finetuned bf16 merged model\n"
             readme_content += "3. Run: `ollama create model_name -f ./Modelfile`\n"
             readme_content += "   (Replace `model_name` with your desired name)\n\n"
-            readme_content += "This will create a unified model that Ollama can use.\n"
+            readme_content += "This will create a unified bf16 model that Ollama can use.\n"
         elif modelfile_location:
             readme_content += "\n## Ollama\n"
             readme_content += "An Ollama Modelfile is included for easy deployment.\n"
