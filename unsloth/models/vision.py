@@ -856,7 +856,11 @@ class FastBaseModel:
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
-        model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing, trust_remote_code = trust_remote_code)
+        model = FastBaseModel.post_patch_model(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+            trust_remote_code = trust_remote_code,
+        )
         model.max_seq_length = max_seq_length
         # Save to modules as well
         for module in model.modules():
