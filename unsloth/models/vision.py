@@ -524,8 +524,8 @@ class FastBaseModel:
                 quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quantization_config["quant_method"]]
                 quantizer_kwargs = {}
                 # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
-                # if "dequantize" in inspect.signature(quantizer).parameters:
-                #     quantizer_kwargs["dequantize"] = True
+                if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
+                    quantizer_kwargs["dequantize"] = True
                 quantization_config = quantizer.from_dict(quantization_config, **quantizer_kwargs)
                 kwargs["quantization_config"] = quantization_config
             pass
@@ -754,52 +754,6 @@ class FastBaseModel:
     pass
 
     @staticmethod
-    def pre_compile_for_inference(model_type, model, tokenizer):
-        """
-        We need to invoke torch.compile to save VRAM usage and make it faster downstream.
-        Sometimes torch.compile can use 3GB weirdly on large batches, then it goes down to <1GB.
-        So we invoke torch.compile on short batches to reduce VRAM usage.
-        """
-        if model_type is None or model is None or tokenizer is None: return
-        if str(model_type).lower() not in PRE_COMPILE_INFERENCE: return
-        if getattr(tokenizer, "chat_template", None) is None: return
-        # Check if already compiled and exit
-        for module in model.modules():
-            if hasattr(module, "_pre_compiled_for_inference"): return
-        pass
-        print(f"🦥 Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take 3 minutes or so!")
-        print("========= Pre compiling model for faster inference. Please be patient thank you! =========")
-        # Do single inference
-        messages = [
-            [
-                 {"role": "user", "content": f"What is 1+1 equal to?"},
-            ],
-        ]*1
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt = True,
-            return_tensors = "pt",
-            return_dict = True,
-        ).to(model.device)
-        _ = model.generate(**inputs, max_new_tokens = 1)
-        # Do batched inference
-        messages = [
-            [
-                 {"role": "user", "content": f"1+1"},
-            ],
-        ]*4
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt = True,
-            return_tensors = "pt",
-            return_dict = True,
-        ).to(model.device)
-        _ = model.generate(**inputs, max_new_tokens = 2)
-        # Set we already pre compiled
-        model._pre_compiled_for_inference = True
-    pass
-
-    @staticmethod
     def get_peft_model(
         model,
         r                          = 16,
@@ -1004,8 +958,6 @@ class FastBaseModel:
                     if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
                         if module.padding_idx < module.weight.shape[0]:
                             module.weight[module.padding_idx] = 0
-        # Patch for torch.compiled inference
-        # FastBaseModel.pre_compile_for_inference(model_type, model, tokenizer)
         return model
     pass
 
