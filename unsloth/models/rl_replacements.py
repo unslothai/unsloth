@@ -465,6 +465,10 @@ def grpo_trainer_compute_loss(function_name, function):
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         pixel_values, image_grid_thw = inputs.get("pixel_values", None), inputs.get("image_grid_thw", None)
         pixel_attention_mask, image_sizes = inputs.get('pixel_attention_mask',None), inputs.get('image_sizes',None)
+        num_items_in_batch  = inputs.get("num_items_in_batch", None)
+        num_items_in_batch = inputs["num_items_in_batch"].item()    
+        current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
+        num_processes = self.accelerator.num_processes
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         bsz, qlen = input_ids.shape
@@ -479,7 +483,7 @@ def grpo_trainer_compute_loss(function_name, function):
             self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep, compute_efficient) \
             if hasattr(self, "_get_per_token_logps") else \
             self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, compute_efficient)[0]  # logps
-        #breakpoint()
+
         per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep, compute_efficient = True)
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
@@ -536,6 +540,9 @@ def grpo_trainer_compute_loss(function_name, function):
                 logit_softcapping = logit_softcapping,
                 logit_scale_multiply = logit_scale_multiply,
                 logit_scale_divide = logit_scale_divide,
+                num_items_in_batch = num_items_in_batch, 
+                current_gradient_accumulation_steps = current_gradient_accumulation_steps,
+                num_processes = num_processes,
             )
         else:
             if hasattr(self.args, "loss_type"):
@@ -561,6 +568,9 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
                     attention_mask = attention_mask,
+                    num_items_in_batch = num_items_in_batch, 
+                    current_gradient_accumulation_steps = current_gradient_accumulation_steps,
+                    num_processes = num_processes,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
