@@ -965,12 +965,15 @@ class FastBaseModel:
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
         # Set weight[padding_idx] = 0
-        with torch.no_grad():
-            for name, module in model.named_modules():
-                if type(module) is torch.nn.Embedding:
-                    if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
-                        if module.padding_idx < module.weight.shape[0]:
-                            module.weight[module.padding_idx] = 0
+        # Only do this if tokenizer is defined since eos_token == pad_token sometimes!
+        pad_token_id = getattr(tokenizer, "pad_token_id", None)
+        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) != pad_token_id:
+            with torch.no_grad():
+                for name, module in model.named_modules():
+                    if type(module) is torch.nn.Embedding:
+                        if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
+                            if module.padding_idx == pad_token_id and module.padding_idx < module.weight.shape[0]:
+                                module.weight[module.padding_idx] = 0
         return model
     pass
 
