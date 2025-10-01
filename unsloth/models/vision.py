@@ -576,14 +576,15 @@ class FastBaseModel:
                     if hasattr(m, "device") and hasattr(m, "_old_device_"):
                         try: m.device = m._old_device_
                         except: pass
+                        print(m._old_device_, m.device)
                         del m._old_device_
-                        print(m._old_device_)
                     m = m.model
                 if hasattr(m, "device"):
                     try: m.device = m._old_device_
                     except: pass
                     del m._old_device_
-                    print(m._old_device_)
+                    print(m._old_device_, m.device)
+                print(model.device)
 
                 # Add hooks to move inputs to CPU and back to CUDA
                 # [TODO] Doesn't seem to work!
