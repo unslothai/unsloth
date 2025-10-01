@@ -524,7 +524,7 @@ def grpo_trainer_compute_loss(function_name, function):
         if logit_scale_multiply is None: logit_scale_multiply = 0
         logit_scale_divide = getattr(model.config, "logits_scaling", 0) # Granite
         if logit_scale_divide is None: logit_scale_divide = 0
-        #breakpoint()
+
         if per_token_logps is not None:
 
             if ref_hidden_states is not None:
@@ -533,7 +533,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 old_hidden_states = old_hidden_states[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             per_token_logps = per_token_logps[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
 
-            loss, completion_length, mean_kl = grpo_compute_loss_slow(
+            loss, completion_length, mean_kl, delta, flat_is_ratio = grpo_compute_loss_slow(
                 ref_hidden_states,
                 per_token_logps,
                 old_hidden_states,
@@ -560,7 +560,7 @@ def grpo_trainer_compute_loss(function_name, function):
             )
         else:
             if hasattr(self.args, "loss_type"):
-                loss, completion_length, mean_kl = grpo_accumulated_loss(
+                loss, completion_length, mean_kl, delta, flat_is_ratio = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
                     pixel_values = pixel_values,
@@ -606,10 +606,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             pass
         pass
-        # Log the metrics
-        # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
-        # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-        # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
+
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
             self._metrics[mode]["completion_length"].append(completion_length.item())
@@ -617,6 +614,36 @@ def grpo_trainer_compute_loss(function_name, function):
         else:
             self._metrics["completion_length"].append(completion_length.item())
             self._metrics["kl"].append(mean_kl.item())
+
+        if self.use_vllm:
+            mean_delta = torch.mean(delta) if delta.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            max_delta = torch.max(delta) if delta.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            self._metrics[mode]["sampling/sampling_logp_difference/mean"].append(
+                self.accelerator.gather(mean_delta).mean().item()
+            )
+            self._metrics[mode]["sampling/sampling_logp_difference/max"].append(
+                self.accelerator.gather(max_delta).max().item()
+            )
+
+            min_importance_sampling_ratio = (
+                torch.min(flat_is_ratio) if flat_is_ratio.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            )
+            mean_importance_sampling_ratio = (
+                torch.mean(flat_is_ratio) if flat_is_ratio.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            )
+            max_importance_sampling_ratio = (
+                torch.max(flat_is_ratio) if flat_is_ratio.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            )
+            self._metrics[mode]["sampling/importance_sampling_ratio/min"].append(
+                nanmin(self.accelerator.gather(min_importance_sampling_ratio)).item()
+            )
+            self._metrics[mode]["sampling/importance_sampling_ratio/mean"].append(
+                self.accelerator.gather(mean_importance_sampling_ratio).nanmean().item()
+            )
+            self._metrics[mode]["sampling/importance_sampling_ratio/max"].append(
+                nanmax(self.accelerator.gather(max_importance_sampling_ratio)).item()
+            )
+
         return loss
     pass
 
