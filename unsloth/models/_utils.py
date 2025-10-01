@@ -94,6 +94,7 @@ from unsloth_zoo.tokenizer_utils import (
 from unsloth_zoo.rl_environments import (
     check_python_modules,
     create_locked_down_function,
+    execute_with_time_limit,
     Benchmarker,
 )
 from unsloth_zoo.patching_utils import (
