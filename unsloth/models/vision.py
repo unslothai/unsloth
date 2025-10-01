@@ -557,7 +557,29 @@ class FastBaseModel:
                 nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
                 ngb = round(nbytes / 1024 / 1024 / 1024, 2)
                 print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+
+                # model.device also will change to CPU so change back
+                m = model
+                while hasattr(m, "model"):
+                    if hasattr(m, "device"): m._old_device_ = m.device
+                    m = m.model
+                if hasattr(m, "device"): m._old_device_ = m.device
+
+                # Move embeddings to CPU
                 embed_tokens.to("cpu")
+
+                # model.device also will change to CPU so change back
+                m = model
+                while hasattr(m, "model"):
+                    if hasattr(m, "device") and hasattr(m, "_old_device_"):
+                        try: m.device = m._old_device_
+                        except: pass
+                        del m._old_device_
+                    m = m.model
+                if hasattr(m, "device"):
+                    try: m.device = m._old_device_
+                    except: pass
+                    del m._old_device_
 
                 # Add hooks to move inputs to CPU and back to CUDA
                 # [TODO] Doesn't seem to work!
