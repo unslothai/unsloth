@@ -264,6 +264,11 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+from unsloth_zoo.rl_environments import (
+    check_python_modules,
+    create_locked_down_function,
+    Benchmarker,
+)
 
 # Patch TRL trainers for backwards compatibility
 _patch_trl_trainer()
