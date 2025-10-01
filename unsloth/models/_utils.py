@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.9.10"
+__version__ = "2025.9.11"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -90,6 +90,12 @@ from unsloth import DEVICE_TYPE, DEVICE_COUNT
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
+)
+from unsloth_zoo.rl_environments import (
+    check_python_modules,
+    create_locked_down_function,
+    execute_with_time_limit,
+    Benchmarker,
 )
 from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
