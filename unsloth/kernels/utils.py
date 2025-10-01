@@ -201,6 +201,10 @@ def get_lora_parameters(proj):
     if weight_fake_quantizer is not None:
         W = weight_fake_quantizer(W)
 
+    if W.dtype == torch.float8_e4m3fn:
+        # we need to somehow store and pass this information :)
+        W.block_size = getattr(base_layer, 'block_size', [128,128])
+
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, getattr(W, "quant_state", None), None, None, None
@@ -224,7 +228,7 @@ def get_lora_parameters(proj):
 
     return (
         W,
-        getattr(W, "quant_state", None),
+        getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None),
         A,
         B,
         proj.scaling[adapter],
@@ -237,6 +241,10 @@ def get_lora_parameters_bias(proj):
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
 
+    if W.dtype == torch.float8_e4m3fn:
+        # we need to somehow store and pass this information :)
+        W.block_size = getattr(base_layer, 'block_size', [128,128])
+
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, getattr(W, "quant_state", None), None, None, None, base_layer.bias
@@ -248,7 +256,7 @@ def get_lora_parameters_bias(proj):
 
     return (
         W,
-        getattr(W, "quant_state", None),
+        getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None),
         proj.lora_A [adapter].weight,
         proj.lora_B [adapter].weight,
         proj.scaling[adapter],
@@ -687,21 +695,33 @@ else:
     pass
 pass
 
+def fp8_forward(X, weight, weight_scale):
+    block_size = getattr(weight, 'block_size', [128,128])
+    # this is replica of https://github.com/huggingface/transformers/blob/01c9e1ba683b3e50d7c76bf92f2d470759fd5e81/src/transformers/integrations/finegrained_fp8.py#L331-L353
+    from transformers.integrations.finegrained_fp8 import act_quant, w8a8_block_fp8_matmul_triton
+    qinput, scale = act_quant(X, block_size[1])
+    output = w8a8_block_fp8_matmul_triton(
+        qinput,
+        weight,
+        scale,
+        weight_scale,
+        block_size,
+        output_dtype=X.dtype,
+    )
+    return output.to(X.dtype)
+
 
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
-    base_layer = getattr(proj, "base_layer", proj)
-    W_scale_inv = getattr(base_layer, "weight_scale_inv", None)
     bsz, q_len, in_dim = X.shape
+    if q_len != 1: return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
 
-    if W_scale_inv is not None:
-        # This is fp8. we'll use the same function as hf does. Always take this path for FP8
-        out = base_layer(X)
-    elif q_len != 1:
-        return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
-    elif W_quant is None:
+    if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
+    elif W.dtype == torch.float8_e4m3fn:
+        # In case of fp8, we'll let the base layer forward pass handle this. LoRA is anyway 16bit
+        out = base_layer(X)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
@@ -739,7 +759,6 @@ pass
 
 def matmul_lora(X, W, W_quant, A, B, s, out = None):
     dtype = X.dtype
-    W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
 
     if X.dim() == 3:
         batch, seq_len, d = X.shape
@@ -748,7 +767,12 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     else:
         reshape = False
     pass
-    out = torch_matmul(X, W, out = out)
+
+    if W.dtype==torch.float8_e4m3fn:
+        out = fp8_forward(X, W, W_quant,)
+    else:
+        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
+        out = torch_matmul(X, W, out = out)
     if W_quant is not None: del W
 
     if A is not None:
