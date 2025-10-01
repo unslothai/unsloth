@@ -709,6 +709,9 @@ class FastBaseModel:
             model.config.update({"unsloth_version" : __version__})
         pass
         patch_saving_functions(model, vision = True)
+        if tokenizer is None:
+            del model
+            raise RuntimeError("Unsloth: The tokenizer is weirdly not loaded? Please check if there is one.")
         patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation
