@@ -662,10 +662,15 @@ class FastModel(FastBaseModel):
         )
         model_types_all = ",".join(model_types) + ","
 
-        # Check versions
+        # Save model types and loading method
         lowered_model_name = model_name.lower()
-        if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
-            os.environ["UNSLOTH_MODEL_NAME"] = lowered_model_name
+        string = os.environ.get("UNSLOTH_MODEL_NAME", "") + model_types_all
+        if load_in_4bit:  string += "_load_in_4bit_"
+        if load_in_8bit:  string += "_load_in_8bit_"
+        if load_in_16bit: string += "_load_in_16bit_"
+        os.environ["UNSLOTH_MODEL_NAME"] = string
+
+        # Check versions
         LATEST  = '\nPlease use transformers via `pip install --no-deps git+https://github.com/huggingface/transformers.git`'
         NIGHTLY = '\nPlease use nightly transformers via pip install --upgrade "transformers>=4.49.0"`'
         # Pixtral
