@@ -691,10 +691,16 @@ pass
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
+    base_layer = getattr(proj, "base_layer", proj)
+    W_scale_inv = getattr(base_layer, "weight_scale_inv", None)
     bsz, q_len, in_dim = X.shape
-    if q_len != 1: return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
 
-    if W_quant is None:
+    if W_scale_inv is not None:
+        # This is fp8. we'll use the same function as hf does. Always take this path for FP8
+        out = base_layer(X)
+    elif q_len != 1:
+        return matmul_lora(X, W, W_quant, lora_A, lora_B, lora_S)
+    elif W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
