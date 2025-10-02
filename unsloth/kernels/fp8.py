@@ -63,7 +63,7 @@ def reconstruct_weight_fp8(
     return W_out.T
 
 
-class FP8_E5M2Linear(torch.autograd.Function):
+class FP8_E4M3Linear(torch.autograd.Function):
 
     @torch.compile
     def forward_compiled(ctx, X, weight, weight_scale):
@@ -92,7 +92,7 @@ class FP8_E5M2Linear(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, X, weight, weight_scale):
-        return FP8_E5M2Linear.forward_compiled(ctx, X, weight, weight_scale)
+        return FP8_E4M3Linear.forward_compiled(ctx, X, weight, weight_scale)
 
     @torch.compile
     def backward_compiled(ctx, grad_output):
@@ -102,7 +102,7 @@ class FP8_E5M2Linear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        return FP8_E5M2Linear.backward_compiled(ctx, grad_output)
+        return FP8_E4M3Linear.backward_compiled(ctx, grad_output)
 
-def fp8_e5m2_forward(X, weight, weight_scale):
-    return FP8_E5M2Linear.apply(X, weight, weight_scale)
+def fp8_e4m3_forward(X, weight, weight_scale):
+    return FP8_E4M3Linear.apply(X, weight, weight_scale)
