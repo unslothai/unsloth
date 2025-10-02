@@ -201,6 +201,10 @@ def get_lora_parameters(proj):
     if weight_fake_quantizer is not None:
         W = weight_fake_quantizer(W)
 
+    if W.dtype == torch.float8_e4m3fn:
+        # we need to somehow store and pass this information :)
+        W.block_size = getattr(base_layer, 'block_size', [128,128])
+
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, getattr(W, "quant_state", None), None, None, None
@@ -241,6 +245,10 @@ def get_lora_parameters_bias(proj):
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, getattr(W, "quant_state", None), None, None, None, base_layer.bias
     pass
+
+    if W.dtype == torch.float8_e4m3fn:
+        # we need to somehow store and pass this information :)
+        W.block_size = getattr(base_layer, 'block_size', [128,128])
 
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None: adapter = getattr(proj, "active_adapter", ("default"))
@@ -707,6 +715,55 @@ def fp8_forward(X, weight, weight_scale):
     return output.to(X.dtype)
 
 
+def reconstruct_weight_fp8(
+    W_fp8: torch.Tensor,
+    W_scale: torch.Tensor,
+    group_k: int,
+    group_n: int,
+    *,
+    out_dtype=torch.float16,
+):
+    K, N = W_fp8.shape
+    num_k_groups = math.ceil(K / group_k)
+    num_n_groups = math.ceil(N / group_n)
+
+    # normalize scale to (num_k_groups, num_n_groups)
+    if W_scale.numel() == 1:
+        W_scale = W_scale.reshape(1, 1).expand(num_k_groups, num_n_groups)
+    elif W_scale.dim() == 1 and W_scale.numel() == num_k_groups * num_n_groups:
+        W_scale = W_scale.reshape(num_k_groups, num_n_groups)
+    elif W_scale.dim() == 2 and W_scale.shape == (num_k_groups, num_n_groups):
+        pass
+    else:
+        raise ValueError("Unsupported W_scale shape")
+
+    W = W_fp8.to(dtype=W_scale.dtype).contiguous()
+    W_scale = W_scale
+
+    # If K or N not divisible by groups, handle last partial groups by padding
+    Kpad = num_k_groups * group_k
+    Npad = num_n_groups * group_n
+    if Kpad != K or Npad != N:
+        W_pad = W.new_zeros((Kpad, Npad))
+        W_pad[:K, :N] = W
+        W = W_pad
+
+    Wg = W.view(num_k_groups, group_k, num_n_groups, group_n)
+    Wg = Wg.permute(0, 2, 1, 3).contiguous()
+    W_flat = Wg.view(num_k_groups * num_n_groups, group_k * group_n)
+
+    ws_flat = W_scale.reshape(-1, 1)
+    W_flat = W_flat * ws_flat
+
+    # reshape back
+    Wg = W_flat.view(num_k_groups, num_n_groups, group_k, group_n)
+    Wg = Wg.permute(0, 2, 1, 3).to(out_dtype).contiguous()
+    W_out = Wg.view(Kpad, Npad)[:K, :N]
+    return W_out
+
+# This cuts down the time taken from ~100us to ~30us for (4096,4096) weight and (32,32) scale :)
+reconstruct_weight_fp8 = torch.compile(reconstruct_weight_fp8)
+
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
@@ -765,10 +822,11 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     pass
 
     if W.dtype==torch.float8_e4m3fn:
-        out = fp8_forward(X, W, W_quant,)
+        k,n = W.block_size
+        W = reconstruct_weight_fp8(W, W_quant, k, n)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
-        out = torch_matmul(X, W, out = out)
+    out = torch_matmul(X, W, out = out)
     if W_quant is not None: del W
 
     if A is not None:
