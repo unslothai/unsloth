@@ -260,7 +260,7 @@ class FastLanguageModel(FastLlamaModel):
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(os.path.join(model_name, "adapter_config.json"))
                 exist_config         = os.path.exists(os.path.join(model_name, "config.json"))
-                both_exist = exist_adapter_config and exist_config
+                files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
             else:
                 # Because HfFileSystem assumes linux paths, we need to set the path with forward slashes, even on Windows.
                 files = HfFileSystem(token = token).glob(f"{model_name}/*.json")
