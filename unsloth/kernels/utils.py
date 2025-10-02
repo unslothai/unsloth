@@ -19,6 +19,7 @@ next_power_of_2 = triton.next_power_of_2
 import functools
 from typing import Optional
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from .fp8 import fp8_e5m2_forward
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -695,74 +696,6 @@ else:
     pass
 pass
 
-def fp8_forward(X, weight, weight_scale):
-    # block_size = getattr(weight, 'block_size', [128,128])
-    m,n = weight.shape
-    p,q = weight_scale.shape
-    assert m % p == 0 and n % q == 0, "FP8 Forward: weight and weight_scale shapes are not compatible"
-    block_size = [m//p,n//q]
-    # this is replica of https://github.com/huggingface/transformers/blob/01c9e1ba683b3e50d7c76bf92f2d470759fd5e81/src/transformers/integrations/finegrained_fp8.py#L331-L353
-    from transformers.integrations.finegrained_fp8 import act_quant, w8a8_block_fp8_matmul_triton
-    qinput, scale = act_quant(X, block_size[1])
-    output = w8a8_block_fp8_matmul_triton(
-        qinput,
-        weight,
-        scale,
-        weight_scale,
-        block_size,
-        output_dtype=X.dtype,
-    )
-    return output.to(X.dtype)
-
-
-def reconstruct_weight_fp8(
-    W_fp8: torch.Tensor,
-    W_scale: torch.Tensor,
-    group_k: int,
-    group_n: int,
-    *,
-    out_dtype=torch.bfloat16,
-):
-    K, N = W_fp8.shape
-    num_k_groups = math.ceil(K / group_k)
-    num_n_groups = math.ceil(N / group_n)
-
-    # normalize scale to (num_k_groups, num_n_groups)
-    if W_scale.numel() == 1:
-        W_scale = W_scale.reshape(1, 1).expand(num_k_groups, num_n_groups)
-    elif W_scale.dim() == 1 and W_scale.numel() == num_k_groups * num_n_groups:
-        W_scale = W_scale.reshape(num_k_groups, num_n_groups)
-    elif W_scale.dim() == 2 and W_scale.shape == (num_k_groups, num_n_groups):
-        pass
-    else:
-        raise ValueError("Unsupported W_scale shape")
-
-    W = W_fp8.to(dtype=W_scale.dtype).contiguous()
-    W_scale = W_scale
-
-    # If K or N not divisible by groups, handle last partial groups by padding
-    Kpad = num_k_groups * group_k
-    Npad = num_n_groups * group_n
-    if Kpad != K or Npad != N:
-        W_pad = W.new_zeros((Kpad, Npad))
-        W_pad[:K, :N] = W
-        W = W_pad
-
-    Wg = W.view(num_k_groups, group_k, num_n_groups, group_n)
-    Wg = Wg.permute(0, 2, 1, 3).contiguous()
-    W_flat = Wg.view(num_k_groups * num_n_groups, group_k * group_n)
-
-    ws_flat = W_scale.reshape(-1, 1)
-    W_flat = W_flat * ws_flat
-
-    # reshape back
-    Wg = W_flat.view(num_k_groups, num_n_groups, group_k, group_n)
-    Wg = Wg.permute(0, 2, 1, 3).to(out_dtype).contiguous()
-    W_out = Wg.view(Kpad, Npad)[:K, :N]
-    return W_out.T
-
-# This cuts down the time taken from ~100us to ~30us for (4096,4096) weight and (32,32) scale :)
-reconstruct_weight_fp8 = torch.compile(reconstruct_weight_fp8)
 
 def fast_linear_forward(proj, X, temp_lora = None, out = None):
 
@@ -774,6 +707,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         # In case of fp8, we'll let the base layer forward pass handle this. LoRA is anyway 16bit
+        base_layer = getattr(proj, 'base_layer', proj)
         out = base_layer(X)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
@@ -822,11 +756,10 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     pass
 
     if W.dtype==torch.float8_e4m3fn:
-        k,n = W.block_size
-        W = reconstruct_weight_fp8(W, W_quant, k, n, out_dtype=X.dtype)
+        out = fp8_e5m2_forward(X, W, W_quant)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
-    out = torch_matmul(X, W, out = out)
+        out = torch_matmul(X, W, out = out)
     if W_quant is not None: del W
 
     if A is not None:
