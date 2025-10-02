@@ -721,7 +721,7 @@ def reconstruct_weight_fp8(
     group_k: int,
     group_n: int,
     *,
-    out_dtype=torch.float16,
+    out_dtype=torch.bfloat16,
 ):
     K, N = W_fp8.shape
     num_k_groups = math.ceil(K / group_k)
@@ -759,7 +759,7 @@ def reconstruct_weight_fp8(
     Wg = W_flat.view(num_k_groups, num_n_groups, group_k, group_n)
     Wg = Wg.permute(0, 2, 1, 3).to(out_dtype).contiguous()
     W_out = Wg.view(Kpad, Npad)[:K, :N]
-    return W_out
+    return W_out.T
 
 # This cuts down the time taken from ~100us to ~30us for (4096,4096) weight and (32,32) scale :)
 reconstruct_weight_fp8 = torch.compile(reconstruct_weight_fp8)
@@ -823,7 +823,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
 
     if W.dtype==torch.float8_e4m3fn:
         k,n = W.block_size
-        W = reconstruct_weight_fp8(W, W_quant, k, n)
+        W = reconstruct_weight_fp8(W, W_quant, k, n, out_dtype=X.dtype)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
     out = torch_matmul(X, W, out = out)
