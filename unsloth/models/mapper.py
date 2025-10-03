@@ -114,7 +114,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-1.1-7b-it",
         "google/gemma-1.1-7b-it",
     ),
-    "unsloth/Starling-LM-7B-beta-bnb-4bit" : (
+    "unsloth/Starling-LM-7B-beta" : (
         "unsloth/Starling-LM-7B-beta",
         "Nexusflow/Starling-LM-7B-beta",
     ),
