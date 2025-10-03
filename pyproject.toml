@@ -362,6 +362,7 @@ cu118-torch260 = [
     "unsloth[cu118onlytorch260]",
 ]
 cu124-torch260 = [
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.56.0,!=4.56.1",
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5",
     "unsloth[cu124onlytorch260]",
