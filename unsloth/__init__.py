@@ -14,7 +14,7 @@
 
 import warnings, importlib, sys
 from packaging.version import Version
-import os, re, subprocess, inspect
+import os, re, subprocess, inspect, functools
 import numpy as np
 
 # Fix some issues before importing other packages
@@ -69,8 +69,16 @@ except Exception as exception:
     raise exception
 pass
 
+@functools.cache
+def is_hip():
+    return bool(getattr(getattr(torch, "version", None), "hip", None))
+pass
+
+@functools.cache
 def get_device_type():
     if hasattr(torch, "cuda") and torch.cuda.is_available():
+        if is_hip():
+            return "hip"
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
@@ -78,8 +86,9 @@ def get_device_type():
 pass
 DEVICE_TYPE : str = get_device_type()
 
+@functools.cache
 def get_device_count():
-    if DEVICE_TYPE == "cuda":
+    if DEVICE_TYPE in ("cuda", "hip"):
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
@@ -91,11 +100,24 @@ DEVICE_COUNT : int = get_device_count()
 
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
-if DEVICE_TYPE == "cuda" and os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0":
+# TODO(billishyahao): need to add hip related optimization...
+if (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="0"):
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
-
+elif (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="1") and \
+    ("expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")):
+    warnings.warn(
+        "Unsloth: `UNSLOTH_VLLM_STANDBY` is on, but requires `expandable_segments` to be off.\n"\
+        "We will remove `expandable_segments`.",
+        stacklevel = 2,
+    )
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = re.sub(
+        r"expandable\_segments\:True\,?",
+        "",
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"],
+    )
+pass
 # We support Pytorch 2
 # Fixes https://github.com/unslothai/unsloth/issues/38
 torch_version = str(re.match(r"[0-9\.]{3,}", str(torch.__version__)).group(0)).split(".")
@@ -119,7 +141,6 @@ pass
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
-from packaging.version import Version
 from .import_fixes import fix_xformers_performance_issue
 fix_xformers_performance_issue(); del fix_xformers_performance_issue;
 from .import_fixes import fix_vllm_aimv2_issue
@@ -141,6 +162,8 @@ if DEVICE_TYPE == "cuda":
         def is_bf16_supported(): return SUPPORTS_BFLOAT16
         torch.cuda.is_bf16_supported = is_bf16_supported
     pass
+elif DEVICE_TYPE == "hip":
+    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
 elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported() does not have including_emulation
     # set SUPPORTS_BFLOAT16 as torch.xpu.is_bf16_supported()
@@ -206,6 +229,9 @@ if DEVICE_TYPE == "cuda":
                 "Unsloth will still run for now, but maybe it might crash - let's hope it works!"
             )
     pass
+elif DEVICE_TYPE == "hip":
+    # NO-OP for rocm device
+    pass
 elif DEVICE_TYPE == "xpu":
     # currently intel xpu will not support bnb, will add support in the future
     # TODO: check triton for intel installed properly.
@@ -214,7 +240,7 @@ elif DEVICE_TYPE == "xpu":
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.9.1"):
+    if Version(unsloth_zoo_version) < Version("2025.9.6"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
@@ -238,6 +264,12 @@ from .save import *
 from .chat_templates import *
 from .tokenizer_utils import *
 from .trainer import *
+from unsloth_zoo.rl_environments import (
+    check_python_modules,
+    create_locked_down_function,
+    execute_with_time_limit,
+    Benchmarker,
+)
 
 # Patch TRL trainers for backwards compatibility
 _patch_trl_trainer()

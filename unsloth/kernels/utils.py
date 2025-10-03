@@ -90,7 +90,7 @@ else:
 
 
 if DEVICE_COUNT > 1:
-    if DEVICE_TYPE == "cuda":
+    if DEVICE_TYPE in ("cuda", "hip"):
         torch_gpu_device = torch.cuda.device
     elif DEVICE_TYPE == "xpu":
         torch_gpu_device = torch.xpu.device
@@ -188,9 +188,18 @@ torch_bfloat16 = torch.bfloat16
 def QUANT_STATE(W): return getattr(W, "quant_state", None)
 
 def get_lora_parameters(proj):
+    """
+    Return a 5-tuple of (weight, weight quant_state, lora A, lora B, and lora scale).
+    If QAT is enabled, additionally fake quantize the base layer and lora weights.
+    """
     # For DPO or disabled adapters
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
+
+    # Optionally apply fake quantization to base layer weights for QAT
+    weight_fake_quantizer = getattr(base_layer, "weight_fake_quantizer", None)
+    if weight_fake_quantizer is not None:
+        W = weight_fake_quantizer(W)
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
@@ -201,11 +210,23 @@ def get_lora_parameters(proj):
     if adapter is None: adapter = getattr(proj, "active_adapter", ("default"))
     adapter = adapter[0]
 
+    # Optionally apply fake quantization to lora weights for QAT
+    lora_A_linear = proj.lora_A[adapter]
+    lora_B_linear = proj.lora_B[adapter]
+    lora_A_fake_quantizer = getattr(lora_A_linear, "weight_fake_quantizer", None)
+    lora_B_fake_quantizer = getattr(lora_B_linear, "weight_fake_quantizer", None)
+    A = lora_A_linear.weight
+    B = lora_B_linear.weight
+    if lora_A_fake_quantizer is not None:
+        A = lora_A_fake_quantizer(A)
+    if lora_B_fake_quantizer is not None:
+        B = lora_B_fake_quantizer(B)
+
     return (
         W,
         getattr(W, "quant_state", None),
-        proj.lora_A [adapter].weight,
-        proj.lora_B [adapter].weight,
+        A,
+        B,
         proj.scaling[adapter],
     )
 pass
@@ -234,6 +255,21 @@ def get_lora_parameters_bias(proj):
         base_layer.bias,
     )
 pass
+
+
+def _maybe_fake_quantize_activations(X: torch.Tensor, proj: torch.nn.Module) -> torch.Tensor:
+    """
+    If QAT is enabled, fake quantize the input activations.
+    Otherwise, just return the input activations as is.
+    Weights are fake quantized separately in `get_lora_parameters`.
+    """
+    base_layer = getattr(proj, "base_layer", proj)
+    activation_fake_quantizer = getattr(base_layer, "activation_fake_quantizer", None)
+    if activation_fake_quantizer is not None:
+        X = activation_fake_quantizer(X)
+    return X
+pass
+
 
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
@@ -312,7 +348,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         return out.t() if is_transposed else out
     pass
 # NVIDIA GPU Default Logic
-elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
+elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
@@ -513,7 +549,7 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
         return out
     pass
-elif DEVICE_TYPE == "cuda" and HAS_CUDA_STREAM:
+elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     def fast_gemv(X, W, quant_state, out = None):
         if quant_state is None: return torch_matmul(X, W, out = out)
         # For fast X @ W where seq_len == 1

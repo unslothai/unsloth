@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.9.1"
+__version__ = "2025.9.11"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -24,6 +24,7 @@ __all__ = [
     "xformers_attention",
     "xformers_version",
     "__version__",
+    "importlib_version",
     "HAS_FLASH_ATTENTION",
     "HAS_FLASH_ATTENTION_SOFTCAPPING",
     "USE_MODELSCOPE",
@@ -68,6 +69,9 @@ __all__ = [
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
+    "fast_inference_setup",
+    "patch_peft_fast_inference",
+    "error_out_no_vllm",
     "dequantize_module_weight",
 ]
 
@@ -81,10 +85,17 @@ import re
 import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
+from importlib.metadata import version as importlib_version
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
-
+from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
+)
+from unsloth_zoo.rl_environments import (
+    check_python_modules,
+    create_locked_down_function,
+    execute_with_time_limit,
+    Benchmarker,
 )
 from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
@@ -132,6 +143,7 @@ for temporary_patch in TEMPORARY_PATCHES:
 # =============================================
 # Disable some warnings which can get annoying
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "torch")
+warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "torch")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "huggingface_hub")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "trl")
@@ -187,6 +199,12 @@ if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
         from vllm.v1.core.block_pool import logger as vllm_block_pool_logger
         vllm_block_pool_logger.addFilter(HideLoggingMessage("reset prefix cache"))
         del vllm_block_pool_logger
+    except:
+        pass
+    try:
+        from vllm.lora.models import logger as vllm_lora_model_logger
+        vllm_lora_model_logger.addFilter(HideLoggingMessage("Regarding multimodal models, vLLM currently only supports adding"))
+        del vllm_lora_model_logger
     except:
         pass
 pass
@@ -328,7 +346,9 @@ class _RaiseUninitialized(logging.Handler):
         record_lower = str(record).lower()
         if ("some weights of" in record_lower) and \
             ("score.weight" not in record_lower) and \
-            ("classifier.weight" not in record_lower):
+            ("classifier.weight" not in record_lower) and \
+            ("cls.predictions" not in record_lower) and \
+            ("predictions.decoder" not in record_lower):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
@@ -452,7 +472,7 @@ pass
 # =============================================
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 torch_version = torch.__version__
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE in ("cuda", "hip"):
     if Version(torch_version) < Version("2.4.0"):
         torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
         torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
@@ -506,7 +526,7 @@ pass
 
 # =============================================
 # Get Flash Attention v2 if Ampere (RTX 30xx, A100)
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE in ("cuda", "hip"):
     import bitsandbytes as bnb
 
 from transformers import AutoTokenizer
@@ -565,15 +585,66 @@ if DEVICE_TYPE == "cuda":
         # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
     pass
+elif DEVICE_TYPE == "hip":
+    SUPPORTS_BFLOAT16 = True
+    if _is_package_available("flash_attn"):
+        # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
+        try:
+            try:
+                # See https://github.com/unslothai/unsloth/issues/1437
+                from flash_attn.flash_attn_interface import flash_attn_gpu
+            except:
+                from flash_attn.flash_attn_interface import flash_attn_cuda
+            HAS_FLASH_ATTENTION = True
+
+            # Also check for softcapping
+            from flash_attn import __version__ as flash_attn_version
+            HAS_FLASH_ATTENTION_SOFTCAPPING = Version(flash_attn_version) >= Version("2.6.3")
+            if not HAS_FLASH_ATTENTION_SOFTCAPPING:
+                print(
+                    "Unsloth: If you want to finetune Gemma 2, upgrade flash-attn to version 2.6.3 or higher!\n"\
+                    "Newer versions support faster and less memory usage kernels for Gemma 2's attention softcapping!\n"\
+                    "To update flash-attn, do the below:\n"\
+                    '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
+                )
+        except:
+            print(
+                "Unsloth: Your Flash Attention 2 installation seems to be broken?\n"\
+                "A possible explanation is you have a new CUDA version which isn't\n"\
+                "yet compatible with FA2? Please file a ticket to Unsloth or FA2.\n"\
+                "We shall now use Xformers instead, which does not have any performance hits!\n"\
+                "We found this negligible impact by benchmarking on 1x A100."
+            )
+
+            # Stop Flash Attention from importing!
+            import transformers.utils.import_utils
+            transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+            import transformers.utils
+            transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+
+            HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
-
-from transformers.models.llama.modeling_llama import logger
 
 # =============================================
 # Get Xformers
 try:
     from xformers import __version__ as xformers_version
+    # [TODO] Xformers does NOT work on RTX 50x (12), B200 (10), Jetson (11)
+    # See https://github.com/facebookresearch/xformers/issues/1329
+    # CUDA error (/workspace/xfrm2/third_party/flash-attention/hopper/flash_fwd_launch_template.h:188)
+    major_version, minor_version = torch.cuda.get_device_capability()
+    if (
+        (f"{major_version}.{minor_version}" in ("10.0", "11.0", "12.0")) and \
+        (Version(xformers_version) in (Version("0.0.32.post2"),))
+    ):
+        raise NotImplementedError(
+            "Unsloth: Xformers does not work in RTX 50X, Blackwell GPUs as of yet. Please build from source via\n"\
+            "```\n"\
+            "pip install ninja\n"\
+            "pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers\n"\
+            "```\n"
+        )
     # Temporarily disable 0.0.27 and higher - inference issues
     if False: #Version(xformers_version) >= Version("0.0.27"):
         raise ImportError(
@@ -621,7 +692,13 @@ try:
     pass
     import xformers.ops.fmha as xformers
     xformers_attention = xformers.memory_efficient_attention
-except:
+except ModuleNotFoundError:
+    xformers = None
+    xformers_attention = None
+    xformers_version = None
+except Exception as e:
+    print("========\nSwitching to PyTorch attention since your Xformers is broken.\n========\n")
+    print(str(e))
     xformers = None
     xformers_attention = None
     xformers_version = None
@@ -1528,3 +1605,86 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
     pass
 
     return loftq_config
+
+def fast_inference_setup(model_name, model_config):
+    fast_inference = True
+    if not is_vLLM_available():
+        logger.warning_once("Unsloth: vLLM is not installed! Will use Unsloth inference!")
+        fast_inference = False
+    pass
+    from unsloth_zoo.vllm_utils import (
+        patch_vllm,
+        vllm_dynamic_quant_supported,
+    )
+    patch_vllm()
+    if model_name.endswith("unsloth-bnb-4bit"):
+        if not vllm_dynamic_quant_supported(model_name, model_config):
+            # Instead use -bnb-4bit variant
+            logger.warning_once(
+                f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"\
+                f"we do not yet support fast inference for {model_name}"
+            )
+            model_name = model_name[:-len("unsloth-bnb-4bit")] + "bnb-4bit"
+        pass
+    pass
+    return fast_inference, model_name
+
+def patch_peft_fast_inference(model):
+    vllm_engine = getattr(model.model, "vllm_engine", None)
+    if vllm_engine is not None:
+        model.vllm_engine = model.model.vllm_engine
+        model.fast_generate = model.model.fast_generate
+        model.fast_generate_batches = model.model.fast_generate_batches
+
+        # Also saving and loading LoRA
+        from unsloth_zoo.vllm_utils import save_lora, load_lora
+        model.save_lora = functools.partial(save_lora, model)
+        model.load_lora = functools.partial(load_lora, model)
+    pass
+
+def error_out_no_vllm(*args, **kwargs):
+    raise NotImplementedError("Unsloth: vLLM is not yet supported for fast inference for this model! Please use `.generate` instead")
+
+
+def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.Module:
+    """
+    Transform a model for Quantization-Aware Training (QAT) during fine-tuning.
+
+    On a high level, this means fake quantizing the base (frozen) model during training.
+    Fake quantization refers to simulating quantization numerics in high precision (e.g. bf16).
+    This helps mitigate quantization degradations when the model is quantized after training.
+
+    QAT can be optionally combined with LoRA fine-tuning to for additional throughput improvement.
+    For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
+    """
+    from torchao.quantization import (
+        Float8DynamicActivationInt4WeightConfig,
+        Float8DynamicActivationFloat8WeightConfig,
+        Int8DynamicActivationIntxWeightConfig,
+        Int4WeightOnlyConfig,
+        PerRow,
+        quantize_,
+    )
+    from torchao.quantization.granularity import PerGroup
+    from torchao.quantization.qat import QATConfig
+    filter_fn = None
+    if qat_scheme == "fp8-int4":
+        group_size = 128
+        base_config = Float8DynamicActivationInt4WeightConfig()
+        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+    elif qat_scheme == "fp8-fp8":
+        base_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
+    elif qat_scheme == "int8-int4":
+        group_size = 32
+        base_config = Int8DynamicActivationIntxWeightConfig(weight_dtype=torch.int4, weight_granularity=PerGroup(group_size))
+        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+    elif qat_scheme == "int4":
+        group_size = 128
+        base_config = Int4WeightOnlyConfig(group_size=group_size)
+        filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+    else:
+        raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
+    pass
+    quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
+    return model
+pass
