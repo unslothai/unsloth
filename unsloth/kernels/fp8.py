@@ -300,7 +300,8 @@ class FP8_E4M3Linear(torch.autograd.Function):
         assert block_size is not None, "block_size is not set"
         if triton.cdiv(m,block_size[0])!=p or triton.cdiv(n,block_size[1])!=q:
             if triton.cdiv(m,block_size[0])==q and triton.cdiv(n,block_size[1])==p:
-                # for some reaosn sometimes the weights seem to be transposed for training.
+                # weights are tranposed during backward pass for training :)
+                # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
                 weight_scale = weight_scale.T
             else:
                 raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}")
