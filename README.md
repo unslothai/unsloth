@@ -18,7 +18,7 @@
 
 ## ✨ Train for Free
 
-Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add your dataset, click "Run All", and export your trained model to GGUF, Ollama, vLLM or Hugging Face.
+Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-started/fine-tuning-guide). Add dataset, click "Run All", and export your trained model to GGUF, Ollama, vLLM or Hugging Face.
 
 | Unsloth supports | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
@@ -43,7 +43,7 @@ Notebooks are beginner friendly. Read our [guide](https://docs.unsloth.ai/get-st
 pip install unsloth
 ```
 ### Windows
-For Windows, `pip install unsloth` works only if you have Pytorch installed. For more info, read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
+For Windows, `pip install unsloth` works only if you have Pytorch installed. Read our [Windows Guide](https://docs.unsloth.ai/get-started/installing-+-updating/windows-installation).
 ### Docker
 Use our official [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Read our [Docker Guide](https://docs.unsloth.ai/get-started/install-and-update/docker).
 ### Blackwell
@@ -58,8 +58,8 @@ For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwe
 - **Gemma 3n** by Google: [Read Blog](https://docs.unsloth.ai/basics/gemma-3n-how-to-run-and-fine-tune). We [uploaded GGUFs, 4-bit models](https://huggingface.co/collections/unsloth/gemma-3n-685d3874830e49e1c93f9339).
 - **[Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning)** is now supported, including `sesame/csm-1b` and STT `openai/whisper-large-v3`.
 - **[Qwen3](https://docs.unsloth.ai/basics/qwen3-how-to-run-and-fine-tune)** is now supported. Qwen3-30B-A3B fits on 17.5GB VRAM.
-- Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & KL Divergence.
-- [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (BERT, diffusion, Cohere, Mamba), FFT, etc. [MultiGPU](https://docs.unsloth.ai/basics/multi-gpu-training-with-unsloth) coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
+- Introducing **[Dynamic 2.0](https://docs.unsloth.ai/basics/unsloth-dynamic-2.0-ggufs)** quants that set new benchmarks on 5-shot MMLU & Aider Polyglot.
+- [**EVERYTHING** is now supported](https://unsloth.ai/blog/gemma3#everything) - all models (TTS, BERT, Mamba), FFT, etc. [MultiGPU](https://docs.unsloth.ai/basics/multi-gpu-training-with-unsloth) coming soon. Enable FFT with `full_finetuning = True`, 8-bit with `load_in_8bit = True`.
 
 <details>
   <summary>Click for more news</summary>
@@ -89,19 +89,18 @@ For RTX 50x, B200, 6000 GPUs, simply do `pip install unsloth`. Read our [Blackwe
 
 ## ⭐ Key Features
 - Supports **full-finetuning**, pretraining, 4b-bit, 16-bit and **8-bit** training
-- Supports **all models** including [TTS](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more! Any model that works in transformers, works in Unsloth!
-- The most efficient library for [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), using 80% less VRAM. Support includes GRPO, GSPO, DrGRPO, DAPO etc.
+- Supports **all models** including [TTS](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), multimodal, [BERT](https://docs.unsloth.ai/get-started/unsloth-notebooks#other-important-notebooks) and more! Any model that works in transformers, works in Unsloth.
+- The most efficient library for [Reinforcement Learning (RL)](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), using 80% less VRAM. Supports GRPO, GSPO, DrGRPO, DAPO etc.
 - **0% loss in accuracy** - no approximation methods - all exact.
 - All kernels written in [OpenAI's Triton](https://openai.com/index/triton/) language. Manual backprop engine.
-- No change of hardware. Supports NVIDIA (since 2018), AMD and Intel GPUs. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc)
-- Works on **Linux** and **Windows**
+- Supports NVIDIA (since 2018), AMD and Intel GPUs. Minimum CUDA Capability 7.0 (V100, T4, Titan V, RTX 20, 30, 40x, A100, H100, L40 etc)
+- Works on **Linux**, WSL and **Windows**
 - If you trained a model with 🦥Unsloth, you can use this cool sticker! &nbsp; <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
 
 ## 💾 Install Unsloth
-> [!warning]
-> Unsloth does not support Python 3.14. Use 3.13 or lower.
-
 You can also see our documentation for more detailed installation and updating instructions [here](https://docs.unsloth.ai/get-started/installing-+-updating).
+
+Unsloth does not support Python 3.14. Use 3.13 or lower.
 
 ### Pip Installation
 **Install with pip (recommended) for Linux devices:**
