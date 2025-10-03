@@ -160,8 +160,8 @@ def CohereAttention_fast_forward(
     else:
         # Grouped query attention
         if n_groups != 1:
-            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
-            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim)
+            K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim).contiguous()
+            V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_seq_len, head_dim).contiguous()
             K = K.reshape(bsz, n_heads, kv_seq_len, head_dim)
             V = V.reshape(bsz, n_heads, kv_seq_len, head_dim)
         pass
