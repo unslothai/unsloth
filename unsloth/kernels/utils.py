@@ -19,7 +19,7 @@ next_power_of_2 = triton.next_power_of_2
 import functools
 from typing import Optional
 from unsloth import DEVICE_TYPE, DEVICE_COUNT
-from .fp8 import fp8_e4m3_forward
+from .fp8 import fp8_e4m3_forward, reconstruct_weight_fp8
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -202,13 +202,16 @@ def get_lora_parameters(proj):
     if weight_fake_quantizer is not None:
         W = weight_fake_quantizer(W)
 
+    W_quant = getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None)
+
     if W.dtype == torch.float8_e4m3fn:
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, 'block_size', [128,128])
+        W_quant.block_size = W.block_size
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
-        return W, getattr(W, "quant_state", None), None, None, None
+        return W, W_quant, None, None, None
     pass
 
     adapter = getattr(proj, "active_adapters", None)
@@ -229,7 +232,7 @@ def get_lora_parameters(proj):
 
     return (
         W,
-        getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None),
+        W_quant,
         A,
         B,
         proj.scaling[adapter],
@@ -242,14 +245,17 @@ def get_lora_parameters_bias(proj):
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
 
+    W_quant = getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None)
+
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
-        return W, getattr(W, "quant_state", None), None, None, None, base_layer.bias
+        return W, W_quant, None, None, None, base_layer.bias
     pass
 
     if W.dtype == torch.float8_e4m3fn:
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, 'block_size', [128,128])
+        W_quant.block_size = W.block_size
 
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None: adapter = getattr(proj, "active_adapter", ("default"))
@@ -257,7 +263,7 @@ def get_lora_parameters_bias(proj):
 
     return (
         W,
-        getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None),
+        W_quant,
         proj.lora_A [adapter].weight,
         proj.lora_B [adapter].weight,
         proj.scaling[adapter],
@@ -286,6 +292,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         # TODO: After adding XPU BNB support, check this function
         if quant_state is None: return W
+        if W.dtype == torch.float8_e4m3fn: return reconstruct_weight_fp8(W.t().contiguous(), quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -361,6 +368,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
+        if W.dtype == torch.float8_e4m3fn: return reconstruct_weight_fp8(W.t().contiguous(), quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -436,6 +444,7 @@ else:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
+        if W.dtype == torch.float8_e4m3fn: return reconstruct_weight_fp8(W.t().contiguous(), quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
