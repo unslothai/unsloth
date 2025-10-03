@@ -36,6 +36,10 @@ def reconstruct_weight_fp8(
     group_k, group_n: block sizes (defaults read from attributes)
     returns: dequantized weight (N, K).contiguous() with block_size metadata set to [group_n, group_k]
     """
+    if W_fp8.dtype != torch.float8_e4m3fn:
+        import traceback
+        traceback.print_stack()
+        raise ValueError(f'Reconstruct weight from fp8 function called on non fp8 input {W_fp8.dtype}. Returning original input but transposed')
 
     # infer block sizes if not provided
     block_from_fp8 = getattr(W_fp8, 'block_size', None)
@@ -106,6 +110,11 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     x = tl.load(x_ptr + offs).to(tl.float32)
     s = tl.max(tl.abs(x)) / 448.0
+    if s==0:
+        # For a row of all zeros, lets return zeros as is
+        # for LoRA, there are cases where dY has 0 in it and we should not let it be NaN
+        # this is a deviation from the original implementation.
+        s = 1.0
     y = x / s
     y = y.to(y_ptr.dtype.element_ty)
     tl.store(y_ptr + offs, y)
