@@ -65,8 +65,8 @@ def reconstruct_weight_fp8(
 
 class FP8_E4M3Linear(torch.autograd.Function):
 
-    @torch.compile
-    def forward_compiled(ctx, X, weight, weight_scale):
+    @staticmethod
+    def forward(ctx, X, weight, weight_scale):
         # block_size = getattr(weight, 'block_size', [128,128])
         m,n = weight.shape
         p,q = weight_scale.shape
@@ -91,18 +91,11 @@ class FP8_E4M3Linear(torch.autograd.Function):
         return output.to(X.dtype)
 
     @staticmethod
-    def forward(ctx, X, weight, weight_scale):
-        return FP8_E4M3Linear.forward_compiled(ctx, X, weight, weight_scale)
-
-    @torch.compile
-    def backward_compiled(ctx, grad_output):
+    def backward(ctx, grad_output):
         W_deq = reconstruct_weight_fp8(ctx.weight, ctx.weight_scale, ctx.block_size[0], ctx.block_size[1])
         grad_X = torch_matmul(grad_output, W_deq.t())
         return grad_X, None, None
 
-    @staticmethod
-    def backward(ctx, grad_output):
-        return FP8_E4M3Linear.backward_compiled(ctx, grad_output)
-
+@torch.compile
 def fp8_e4m3_forward(X, weight, weight_scale):
     return FP8_E4M3Linear.apply(X, weight, weight_scale)
