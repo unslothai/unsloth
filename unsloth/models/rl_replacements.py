@@ -27,7 +27,6 @@ import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
 from unsloth import DEVICE_TYPE
-import textwrap
 
 RL_EXTRA_ARGS      = defaultdict(list)
 RL_FUNCTIONS       = defaultdict(list)
@@ -257,6 +256,19 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             prompt_completion_ids = left_pack_padding(prompt_completion_ids, self.processing_class.pad_token_id)"""
 
     function = function.replace(line_to_replace, replacement_lines)
+    pattern_to_find = re.compile(
+        r"^\s*if self\.args\.gradient_accumulation_steps % generate_every != 0 or \(\s*"
+        r"self\.use_vllm and self\.vllm_importance_sampling_correction\s*"
+        r"\):",
+        re.MULTILINE
+    )
+
+    replacement_text = """        
+            if self.args.gradient_accumulation_steps % generate_every != 0 or (
+                self.use_vllm
+            ):"""
+    # Use re.sub() to perform the replacement
+    function, num_replacements = pattern_to_find.subn(replacement_text, function)
 
     # Always between max_prompt_length and use_vllm
     found = re.findall(
@@ -296,57 +308,18 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
 
+    string_to_find = """        if "image_sizes" in prompt_inputs:
+            output["image_sizes"] = prompt_inputs["image_sizes"]"""
+
+    replacement_string = """        if "image_sizes" in prompt_inputs:
+            output["image_sizes"] = prompt_inputs["image_sizes"]
+        if self.use_vllm:
+            output["sampling_per_token_logps"] = sampling_per_token_logps"""
+    function = function.replace(string_to_find, replacement_string)
+
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
-
-
-# Fix {"reasoning_effort" : "high"} not applied
-def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
-    spaces = function.find("def ")
-    if spaces % 4 != 0: return function
-    spaces += 4
-    replacement = """
-        _chat_template_ = getattr(self.processing_class, "chat_template", None)
-        if _chat_template_ is None: _chat_template_ = ""
-        _supported_keys_ = set(("prompt", "chosen", "rejected", "completion", "messages", "label"))
-
-        prompts_text = []
-        for _example_ in __INPUTS__REPLACEMENT__:
-            _tokenizer_kwargs_ = {}
-            if type(_example_) is not dict:
-                _example_ = {"prompt": _example_}
-            _left_keys_ = _example_.keys() - _supported_keys_
-            for k in _left_keys_:
-                if k in _chat_template_:
-                    v = _example_[k]
-                    if type(v) is str:
-                        _tokenizer_kwargs_[k] = v
-            _x_ = maybe_apply_chat_template(_example_, self.processing_class, **_tokenizer_kwargs_)["prompt"]
-            prompts_text.append(_x_)
-    """
-    replacement = textwrap.dedent(replacement).strip()
-    replacement = textwrap.indent(replacement, spaces*" ")
-    replacement = f"\n{replacement}\n"
-    what = 'prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]'
-    function = function.replace(what, replacement.replace("__INPUTS__REPLACEMENT__", "inputs"))
-
-    """prompts_text = [
-        maybe_apply_chat_template({"prompt": prompt}, self.processing_class)["prompt"] for prompt in prompts
-    ]"""
-    function = re.sub(
-        r"prompts_text = \["\
-        r"[\s]{0,}"\
-        r"maybe_apply_chat_template\(\{[\"\']prompt[\"\'][\s]{0,}\:[\s]{0,}prompt[\s]{0,}\}[\s]{0,}\,[\s]{0,}self\.processing_class\)"\
-        r"\[[\"\']prompt[\"\']\] for prompt in prompts"\
-        r"[\s]{0,}"\
-        r"\]",
-        replacement.replace("__INPUTS__REPLACEMENT__", "prompts"),
-        function,
-    )
-    return function
-pass
-RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
 # Remove _move_model_to_vllm
@@ -513,6 +486,10 @@ def grpo_trainer_compute_loss(function_name, function):
         completion_ids, completion_mask = inputs["completion_ids"], inputs["completion_mask"]
         pixel_values, image_grid_thw = inputs.get("pixel_values", None), inputs.get("image_grid_thw", None)
         pixel_attention_mask, image_sizes = inputs.get('pixel_attention_mask',None), inputs.get('image_sizes',None)
+        num_items_in_batch  = inputs.get("num_items_in_batch", None)
+        sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)   
+        current_gradient_accumulation_steps = self.current_gradient_accumulation_steps
+        num_processes = self.accelerator.num_processes
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         bsz, qlen = input_ids.shape
@@ -527,7 +504,7 @@ def grpo_trainer_compute_loss(function_name, function):
             self._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep, compute_efficient) \
             if hasattr(self, "_get_per_token_logps") else \
             self._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, compute_efficient)[0]  # logps
-        #breakpoint()
+
         per_token_logps = get_logps_func(model, input_ids, attention_mask, logits_to_keep, compute_efficient = True)
         # Compute the KL divergence between the model and the reference model
         # _prepare_inputs doesn't return reference log probs anymore. We need to calculate it ourselves.
@@ -564,7 +541,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 old_hidden_states = old_hidden_states[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
             per_token_logps = per_token_logps[:, :-1, :] # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
 
-            loss, completion_length, mean_kl = grpo_compute_loss_slow(
+            loss, completion_length, mean_kl, delta, flat_is_ratio = grpo_compute_loss_slow(
                 ref_hidden_states,
                 per_token_logps,
                 old_hidden_states,
@@ -584,10 +561,14 @@ def grpo_trainer_compute_loss(function_name, function):
                 logit_softcapping = logit_softcapping,
                 logit_scale_multiply = logit_scale_multiply,
                 logit_scale_divide = logit_scale_divide,
+                num_items_in_batch = num_items_in_batch, 
+                current_gradient_accumulation_steps = current_gradient_accumulation_steps,
+                num_processes = num_processes,
+                sampling_per_token_logps  = sampling_per_token_logps,
             )
         else:
             if hasattr(self.args, "loss_type"):
-                loss, completion_length, mean_kl = grpo_accumulated_loss(
+                loss, completion_length, mean_kl, delta, flat_is_ratio = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
                     pixel_values = pixel_values,
@@ -609,6 +590,10 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
                     attention_mask = attention_mask,
+                    num_items_in_batch = num_items_in_batch, 
+                    current_gradient_accumulation_steps = current_gradient_accumulation_steps,
+                    num_processes = num_processes,
+                    sampling_per_token_logps  = sampling_per_token_logps,
                 )
             else:
                 # to ensure backwards compatibility with trl 0.15.2 and maybe even 0.17
@@ -629,10 +614,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 )
             pass
         pass
-        # Log the metrics
-        # completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
-        # mean_kl = ((per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
-        # self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
+
         if "train" in self._metrics:
             mode = "eval" if self.control.should_evaluate else "train"
             self._metrics[mode]["completion_length"].append(completion_length.item())
@@ -640,6 +622,36 @@ def grpo_trainer_compute_loss(function_name, function):
         else:
             self._metrics["completion_length"].append(completion_length.item())
             self._metrics["kl"].append(mean_kl.item())
+
+        if self.use_vllm:
+            mean_delta = torch.mean(delta) if delta.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            max_delta = torch.max(delta) if delta.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            self._metrics[mode]["sampling/sampling_logp_difference/mean"].append(
+                self.accelerator.gather(mean_delta).mean().item()
+            )
+            self._metrics[mode]["sampling/sampling_logp_difference/max"].append(
+                self.accelerator.gather(max_delta).max().item()
+            )
+
+            min_importance_sampling_ratio = (
+                torch.min(flat_is_ratio) if flat_is_ratio.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            )
+            mean_importance_sampling_ratio = (
+                torch.mean(flat_is_ratio) if flat_is_ratio.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            )
+            max_importance_sampling_ratio = (
+                torch.max(flat_is_ratio) if flat_is_ratio.numel() > 0 else torch.tensor(0.0, device=self.model.device)
+            )
+            self._metrics[mode]["sampling/importance_sampling_ratio/min"].append(
+                nanmin(self.accelerator.gather(min_importance_sampling_ratio)).item()
+            )
+            self._metrics[mode]["sampling/importance_sampling_ratio/mean"].append(
+                self.accelerator.gather(mean_importance_sampling_ratio).nanmean().item()
+            )
+            self._metrics[mode]["sampling/importance_sampling_ratio/max"].append(
+                nanmax(self.accelerator.gather(max_importance_sampling_ratio)).item()
+            )
+
         return loss
     pass
 
