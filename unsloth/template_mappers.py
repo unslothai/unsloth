@@ -13,39 +13,14 @@
 # limitations under the License.
 
 __all__ = [
-    "CHAT_TEMPLATES",
-    "DEFAULT_SYSTEM_MESSAGE",
-    "TEMPLATE_TO_MODEL_MAPPER",
-    "MODEL_TO_TEMPLATE_MAPPER",
+    "OLLAMA_TEMPLATES",
+    "OLLAMA_TEMPLATE_TO_MODEL_MAPPER",
+    "MODEL_TO_OLLAMA_TEMPLATE_MAPPER",
 ]
 
-CHAT_TEMPLATES = {}
-DEFAULT_SYSTEM_MESSAGE = {}
+OLLAMA_TEMPLATES = {}
 
 # =========================================== Unsloth
-# Unsloth efficient template leverages from Zephyr
-unsloth_template = \
-    "{{ bos_token }}"\
-    "{% if messages[0]['role'] == 'system' %}"\
-        "{{ messages[0]['content'] + '\n' }}"\
-        "{% set loop_messages = messages[1:] %}"\
-    "{% else %}"\
-        "{{ '{system_message}' + '\n' }}"\
-        "{% set loop_messages = messages %}"\
-    "{% endif %}"\
-    "{% for message in loop_messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ '>>> User: ' + message['content'] + '\n' }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ '>>> Assistant: ' + message['content'] + eos_token + '\n' }}"\
-        "{% else %}"\
-            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '>>> Assistant: ' }}"\
-    "{% endif %}"
-pass
 
 unsloth_ollama = \
 '''
@@ -60,27 +35,10 @@ PARAMETER min_p 0.1
 SYSTEM """You are a helpful assistant to the user"""
 '''
 
-unsloth_eos_token = "eos_token"
-CHAT_TEMPLATES["unsloth"] = (unsloth_template, unsloth_eos_token, False, unsloth_ollama,)
-DEFAULT_SYSTEM_MESSAGE["unsloth"] = "You are a helpful assistant to the user"
+OLLAMA_TEMPLATES["unsloth"] = unsloth_ollama
 pass
 
 # =========================================== Zephyr
-# Zephyr has no BOS!
-zephyr_template = \
-    "{% for message in messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ '<|user|>\n' + message['content'] + eos_token + '\n' }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ '<|assistant|>\n' + message['content'] + eos_token + '\n' }}"\
-        "{% else %}"\
-            "{{ '<|system|>\n' + message['content'] + eos_token + '\n' }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '<|assistant|>\n' }}"\
-    "{% endif %}"
-pass
 
 zephyr_ollama = \
 '''
@@ -97,28 +55,10 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-zephyr_eos_token = "eos_token"
-CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False, zephyr_ollama,)
-DEFAULT_SYSTEM_MESSAGE["zephyr"] = None # No system message in Zephyr
+OLLAMA_TEMPLATES["zephyr"] = zephyr_ollama
 pass
 
 # =========================================== ChatML
-# ChatML has no BOS and not EOS! Rather <|im_start|> and <|im_end|> acts as BOS / EOS.
-chatml_template = \
-    "{% for message in messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{'<|im_start|>user\n' + message['content'] + '<|im_end|>\n'}}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{'<|im_start|>assistant\n' + message['content'] + '<|im_end|>\n' }}"\
-        "{% else %}"\
-            "{{ '<|im_start|>system\n' + message['content'] + '<|im_end|>\n' }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '<|im_start|>assistant\n' }}"\
-    "{% endif %}"
-pass
-
 chatml_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -135,77 +75,388 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-chatml_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token, True, chatml_ollama,)
-DEFAULT_SYSTEM_MESSAGE["chatml"] = None # No system message in ChatML
+OLLAMA_TEMPLATES["chatml"] = chatml_ollama
 pass
 
 # =========================================== Mistral-1
-# Mistral Instruct doesn't allow system prompts, so we append it to the user message.
-mistral_template = \
-    "{{ bos_token }}"\
-    "{% if messages[0]['role'] == 'system' %}"\
-        "{% if messages[1]['role'] == 'user' %}"\
-            "{{ '[INST] ' + messages[0]['content'] + ' ' + messages[1]['content'] + ' [/INST]' }}"\
-            "{% set loop_messages = messages[2:] %}"\
-        "{% else %}"\
-            "{{ '[INST] ' + messages[0]['content'] + ' [/INST]' }}"\
-            "{% set loop_messages = messages[1:] %}"\
-        "{% endif %}"\
-    "{% else %}"\
-        "{% set loop_messages = messages %}"\
-    "{% endif %}"\
-    "{% for message in loop_messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ '[INST] ' + message['content'] + ' [/INST]' }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ message['content'] + eos_token }}"\
-        "{% else %}"\
-            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
-        "{% endif %}"\
-    "{% endfor %}"
-pass
-
 # Ollama from https://www.ollama.com/library/mistral
+# Mistral v0.1 https://ollama.com/library/mistral:v0.1/blobs/22e1b2e8dc2f
+# Mistral v0.2 https://ollama.com/library/mistral:v0.2/blobs/e6836092461f
 mistral_ollama = \
 '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST]"""
-PARAMETER stop "{__EOS_TOKEN__}"
-PARAMETER temperature 1.5
-PARAMETER min_p 0.1
+PARAMETER stop "[INST]"
+PARAMETER stop "[/INST]"
 '''
 
-mistral_eos_token = "eos_token"
-CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False, mistral_ollama,)
-DEFAULT_SYSTEM_MESSAGE["mistral"] = None # No system message in Mistral
+# mistral:v0.3 https://ollama.com/library/mistral:v0.3/blobs/1ff5b64b61b9
+# mistral-large https://ollama.com/library/mistral-large:latest/blobs/96adabcf2c08
+mistral_v03_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- if .Messages }}
+{{- range $index, $_ := .Messages }}
+{{- if eq .Role "user" }}
+{{- if and (eq (len (slice $.Messages $index)) 1) $.Tools }}[AVAILABLE_TOOLS] {{ $.Tools }}[/AVAILABLE_TOOLS]
+{{- end }}[INST] {{ if and $.System (eq (len (slice $.Messages $index)) 1) }}{{ $.System }}
+
+{{ end }}{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }}
+{{- if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}[TOOL_CALLS] [
+{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{- end }}]
+{{- end }}</s>
+{{- else if eq .Role "tool" }}[TOOL_RESULTS] {"content": {{ .Content }}} [/TOOL_RESULTS]
+{{- end }}
+{{- end }}
+{{- else }}[INST] {{ if .System }}{{ .System }}
+
+{{ end }}{{ .Prompt }}[/INST]
+{{- end }}{{ .Response }}
+{{- if .Response }}</s>
+{{- end }}"""
+PARAMETER stop "[INST]"
+PARAMETER stop "[/INST]"
+PARAMETER stop "</s>"
+'''
+
+# Mistral-small https://ollama.com/library/mistral-small:latest/blobs/6db27cd4e277
+mistral_small_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $index, $_ := .Messages }}
+{{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
+{{- else if eq .Role "user" }}
+{{- if and (le (len (slice $.Messages $index)) 2) $.Tools }}[AVAILABLE_TOOLS]{{ $.Tools }}[/AVAILABLE_TOOLS]
+{{- end }}[INST]{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }}
+{{- if .Content }}{{ .Content }}
+{{- if not (eq (len (slice $.Messages $index)) 1) }}</s>
+{{- end }}
+{{- else if .ToolCalls }}[TOOL_CALLS][
+{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{- end }}]</s>
+{{- end }}
+{{- else if eq .Role "tool" }}[TOOL_RESULTS]{"content": {{ .Content }}}[/TOOL_RESULTS]
+{{- end }}
+{{- end }}"""
+PARAMETER temperature 0.15
+SYSTEM """You are Mistral Small 3, a Large Language Model (LLM) created by Mistral AI, a French startup headquartered in Paris. Your knowledge base was last updated on 2023-10-01. When you're not sure about some information, you say that you don't have the information and don't make up anything. If the user's question is not clear, ambiguous, or does not provide enough context for you to accurately answer the question, you do not try to answer it right away and you rather ask the user to clarify their request (e.g. "What are some good restaurants around me?" => "Where are you?" or "When is the next flight to Tokyo" => "Where do you travel from?")"""
+'''
+
+# mistral-small-3.1 https://ollama.com/library/mistral-small3.1:latest/blobs/6db27cd4e277
+mistral_small_31_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $index, $_ := .Messages }}
+{{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
+{{- else if eq .Role "user" }}
+{{- if and (le (len (slice $.Messages $index)) 2) $.Tools }}[AVAILABLE_TOOLS]{{ $.Tools }}[/AVAILABLE_TOOLS]
+{{- end }}[INST]{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }}
+{{- if .Content }}{{ .Content }}
+{{- if not (eq (len (slice $.Messages $index)) 1) }}</s>
+{{- end }}
+{{- else if .ToolCalls }}[TOOL_CALLS][
+{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{- end }}]</s>
+{{- end }}
+{{- else if eq .Role "tool" }}[TOOL_RESULTS]{"content": {{ .Content }}}[/TOOL_RESULTS]
+{{- end }}
+{{- end }}"""
+PARAMETER num_ctx 4096
+SYSTEM """You are Mistral Small 3.1, a Large Language Model (LLM) created by Mistral AI, a French startup headquartered in Paris.
+You power an AI assistant called Le Chat.
+Your knowledge base was last updated on 2023-10-01.
+
+When you're not sure about some information, you say that you don't have the information and don't make up anything.
+If the user's question is not clear, ambiguous, or does not provide enough context for you to accurately answer the question, you do not try to answer it right away and you rather ask the user to clarify their request (e.g. "What are some good restaurants around me?" => "Where are you?" or "When is the next flight to Tokyo" => "Where do you travel from?").
+You are always very attentive to dates, in particular you try to resolve dates (e.g. "yesterday" is {yesterday}) and when asked about information at specific dates, you discard information that is at another date.
+You follow these instructions in all languages, and always respond to the user in the language they use or request.
+Next sections describe the capabilities that you have.
+
+# WEB BROWSING INSTRUCTIONS
+
+You cannot perform any web search or access internet to open URLs, links etc. If it seems like the user is expecting you to do so, you clarify the situation and ask the user to copy paste the text directly in the chat.
+
+# MULTI-MODAL INSTRUCTIONS
+
+You have the ability to read images, but you cannot generate images. You also cannot transcribe audio files or videos.
+You cannot read nor transcribe audio files or videos."""
+'''
+
+# mistral-small-3.2 https://ollama.com/library/mistral-small3.2:latest/blobs/706c4d1164f7
+mistral_small_32_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $index, $_ := .Messages }}
+{{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
+{{- else if eq .Role "user" }}
+{{- if and (le (len (slice $.Messages $index)) 2) $.Tools }}[AVAILABLE_TOOLS]{{ $.Tools }}[/AVAILABLE_TOOLS]
+{{- end }}[INST]{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }}
+{{- if .Content }}{{ .Content }}
+{{- if not (eq (len (slice $.Messages $index)) 1) }}</s>
+{{- end }}
+{{- else if .ToolCalls }}
+{{- range $i, $_ := .ToolCalls }}[TOOL_CALLS]{{ .Function.Name }}[CALL_ID]{{ $i }}[ARGS]{{ .Function.Arguments }}
+{{- end }}</s>
+{{- end }}
+{{- else if eq .Role "tool" }}[TOOL_RESULTS]{"content": {{ .Content }}}[/TOOL_RESULTS]
+{{- end }}
+{{- end }}"""
+PARAMETER temperature 0.15
+SYSTEM """You are Mistral Small 3.2, a Large Language Model (LLM) created by Mistral AI, a French startup headquartered in Paris.
+You power an AI assistant called Le Chat.
+Your knowledge base was last updated on 2023-10-01.
+
+When you're not sure about some information or when the user's request requires up-to-date or specific data, you must use the available tools to fetch the information. Do not hesitate to use tools whenever they can provide a more accurate or complete response. If no relevant tools are available, then clearly state that you don't have the information and avoid making up anything.
+If the user's question is not clear, ambiguous, or does not provide enough context for you to accurately answer the question, you do not try to answer it right away and you rather ask the user to clarify their request (e.g. "What are some good restaurants around me?" => "Where are you?" or "When is the next flight to Tokyo" => "Where do you travel from?").
+You are always very attentive to dates, in particular you try to resolve dates and when asked about information at specific dates, you discard information that is at another date.
+You follow these instructions in all languages, and always respond to the user in the language they use or request.
+Next sections describe the capabilities that you have.
+
+# WEB BROWSING INSTRUCTIONS
+
+You cannot perform any web search or access internet to open URLs, links etc. If it seems like the user is expecting you to do so, you clarify the situation and ask the user to copy paste the text directly in the chat.
+
+# MULTI-MODAL INSTRUCTIONS
+
+You have the ability to read images, but you cannot generate images. You also cannot transcribe audio files or videos.
+You cannot read nor transcribe audio files or videos.
+
+TOOL CALLING INSTRUCTIONS
+
+You may have access to tools that you can use to fetch information or perform actions. You must use these tools in the following situations:
+
+1. When the request requires up-to-date information.
+2. When the request requires specific data that you do not have in your knowledge base.
+3. When the request involves actions that you cannot perform without tools.
+
+Always prioritize using tools to provide the most accurate and helpful response. If tools are not available, inform the user that you cannot perform the requested action at the moment."""
+'''
+
+
+# https://ollama.com/library/mixtral:latest/blobs/53d74de0d84c
+mixtral_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """[INST] {{ if .System }}{{ .System }} {{ end }}{{ .Prompt }} [/INST] {{ .Response }}"""
+PARAMETER stop "[INST]"
+PARAMETER stop "[/INST]"
+'''
+
+# https://registry.ollama.ai/library/mistral-nemo:latest/blobs/438402ddac75
+mistral_nemo_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """
+{{- range $i, $_ := .Messages }}
+{{- if eq .Role "user" }}
+{{- if and $.Tools (le (len (slice $.Messages $i)) 2) }}[AVAILABLE_TOOLS]{{ $.Tools }}[/AVAILABLE_TOOLS]
+{{- end }}[INST]{{ if and $.System (eq (len (slice $.Messages $i)) 1) }}{{ $.System }}
+
+{{ end }}{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }}
+{{- if .Content }} {{ .Content }}{{ if not (eq (len (slice $.Messages $i)) 1) }}</s>{{ end }}
+{{- else if .ToolCalls }}[TOOL_CALLS][
+{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{- end }}]</s>
+{{- end }}
+{{- else if eq .Role "tool" }}[TOOL_RESULTS]{"content": {{ .Content }}}[/TOOL_RESULTS]
+{{- end }}
+{{- end }}"""
+PARAMETER stop "[INST]"
+PARAMETER stop "[/INST]"
+'''
+
+# https://ollama.com/library/codestral:latest/blobs/51707752a87c
+codestral_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """
+{{- if .Suffix }}[SUFFIX]{{ .Suffix }}[PREFIX] {{ .Prompt }}
+{{- else if .Messages }}
+{{- range $index, $_ := .Messages }}
+{{- if eq .Role "user" }}[INST] {{ if and $.System (eq (len (slice $.Messages $index)) 1) }}{{ $.System }}
+
+{{ end }}{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }} {{ .Content }}</s>
+{{- end }}
+{{- end }}
+{{- else }}[INST] {{ if .System }}{{ .System }}
+
+{{ end }}{{ .Prompt }} [/INST]
+{{- end }} {{ .Response }}
+{{- if .Response }}</s>
+{{- end }}
+"""
+PARAMETER stop "[INST]"
+PARAMETER stop "[/INST]"
+PARAMETER stop "[PREFIX]"
+PARAMETER stop "[MIDDLE]"
+PARAMETER stop "[SUFFIX]"
+'''
+
+# https://ollama.com/library/devstral:latest/blobs/ea9ec42474e0
+devstral_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- $lastUserIndex := -1 }}
+{{- range $index, $_ := .Messages }}
+{{- if eq .Role "user" }}{{ $lastUserIndex = $index }}{{ end }}
+{{- end }}
+{{- range $index, $_ := .Messages }}
+{{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
+{{- else if eq .Role "user" }}
+{{- if and (eq $lastUserIndex $index) $.Tools }}[AVAILABLE_TOOLS]{{ $.Tools }}[/AVAILABLE_TOOLS]
+{{- end }}[INST]{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }}
+{{- if .Content }}{{ .Content }}
+{{- if not (eq (len (slice $.Messages $index)) 1) }}</s>
+{{- end }}
+{{- else if .ToolCalls }}[TOOL_CALLS][
+{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{- end }}]</s>
+{{- end }}
+{{- else if eq .Role "tool" }}[TOOL_RESULTS]{"content": {{ .Content }}}[/TOOL_RESULTS]
+{{- end }}
+{{- end }}"""
+SYSTEM """You are Devstral, a helpful agentic model trained by Mistral AI and using the OpenHands scaffold. You can interact with a computer to solve tasks.
+
+<ROLE>
+Your primary role is to assist users by executing commands, modifying code, and solving technical problems effectively. You should be thorough, methodical, and prioritize quality over speed.
+* If the user asks a question, like "why is X happening", don't try to fix the problem. Just give an answer to the question.
+</ROLE>
+
+<EFFICIENCY>
+* Each action you take is somewhat expensive. Wherever possible, combine multiple actions into a single action, e.g. combine multiple bash commands into one, using sed and grep to edit/view multiple files at once.
+* When exploring the codebase, use efficient tools like find, grep, and git commands with appropriate filters to minimize unnecessary operations.
+</EFFICIENCY>
+
+<FILE_SYSTEM_GUIDELINES>
+* When a user provides a file path, do NOT assume it's relative to the current working directory. First explore the file system to locate the file before working on it.
+* If asked to edit a file, edit the file directly, rather than creating a new file with a different filename.
+* For global search-and-replace operations, consider using `sed` instead of opening file editors multiple times.
+</FILE_SYSTEM_GUIDELINES>
+
+<CODE_QUALITY>
+* Write clean, efficient code with minimal comments. Avoid redundancy in comments: Do not repeat information that can be easily inferred from the code itself.
+* When implementing solutions, focus on making the minimal changes needed to solve the problem.
+* Before implementing any changes, first thoroughly understand the codebase through exploration.
+* If you are adding a lot of code to a function or file, consider splitting the function or file into smaller pieces when appropriate.
+</CODE_QUALITY>
+
+<VERSION_CONTROL>
+* When configuring git credentials, use "openhands" as the user.name and "openhands@all-hands.dev" as the user.email by default, unless explicitly instructed otherwise.
+* Exercise caution with git operations. Do NOT make potentially dangerous changes (e.g., pushing to main, deleting repositories) unless explicitly asked to do so.
+* When committing changes, use `git status` to see all modified files, and stage all files necessary for the commit. Use `git commit -a` whenever possible.
+* Do NOT commit files that typically shouldn't go into version control (e.g., node_modules/, .env files, build directories, cache files, large binaries) unless explicitly instructed by the user.
+* If unsure about committing certain files, check for the presence of .gitignore files or ask the user for clarification.
+</VERSION_CONTROL>
+
+<PULL_REQUESTS>
+* When creating pull requests, create only ONE per session/issue unless explicitly instructed otherwise.
+* When working with an existing PR, update it with new commits rather than creating additional PRs for the same issue.
+* When updating a PR, preserve the original PR title and purpose, updating description only when necessary.
+</PULL_REQUESTS>
+
+<PROBLEM_SOLVING_WORKFLOW>
+1. EXPLORATION: Thoroughly explore relevant files and understand the context before proposing solutions
+2. ANALYSIS: Consider multiple approaches and select the most promising one
+3. TESTING:
+   * For bug fixes: Create tests to verify issues before implementing fixes
+   * For new features: Consider test-driven development when appropriate
+   * If the repository lacks testing infrastructure and implementing tests would require extensive setup, consult with the user before investing time in building testing infrastructure
+   * If the environment is not set up to run tests, consult with the user first before investing time to install all dependencies
+4. IMPLEMENTATION: Make focused, minimal changes to address the problem
+5. VERIFICATION: If the environment is set up to run tests, test your implementation thoroughly, including edge cases. If the environment is not set up to run tests, consult with the user first before investing time to run tests.
+</PROBLEM_SOLVING_WORKFLOW>
+
+<SECURITY>
+* Only use GITHUB_TOKEN and other credentials in ways the user has explicitly requested and would expect.
+* Use APIs to work with GitHub or other platforms, unless the user asks otherwise or your task requires browsing.
+</SECURITY>
+
+<ENVIRONMENT_SETUP>
+* When user asks you to run an application, don't stop if the application is not installed. Instead, please install the application and run the command again.
+* If you encounter missing dependencies:
+  1. First, look around in the repository for existing dependency files (requirements.txt, pyproject.toml, package.json, Gemfile, etc.)
+  2. If dependency files exist, use them to install all dependencies at once (e.g., `pip install -r requirements.txt`, `npm install`, etc.)
+  3. Only install individual packages directly if no dependency files are found or if only specific packages are needed
+* Similarly, if you encounter missing dependencies for essential tools requested by the user, install them when possible.
+</ENVIRONMENT_SETUP>
+
+<TROUBLESHOOTING>
+* If you've made repeated attempts to solve a problem but tests still fail or the user reports it's still broken:
+  1. Step back and reflect on 5-7 different possible sources of the problem
+  2. Assess the likelihood of each possible cause
+  3. Methodically address the most likely causes, starting with the highest probability
+  4. Document your reasoning process
+* When you run into any major issue while executing a plan from the user, please don't try to directly work around it. Instead, propose a new plan and confirm with the user before proceeding.
+</TROUBLESHOOTING>"""
+'''
+
+# https://ollama.com/library/magistral:latest/blobs/35f7a1efc383
+magistral_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1}}
+{{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
+{{- else if eq .Role "user" }}
+{{- if and (le (len (slice $.Messages $i)) 2) $.Tools }}[AVAILABLE_TOOLS]{{ $.Tools }}[/AVAILABLE_TOOLS]
+{{- end }}[INST]{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }}
+{{- if and $.IsThinkSet (and $last .Thinking) -}}
+<think>
+{{ .Thinking }}
+</think>
+{{ end }}
+{{- if .Content }}{{ .Content }}
+{{- end }}
+{{- if .ToolCalls }}{{ range $i, $_ := .ToolCalls }}[TOOL_CALLS]{{ .Function.Name }}[CALL_ID]{{ $i }}[ARGS]{{ .Function.Arguments }}{{ end }}
+{{- end }}
+{{- if not (eq (len (slice $.Messages $i)) 1) }}</s>
+{{- end }}
+{{- else if eq .Role "tool" }}[TOOL_RESULTS]0[TOOL_CONTENT]{{ .Content }}[/TOOL_RESULTS]
+{{- end }}
+{{- if and $last (ne .Role "assistant") }}{{ if and $.IsThinkSet (not $.Think) -}}<think>
+</think>
+{{ end }}
+{{- end }}
+{{- end }}"""
+PARAMETER temperature 0.7
+PARAMETER top_p 0.95
+SYSTEM """A user will ask you to solve a task. You should first draft your thinking process (inner monologue) until you have derived the final answer. Afterwards, write a self-contained summary of your thoughts (i.e. your summary should be succinct but contain all the critical steps you needed to reach the conclusion). You should use Markdown and Latex to format your response. Write both your thoughts and summary in the same language as the task posed by the user.
+
+Your thinking process must follow the template below:
+<think>
+Your thoughts or/and draft, like working through an exercise on scratch paper. Be as casual and as long as you want until you are confident to generate a correct answer.
+</think>
+
+Here, provide a concise summary that reflects your reasoning and presents a clear final answer to the user.
+
+Problem:"""
+'''
+
+OLLAMA_TEMPLATES["mistral"]          = mistral_ollama
+OLLAMA_TEMPLATES["mistral-v03"]      = mistral_v03_ollama
+OLLAMA_TEMPLATES["mistral-small"]    = mistral_small_ollama
+OLLAMA_TEMPLATES["mistral-small-31"] = mistral_small_31_ollama
+OLLAMA_TEMPLATES["mistral-small-32"] = mistral_small_32_ollama
+OLLAMA_TEMPLATES["mixtral"]          = mixtral_ollama
+OLLAMA_TEMPLATES["mistral-nemo"]     = mistral_nemo_ollama
+OLLAMA_TEMPLATES["devstral"]         = devstral_ollama
+OLLAMA_TEMPLATES["magistral"]        = magistral_ollama
+OLLAMA_TEMPLATES["codestral"]        = codestral_ollama
+
 pass
 
 # =========================================== Llama-2
-# Adds BOS to every convo! And weird <<SYS>> system messages.
-llama_template = \
-    "{% if messages[0]['role'] == 'system' %}"\
-        "{% if messages[1]['role'] == 'user' %}"\
-            "{{ bos_token + '[INST] <<SYS>>\n' + messages[0]['content'] + '\n<</SYS>>\n\n' + messages[1]['content'] + ' [/INST]' }}"\
-            "{% set loop_messages = messages[2:] %}"\
-        "{% else %}"\
-            "{{ bos_token + '[INST] ' + messages[0]['content'] + ' [/INST]' }}"\
-            "{% set loop_messages = messages[1:] %}"\
-        "{% endif %}"\
-    "{% else %}"\
-        "{% set loop_messages = messages %}"\
-    "{% endif %}"\
-    "{% for message in loop_messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ bos_token + '[INST] ' + message['content'].strip() + ' [/INST]' }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ ' ' + message['content'].strip() + ' ' + eos_token }}"\
-        "{% else %}"\
-            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
-        "{% endif %}"\
-    "{% endfor %}"
-pass
-
 # Ollama from https://www.ollama.com/library/llama3
 llama_ollama = \
 '''
@@ -218,36 +469,10 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-llama_eos_token = "eos_token"
-CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False, llama_ollama,)
-DEFAULT_SYSTEM_MESSAGE["llama"] = None # No system message in Llama
+OLLAMA_TEMPLATES["llama"] =llama_ollama
 pass
 
 # ===========================================  Vicuna
-# https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
-vicuna_template = \
-    "{{ bos_token }}"\
-    "{% if messages[0]['role'] == 'system' %}"\
-        "{{ messages[0]['content'] + ' ' }}"\
-        "{% set loop_messages = messages[1:] %}"\
-    "{% else %}"\
-        "{{ '{system_message}' + ' ' }}"\
-        "{% set loop_messages = messages %}"\
-    "{% endif %}"\
-    "{% for message in loop_messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ 'USER: ' + message['content'] + ' ' }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ 'ASSISTANT: ' + message['content'] + eos_token }}"\
-        "{% else %}"\
-            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ 'ASSISTANT:' }}"\
-    "{% endif %}"
-pass
-
 # Ollama from https://www.ollama.com/library/vicuna
 vicuna_ollama = \
 '''
@@ -258,36 +483,10 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-vicuna_eos_token = "eos_token"
-CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
+OLLAMA_TEMPLATES["vicuna"] = vicuna_ollama
 pass
 
 # =========================================== Vicuna Old
-# https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
-vicuna_old_template = \
-    "{{ bos_token }}"\
-    "{% if messages[0]['role'] == 'system' %}"\
-        "{{ messages[0]['content'] + '\n' }}"\
-        "{% set loop_messages = messages[1:] %}"\
-    "{% else %}"\
-        "{{ '{system_message}' + '\n' }}"\
-        "{% set loop_messages = messages %}"\
-    "{% endif %}"\
-    "{% for message in loop_messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ '### Human: ' + message['content'] + '\n' }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ '### Assistant: ' + message['content'] + eos_token + '\n' }}"\
-        "{% else %}"\
-            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '### Assistant:' }}"\
-    "{% endif %}"
-pass
-
 vicuna_old_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -301,39 +500,11 @@ PARAMETER min_p 0.1
 SYSTEM """A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions."""
 '''
 
-vicuna_old_eos_token = "eos_token"
-CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False, vicuna_old_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna_old"] = "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human\\'s questions."
-
-CHAT_TEMPLATES["vicuna old"] = CHAT_TEMPLATES["vicuna_old"]
-DEFAULT_SYSTEM_MESSAGE["vicuna old"] = DEFAULT_SYSTEM_MESSAGE["vicuna_old"]
+OLLAMA_TEMPLATES["vicuna_old"] = vicuna_old_ollama
+OLLAMA_TEMPLATES["vicuna old"] = OLLAMA_TEMPLATES["vicuna_old"]
 pass
 
 # =========================================== Alpaca multi turn
-# https://github.com/tatsu-lab/stanford_alpaca Changed for multi-turn convos
-alpaca_template = \
-    "{{ bos_token }}"\
-    "{% if messages[0]['role'] == 'system' %}"\
-        "{{ messages[0]['content'] + '\n\n' }}"\
-        "{% set loop_messages = messages[1:] %}"\
-    "{% else %}"\
-        "{{ '{system_message}' + '\n\n' }}"\
-        "{% set loop_messages = messages %}"\
-    "{% endif %}"\
-    "{% for message in loop_messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ '### Instruction:\n' + message['content'] + '\n\n' }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ '### Response:\n' + message['content'] + eos_token + '\n\n' }}"\
-        "{% else %}"\
-            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '### Response:\n' }}"\
-    "{% endif %}"
-pass
-
 alpaca_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -352,35 +523,10 @@ PARAMETER min_p 0.1
 SYSTEM """Below are some instructions that describe some tasks. Write responses that appropriately complete each request."""
 '''
 
-alpaca_eos_token = "eos_token"
-CHAT_TEMPLATES["alpaca"] = (alpaca_template, alpaca_eos_token, False, alpaca_ollama,)
-DEFAULT_SYSTEM_MESSAGE["alpaca"] = "Below are some instructions that describe some tasks. Write responses that appropriately complete each request."
+OLLAMA_TEMPLATES["alpaca"] = alpaca_ollama
 pass
 
 # =========================================== Gemma
-# https://huggingface.co/google/gemma-7b-it
-# Notice we must use |trim for lstrip and rstrip. <start_of_turn> maps to 106.
-# <end_of_turn> maps to 107. user and model are normal 1 word tokens.
-gemma_template = \
-    "{{ bos_token }}"\
-    "{% if messages[0]['role'] == 'system' %}"\
-        "{{'<start_of_turn>user\n' + messages[0]['content'] | trim + ' ' + messages[1]['content'] | trim + '<end_of_turn>\n'}}"\
-        "{% set messages = messages[2:] %}"\
-    "{% endif %}"\
-    "{% for message in messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{'<start_of_turn>user\n' + message['content'] | trim + '<end_of_turn>\n'}}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{'<start_of_turn>model\n' + message['content'] | trim + '<end_of_turn>\n' }}"\
-        "{% else %}"\
-            "{{ raise_exception('Only user and assistant roles are supported!') }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '<start_of_turn>model\n' }}"\
-    "{% endif %}"
-pass
-
 # Ollama from https://www.ollama.com/library/gemma
 gemma_ollama = \
 '''
@@ -398,16 +544,10 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-gemma_eos_token = "<end_of_turn>"
-CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True, gemma_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma"] = None # No system message in Gemma
+OLLAMA_TEMPLATES["gemma"] = gemma_ollama
 pass
 
 # =========================================== Gemma with ChatML instead
-# We find using <eos> is still more appropriate!
-gemma_chatml_template = "{{ bos_token }}" + chatml_template
-pass
-
 gemma_chatml_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -426,49 +566,21 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-gemma_chatml_eos_token = (
-    {"<start_of_turn>" : "<|im_start|>", "<eos>" : "<|im_end|>"},
-    "<|im_end|>",
-)
-CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token, True, gemma_chatml_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma_chatml"] = None # No system message in Gemma
+OLLAMA_TEMPLATES["gemma_chatml"] = gemma_chatml_ollama
 pass
 
 # =========================================== Gemma 2
 # Same as Gemma 1, but with sliding window attention!
 # https://ollama.com/library/gemma2/blobs/6522ca797f47
-gemma2_template = gemma_template
 gemma2_ollama = gemma_ollama + "PARAMETER num_ctx 4096\n"
-gemma2_eos_token = "<end_of_turn>"
-CHAT_TEMPLATES["gemma2"] = (gemma2_template, gemma2_eos_token, True, gemma2_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma2"] = None # No system message in Gemma 2
+OLLAMA_TEMPLATES["gemma2"] = gemma2_ollama
 
 # =========================================== Gemma 2 with ChatML instead
-gemma2_chatml_template = gemma_chatml_template
 gemma2_chatml_ollama = gemma_chatml_ollama + "PARAMETER num_ctx 4096\n"
-gemma2_chatml_eos_token = gemma_chatml_eos_token
-CHAT_TEMPLATES["gemma2_chatml"] = (gemma2_chatml_template, gemma2_chatml_eos_token, True, gemma2_chatml_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma2_chatml"] = None # No system message in Gemma 2
+OLLAMA_TEMPLATES["gemma2_chatml"] = gemma2_chatml_ollama
 pass
 
 # =========================================== Llama-3
-# Weirdly \n\n is needed?
-llama3_template = \
-    "{{ bos_token }}"\
-    "{% for message in messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ '<|start_header_id|>user<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
-        "{% else %}"\
-            "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"\
-    "{% endif %}"
-pass
-
 # Ollama from https://www.ollama.com/library/llama3
 llama3_ollama = \
 '''
@@ -480,6 +592,7 @@ TEMPLATE """{{ if .System }}<|start_header_id|>system<|end_header_id|>
 {{ .Prompt }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>
 
 {{ .Response }}<|eot_id|>"""
+PARAMETER num_keep 24
 PARAMETER stop "<|start_header_id|>"
 PARAMETER stop "<|end_header_id|>"
 PARAMETER stop "<|eot_id|>"
@@ -487,33 +600,12 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-llama3_template_eos_token = "eos_token"
-
-CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token, False, llama3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["llama-3"] = None # No system message in Llama-3
-
-CHAT_TEMPLATES["llama3"] = (llama3_template, llama3_template_eos_token, False, llama3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["llama3"] = None # No system message in Llama-3
+OLLAMA_TEMPLATES["llama-3"] = llama3_ollama
+OLLAMA_TEMPLATES["llama3"] = llama3_ollama
 pass
 
 
 # =========================================== Phi-3
-# "{{ bos_token }}"\ # Phi-3.5 removes BOS?
-phi3_template = \
-    "{% for message in messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{'<|user|>\n' + message['content'] + '<|end|>\n'}}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{'<|assistant|>\n' + message['content'] + '<|end|>\n'}}"\
-        "{% else %}"\
-            "{{'<|' + message['role'] + '|>\n' + message['content'] + '<|end|>\n'}}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '<|assistant|>\n' }}"\
-    "{% endif %}"
-pass
-
 # Ollama from https://www.ollama.com/library/phi3
 phi3_ollama = \
 '''
@@ -532,15 +624,9 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-phi3_template_eos_token = "<|end|>"
-CHAT_TEMPLATES["phi-3"]   = (phi3_template, phi3_template_eos_token, False, phi3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["phi-3"] = None # No system message in Phi-3
-
-CHAT_TEMPLATES["phi-35"]  = CHAT_TEMPLATES["phi-3"]
-DEFAULT_SYSTEM_MESSAGE["phi-35"] = None # No system message in Phi-3.5
-
-CHAT_TEMPLATES["phi-3.5"] = CHAT_TEMPLATES["phi-3"]
-DEFAULT_SYSTEM_MESSAGE["phi-3.5"] = None # No system message in Phi-3.5
+OLLAMA_TEMPLATES["phi-3"]   = phi3_ollama
+OLLAMA_TEMPLATES["phi-35"]  = OLLAMA_TEMPLATES["phi-3"]
+OLLAMA_TEMPLATES["phi-3.5"] = OLLAMA_TEMPLATES["phi-3"]
 pass
 
 # =========================================== Llama-3.1
@@ -559,119 +645,6 @@ tokenizer.apply_chat_template(
     date_string = datetime.today().strftime("%d %B %Y")),
 )
 """
-
-llama31_template = \
-"""{{- bos_token }}
-{%- if custom_tools is defined %}
-    {%- set tools = custom_tools %}
-{%- endif %}
-{%- if not tools_in_user_message is defined %}
-    {%- set tools_in_user_message = true %}
-{%- endif %}
-{%- if not date_string is defined %}
-    {%- set date_string = "26 July 2024" %}
-{%- endif %}
-{%- if not tools is defined %}
-    {%- set tools = none %}
-{%- endif %}
-
-{#- This block extracts the system message, so we can slot it into the right place. #}
-{%- if messages[0]['role'] == 'system' %}
-    {%- set system_message = messages[0]['content'] %}
-    {%- set messages = messages[1:] %}
-{%- else %}
-    {%- set system_message = "{system_message}" %}
-{%- endif %}
-
-{#- System message + builtin tools #}
-{{- "<|start_header_id|>system<|end_header_id|>\n\n" }}
-{%- if builtin_tools is defined or tools is not none %}
-    {{- "Environment: ipython\n" }}
-{%- endif %}
-{%- if builtin_tools is defined %}
-    {{- "Tools: " + builtin_tools | reject('equalto', 'code_interpreter') | join(", ") + "\n\n"}}
-{%- endif %}
-{{- "Cutting Knowledge Date: December 2023\n" }}
-{{- "Today Date: " + date_string + "\n\n" }}
-{%- if tools is not none and not tools_in_user_message %}
-    {{- "You have access to the following functions. To call a function, please respond with JSON for a function call." }}
-    {{- 'Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}.' }}
-    {{- "Do not use variables.\n\n" }}
-    {%- for t in tools %}
-        {{- t | tojson(indent=4) }}
-        {{- "\n\n" }}
-    {%- endfor %}
-{%- endif %}
-{{- system_message }}
-{{- "<|eot_id|>" }}
-
-{#- Custom tools are passed in a user message with some extra guidance #}
-{%- if tools_in_user_message and not tools is none %}
-    {#- Extract the first user message so we can plug it in here #}
-    {%- if messages | length != 0 %}
-        {%- set first_user_message = messages[0]['content'] %}
-        {%- set messages = messages[1:] %}
-    {%- else %}
-        {{- raise_exception("Cannot put tools in the first user message when there's no first user message!") }}
-{%- endif %}
-    {{- '<|start_header_id|>user<|end_header_id|>\n\n' -}}
-    {{- "Given the following functions, please respond with a JSON for a function call " }}
-    {{- "with its proper arguments that best answers the given prompt.\n\n" }}
-    {{- 'Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}.' }}
-    {{- "Do not use variables.\n\n" }}
-    {%- for t in tools %}
-        {{- t | tojson(indent=4) }}
-        {{- "\n\n" }}
-    {%- endfor %}
-    {{- first_user_message + "<|eot_id|>"}}
-{%- endif %}
-
-{%- for message in messages %}
-    {%- if not (message.role == 'ipython' or message.role == 'tool' or 'tool_calls' in message) %}
-        {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] + '<|eot_id|>' }}
-    {%- elif 'tool_calls' in message %}
-        {%- if not message.tool_calls|length == 1 %}
-            {{- raise_exception("This model only supports single tool-calls at once!") }}
-        {%- endif %}
-        {%- set tool_call = message.tool_calls[0].function %}
-        {%- if builtin_tools is defined and tool_call.name in builtin_tools %}
-            {{- '<|start_header_id|>assistant<|end_header_id|>\n\n' -}}
-            {{- "<|python_tag|>" + tool_call.name + ".call(" }}
-            {%- for arg_name, arg_val in tool_call.arguments | items %}
-                {{- arg_name + '="' + arg_val + '"' }}
-                {%- if not loop.last %}
-                    {{- ", " }}
-                {%- endif %}
-                {%- endfor %}
-            {{- ")" }}
-        {%- else  %}
-            {{- '<|start_header_id|>assistant<|end_header_id|>\n\n' -}}
-            {{- '{"name": "' + tool_call.name + '", ' }}
-            {{- '"parameters": ' }}
-            {{- tool_call.arguments | tojson }}
-            {{- "}" }}
-        {%- endif %}
-        {%- if builtin_tools is defined %}
-            {#- This means we're in ipython mode #}
-            {{- "<|eom_id|>" }}
-        {%- else %}
-            {{- "<|eot_id|>" }}
-        {%- endif %}
-    {%- elif message.role == "tool" or message.role == "ipython" %}
-        {{- "<|start_header_id|>ipython<|end_header_id|>\n\n" }}
-        {%- if message.content is mapping or message.content is iterable %}
-            {{- message.content | tojson }}
-        {%- else %}
-            {{- message.content }}
-        {%- endif %}
-        {{- "<|eot_id|>" }}
-    {%- endif %}
-{%- endfor %}
-{%- if add_generation_prompt %}
-    {{- '<|start_header_id|>assistant<|end_header_id|>\n\n' }}
-{%- endif %}
-"""
-pass
 
 # Ollama from https://ollama.com/library/llama3.1 (needs updating!)
 llama31_ollama = \
@@ -734,73 +707,156 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-llama31_template_eos_token = "eos_token"
-CHAT_TEMPLATES["llama-3.1"] = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
-DEFAULT_SYSTEM_MESSAGE["llama-3.1"] = "" # Llama3.1 default system message is empty + the dates
+# https://ollama.com/ajindal/llama3.1-storm:8b/blobs/1970553b62f4
+llama_31_storm_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """
+{{ if .Messages }}
+{{- if or .System .Tools }}<|start_header_id|>system<|end_header_id|>
+{{- if .System }}
 
-CHAT_TEMPLATES["llama-31"]  = (llama31_template, llama31_template_eos_token, False, llama31_ollama,)
-DEFAULT_SYSTEM_MESSAGE["llama-31"] = "" # Llama3.1 default system message is empty + the dates
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+
+You are a function calling AI model. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into function. The user may use the terms function calling or tool use interchangeably.
+
+Here are the available functions:
+<tools>{{ json .Tools }}</tools>
+
+For each function call return a json object with function name and arguments within <tool_call></tool_call> XML tags in the format:
+<tool_call>{"tool_name": <function-name>, "tool_arguments": <args-dict>}</tool_call>
+{{- end }}
+{{- end }}<|eot_id|>
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "user" }}<|start_header_id|>user<|end_header_id|>
+
+{{ .Content }}<|eot_id|>{{ if $last }}<|start_header_id|>assistant<|end_header_id|>
+{{ end }}
+{{- else if eq .Role "assistant" }}<|start_header_id|>assistant<|end_header_id|>
+{{- if .ToolCalls }}
+
+{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "parameters": {{ .Function.Arguments }}}{{ end }}
+{{- else }}
+
+{{ .Content }}{{ if not $last }}<|eot_id|>{{ end }}
+{{- end }}
+{{- else if eq .Role "tool" }}<|start_header_id|>ipython<|end_header_id|>
+
+{{ .Content }}<|eot_id|>{{ if $last }}<|start_header_id|>assistant<|end_header_id|>
+{{ end }}
+{{- end }}
+{{- end }}
+{{- else }}
+{{- if .System }}<|start_header_id|>system<|end_header_id|>
+
+{{ .System }}<|eot_id|>{{ end }}{{ if .Prompt }}<|start_header_id|>user<|end_header_id|>
+
+{{ .Prompt }}<|eot_id|>{{ end }}<|start_header_id|>assistant<|end_header_id|>
+
+{{ end }}{{ .Response }}{{ if .Response }}<|eot_id|>{{ end }}
+"""
+PARAMETER stop "<|start_header_id|>"
+PARAMETER stop "<|end_header_id|>"
+PARAMETER stop "<|eot_id|>"
+'''
+
+# https://ollama.com/library/nemotron:latest/blobs/4863fe3335f3
+llama_31_nemotron_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """<|start_header_id|>system<|end_header_id|>
+
+{{ if .Tools }}You have access to the following functions. To call a function, please respond with JSON for a function call. Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}. Do not use variables.
+
+{{ range .Tools }}{{ . }}
+
+{{ end }}
+{{- end }}{{ .System }}<|eot_id|>
+{{- range $i, $_ := .Messages }}
+{{- $isLastMessage := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "system" }}
+{{- else if eq .Role "assistant" }}<|start_header_id|>assistant<|end_header_id|>
+
+{{ if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}
+{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "parameters": {{ .Function.Arguments }} }
+{{- end }}
+{{- end }}
+{{- if not $isLastMessage }}<|eot_id|>
+{{- end }}
+{{- else if eq .Role "tool" }}<|start_header_id|>ipython<|end_header_id|>
+
+{{ .Content }}<|eot_id|>
+{{- if $isLastMessage }}<|start_header_id|>assistant<|end_header_id|>
+
+{{ end }}
+{{- else }}<|start_header_id|>{{ .Role }}<|end_header_id|>
+
+{{ .Content }}<|eot_id|>
+{{- if $isLastMessage }}<|start_header_id|>assistant<|end_header_id|>
+
+{{ end }}
+{{- end }}
+{{- end }}
+"""
+PARAMETER stop "<|start_header_id|>"
+PARAMETER stop "<|end_header_id|>"
+PARAMETER stop "<|eot_id|>"
+'''
+
+# https://ollama.com/library/llama3.2-vision:latest/blobs/715415638c895a1f8e8c6
+llama_32_vision_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $index, $_ := .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>
+
+{{ .Content }}
+{{- if gt (len (slice $.Messages $index)) 1 }}<|eot_id|>
+{{- else if ne .Role "assistant" }}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{{ end }}
+{{- end }}"""
+PARAMETER temperature 0.6
+PARAMETER top_p 0.9
+'''
+
+OLLAMA_TEMPLATES["llama-3.1"]         = llama31_ollama
+OLLAMA_TEMPLATES["llama-31"]          = llama31_ollama
+OLLAMA_TEMPLATES["llama-31-nemotron"] = llama_31_nemotron_ollama
+OLLAMA_TEMPLATES["llama-31-storm"]    = llama_31_storm_ollama
+OLLAMA_TEMPLATES["llama-32-vision"]   = llama_32_vision_ollama
 
 for version in ("llama-3.2", "llama-3.3", "llama-32", "llama-33"):
-    CHAT_TEMPLATES[version] = CHAT_TEMPLATES["llama-3.1"]
-    DEFAULT_SYSTEM_MESSAGE[version] = ""
+    OLLAMA_TEMPLATES[version] = OLLAMA_TEMPLATES["llama-3.1"]
 pass
 
+# =========================================== tinyllama
+# tinyllama-chat https://ollama.com/library/tinyllama:latest/blobs/af0ddbdaaa26
+tinyllama_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """<|system|>
+{{ .System }}</s>
+<|user|>
+{{ .Prompt }}</s>
+<|assistant|>"""
+PARAMETER stop "<|system|>"
+PARAMETER stop "<|user|>"
+PARAMETER stop "<|assistant|>"
+PARAMETER "</s>"
+SYSTEM """You are a helpful AI assistant."""
+'''
 
-# =========================================== Qwen 2.5
-qwen25_template = \
-"""{%- if tools %}
-    {{- \'<|im_start|>system\\n\' }}
-    {%- if messages[0][\'role\'] == \'system\' %}
-        {{- messages[0][\'content\'] }}
-    {%- else %}
-        {{- \'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.\' }}
-    {%- endif %}
-    {{- "\\n\\n# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>" }}
-    {%- for tool in tools %}
-        {{- "\\n" }}
-        {{- tool | tojson }}
-    {%- endfor %}
-    {{- "\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\"name\\": <function-name>, \\"arguments\\": <args-json-object>}\\n</tool_call><|im_end|>\\n" }}\n{%- else %}
-    {%- if messages[0][\'role\'] == \'system\' %}
-        {{- \'<|im_start|>system\\n\' + messages[0][\'content\'] + \'<|im_end|>\\n\' }}
-    {%- else %}
-        {{- \'<|im_start|>system\\n{system_message}<|im_end|>\\n\' }}
-    {%- endif %}\n{%- endif %}\n{%- for message in messages %}
-    {%- if (message.role == "user") or (message.role == "system" and not loop.first) or (message.role == "assistant" and not message.tool_calls) %}
-        {{- \'<|im_start|>\' + message.role + \'\\n\' + message.content + \'<|im_end|>\' + \'\\n\' }}
-    {%- elif message.role == "assistant" %}
-        {{- \'<|im_start|>\' + message.role }}
-        {%- if message.content %}
-            {{- \'\\n\' + message.content }}
-        {%- endif %}
-        {%- for tool_call in message.tool_calls %}
-            {%- if tool_call.function is defined %}
-                {%- set tool_call = tool_call.function %}
-            {%- endif %}
-            {{- \'\\n<tool_call>\\n{"name": "\' }}
-            {{- tool_call.name }}
-            {{- \'", "arguments": \' }}
-            {{- tool_call.arguments | tojson }}
-            {{- \'}\\n</tool_call>\' }}
-        {%- endfor %}
-        {{- \'<|im_end|>\\n\' }}
-    {%- elif message.role == "tool" %}
-        {%- if (loop.index0 == 0) or (messages[loop.index0 - 1].role != "tool") %}            {{- \'<|im_start|>user\' }}
-        {%- endif %}
-        {{- \'\\n<tool_response>\\n\' }}
-        {{- message.content }}
-        {{- \'\\n</tool_response>\' }}
-        {%- if loop.last or (messages[loop.index0 + 1].role != "tool") %}
-            {{- \'<|im_end|>\\n\' }}
-        {%- endif %}
-    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}
-    {{- \'<|im_start|>assistant\\n\' }}
-{%- endif %}
-"""
+OLLAMA_TEMPLATES["tinyllama"] = tinyllama_ollama
 
+pass
 
-# Ollama from https://ollama.com/library/qwen2.5/blobs/eb4402837c78
+# =========================================== Qwen 2/2.5
+# Qwen2 https://ollama.com/library/qwen2:latest/blobs/77c91b422cc9
+# Qwen2.5 from https://ollama.com/library/qwen2.5/blobs/eb4402837c78
 qwen25_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -858,47 +914,125 @@ PARAMETER stop "<|im_end|>"
 PARAMETER stop "<|endoftext|>"
 PARAMETER temperature 1.5
 PARAMETER min_p 0.1
+SYSTEM """You are Qwen, created by Alibaba Cloud. You are a helpful assistant."""
 '''
 
-qwen25_template_eos_token = "eos_token"
-qwen25_default_system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
-CHAT_TEMPLATES["qwen-2.5"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen-2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
+# https://ollama.com/library/qwen2.5-coder:latest/blobs/1e65450c3067
+qwen_25_coder_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- if .Suffix }}<|fim_prefix|>{{ .Prompt }}<|fim_suffix|>{{ .Suffix }}<|fim_middle|>
+{{- else if .Messages }}
+{{- if or .System .Tools }}<|im_start|>system
+{{- if .System }}
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
 
-CHAT_TEMPLATES["qwen-25"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen-25"] = qwen25_default_system_message # No system message in Qwen 2.5
+# Tools
 
-CHAT_TEMPLATES["qwen25"]   = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message # No system message in Qwen 2.5
+You may call one or more functions to assist with the user query.
 
-CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
+You are provided with function signatures within <tools></tools>:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> with NO other text. Do not include any backticks or ```json.
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+{{- end }}<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}<tool_call>
+{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{ end }}</tool_call>
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+{{ end }}
+{{- end }}
+{{- else }}
+{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+{{ end }}{{ .Response }}{{ if .Response }}<|im_end|>{{ end }}"""
+SYSTEM """You are Qwen, created by Alibaba Cloud. You are a helpful assistant."""
+'''
+
+# https://ollama.com/library/qwen2.5vl:latest/blobs/a242d8dfdc8f
+qwen_25_vl_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- if .System -}}
+<|im_start|>system
+{{ .System }}<|im_end|>
+{{- end -}}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}
+<|im_start|>user
+{{ .Content }}<|im_end|>
+{{- else if eq .Role "assistant" }}
+<|im_start|>assistant
+{{ if .Content }}{{ .Content }}{{ if not $last }}<|im_end|>
+{{- else -}}<|im_end|>{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and (ne .Role "assistant") $last }}
+<|im_start|>assistant
+{{ end -}}
+{{- end }}"""
+PARAMETER temperature 0.0001
+SYSTEM """You are a helpful assistant."""
+'''
+
+# https://ollama.com/library/openthinker:latest/blobs/32695b892af8
+openthinker_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+<|im_start|>{{ .Role }}<|im_sep|>
+{{ .Content }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_end|>
+<|im_start|>assistant<|im_sep|>
+{{ end }}
+{{- end }}"""
+'''
+
+
+OLLAMA_TEMPLATES["qwen-25"]       = qwen25_ollama
+OLLAMA_TEMPLATES["qwen-25-coder"] = qwen_25_coder_ollama
+OLLAMA_TEMPLATES["qwen-25-vl"]    = qwen_25_vl_ollama
+OLLAMA_TEMPLATES["openthinker"]   = openthinker_ollama
+OLLAMA_TEMPLATES["qwen-2"]        = qwen25_ollama
 pass
 
 # =========================================== Phi-4
-# "{{ bos_token }}"\ # Phi-4 removes BOS?
-phi4_template = \
-    "{% for message in messages %}"\
-        "{% if (message['role'] == 'system') %}"\
-            "{{'<|im_start|>system<|im_sep|>' + message['content'] + '<|im_end|>'}}"\
-        "{% elif (message['role'] == 'user') %}"\
-            "{{'<|im_start|>user<|im_sep|>' + message['content'] + '<|im_end|>'}}"\
-        "{% elif (message['role'] == 'assistant') %}"\
-            "{{'<|im_start|>assistant<|im_sep|>' + message['content'] + '<|im_end|>'}}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}"\
-        "{{ '<|im_start|>assistant<|im_sep|>' }}"\
-    "{% endif %}"
-pass
-
 _phi4_ollama_template = \
     "{{ if .System }}<|im_start|><|system|><|im_sep|>{{ .System }}<|im_end|>{{ end }}"\
     "{{ if .Prompt }}<|im_start|><|user|><|im_sep|>{{ .Prompt }}<|im_end|>{{ end }}"\
     "<|im_start|><|assistant|><|im_sep|>{{ .Response }}<|im_end|>"
 
 # Ollama from https://www.ollama.com/library/phi4 is different
-phi4_ollama = \
+phi_4_ollama = \
 f'''
 FROM {{__FILE_LOCATION__}}
 TEMPLATE """{_phi4_ollama_template}"""
@@ -909,58 +1043,70 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-phi4_template_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["phi-4"] = (phi4_template, phi4_template_eos_token, False, phi4_ollama,)
-DEFAULT_SYSTEM_MESSAGE["phi-4"] = None # No system message in Phi-4
+# https://ollama.com/library/phi4-reasoning:latest/blobs/32695b892af8
+phi_4_reasoning_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+<|im_start|>{{ .Role }}<|im_sep|>
+{{ .Content }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_end|>
+<|im_start|>assistant<|im_sep|>
+{{ end }}
+{{- end }}"""
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_sep|>"
+'''
+
+# https://ollama.com/library/phi4-mini:latest/blobs/813f53fdc6e5
+phi_4_mini_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- if or .System .Tools }}<|system|>{{ if .System }}{{ .System }}{{ end }}
+{{- if .Tools }}{{ if not .System }}You are a helpful assistant with some tools.{{ end }}<|tool|>{{ .Tools }}<|/tool|><|end|>
+{{- end }}
+{{- end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if ne .Role "system" }}<|{{ .Role }}|>{{ .Content }}
+{{- if .ToolCalls }}<|tool_call|>[{{ range .ToolCalls }}{"name":"{{ .Function.Name }}","arguments":{{ .Function.Arguments }}{{ end }}]<|/tool_call|>
+{{- end }}
+{{- if not $last }}<|end|>
+{{- end }}
+{{- if and (ne .Role "assistant") $last }}<|end|><|assistant|>{{ end }}
+{{- end }}
+{{- end }}"""
+'''
+
+# https://ollama.com/library/phi4-mini-reasoning:latest/blobs/c895a1f8e8c6
+phi_4_mini_reasoning_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """
+{{- if .System }}<|system|>{{ .System }}
+{{- end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if ne .Role "system" }}<|{{ .Role }}|>{{ .Content }}
+{{- if not $last }}<|end|>
+{{- end }}
+{{- if and (ne .Role "assistant") $last }}<|end|><|assistant|>{{ end }}
+{{- end }}
+{{- end }}"""
+SYSTEM """Your name is Phi, an AI math expert developed by Microsoft."""
+'''
+OLLAMA_TEMPLATES["phi-4"]                = phi_4_ollama
+OLLAMA_TEMPLATES["phi-4-reasoning"]      = phi_4_reasoning_ollama
+OLLAMA_TEMPLATES["phi-4-mini"]           = phi_4_mini_ollama
+OLLAMA_TEMPLATES["phi-4-mini-reasoning"] = phi_4_mini_reasoning_ollama
 pass
 
 
 # =========================================== Gemma-3
-# Obtained via
-# print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
-gemma3_template = \
-"""{{ bos_token }}
-{%- if messages[0]['role'] == 'system' -%}
-    {%- if messages[0]['content'] is string -%}
-        {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
-    {%- else -%}
-        {%- set first_user_prefix = messages[0]['content'][0]['text'] + '\n\n' -%}
-    {%- endif -%}
-    {%- set loop_messages = messages[1:] -%}
-{%- else -%}
-    {%- set first_user_prefix = "" -%}
-    {%- set loop_messages = messages -%}
-{%- endif -%}
-{%- for message in loop_messages -%}
-    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
-        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
-    {%- endif -%}
-    {%- if (message['role'] == 'assistant') -%}
-        {%- set role = "model" -%}
-    {%- else -%}
-        {%- set role = message['role'] -%}
-    {%- endif -%}
-    {{ '<start_of_turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
-    {%- if message['content'] is string -%}
-        {{ message['content'] | trim }}
-    {%- elif message['content'] is iterable -%}
-        {%- for item in message['content'] -%}
-            {%- if item['type'] == 'image' -%}
-                {{ '<start_of_image>' }}
-            {%- elif item['type'] == 'text' -%}
-                {{ item['text'] | trim }}
-            {%- endif -%}
-        {%- endfor -%}
-    {%- else -%}
-        {{ raise_exception("Invalid content type") }}
-    {%- endif -%}
-    {{ '<end_of_turn>\n' }}
-{%- endfor -%}
-{%- if add_generation_prompt -%}
-    {{ '<start_of_turn>model\n' }}
-{%- endif -%}
-"""
-
 # Ollama from https://ollama.com/library/gemma3/blobs/e0a42594d802
 gemma3_ollama = \
 '''
@@ -978,125 +1124,46 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- end }}"""
 PARAMETER stop "<end_of_turn>"
 PARAMETER stop "<eos>"
-PARAMETER temperature 0.1
+PARAMETER temperature 1.0
 PARAMETER min_p 0.0
 PARAMETER top_k 64
 PARAMETER top_p 0.95
 PARAMETER num_predict 32768
 '''
 
-gemma3_template_eos_token = "<end_of_turn>"
-CHAT_TEMPLATES["gemma-3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma-3"] = None # No system message in Gemma-3
+# https://ollama.com/library/gemma3:270m/blobs/4b19ac7dd2fb
+gemma3_270m_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- $systemPromptAdded := false }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "user" }}<start_of_turn>user
+{{- if (and (not $systemPromptAdded) $.System) }}
+{{- $systemPromptAdded = true }}
+{{ $.System }}
+{{ end }}
+{{ .Content }}<end_of_turn>
+{{ if $last }}<start_of_turn>model
+{{ end }}
+{{- else if eq .Role "assistant" }}<start_of_turn>model
+{{ .Content }}{{ if not $last }}<end_of_turn>
+{{ end }}
+{{- end }}
+{{- end }}
+"""
+PARAMETER stop "<end_of_turn>"
+PARAMETER top_k 64
+PARAMETER top_p 0.95
+'''
 
-CHAT_TEMPLATES["gemma3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma3"] = None # No system message in Gemma-3
+OLLAMA_TEMPLATES["gemma-3"]     = gemma3_ollama
+OLLAMA_TEMPLATES["gemma3"]      = gemma3_ollama
+OLLAMA_TEMPLATES["gemma3-270m"] = gemma3_270m_ollama
+
 pass
 
 # =========================================== Qwen-3
-# Official Qwen-3 chat template (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
-qwen3_template = \
-"""
-{%- if tools %}
-    {{- '<|im_start|>system\n' }}
-    {%- if messages[0].role == 'system' %}
-        {{- messages[0].content + '\n\n' }}
-    {%- endif %}
-    {{- "# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>" }}
-    {%- for tool in tools %}
-        {{- "\n" }}
-        {{- tool | tojson }}
-    {%- endfor %}
-    {{- "\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\\"name\\": <function-name>, \\"arguments\\": <args-json-object>}\n</tool_call><|im_end|>\n" }}
-{%- else %}
-    {%- if messages[0].role == 'system' %}
-        {{- '<|im_start|>system\n' + messages[0].content + '<|im_end|>\n' }}
-    {%- endif %}
-{%- endif %}
-{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}
-{%- for forward_message in messages %}
-    {%- set index = (messages|length - 1) - loop.index0 %}
-    {%- set message = messages[index] %}
-    {%- set current_content = message.content if message.content is not none else '' %}
-    {%- set tool_start = '<tool_response>' %}
-    {%- set tool_start_length = tool_start|length %}
-    {%- set start_of_message = current_content[:tool_start_length] %}
-    {%- set tool_end = '</tool_response>' %}
-    {%- set tool_end_length = tool_end|length %}
-    {%- set start_pos = (current_content|length) - tool_end_length %}
-    {%- if start_pos < 0 %}
-        {%- set start_pos = 0 %}
-    {%- endif %}
-    {%- set end_of_message = current_content[start_pos:] %}
-    {%- if ns.multi_step_tool and message.role == "user" and not(start_of_message == tool_start and end_of_message == tool_end) %}
-        {%- set ns.multi_step_tool = false %}
-        {%- set ns.last_query_index = index %}
-    {%- endif %}
-{%- endfor %}
-{%- for message in messages %}
-    {%- if (message.role == "user") or (message.role == "system" and not loop.first) %}
-        {{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>' + '\n' }}
-    {%- elif message.role == "assistant" %}
-        {%- set content = message.content %}
-        {%- set reasoning_content = '' %}
-        {%- if message.reasoning_content is defined and message.reasoning_content is not none %}
-            {%- set reasoning_content = message.reasoning_content %}
-        {%- else %}
-            {%- if '</think>' in message.content %}
-                {%- set content = (message.content.split('</think>')|last).lstrip('\n') %}
-                {%- set reasoning_content = (message.content.split('</think>')|first).rstrip('\n') %}
-                {%- set reasoning_content = (reasoning_content.split('<think>')|last).lstrip('\n') %}
-            {%- endif %}
-        {%- endif %}
-        {%- if loop.index0 > ns.last_query_index %}
-            {%- if loop.last or (not loop.last and reasoning_content) %}
-                {{- '<|im_start|>' + message.role + '\n<think>\n' + reasoning_content.strip('\n') + '\n</think>\n\n' + content.lstrip('\n') }}
-            {%- else %}
-                {{- '<|im_start|>' + message.role + '\n' + content }}
-            {%- endif %}
-        {%- else %}
-            {{- '<|im_start|>' + message.role + '\n' + content }}
-        {%- endif %}
-        {%- if message.tool_calls %}
-            {%- for tool_call in message.tool_calls %}
-                {%- if (loop.first and content) or (not loop.first) %}
-                    {{- '\n' }}
-                {%- endif %}
-                {%- if tool_call.function %}
-                    {%- set tool_call = tool_call.function %}
-                {%- endif %}
-                {{- '<tool_call>\n{"name": "' }}
-                {{- tool_call.name }}
-                {{- '", "arguments": ' }}
-                {%- if tool_call.arguments is string %}
-                    {{- tool_call.arguments }}
-                {%- else %}
-                    {{- tool_call.arguments | tojson }}
-                {%- endif %}
-                {{- '}\n</tool_call>' }}
-            {%- endfor %}
-        {%- endif %}
-        {{- '<|im_end|>\n' }}
-    {%- elif message.role == "tool" %}
-        {%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}
-            {{- '<|im_start|>user' }}
-        {%- endif %}
-        {{- '\n<tool_response>\n' }}
-        {{- message.content }}
-        {{- '\n</tool_response>' }}
-        {%- if loop.last or (messages[loop.index0 + 1].role != "tool") %}
-            {{- '<|im_end|>\n' }}
-        {%- endif %}
-    {%- endif %}
-{%- endfor %}
-{%- if add_generation_prompt %}
-    {{- '<|im_start|>assistant\n' }}
-    {%- if enable_thinking is defined and enable_thinking is false %}
-        {{- '<think>\n\n</think>\n\n' }}
-    {%- endif %}
-{%- endif %}
-"""
-
 # Ollama template for Qwen-3 (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
 qwen3_ollama = \
 '''
@@ -1161,61 +1228,12 @@ PARAMETER repeat_penalty 1
 '''
 
 qwen3_template_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["qwen-3"] = (qwen3_template, qwen3_template_eos_token, False, qwen3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen-3"] = None # No default system message for Qwen-3
+OLLAMA_TEMPLATES["qwen-3"] = qwen3_ollama
+OLLAMA_TEMPLATES["qwen3"] = qwen3_ollama
 
-CHAT_TEMPLATES["qwen3"] = (qwen3_template, qwen3_template_eos_token, False, qwen3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen3"] = None # No default system message for Qwen-3
 pass
 
 # =========================================== Gemma-3n
-# Obtained via
-# print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
-gemma3n_template = \
-"""{{ bos_token }}
-{%- if messages[0]['role'] == 'system' -%}
-    {%- if messages[0]['content'] is string -%}
-        {%- set first_user_prefix = messages[0]['content'] + '\n\n' -%}
-    {%- else -%}
-        {%- set first_user_prefix = messages[0]['content'][0]['text'] + '\n\n' -%}
-    {%- endif -%}
-    {%- set loop_messages = messages[1:] -%}
-{%- else -%}
-    {%- set first_user_prefix = "" -%}
-    {%- set loop_messages = messages -%}
-{%- endif -%}
-{%- for message in loop_messages -%}
-    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
-        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
-    {%- endif -%}
-    {%- if (message['role'] == 'assistant') -%}
-        {%- set role = "model" -%}
-    {%- else -%}
-        {%- set role = message['role'] -%}
-    {%- endif -%}
-    {{ '<start_of_turn>' + role + '\n' + (first_user_prefix if loop.first else "") }}
-    {%- if message['content'] is string -%}
-        {{ message['content'] | trim }}
-    {%- elif message['content'] is iterable -%}
-        {%- for item in message['content'] -%}
-            {%- if item['type'] == 'audio' -%}
-                {{ '<audio_soft_token>' }}
-            {%- elif item['type'] == 'image' -%}
-                {{ '<image_soft_token>' }}
-            {%- elif item['type'] == 'text' -%}
-                {{ item['text'] | trim }}
-            {%- endif -%}
-        {%- endfor -%}
-    {%- else -%}
-        {{ raise_exception("Invalid content type") }}
-    {%- endif -%}
-    {{ '<end_of_turn>\n' }}
-{%- endfor -%}
-{%- if add_generation_prompt -%}
-    {{'<start_of_turn>model\n'}}
-{%- endif -%}
-"""
-
 # Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
 gemma3n_ollama = \
 '''
@@ -1233,368 +1251,13 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- end }}"""
 '''
 
-gemma3n_template_eos_token = "<end_of_turn>"
-CHAT_TEMPLATES["gemma-3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None # No system message in Gemma-3n
-
-CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
+OLLAMA_TEMPLATES["gemma-3n"] = gemma3n_ollama
+OLLAMA_TEMPLATES["gemma3n"] = gemma3n_ollama
 pass
 
 # =========================================== GPT-OSS
-# Obtained via
-# print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
-gptoss_template = \
-"""{#-
-  In addition to the normal inputs of `messages` and `tools`, this template also accepts the
-  following kwargs:
-  - "builtin_tools": A list, can contain "browser" and/or "python".
-  - "model_identity": A string that optionally describes the model identity.
-  - "reasoning_effort": A string that describes the reasoning effort, defaults to "medium".
- #}
 
-{#- Tool Definition Rendering ============================================== #}
-{%- macro render_typescript_type(param_spec, required_params, is_nullable=false) -%}
-    {%- if param_spec.type == "array" -%}
-        {%- if param_spec['items'] -%}
-            {%- if param_spec['items']['type'] == "string" -%}
-                {{- "string[]" }}
-            {%- elif param_spec['items']['type'] == "number" -%}
-                {{- "number[]" }}
-            {%- elif param_spec['items']['type'] == "integer" -%}
-                {{- "number[]" }}
-            {%- elif param_spec['items']['type'] == "boolean" -%}
-                {{- "boolean[]" }}
-            {%- else -%}
-                {%- set inner_type = render_typescript_type(param_spec['items'], required_params) -%}
-                {%- if inner_type == "object | object" or inner_type|length > 50 -%}
-                    {{- "any[]" }}
-                {%- else -%}
-                    {{- inner_type + "[]" }}
-                {%- endif -%}
-            {%- endif -%}
-            {%- if param_spec.nullable -%}
-                {{- " | null" }}
-            {%- endif -%}
-        {%- else -%}
-            {{- "any[]" }}
-            {%- if param_spec.nullable -%}
-                {{- " | null" }}
-            {%- endif -%}
-        {%- endif -%}
-    {%- elif param_spec.type is defined and param_spec.type is iterable and param_spec.type is not string and param_spec.type is not mapping and param_spec.type[0] is defined -%}
-        {#- Handle array of types like ["object", "object"] from Union[dict, list] #}
-        {%- if param_spec.type | length > 1 -%}
-            {{- param_spec.type | join(" | ") }}
-        {%- else -%}
-            {{- param_spec.type[0] }}
-        {%- endif -%}
-    {%- elif param_spec.oneOf -%}
-        {#- Handle oneOf schemas - check for complex unions and fallback to any #}
-        {%- set has_object_variants = false -%}
-        {%- for variant in param_spec.oneOf -%}
-            {%- if variant.type == "object" -%}
-                {%- set has_object_variants = true -%}
-            {%- endif -%}
-        {%- endfor -%}
-        {%- if has_object_variants and param_spec.oneOf|length > 1 -%}
-            {{- "any" }}
-        {%- else -%}
-            {%- for variant in param_spec.oneOf -%}
-                {{- render_typescript_type(variant, required_params) -}}
-                {%- if variant.description %}
-                    {{- "// " + variant.description }}
-                {%- endif -%}
-                {%- if variant.default is defined %}
-                    {{ "// default: " + variant.default|tojson }}
-                {%- endif -%}
-                {%- if not loop.last %}
-                    {{- " | " }}
-                {% endif -%}
-            {%- endfor -%}
-        {%- endif -%}
-    {%- elif param_spec.type == "string" -%}
-        {%- if param_spec.enum -%}
-            {{- '"' + param_spec.enum|join('" | "') + '"' -}}
-        {%- else -%}
-            {{- "string" }}
-            {%- if param_spec.nullable %}
-                {{- " | null" }}
-            {%- endif -%}
-        {%- endif -%}
-    {%- elif param_spec.type == "number" -%}
-        {{- "number" }}
-    {%- elif param_spec.type == "integer" -%}
-        {{- "number" }}
-    {%- elif param_spec.type == "boolean" -%}
-        {{- "boolean" }}
-
-    {%- elif param_spec.type == "object" -%}
-        {%- if param_spec.properties -%}
-            {{- "{\n" }}
-            {%- for prop_name, prop_spec in param_spec.properties.items() -%}
-                {{- prop_name -}}
-                {%- if prop_name not in (param_spec.required or []) -%}
-                    {{- "?" }}
-                {%- endif -%}
-                {{- ": " }}
-                {{ render_typescript_type(prop_spec, param_spec.required or []) }}
-                {%- if not loop.last -%}
-                    {{-", " }}
-                {%- endif -%}
-            {%- endfor -%}
-            {{- "}" }}
-        {%- else -%}
-            {{- "object" }}
-        {%- endif -%}
-    {%- else -%}
-        {{- "any" }}
-    {%- endif -%}
-{%- endmacro -%}
-
-{%- macro render_tool_namespace(namespace_name, tools) -%}
-    {{- "## " + namespace_name + "\n\n" }}
-    {{- "namespace " + namespace_name + " {\n\n" }}
-    {%- for tool in tools %}
-        {%- set tool = tool.function %}
-        {{- "// " + tool.description + "\n" }}
-        {{- "type "+ tool.name + " = " }}
-        {%- if tool.parameters and tool.parameters.properties %}
-            {{- "(_: {\n" }}
-            {%- for param_name, param_spec in tool.parameters.properties.items() %}
-                {%- if param_spec.description %}
-                    {{- "// " + param_spec.description + "\n" }}
-                {%- endif %}
-                {{- param_name }}
-                {%- if param_name not in (tool.parameters.required or []) -%}
-                    {{- "?" }}
-                {%- endif -%}
-                {{- ": " }}
-                {{- render_typescript_type(param_spec, tool.parameters.required or []) }}
-                {%- if param_spec.default is defined -%}
-                    {%- if param_spec.enum %}
-                        {{- ", // default: " + param_spec.default }}
-                    {%- elif param_spec.oneOf %}
-                        {{- "// default: " + param_spec.default }}
-                    {%- else %}
-                        {{- ", // default: " + param_spec.default|tojson }}
-                    {%- endif -%}
-                {%- endif -%}
-                {%- if not loop.last %}
-                    {{- ",\n" }}
-                {%- else %}
-                    {{- ",\n" }}
-                {%- endif -%}
-            {%- endfor %}
-            {{- "}) => any;\n\n" }}
-        {%- else -%}
-            {{- "() => any;\n\n" }}
-        {%- endif -%}
-    {%- endfor %}
-    {{- "} // namespace " + namespace_name }}
-{%- endmacro -%}
-
-{%- macro render_builtin_tools(browser_tool, python_tool) -%}
-    {%- if browser_tool %}
-        {{- "## browser\n\n" }}
-        {{- "// Tool for browsing.\n" }}
-        {{- "// The `cursor` appears in brackets before each browsing display: `[{cursor}]`.\n" }}
-        {{- "// Cite information from the tool using the following format:\n" }}
-        {{- "// `【{cursor}†L{line_start}(-L{line_end})?】`, for example: `【6†L9-L11】` or `【8†L3】`.\n" }}
-        {{- "// Do not quote more than 10 words directly from the tool output.\n" }}
-        {{- "// sources=web (default: web)\n" }}
-        {{- "namespace browser {\n\n" }}
-        {{- "// Searches for information related to `query` and displays `topn` results.\n" }}
-        {{- "type search = (_: {\n" }}
-        {{- "query: string,\n" }}
-        {{- "topn?: number, // default: 10\n" }}
-        {{- "source?: string,\n" }}
-        {{- "}) => any;\n\n" }}
-        {{- "// Opens the link `id` from the page indicated by `cursor` starting at line number `loc`, showing `num_lines` lines.\n" }}
-        {{- "// Valid link ids are displayed with the formatting: `【{id}†.*】`.\n" }}
-        {{- "// If `cursor` is not provided, the most recent page is implied.\n" }}
-        {{- "// If `id` is a string, it is treated as a fully qualified URL associated with `source`.\n" }}
-        {{- "// If `loc` is not provided, the viewport will be positioned at the beginning of the document or centered on the most relevant passage, if available.\n" }}
-        {{- "// Use this function without `id` to scroll to a new location of an opened page.\n" }}
-        {{- "type open = (_: {\n" }}
-        {{- "id?: number | string, // default: -1\n" }}
-        {{- "cursor?: number, // default: -1\n" }}
-        {{- "loc?: number, // default: -1\n" }}
-        {{- "num_lines?: number, // default: -1\n" }}
-        {{- "view_source?: boolean, // default: false\n" }}
-        {{- "source?: string,\n" }}
-        {{- "}) => any;\n\n" }}
-        {{- "// Finds exact matches of `pattern` in the current page, or the page given by `cursor`.\n" }}
-        {{- "type find = (_: {\n" }}
-        {{- "pattern: string,\n" }}
-        {{- "cursor?: number, // default: -1\n" }}
-        {{- "}) => any;\n\n" }}
-        {{- "} // namespace browser\n\n" }}
-    {%- endif -%}
-
-    {%- if python_tool %}
-        {{- "## python\n\n" }}
-        {{- "Use this tool to execute Python code in your chain of thought. The code will not be shown to the user. This tool should be used for internal reasoning, but not for code that is intended to be visible to the user (e.g. when creating plots, tables, or files).\n\n" }}
-        {{- "When you send a message containing Python code to python, it will be executed in a stateful Jupyter notebook environment. python will respond with the output of the execution or time out after 120.0 seconds. The drive at '/mnt/data' can be used to save and persist user files. Internet access for this session is UNKNOWN. Depends on the cluster.\n\n" }}
-    {%- endif -%}
-{%- endmacro -%}
-
-{#- System Message Construction ============================================ #}
-{%- macro build_system_message() -%}
-    {%- if model_identity is not defined %}
-        {%- set model_identity = "You are ChatGPT, a large language model trained by OpenAI." %}
-    {%- endif %}
-    {{- model_identity + "\n" }}
-    {{- "Knowledge cutoff: 2024-06\n" }}
-    {{- "Current date: " + strftime_now("%Y-%m-%d") + "\n\n" }}
-    {%- if reasoning_effort is not defined %}
-        {%- set reasoning_effort = "medium" %}
-    {%- endif %}
-    {{- "Reasoning: " + reasoning_effort + "\n\n" }}
-    {%- if builtin_tools is defined and builtin_tools is not none %}
-        {{- "# Tools\n\n" }}
-        {%- set available_builtin_tools = namespace(browser=false, python=false) %}
-        {%- for tool in builtin_tools %}
-            {%- if tool == "browser" %}
-                {%- set available_builtin_tools.browser = true %}
-            {%- elif tool == "python" %}
-                {%- set available_builtin_tools.python = true %}
-            {%- endif %}
-        {%- endfor %}
-        {{- render_builtin_tools(available_builtin_tools.browser, available_builtin_tools.python) }}
-    {%- endif -%}
-    {{- "# Valid channels: analysis, commentary, final. Channel must be included for every message." }}
-    {%- if tools -%}
-        {{- "\nCalls to these tools must go to the commentary channel: 'functions'." }}
-    {%- endif -%}
-{%- endmacro -%}
-
-{#- Main Template Logic ================================================= #}
-{#- Set defaults #}
-
-{#- Render system message #}
-{{- "<|start|>system<|message|>" }}
-{{- build_system_message() }}
-{{- "<|end|>" }}
-
-{#- Extract developer message #}
-{%- if developer_instructions is defined and developer_instructions is not none %}
-    {%- set developer_message = developer_instructions %}
-    {%- set loop_messages = messages %}
-{%- elif messages[0].role == "developer" or messages[0].role == "system" %}
-    {%- set developer_message = messages[0].content %}
-    {%- set loop_messages = messages[1:] %}
-{%- else %}
-    {%- set developer_message = "" %}
-    {%- set loop_messages = messages %}
-{%- endif %}
-
-{#- Render developer message #}
-{%- if developer_message or tools %}
-    {{- "<|start|>developer<|message|>" }}
-    {%- if developer_message %}
-        {{- "# Instructions\n\n" }}
-        {{- developer_message }}
-    {%- endif %}
-    {%- if tools -%}
-        {%- if developer_message %}
-            {{- "\n\n" }}
-        {%- endif %}
-        {{- "# Tools\n\n" }}
-        {{- render_tool_namespace("functions", tools) }}
-    {%- endif -%}
-    {{- "<|end|>" }}
-{%- endif %}
-
-{#- Render messages #}
-{%- set last_tool_call = namespace(name=none) %}
-{%- for message in loop_messages -%}
-    {#- At this point only assistant/user/tool messages should remain #}
-    {%- if message.role == 'assistant' -%}
-        {#- Checks to ensure the messages are being passed in the format we expect #}
-        {%- if "content" in message %}
-            {%- if "<|channel|>analysis<|message|>" in message.content or "<|channel|>final<|message|>" in message.content %}
-                {{- raise_exception("You have passed a message containing <|channel|> tags in the content field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
-            {%- endif %}
-        {%- endif %}
-        {%- if "thinking" in message %}
-            {%- if "<|channel|>analysis<|message|>" in message.thinking or "<|channel|>final<|message|>" in message.thinking %}
-                {{- raise_exception("You have passed a message containing <|channel|> tags in the thinking field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
-            {%- endif %}
-        {%- endif %}
-        {%- if "tool_calls" in message %}
-            {#- We need very careful handling here - we want to drop the tool call analysis message if the model #}
-            {#- has output a later <|final|> message, but otherwise we want to retain it. This is the only case #}
-            {#- when we render CoT/analysis messages in inference. #}
-            {%- set future_final_message = namespace(found=false) %}
-            {%- for future_message in loop_messages[loop.index:] %}
-                {%- if future_message.role == 'assistant' and "tool_calls" not in future_message %}
-                    {%- set future_final_message.found = true %}
-                {%- endif %}
-            {%- endfor %}
-            {#- We assume max 1 tool call per message, and so we infer the tool call name #}
-            {#- in "tool" messages from the most recent assistant tool call name #}
-            {%- set tool_call = message.tool_calls[0] %}
-            {%- if tool_call.function %}
-                {%- set tool_call = tool_call.function %}
-            {%- endif %}
-            {%- if message.content and message.thinking %}
-                {{- raise_exception("Cannot pass both content and thinking in an assistant message with tool calls! Put the analysis message in one or the other, but not both.") }}
-            {%- elif message.content and not future_final_message.found %}
-                {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.content + "<|end|>" }}
-            {%- elif message.thinking and not future_final_message.found %}
-                {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
-            {%- endif %}
-            {{- "<|start|>assistant to=" }}
-            {{- "functions." + tool_call.name + "<|channel|>commentary " }}
-            {{- (tool_call.content_type if tool_call.content_type is defined else "json") + "<|message|>" }}
-            {%- if tool_call.arguments is string %}
-                {{- tool_call.arguments }}
-            {%- else %}
-                {{- tool_call.arguments|tojson }}
-            {%- endif %}
-            {{- "<|call|>" }}
-            {%- set last_tool_call.name = tool_call.name %}
-        {%- elif loop.last and not add_generation_prompt %}
-            {#- Only render the CoT if the final turn is an assistant turn and add_generation_prompt is false #}
-            {#- This is a situation that should only occur in training, never in inference. #}
-            {%- if "thinking" in message %}
-                {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
-            {%- endif %}
-            {#- <|return|> indicates the end of generation, but <|end|> does not #}
-            {#- <|return|> should never be an input to the model, but we include it as the final token #}
-            {#- when training, so the model learns to emit it. #}
-            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|end|>" }}
-        {%- elif "thinking" in message %}
-            {#- CoT is dropped during all previous turns, so we never render it for inference #}
-            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.content + "<|end|>" }}
-            {%- set last_tool_call.name = none %}
-        {%- else %}
-            {#- CoT is dropped during all previous turns, so we never render it for inference #}
-            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|end|>" }}
-            {%- set last_tool_call.name = none %}
-        {%- endif %}
-    {%- elif message.role == 'tool' -%}
-        {%- if last_tool_call.name is none %}
-            {{- raise_exception("Message has tool role, but there was no previous assistant message with a tool call!") }}
-        {%- endif %}
-        {{- "<|start|>functions." + last_tool_call.name }}
-        {%- if message.content is string %}
-            {{- " to=assistant<|channel|>commentary<|message|>" + message.content + "<|end|>" }}
-        {%- else %}
-            {{- " to=assistant<|channel|>commentary<|message|>" + message.content|tojson + "<|end|>" }}
-        {%- endif %}
-    {%- elif message.role == 'user' -%}
-        {{- "<|start|>user<|message|>" + message.content + "<|end|>" }}
-    {%- endif -%}
-{%- endfor -%}
-
-{#- Generation prompt #}
-{%- if add_generation_prompt -%}
-<|start|>assistant
-{%- endif -%}"""
-
-# Ollama from https://ollama.com/library/gemma3n/blobs/e0a42594d802
+# Ollama from https://ollama.com/library/gpt-oss:latest/blobs/fa6710a93d78
 gptoss_ollama = \
 '''
 FROM {__FILE_LOCATION__}
@@ -1776,102 +1439,12 @@ PARAMETER top_k 0
 PARAMETER top_p 1.0
 '''
 
-gptoss_template_template_eos_token = "<|return|>"
-CHAT_TEMPLATES["gpt-oss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gpt-oss"] = None # No system message in GPT-oss
+OLLAMA_TEMPLATES["gpt-oss"] = gptoss_ollama
+OLLAMA_TEMPLATES["gptoss"]  = gptoss_ollama
 
-CHAT_TEMPLATES["gptoss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gptoss"] = None # No system message in GPT-oss
 pass
 
-# =========================================== Qwen3-Instruct
-qwen3_instruct_template = \
-'''{%- if tools %}
-    {{- '<|im_start|>system\\n' }}
-    {%- if messages[0].role == 'system' %}
-        {{- messages[0].content + '\\n\\n' }}
-    {%- endif %}
-    {{- "# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>" }}
-    {%- for tool in tools %}
-        {{- "\\n" }}
-        {{- tool | tojson }}
-    {%- endfor %}
-    {{- "\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\"name\\": <function-name>, \\"arguments\\": <args-json-object>}\\n</tool_call><|im_end|>\\n" }}
-{%- else %}
-    {%- if messages[0].role == 'system' %}
-        {{- '<|im_start|>system\\n' + messages[0].content + '<|im_end|>\\n' }}
-    {%- endif %}
-{%- endif %}
-{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}
-{%- for message in messages[::-1] %}
-    {%- set index = (messages|length - 1) - loop.index0 %}
-    {%- if ns.multi_step_tool and message.role == "user" and message.content is string and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}
-        {%- set ns.multi_step_tool = false %}
-        {%- set ns.last_query_index = index %}
-    {%- endif %}
-{%- endfor %}
-{%- for message in messages %}
-    {%- if message.content is string %}
-        {%- set content = message.content %}
-    {%- else %}
-        {%- set content = '' %}
-    {%- endif %}
-    {%- if (message.role == "user") or (message.role == "system" and not loop.first) %}
-        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}
-    {%- elif message.role == "assistant" %}
-        {%- set reasoning_content = '' %}
-        {%- if message.reasoning_content is string %}
-            {%- set reasoning_content = message.reasoning_content %}
-        {%- else %}
-            {%- if '</think>' in content %}
-                {%- set reasoning_content = content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}
-                {%- set content = content.split('</think>')[-1].lstrip('\\n') %}
-            {%- endif %}
-        {%- endif %}
-        {%- if loop.index0 > ns.last_query_index %}
-            {%- if reasoning_content %}
-                {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content.strip('\\n') + '\\n</think>\\n\\n' + content.lstrip('\\n') }}
-            {%- else %}
-                {{- '<|im_start|>' + message.role + '\\n' + content }}
-            {%- endif %}
-        {%- else %}
-            {{- '<|im_start|>' + message.role + '\\n' + content }}
-        {%- endif %}
-        {%- if message.tool_calls %}
-            {%- for tool_call in message.tool_calls %}
-                {%- if (loop.first and content) or (not loop.first) %}
-                    {{- '\\n' }}
-                {%- endif %}
-                {%- if tool_call.function %}
-                    {%- set tool_call = tool_call.function %}
-                {%- endif %}
-                {{- '<tool_call>\\n{"name": "' }}
-                {{- tool_call.name }}
-                {{- '", "arguments": ' }}
-                {%- if tool_call.arguments is string %}
-                    {{- tool_call.arguments }}
-                {%- else %}
-                    {{- tool_call.arguments | tojson }}
-                {%- endif %}
-                {{- '}\\n</tool_call>' }}
-            {%- endfor %}
-        {%- endif %}
-        {{- '<|im_end|>\\n' }}
-    {%- elif message.role == "tool" %}
-        {%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}
-            {{- '<|im_start|>user' }}
-        {%- endif %}
-        {{- '\\n<tool_response>\\n' }}
-        {{- content }}
-        {{- '\\n</tool_response>' }}
-        {%- if loop.last or (messages[loop.index0 + 1].role != "tool") %}
-            {{- '<|im_end|>\\n' }}
-        {%- endif %}
-    {%- endif %}
-{%- endfor %}
-{%- if add_generation_prompt %}
-    {{- '<|im_start|>assistant\\n' }}
-{%- endif %}'''
+# =========================================== Qwen3
 
 # Ollama from https://ollama.com/library/qwen3/blobs/53e4ea15e8f5
 qwen3_ollama = \
@@ -1931,130 +1504,14 @@ For each function call, return a json object with function name and arguments wi
 """
 '''
 
-qwen3_template_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["qwen3-instruct"] = (qwen3_instruct_template, qwen3_template_eos_token, False, qwen3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen3-instruct"] = None # No system message in Qwen3
+OLLAMA_TEMPLATES["qwen3-instruct"] = qwen3_ollama
+OLLAMA_TEMPLATES["qwen3-thinking"] = qwen3_ollama
 
 pass
 
-# =========================================== Qwen3-Thinking
-qwen3_thinking_template = \
-'''{%- if tools %}
-    {{- '<|im_start|>system\\n' }}
-    {%- if messages[0].role == 'system' %}
-        {{- messages[0].content + '\\n\\n' }}
-    {%- endif %}
-    {{- "# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>" }}
-    {%- for tool in tools %}
-        {{- "\\n" }}
-        {{- tool | tojson }}
-    {%- endfor %}
-    {{- "\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\"name\\": <function-name>, \\"arguments\\": <args-json-object>}\\n</tool_call><|im_end|>\\n" }}
-{%- else %}
-    {%- if messages[0].role == 'system' %}
-        {{- '<|im_start|>system\\n' + messages[0].content + '<|im_end|>\\n' }}
-    {%- endif %}
-{%- endif %}
-{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}
-{%- for message in messages[::-1] %}
-    {%- set index = (messages|length - 1) - loop.index0 %}
-    {%- if ns.multi_step_tool and message.role == "user" and message.content is string and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}
-        {%- set ns.multi_step_tool = false %}
-        {%- set ns.last_query_index = index %}
-    {%- endif %}
-{%- endfor %}
-{%- for message in messages %}
-    {%- if message.content is string %}
-        {%- set content = message.content %}
-    {%- else %}
-        {%- set content = '' %}
-    {%- endif %}
-    {%- if (message.role == "user") or (message.role == "system" and not loop.first) %}
-        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}
-    {%- elif message.role == "assistant" %}
-        {%- set reasoning_content = '' %}
-        {%- if message.reasoning_content is string %}
-            {%- set reasoning_content = message.reasoning_content %}
-        {%- else %}
-            {%- if '</think>' in content %}
-                {%- set reasoning_content = content.split('</think>')[0].rstrip('\\n').split('<think>')[-1].lstrip('\\n') %}
-                {%- set content = content.split('</think>')[-1].lstrip('\\n') %}
-            {%- endif %}
-        {%- endif %}
-        {%- if loop.index0 > ns.last_query_index %}
-            {%- if loop.last or (not loop.last and reasoning_content) %}
-                {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content.strip('\\n') + '\\n</think>\\n\\n' + content.lstrip('\\n') }}
-            {%- else %}
-                {{- '<|im_start|>' + message.role + '\\n' + content }}
-            {%- endif %}
-        {%- else %}
-            {{- '<|im_start|>' + message.role + '\\n' + content }}
-        {%- endif %}
-        {%- if message.tool_calls %}
-            {%- for tool_call in message.tool_calls %}
-                {%- if (loop.first and content) or (not loop.first) %}
-                    {{- '\\n' }}
-                {%- endif %}
-                {%- if tool_call.function %}
-                    {%- set tool_call = tool_call.function %}
-                {%- endif %}
-                {{- '<tool_call>\\n{"name": "' }}
-                {{- tool_call.name }}
-                {{- '", "arguments": ' }}
-                {%- if tool_call.arguments is string %}
-                    {{- tool_call.arguments }}
-                {%- else %}
-                    {{- tool_call.arguments | tojson }}
-                {%- endif %}
-                {{- '}\\n</tool_call>' }}
-            {%- endfor %}
-        {%- endif %}
-        {{- '<|im_end|>\\n' }}
-    {%- elif message.role == "tool" %}
-        {%- if loop.first or (messages[loop.index0 - 1].role != "tool") %}
-            {{- '<|im_start|>user' }}
-        {%- endif %}
-        {{- '\\n<tool_response>\\n' }}
-        {{- content }}
-        {{- '\\n</tool_response>' }}
-        {%- if loop.last or (messages[loop.index0 + 1].role != "tool") %}
-            {{- '<|im_end|>\\n' }}
-        {%- endif %}
-    {%- endif %}
-{%- endfor %}
-{%- if add_generation_prompt %}
-    {{- '<|im_start|>assistant\n<think>\n' }}
-{%- endif %}'''
-
-CHAT_TEMPLATES["qwen3-thinking"] = (qwen3_thinking_template, qwen3_template_eos_token, False, qwen3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None # No system message in Qwen3
-
-pass
-
-# =========================================== Liquid-LFM2
-liquid_lfm2_template = \
-'''
-{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
-' + message['content'] + '<|im_end|>' + '
-'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
-' }}{% endif %}'''
-
-liquid_lfm2_template_eos_token = "<|im_end|>"
-CHAT_TEMPLATES["lfm-2"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
-DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None # No system message in Phi-3
-
-pass
 
 # =========================================== Starling-LM
 
-starling_template = \
-"""{{ bos_token }}
-{%- for message in messages %}
-    {{ 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
-{%- endfor %}
-{%- if add_generation_prompt %}
-    {{ 'GPT4 Correct Assistant:' }}
-{%- endif %}"""
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
 starling_ollama = \
@@ -2071,21 +1528,12 @@ PARAMETER temperature 1.5
 PARAMETER min_p 0.1
 '''
 
-starling_template_eos_token = "<|end_of_turn|>"
-CHAT_TEMPLATES["starling"] = (starling_template, starling_template_eos_token, False, starling_ollama)
-DEFAULT_SYSTEM_MESSAGE["starling"] = None
+OLLAMA_TEMPLATES["starling"] =  starling_ollama
 
 pass
 
 # =========================================== Yi-chat
 
-yi_chat_template = \
-"""
-{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
-' + message['content'] + '<|im_end|>' + '
-'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
-' }}{% endif %}
-"""
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
 yi_chat_ollama = \
@@ -2099,14 +1547,12 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 {{ .Response }}<|im_end|>"""
 '''
 
-yi_chat_template_eos_token = "<|endoftext|>"
-CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False, yi_chat_ollama)
-DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
+OLLAMA_TEMPLATES["yi-chat"] = yi_chat_ollama
 
 # =========================================== Yi-chat
 
 
-TEMPLATE_TO_MODEL_MAPPER = {
+OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
     "phi-3.5": (
         "unsloth/Phi-3.5-mini-instruct-bnb-4bit",
         "unsloth/Phi-3.5-mini-instruct",
@@ -2127,6 +1573,8 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/phi-4",
         "microsoft/phi-4",
         "unsloth/phi-4-bnb-4bit",
+    ),
+    "phi-4-reasoning": (
         "unsloth/phi-4-reasoning-unsloth-bnb-4bit",
         "unsloth/phi-4-reasoning",
         "microsoft/Phi-4-reasoning",
@@ -2135,87 +1583,85 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/phi-4-reasoning-plus",
         "microsoft/Phi-4-reasoning-plus",
         "unsloth/phi-4-reasoning-plus-bnb-4bit",
-        "unsloth/phi-4-mini-reasoning-unsloth-bnb-4bit",
-        "unsloth/phi-4-mini-reasoning",
-        "microsoft/Phi-4-mini-reasoning",
-        "unsloth/phi-4-mini-reasoning-bnb-4bit",
+    ),
+    "phi-4-mini": (
         "unsloth/Phi-4-mini-instruct-unsloth-bnb-4bit",
         "unsloth/Phi-4-mini-instruct",
         "microsoft/Phi-4-mini-instruct",
         "unsloth/Phi-4-mini-instruct-bnb-4bit",
     ),
+    "phi-4-mini-reasoning": (
+        "unsloth/phi-4-mini-reasoning-unsloth-bnb-4bit",
+        "unsloth/phi-4-mini-reasoning",
+        "microsoft/Phi-4-mini-reasoning",
+        "unsloth/phi-4-mini-reasoning-bnb-4bit",
+    ),
     "mistral": (
-        "unsloth/mistral-7b-bnb-4bit",
-        "unsloth/mistral-7b",
-        "mistralai/Mistral-7B-v0.1",
         "unsloth/mistral-7b-instruct-v0.1-bnb-4bit",
         "unsloth/mistral-7b-instruct-v0.1",
         "mistralai/Mistral-7B-Instruct-v0.1",
         "unsloth/mistral-7b-instruct-v0.2-bnb-4bit",
         "unsloth/mistral-7b-instruct-v0.2",
         "mistralai/Mistral-7B-Instruct-v0.2",
-        "unsloth/mistral-7b-v0.2-bnb-4bit",
-        "unsloth/mistral-7b-v0.2",
-        "alpindale/Mistral-7B-v0.2-hf",
-        "unsloth/mistral-7b-v0.3-bnb-4bit",
-        "unsloth/mistral-7b-v0.3",
-        "mistralai/Mistral-7B-v0.3",
+    ),
+    "mistral-v03":(
         "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
         "unsloth/mistral-7b-instruct-v0.3",
         "mistralai/Mistral-7B-Instruct-v0.3",
-        "unsloth/Mixtral-8x7B-v0.1-unsloth-bnb-4bit",
-        "unsloth/Mixtral-8x7B-v0.1",
-        "mistralai/Mixtral-8x7B-v0.1",
-        "unsloth/Mixtral-8x7B-v0.1-bnb-4bit",
-        "unsloth/Mixtral-8x7B-Instruct-v0.1-unsloth-bnb-4bit",
-        "unsloth/Mixtral-8x7B-Instruct-v0.1",
-        "mistralai/Mixtral-8x7B-Instruct-v0.1",
-        "unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit",
-        "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
-        "unsloth/Mistral-Nemo-Instruct-2407",
-        "mistralai/Mistral-Nemo-Instruct-2407",
-        "unsloth/Mistral-Nemo-Base-2407-bnb-4bit",
-        "unsloth/Mistral-Nemo-Base-2407",
-        "mistralai/Mistral-Nemo-Base-2407",
         "unsloth/Mistral-Large-Instruct-2407-bnb-4bit",
         "mistralai/Mistral-Large-Instruct-2407",
+    ),
+    "mistral-small": (
         "unsloth/Mistral-Small-Instruct-2409-bnb-4bit",
         "unsloth/Mistral-Small-Instruct-2409",
         "mistralai/Mistral-Small-Instruct-2409",
-        "mistralai/Codestral-22B-v0.1",
-        "mistral-community/Codestral-22B-v0.1",
-        "unsloth/Mistral-Small-24B-Base-2501-unsloth-bnb-4bit",
-        "unsloth/Mistral-Small-24B-Base-2501",
-        "mistralai/Mistral-Small-24B-Base-2501",
-        "unsloth/Mistral-Small-24B-Base-2501-bnb-4bit",
         "unsloth/Mistral-Small-24B-Instruct-2501-unsloth-bnb-4bit",
         "unsloth/Mistral-Small-24B-Instruct-2501",
         "mistralai/Mistral-Small-24B-Instruct-2501",
         "unsloth/Mistral-Small-24B-Instruct-2501-bnb-4bit",
+    ),
+    "mistral-small-31": (
         "unsloth/Mistral-Small-3.1-24B-Instruct-2503-unsloth-bnb-4bit",
         "unsloth/Mistral-Small-3.1-24B-Instruct-2503",
         "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
         "unsloth/Mistral-Small-3.1-24B-Instruct-2503-bnb-4bit",
-        "unsloth/Mistral-Small-3.1-24B-Base-2503-unsloth-bnb-4bit",
-        "unsloth/Mistral-Small-3.1-24B-Base-2503",
-        "mistralai/Mistral-Small-3.1-24B-Base-2503",
-        "unsloth/Mistral-Small-3.1-24B-Base-2503-bnb-4bit",
-        "unsloth/Devstral-Small-2505-unsloth-bnb-4bit",
-        "unsloth/Devstral-Small-2505",
-        "mistralai/Devstral-Small-2505",
-        "unsloth/Devstral-Small-2505-bnb-4bit",
-        "unsloth/Magistral-Small-2506-unsloth-bnb-4bit",
-        "unsloth/Magistral-Small-2506",
-        "mistralai/Magistral-Small-2506",
-        "unsloth/Magistral-Small-2506-bnb-4bit",
+    ),
+    "mistral-small-32": (
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506-unsloth-bnb-4bit",
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506",
         "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
         "unsloth/Mistral-Small-3.2-24B-Instruct-2506-bnb-4bit",
+    ),
+    "mixtral":(
+        "unsloth/Mixtral-8x7B-Instruct-v0.1-unsloth-bnb-4bit",
+        "unsloth/Mixtral-8x7B-Instruct-v0.1",
+        "mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "unsloth/Mixtral-8x7B-Instruct-v0.1-bnb-4bit",
+    ),
+    "mistral-nemo": (
+        "unsloth/Mistral-Nemo-Instruct-2407-bnb-4bit",
+        "unsloth/Mistral-Nemo-Instruct-2407",
+        "mistralai/Mistral-Nemo-Instruct-2407",
+    ),
+    "codestral": (
+        "mistralai/Codestral-22B-v0.1",
+        "mistral-community/Codestral-22B-v0.1",
+    ),
+    "devstral": (
+        "unsloth/Devstral-Small-2505-unsloth-bnb-4bit",
+        "unsloth/Devstral-Small-2505",
+        "mistralai/Devstral-Small-2505",
+        "unsloth/Devstral-Small-2505-bnb-4bit",
         "unsloth/Devstral-Small-2507-unsloth-bnb-4bit",
         "unsloth/Devstral-Small-2507",
         "mistralai/Devstral-Small-2507",
         "unsloth/Devstral-Small-2507-bnb-4bit",
+    ),
+    "magistral": (
+        "unsloth/Magistral-Small-2506-unsloth-bnb-4bit",
+        "unsloth/Magistral-Small-2506",
+        "mistralai/Magistral-Small-2506",
+        "unsloth/Magistral-Small-2506-bnb-4bit",
         "unsloth/Magistral-Small-2507-unsloth-bnb-4bit",
         "unsloth/Magistral-Small-2507",
         "mistralai/Magistral-Small-2507",
@@ -2224,13 +1670,11 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Magistral-Small-2509",
         "mistralai/Magistral-Small-2509",
         "unsloth/Magistral-Small-2509-bnb-4bit",
-        "unsloth/Pixtral-12B-2409-unsloth-bnb-4bit",
-        "unsloth/Pixtral-12B-2409",
-        "mistralai/Pixtral-12B-2409",
-        "unsloth/Pixtral-12B-2409-bnb-4bit",
-        "unsloth/Pixtral-12B-2409-Base-bnb-4bit",
-        "unsloth/Pixtral-12B-Base-2409",
-        "mistralai/Pixtral-12B-Base-2409",
+    ),
+    "tinyllama": (
+        "unsloth/tinyllama-chat-bnb-4bit",
+        "unsloth/tinyllama-chat",
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     ),
     "llama": (
         "unsloth/llama-2-7b-bnb-4bit",
@@ -2244,47 +1688,26 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "meta-llama/Llama-2-7b-chat-hf",
     ),
     "llama3": (
-        "unsloth/llama-3-8b-bnb-4bit",
-        "unsloth/llama-3-8b",
-        "meta-llama/Meta-Llama-3-8B",
         "unsloth/llama-3-8b-Instruct-bnb-4bit",
         "unsloth/llama-3-8b-Instruct",
         "meta-llama/Meta-Llama-3-8B-Instruct",
-        "unsloth/llama-3-70b-bnb-4bit",
-        "meta-llama/Meta-Llama-3-70B",
         "unsloth/llama-3-70b-Instruct-bnb-4bit",
         "meta-llama/Meta-Llama-3-70B-Instruct",
     ),
     "llama-3.1": (
-        "unsloth/Meta-Llama-3.1-8B-unsloth-bnb-4bit",
-        "unsloth/Meta-Llama-3.1-8B",
-        "meta-llama/Meta-Llama-3.1-8B",
-        "unsloth/Meta-Llama-3.1-8B-bnb-4bit",
         "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
         "unsloth/Meta-Llama-3.1-8B-Instruct",
         "meta-llama/Meta-Llama-3.1-8B-Instruct",
         "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
-        "unsloth/Llama-3.1-8B-unsloth-bnb-4bit",
-        "unsloth/Llama-3.1-8B",
-        "meta-llama/Llama-3.1-8B",
-        "unsloth/Llama-3.1-8B-bnb-4bit",
         "unsloth/Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
         "unsloth/Llama-3.1-8B-Instruct",
         "meta-llama/Llama-3.1-8B-Instruct",
         "unsloth/Llama-3.1-8B-Instruct-bnb-4bit",
-        "unsloth/Meta-Llama-3.1-70B-bnb-4bit",
-        "unsloth/Meta-Llama-3.1-70B",
-        "meta-llama/Meta-Llama-3.1-70B",
-        "unsloth/Meta-Llama-3.1-405B-bnb-4bit",
-        "meta-llama/Meta-Llama-3.1-405B",
         "unsloth/Meta-Llama-3.1-405B-Instruct-bnb-4bit",
         "meta-llama/Meta-Llama-3.1-405B-Instruct",
         "unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit",
         "unsloth/Meta-Llama-3.1-70B-Instruct",
         "meta-llama/Meta-Llama-3.1-70B-Instruct",
-        "unsloth/Llama-3.1-Storm-8B-bnb-4bit",
-        "unsloth/Llama-3.1-Storm-8B",
-        "akjindal53244/Llama-3.1-Storm-8B",
         "unsloth/Hermes-3-Llama-3.1-8B-bnb-4bit",
         "unsloth/Hermes-3-Llama-3.1-8B",
         "NousResearch/Hermes-3-Llama-3.1-8B",
@@ -2293,9 +1716,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "NousResearch/Hermes-3-Llama-3.1-70B",
         "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit",
         "NousResearch/Hermes-3-Llama-3.1-405B",
-        "unsloth/Llama-3.1-Nemotron-70B-Instruct-bnb-4bit",
-        "unsloth/Llama-3.1-Nemotron-70B-Instruct",
-        "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
         "unsloth/Llama-3.1-Tulu-3-8B-bnb-4bit",
         "unsloth/Llama-3.1-Tulu-3-8B",
         "allenai/Llama-3.1-Tulu-3-8B",
@@ -2303,15 +1723,17 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Llama-3.1-Tulu-3-70B",
         "allenai/Llama-3.1-Tulu-3-70B",
     ),
+    "llama-31-storm": (
+        "unsloth/Llama-3.1-Storm-8B-bnb-4bit",
+        "unsloth/Llama-3.1-Storm-8B",
+        "akjindal53244/Llama-3.1-Storm-8B",
+    ),
+    "llama-31-nemotron":(
+        "unsloth/Llama-3.1-Nemotron-70B-Instruct-bnb-4bit",
+        "unsloth/Llama-3.1-Nemotron-70B-Instruct",
+        "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+    ),
     "llama-3.2": (
-        "unsloth/Llama-3.2-1B-unsloth-bnb-4bit",
-        "unsloth/Llama-3.2-1B",
-        "meta-llama/Llama-3.2-1B",
-        "unsloth/Llama-3.2-1B-bnb-4bit",
-        "unsloth/Llama-3.2-3B-unsloth-bnb-4bit",
-        "unsloth/Llama-3.2-3B",
-        "meta-llama/Llama-3.2-3B",
-        "unsloth/Llama-3.2-3B-bnb-4bit",
         "unsloth/Llama-3.2-1B-Instruct-unsloth-bnb-4bit",
         "unsloth/Llama-3.2-1B-Instruct",
         "meta-llama/Llama-3.2-1B-Instruct",
@@ -2320,6 +1742,9 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Llama-3.2-3B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
         "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
+
+    ),
+    "llama-32-vision":(
         "unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit",
         "unsloth/Llama-3.2-11B-Vision-Instruct",
         "meta-llama/Llama-3.2-11B-Vision-Instruct",
@@ -2327,13 +1752,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Llama-3.2-90B-Vision-Instruct-bnb-4bit",
         "unsloth/Llama-3.2-90B-Vision-Instruct",
         "meta-llama/Llama-3.2-90B-Vision-Instruct",
-        "unsloth/Llama-3.2-11B-Vision-unsloth-bnb-4bit",
-        "unsloth/Llama-3.2-11B-Vision",
-        "meta-llama/Llama-3.2-11B-Vision",
-        "unsloth/Llama-3.2-11B-Vision-bnb-4bit",
-        "unsloth/Llama-3.2-90B-Vision-bnb-4bit",
-        "unsloth/Llama-3.2-90B-Vision",
-        "meta-llama/Llama-3.2-90B-Vision",
     ),
     "llama-3.3": (
         "unsloth/Llama-3.3-70B-Instruct-bnb-4bit",
@@ -2341,12 +1759,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "meta-llama/Llama-3.3-70B-Instruct",
     ),
     "gemma": (
-        "unsloth/gemma-7b-bnb-4bit",
-        "unsloth/gemma-7b",
-        "google/gemma-7b",
-        "unsloth/gemma-2b-bnb-4bit",
-        "unsloth/gemma-2b",
-        "google/gemma-2b",
         "unsloth/gemma-7b-it-bnb-4bit",
         "unsloth/gemma-7b-it",
         "google/gemma-7b-it",
@@ -2359,21 +1771,12 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "google/gemma-1.1-7b-it",
     ),
     "gemma2": (
-        "unsloth/gemma-2-9b-bnb-4bit",
-        "unsloth/gemma-2-9b",
-        "google/gemma-2-9b",
-        "unsloth/gemma-2-27b-bnb-4bit",
-        "unsloth/gemma-2-27b",
-        "google/gemma-2-27b",
         "unsloth/gemma-2-9b-it-bnb-4bit",
         "unsloth/gemma-2-9b-it",
         "google/gemma-2-9b-it",
         "unsloth/gemma-2-27b-it-bnb-4bit",
         "unsloth/gemma-2-27b-it",
         "google/gemma-2-27b-it",
-        "unsloth/gemma-2-2b-bnb-4bit",
-        "unsloth/gemma-2-2b",
-        "google/gemma-2-2b",
         "unsloth/gemma-2-2b-it-bnb-4bit",
         "unsloth/gemma-2-2b-it",
         "google/gemma-2-2b-it",
@@ -2395,14 +1798,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/gemma-3-27b-it",
         "google/gemma-3-27b-it",
         "unsloth/gemma-3-27b-it-bnb-4bit",
-        "unsloth/gemma-3-270m-it-unsloth-bnb-4bit",
-        "unsloth/gemma-3-270m-it",
-        "google/gemma-3-270m-it",
-        "unsloth/gemma-3-270m-it-bnb-4bit",
-        "unsloth/gemma-3-270m-unsloth-bnb-4bit",
-        "unsloth/gemma-3-270m",
-        "google/gemma-3-270m",
-        "unsloth/gemma-3-270m-bnb-4bit",
         "unsloth/medgemma-4b-it-unsloth-bnb-4bit",
         "unsloth/medgemma-4b-it",
         "google/medgemma-4b-it",
@@ -2421,16 +1816,14 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/gemma-3n-E2B-it",
         "google/gemma-3n-E2B-it",
         "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit",
-        "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
-        "unsloth/gemma-3n-E4B",
-        "google/gemma-3n-E4B",
-        "unsloth/gemma-3n-E4B-unsloth-bnb-4bit",
-        "unsloth/gemma-3n-E2B-unsloth-bnb-4bit",
-        "unsloth/gemma-3n-E2B",
-        "google/gemma-3n-E2B",
-        "unsloth/gemma-3n-E2B-unsloth-bnb-4bit",
     ),
-    "qwen2.5": (
+    "gemma3-270m":(
+        "unsloth/gemma-3-270m-it-unsloth-bnb-4bit",
+        "unsloth/gemma-3-270m-it",
+        "google/gemma-3-270m-it",
+        "unsloth/gemma-3-270m-it-bnb-4bit",
+    ),
+    "qwen-25": (
         "unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit",
         "unsloth/Qwen2.5-0.5B-Instruct",
         "Qwen/Qwen2.5-0.5B-Instruct",
@@ -2457,41 +1850,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen2.5-72B-Instruct-bnb-4bit",
         "unsloth/Qwen2.5-72B-Instruct",
         "Qwen/Qwen2.5-72B-Instruct",
-        "unsloth/Qwen2.5-0.5B-unsloth-bnb-4bit",
-        "unsloth/Qwen2.5-0.5B",
-        "Qwen/Qwen2.5-0.5B",
-        "unsloth/Qwen2.5-0.5B-bnb-4bit",
-        "unsloth/Qwen2.5-1.5B-unsloth-bnb-4bit",
-        "unsloth/Qwen2.5-1.5B",
-        "Qwen/Qwen2.5-1.5B",
-        "unsloth/Qwen2.5-1.5B-bnb-4bit",
-        "unsloth/Qwen2.5-3B-unsloth-bnb-4bit",
-        "unsloth/Qwen2.5-3B",
-        "Qwen/Qwen2.5-3B",
-        "unsloth/Qwen2.5-3B-bnb-4bit",
-        "unsloth/Qwen2.5-7B-unsloth-bnb-4bit",
-        "unsloth/Qwen2.5-7B",
-        "Qwen/Qwen2.5-7B",
-        "unsloth/Qwen2.5-7B-bnb-4bit",
-        "unsloth/Qwen2.5-14B-unsloth-bnb-4bit",
-        "unsloth/Qwen2.5-14B",
-        "Qwen/Qwen2.5-14B",
-        "unsloth/Qwen2.5-14B-bnb-4bit",
-        "unsloth/Qwen2.5-32B-bnb-4bit",
-        "unsloth/Qwen2.5-32B",
-        "Qwen/Qwen2.5-32B",
-        "unsloth/Qwen2.5-72B-bnb-4bit",
-        "unsloth/Qwen2.5-72B",
-        "Qwen/Qwen2.5-72B",
-        "unsloth/Qwen2.5-Math-1.5B-bnb-4bit",
-        "unsloth/Qwen2.5-Math-1.5B",
-        "Qwen/Qwen2.5-Math-1.5B",
-        "unsloth/Qwen2.5-Math-7B-bnb-4bit",
-        "unsloth/Qwen2.5-Math-7B",
-        "Qwen/Qwen2.5-Math-7B",
-        "unsloth/Qwen2.5-Math-72B-bnb-4bit",
-        "unsloth/Qwen2.5-Math-72B",
-        "Qwen/Qwen2.5-Math-72B",
         "unsloth/Qwen2.5-Math-1.5B-Instruct-bnb-4bit",
         "unsloth/Qwen2.5-Math-1.5B-Instruct",
         "Qwen/Qwen2.5-Math-1.5B-Instruct",
@@ -2501,24 +1859,9 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen2.5-Math-72B-Instruct-bnb-4bit",
         "unsloth/Qwen2.5-Math-72B-Instruct",
         "Qwen/Qwen2.5-Math-72B-Instruct",
-        "unsloth/Qwen2.5-Coder-0.5B-bnb-4bit",
-        "unsloth/Qwen2.5-Coder-0.5B",
-        "Qwen/Qwen2.5-Coder-0.5B",
-        "unsloth/Qwen2.5-Coder-1.5B-bnb-4bit",
-        "unsloth/Qwen2.5-Coder-1.5B",
-        "Qwen/Qwen2.5-Coder-1.5B",
-        "unsloth/Qwen2.5-Coder-3B-bnb-4bit",
-        "unsloth/Qwen2.5-Coder-3B",
-        "Qwen/Qwen2.5-Coder-3B",
-        "unsloth/Qwen2.5-Coder-7B-bnb-4bit",
-        "unsloth/Qwen2.5-Coder-7B",
-        "Qwen/Qwen2.5-Coder-7B",
-        "unsloth/Qwen2.5-Coder-14B-bnb-4bit",
-        "unsloth/Qwen2.5-Coder-14B",
-        "Qwen/Qwen2.5-Coder-14B",
-        "unsloth/Qwen2.5-Coder-32B-bnb-4bit",
-        "unsloth/Qwen2.5-Coder-32B",
-        "Qwen/Qwen2.5-Coder-32B",
+
+    ),
+    "qwen-25-coder":(
         "unsloth/Qwen2.5-Coder-0.5B-Instruct-bnb-4bit",
         "unsloth/Qwen2.5-Coder-0.5B-Instruct",
         "Qwen/Qwen2.5-Coder-0.5B-Instruct",
@@ -2537,6 +1880,8 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen2.5-Coder-32B-Instruct-bnb-4bit",
         "unsloth/Qwen2.5-Coder-32B-Instruct",
         "Qwen/Qwen2.5-Coder-32B-Instruct",
+    ),
+    "qwen-25-vl":(
         "unsloth/Qwen2.5-VL-3B-Instruct-unsloth-bnb-4bit",
         "unsloth/Qwen2.5-VL-3B-Instruct",
         "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -2553,55 +1898,25 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen2.5-VL-72B-Instruct",
         "Qwen/Qwen2.5-VL-72B-Instruct",
         "unsloth/Qwen2.5-VL-72B-Instruct-bnb-4bit",
+    ),
+    "openthinker": (
         "unsloth/OpenThinker-7B-unsloth-bnb-4bit",
         "unsloth/OpenThinker-7B",
         "open-thoughts/OpenThinker-7B",
         "unsloth/OpenThinker-7B-bnb-4bit",
     ),
-    "qwen-2.5": (
-        "unsloth/Qwen2-0.5B-bnb-4bit",
-        "unsloth/Qwen2-0.5B",
-        "Qwen/Qwen2-0.5B",
+    "qwen-2": (
         "unsloth/Qwen2-0.5B-Instruct-bnb-4bit",
         "unsloth/Qwen2-0.5B-Instruct",
         "Qwen/Qwen2-0.5B-Instruct",
-        "unsloth/Qwen2-1.5B-bnb-4bit",
-        "unsloth/Qwen2-1.5B",
-        "Qwen/Qwen2-1.5B",
         "unsloth/Qwen2-1.5B-Instruct-bnb-4bit",
         "unsloth/Qwen2-1.5B-Instruct",
         "Qwen/Qwen2-1.5B-Instruct",
-        "unsloth/Qwen2-7B-bnb-4bit",
-        "unsloth/Qwen2-7B",
-        "Qwen/Qwen2-7B",
         "unsloth/Qwen2-7B-Instruct-bnb-4bit",
         "unsloth/Qwen2-7B-Instruct",
         "Qwen/Qwen2-7B-Instruct",
-        "unsloth/Qwen2-70B-bnb-4bit",
-        "Qwen/Qwen2-70B",
         "unsloth/Qwen2-70B-Instruct-bnb-4bit",
         "Qwen/Qwen2-70B-Instruct",
-        "unsloth/Qwen2-VL-2B-Instruct-unsloth-bnb-4bit",
-        "unsloth/Qwen2-VL-2B-Instruct",
-        "Qwen/Qwen2-VL-2B-Instruct",
-        "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit",
-        "unsloth/Qwen2-VL-7B-Instruct-unsloth-bnb-4bit",
-        "unsloth/Qwen2-VL-7B-Instruct",
-        "Qwen/Qwen2-VL-7B-Instruct",
-        "unsloth/Qwen2-VL-7B-Instruct-bnb-4bit",
-        "unsloth/Qwen2-VL-72B-Instruct-bnb-4bit",
-        "unsloth/Qwen2-VL-72B-Instruct",
-        "Qwen/Qwen2-VL-72B-Instruct",
-        "unsloth/Qwen2-VL-2B-bnb-4bit",
-        "unsloth/Qwen2-VL-2B",
-        "Qwen/Qwen2-VL-2B",
-        "unsloth/Qwen2-VL-7B-bnb-4bit",
-        "unsloth/Qwen2-VL-7B",
-        "Qwen/Qwen2-VL-7B",
-        "unsloth/Qwen2-VL-72B-bnb-4bit",
-        "unsloth/Qwen2-VL-72B",
-        "Qwen/Qwen2-VL-72B",
-
     ),
     "qwen3": (
         "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
@@ -2632,26 +1947,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/Qwen3-30B-A3B",
         "Qwen/Qwen3-30B-A3B",
         "unsloth/Qwen3-30B-A3B-bnb-4bit",
-        "unsloth/Qwen3-0.6B-Base-unsloth-bnb-4bit",
-        "unsloth/Qwen3-0.6B-Base",
-        "Qwen/Qwen3-0.6B-Base",
-        "unsloth/Qwen3-0.6B-Base-bnb-4bit",
-        "unsloth/Qwen3-1.7B-Base-unsloth-bnb-4bit",
-        "unsloth/Qwen3-1.7B-Base",
-        "Qwen/Qwen3-1.7B-Base",
-        "unsloth/Qwen3-1.7B-Base-bnb-4bit",
-        "unsloth/Qwen3-4B-Base-unsloth-bnb-4bit",
-        "unsloth/Qwen3-4B-Base",
-        "Qwen/Qwen3-4B-Base",
-        "unsloth/Qwen3-4B-Base-bnb-4bit",
-        "unsloth/Qwen3-8B-Base-unsloth-bnb-4bit",
-        "unsloth/Qwen3-8B-Base",
-        "Qwen/Qwen3-8B-Base",
-        "unsloth/Qwen3-8B-Base-bnb-4bit",
-        "unsloth/Qwen3-14B-Base-unsloth-bnb-4bit",
-        "Qwen/Qwen3-14B-Base",
-        "unsloth/Qwen3-14B-Base-bnb-4bit",
-
     ),
     "qwen3-instruct": (
         "unsloth/Qwen3-4B-Instruct-2507-unsloth-bnb-4bit",
@@ -2720,16 +2015,16 @@ TEMPLATE_TO_MODEL_MAPPER = {
     )
 }
 
-MODEL_TO_TEMPLATE_MAPPER = {}
+MODEL_TO_OLLAMA_TEMPLATE_MAPPER = {}
 
-for key, values in TEMPLATE_TO_MODEL_MAPPER.items():
+for key, values in OLLAMA_TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
-        MODEL_TO_TEMPLATE_MAPPER[value] = key
+        MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value] = key
     pass
 
     # Get lowercased
     lowered_key = key.lower()
     for value in values:
-        MODEL_TO_TEMPLATE_MAPPER[value.lower()] = lowered_key
+        MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value.lower()] = lowered_key
     pass
 pass
