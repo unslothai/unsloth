@@ -1983,9 +1983,6 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "HuggingFaceH4/mistral-7b-sft-beta",
     ),
     "chatml": (
-        "unsloth/yi-6b-bnb-4bit",
-        "unsloth/yi-6b",
-        "01-ai/Yi-6B",
         "unsloth/Hermes-2-Pro-Mistral-7B-bnb-4bit",
         "unsloth/Hermes-2-Pro-Mistral-7B",
         "NousResearch/Hermes-2-Pro-Mistral-7B",
