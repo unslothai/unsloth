@@ -2091,7 +2091,7 @@ tags:
 This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
 
 **Example usage**:
-- For text only LLMs:    **llama-cli** **--hf** repo_id>/model_name **-p** "why is the sky blue?"
+- For text only LLMs:    **llama-cli** **--hf** repo_id/model_name **-p** "why is the sky blue?"
 - For multimodal models: **llama-mtmd-cli** **-m** model_name.gguf **--mmproj** mmproj_file.gguf
 
 ## Available Model files:
