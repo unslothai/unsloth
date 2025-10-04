@@ -34,7 +34,7 @@ import re
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
-from .template_mappers import CHAT_TEMPLATES, MODEL_TO_TEMPLATE_MAPPER
+from .template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin
 from huggingface_hub import HfApi
 try:
@@ -1138,6 +1138,7 @@ def save_to_gguf(
 
     if not is_gpt_oss:
         base_gguf = initial_files[0]
+        quants_created = False
         for quant_method in quantization_method:
             if quant_method != first_conversion:
                 print(f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes...")
@@ -1153,6 +1154,7 @@ def save_to_gguf(
                         print_output=print_output
                     )
                     all_saved_locations.append(quantized_file)
+                    quants_created = True
                 except Exception as e:
                     if IS_KAGGLE_ENVIRONMENT:
                         raise RuntimeError(
@@ -1182,8 +1184,9 @@ def save_to_gguf(
             pass
         pass
         print("Unsloth: Model files cleanup...")
-        all_saved_locations.remove(base_gguf)
-        Path(base_gguf).unlink()
+        if quants_created:
+            all_saved_locations.remove(base_gguf)
+            Path(base_gguf).unlink()
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
     pass
@@ -1502,11 +1505,11 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
         Creates an Ollama Modelfile.
         Use ollama.create(model = "new_ollama_model", modelfile = modelfile)
     """
-    chat_template = MODEL_TO_TEMPLATE_MAPPER.get(base_model_name)
-    if not chat_template:
+    ollama_template_name = MODEL_TO_OLLAMA_TEMPLATE_MAPPER.get(base_model_name)
+    if not ollama_template_name:
         print(f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile")
         return None
-    _, _, _, ollama_modelfile = CHAT_TEMPLATES.get(chat_template)
+    ollama_modelfile = OLLAMA_TEMPLATES.get(ollama_template_name)
     if not ollama_modelfile:
         print(f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile")
         return None
@@ -1857,7 +1860,7 @@ def unsloth_save_pretrained_gguf(
             else:
                 modelfile = create_ollama_modelfile(tokenizer, base_model_name, all_file_locations[0])
             if modelfile is not None:
-                if is_vlm:
+                if is_vlm_update:
                     modelfile_location = os.path.join(save_directory, "Modelfile")
                 else:
                     modelfile_location = os.path.join(os.getcwd(), "Modelfile")
@@ -1877,7 +1880,7 @@ def unsloth_save_pretrained_gguf(
 
     if is_vlm_update:
         print("\n")
-        print(f"Unsloth: example usage for Multimodal LLMs: llama-mtmd-cli --m {all_file_locations[1]} --mmproj {all_file_locations[0]}")
+        print(f"Unsloth: example usage for Multimodal LLMs: llama-mtmd-cli -m {all_file_locations[1]} --mmproj {all_file_locations[0]}")
         print("Unsloth: load image inside llama.cpp runner: /image test_image.jpg")
         print("Unsloth: Prompt model to describe the image")
     else:
