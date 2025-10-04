@@ -1187,6 +1187,9 @@ def save_to_gguf(
         if quants_created:
             all_saved_locations.remove(base_gguf)
             Path(base_gguf).unlink()
+
+            # flip the list to get [text_model, mmproj] order. for text models stays the same.
+            all_saved_locations.reverse()
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
     pass
@@ -1880,7 +1883,7 @@ def unsloth_save_pretrained_gguf(
 
     if is_vlm_update:
         print("\n")
-        print(f"Unsloth: example usage for Multimodal LLMs: llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[1]}")
+        print(f"Unsloth: example usage for Multimodal LLMs: llama-mtmd-cli -m {all_file_locations[0]} --mmproj {all_file_locations[-1]}")
         print("Unsloth: load image inside llama.cpp runner: /image test_image.jpg")
         print("Unsloth: Prompt model to describe the image")
     else:
