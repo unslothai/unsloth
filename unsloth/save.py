@@ -34,7 +34,7 @@ import re
 from transformers.models.llama.modeling_llama import logger
 from .tokenizer_utils import fix_sentencepiece_gguf
 from .models.loader_utils import get_model_name
-from .template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
+from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin
 from huggingface_hub import HfApi
 try:
