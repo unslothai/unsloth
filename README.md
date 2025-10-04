@@ -275,9 +275,11 @@ docker run -d -e JUPYTER_PASSWORD="mypassword" \
 Access Jupyter Lab at `http://localhost:8888` and start fine-tuning!
 
 ## 📜 Documentation
-- Go to our official [Documentation](https://docs.unsloth.ai) for saving to GGUF, checkpointing, evaluation and more!
-- We support Huggingface's transformers, TRL, Trainer, Seq2SeqTrainer or even Pytorch code!
-- If you want to download models or datasets from the ModelScope community, please use an environment variable: `UNSLOTH_USE_MODELSCOPE=1`, and install the modelscope library by: `pip install modelscope -U`. unsloth_cli.py also supports this.
+- Go to our official [Documentation](https://docs.unsloth.ai) for [running models](https://docs.unsloth.ai/basics/running-and-saving-models), [saving to GGUF](https://docs.unsloth.ai/basics/running-and-saving-models/saving-to-gguf), [checkpointing](https://docs.unsloth.ai/basics/finetuning-from-last-checkpoint), [evaluation](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide#evaluation) and more!
+- Read our Guides for: [Fine-tuning](https://docs.unsloth.ai/get-started/fine-tuning-llms-guide), [Reinforcement Learning](https://docs.unsloth.ai/get-started/reinforcement-learning-rl-guide), [Text-to-Speech (TTS)](https://docs.unsloth.ai/basics/text-to-speech-tts-fine-tuning), [Vision](https://docs.unsloth.ai/basics/vision-fine-tuning) and [any model](docs.unsloth.ai/models/tutorials-how-to-fine-tune-and-run-llms).
+- We support Huggingface's transformers, TRL, Trainer, Seq2SeqTrainer and Pytorch code.
+
+Unsloth example code to fine-tune gpt-oss-20b:
 
 ```python
 from unsloth import FastLanguageModel, FastModel
@@ -291,31 +293,17 @@ dataset = load_dataset("json", data_files = {"train" : url}, split = "train")
 
 # 4bit pre quantized models we support for 4x faster downloading + no OOMs.
 fourbit_models = [
-    "unsloth/Meta-Llama-3.1-8B-bnb-4bit",      # Llama-3.1 2x faster
-    "unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit",
-    "unsloth/Meta-Llama-3.1-70B-bnb-4bit",
-    "unsloth/Meta-Llama-3.1-405B-bnb-4bit",    # 4bit for 405b!
-    "unsloth/Mistral-Small-Instruct-2409",     # Mistral 22b 2x faster!
-    "unsloth/mistral-7b-instruct-v0.3-bnb-4bit",
-    "unsloth/Phi-3.5-mini-instruct",           # Phi-3.5 2x faster!
-    "unsloth/Phi-3-medium-4k-instruct",
-    "unsloth/gemma-2-9b-bnb-4bit",
-    "unsloth/gemma-2-27b-bnb-4bit",            # Gemma 2x faster!
+    "unsloth/gpt-oss-20b-unsloth-bnb-4bit", #or choose any model
 
-    "unsloth/Llama-3.2-1B-bnb-4bit",           # NEW! Llama 3.2 models
-    "unsloth/Llama-3.2-1B-Instruct-bnb-4bit",
-    "unsloth/Llama-3.2-3B-bnb-4bit",
-    "unsloth/Llama-3.2-3B-Instruct-bnb-4bit",
-
-    "unsloth/Llama-3.3-70B-Instruct-bnb-4bit" # NEW! Llama 3.3 70B!
 ] # More models at https://huggingface.co/unsloth
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name = "unsloth/gemma-3-4B-it",
+    model_name = "unsloth/gpt-oss-20b",
     max_seq_length = 2048, # Choose any for long context!
-    load_in_4bit = True,  # 4 bit quantization to reduce memory
-    load_in_8bit = False, # [NEW!] A bit more accurate, uses 2x memory
-    full_finetuning = False, # [NEW!] We have full finetuning now!
+    load_in_4bit = True,  # 4-bit quantization. False = 16-bit LoRA.
+    load_in_8bit = False, # 8-bit quantization
+    load_in_16bit = False, # [NEW!] 16-bit LoRA
+    full_finetuning = False, # Use for full fine-tuning.
     # token = "hf_...", # use one if using gated models
 )
 
@@ -354,7 +342,7 @@ trainer = SFTTrainer(
 )
 trainer.train()
 
-# Go to https://github.com/unslothai/unsloth/wiki for advanced tips like
+# Go to https://docs.unsloth.ai for advanced tips like
 # (1) Saving to GGUF / merging to 16bit for vLLM
 # (2) Continued training from a saved LoRA adapter
 # (3) Adding an evaluation loop / OOMs
@@ -372,63 +360,6 @@ RL including GRPO, GSPO, DrGRPO, DAPO, PPO, Reward Modelling, Online DPO all wor
 - DPO Zephyr notebook: [Link](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Zephyr_(7B)-DPO.ipynb)
 - KTO notebook: [Link](https://colab.research.google.com/drive/1MRgGtLWuZX4ypSfGguFgC-IblTvO2ivM?usp=sharing)
 - SimPO notebook: [Link](https://colab.research.google.com/drive/1Hs5oQDovOay4mFA6Y9lQhVJ8TnbFLFh2?usp=sharing)
-
-<details>
-  <summary>Click for DPO code</summary>
-  
-```python
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0" # Optional set GPU device ID
-
-from unsloth import FastLanguageModel
-import torch
-from trl import DPOTrainer, DPOConfig
-max_seq_length = 2048
-
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/zephyr-sft-bnb-4bit",
-    max_seq_length = max_seq_length,
-    load_in_4bit = True,
-)
-
-# Do model patching and add fast LoRA weights
-model = FastLanguageModel.get_peft_model(
-    model,
-    r = 64,
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                      "gate_proj", "up_proj", "down_proj",],
-    lora_alpha = 64,
-    lora_dropout = 0, # Supports any, but = 0 is optimized
-    bias = "none",    # Supports any, but = "none" is optimized
-    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-    use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
-    random_state = 3407,
-    max_seq_length = max_seq_length,
-)
-
-dpo_trainer = DPOTrainer(
-    model = model,
-    ref_model = None,
-    train_dataset = YOUR_DATASET_HERE,
-    # eval_dataset = YOUR_DATASET_HERE,
-    tokenizer = tokenizer,
-    args = DPOConfig(
-        per_device_train_batch_size = 4,
-        gradient_accumulation_steps = 8,
-        warmup_ratio = 0.1,
-        num_train_epochs = 3,
-        logging_steps = 1,
-        optim = "adamw_8bit",
-        seed = 42,
-        output_dir = "outputs",
-        max_length = 1024,
-        max_prompt_length = 512,
-        beta = 0.1,
-    ),
-)
-dpo_trainer.train()
-```
-</details>
 
 ## 🥇 Performance Benchmarking
 - For our most detailed benchmarks, read our [Llama 3.3 Blog](https://unsloth.ai/blog/llama3-3).
@@ -483,6 +414,7 @@ You can cite the Unsloth repo as follows:
 ### Thank You to
 - The [llama.cpp library](https://github.com/ggml-org/llama.cpp) that lets users save models with Unsloth
 - The Hugging Face team and their libraries: [transformers](https://github.com/huggingface/transformers) and [TRL](https://github.com/huggingface/trl)
+- The Pytorch and [Torch AO](https://github.com/unslothai/unsloth/pull/3391) team for their contributions
 - [Erik](https://github.com/erikwijmans) for his help adding [Apple's ML Cross Entropy](https://github.com/apple/ml-cross-entropy) in Unsloth
 - [Etherl](https://github.com/Etherll) for adding support for [TTS, diffusion and BERT models](https://github.com/unslothai/notebooks/pull/34)
 - And of course for every single person who has contributed or has used Unsloth!
