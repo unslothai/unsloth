@@ -1198,8 +1198,13 @@ def save_to_gguf(
     else:
         # Fix up conversion script is possible
         with open(convert_location, "rb") as f: converter_latest = f.read()
+        PATCH_MARKER = b"# UNSLOTH_PATCHED_MISTRAL_IMPORT"
+        if PATCH_MARKER in converter_latest:
+          pass
+        else:
+
         # Fix metadata
-        converter_latest = re.sub(
+          converter_latest = re.sub(
             rb"(self\.metadata \= .+?\(.+?\)"\
             rb"[\n]{1,}([\s]{4,}))",
             rb"\1"\
@@ -1208,29 +1213,31 @@ def save_to_gguf(
             rb"\2if hasattr(self.metadata, 'tags'): self.metadata.tags = ['unsloth', 'llama.cpp']\n"\
             rb"\2",
             converter_latest,
-        )
+          )
+
+          converter_latest = PATCH_MARKER + b"\n" + converter_latest
 
         # Make mistral_common optional for now
         # from x import y
-        converter_latest = re.sub(
-            rb"(from mistral_common[^\n\(]{1,})[\s]{0,}\n",
-            rb"try:\n    \1\nexcept:\n    pass\n",
-            converter_latest,
-        )
+          converter_latest = re.sub(
+              rb"(from mistral_common[^\n\(]{1,})[\s]{0,}\n",
+              rb"try:\n    \1\nexcept:\n    pass\n",
+              converter_latest,
+          )
         # from x import (y, z,)
-        converter_latest = re.sub(
-            rb"(from mistral_common[^\n\(]{1,}[\s]{0,}\(.+?\))",
-            rb"try:\n    \1\nexcept:\n    pass\n",
-            converter_latest,
-            flags = re.MULTILINE | re.DOTALL,
-        )
+          converter_latest = re.sub(
+              rb"(from mistral_common[^\n\(]{1,}[\s]{0,}\(.+?\))",
+              rb"try:\n    \1\nexcept:\n    pass\n",
+              converter_latest,
+              flags = re.MULTILINE | re.DOTALL,
+          )
 
-        try:
-            # Write file
-            with open(convert_location, "wb") as file:
-                file.write(converter_latest)
-        except:
-            pass
+          try:
+              # Write file
+              with open(convert_location, "wb") as file:
+                  file.write(converter_latest)
+          except:
+              pass
         command = f"python {convert_location} {model_directory} "\
             f"--outfile {final_location} "\
             f"--outtype {first_conversion}"
