@@ -1549,7 +1549,230 @@ TEMPLATE """{{ if .System }}<|im_start|>system
 
 OLLAMA_TEMPLATES["yi-chat"] = yi_chat_ollama
 
-# =========================================== Yi-chat
+# =========================================== Granite
+
+# Ollama from https://ollama.com/library/granite3.2:latest/blobs/3e7ca51acd6e
+granite_32_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- /*
+
+------ MESSAGE PARSING ------
+
+*/}}
+{{- /*
+Declare the prompt structure variables to be filled in from messages
+*/}}
+{{- $system := "" }}
+{{- $documents := "" }}
+{{- $documentCounter := 0 }}
+{{- $thinking := false }}
+{{- $citations := false }}
+{{- $hallucinations := false }}
+{{- $length := "" }}
+
+{{- /*
+Loop over messages and look for a user-provided system message and documents
+*/ -}}
+{{- range .Messages }}
+
+    {{- /* User defined system prompt(s) */}}
+    {{- if (eq .Role "system")}}
+        {{- if (ne $system "") }}
+            {{- $system = print $system " " }}
+        {{- end}}
+        {{- $system = print $system .Content }}
+    {{- end}}
+
+    {{- /*
+    NOTE: Since Ollama collates consecutive roles, for control and documents, we
+        work around this by allowing the role to contain an qualifier after the
+        role string.
+    */ -}}
+
+    {{- /* Role specified thinking */ -}}
+    {{- if (and (ge (len .Role) 7) (eq (slice .Role 0 7) "control")) }}
+        {{- if (eq .Content "thinking")}}{{- $thinking = true }}{{- end}}
+        {{- if (eq .Content "citations")}}{{- $citations = true }}{{- end}}
+        {{- if (eq .Content "hallucinations")}}{{- $hallucinations = true }}{{- end}}
+        {{- if (and (ge (len .Content) 7) (eq (slice .Content 0 7) "length "))}}
+            {{- $length = print ` {"length": "` (slice .Content 7) `"}` }}
+        {{- end}}
+    {{- end}}
+
+    {{- /* Role specified document */ -}}
+    {{- if (and (ge (len .Role) 8) (eq (slice .Role 0 8) "document")) }}
+        {{- if (ne $documentCounter 0)}}
+            {{- $documents = print $documents " "}}
+        {{- end}}
+        {{- $identifier := $documentCounter}}
+        {{- if (ge (len .Role) 9) }}
+            {{- $identifier = (slice .Role 8)}}
+        {{- end}}
+        {{- $documents = print $documents "Document " $identifier "" .Content}}
+        {{- $documentCounter = len (printf "a%*s" $documentCounter "")}}
+    {{- end}}
+{{- end}}
+
+{{- /*
+If no user message provided, build the default system message
+*/ -}}
+{{- if eq $system "" }}
+    {{- $system = "Knowledge Cutoff Date: April 2024.You are Granite, developed by IBM."}}
+
+    {{- /* Add Tools prompt */}}
+    {{- if .Tools }}
+        {{- $system = print $system " You are a helpful AI assistant with access to the following tools. When a tool is required to answer the user's query, respond with <|tool_call|> followed by a JSON list of tools used. If a tool does not exist in the provided list of tools, notify the user that you do not have the ability to fulfill the request." }}
+    {{- end}}
+
+    {{- /* Add documents prompt */}}
+    {{- if $documents }}
+        {{- if .Tools }}
+            {{- $system = print $system " "}}
+        {{- else }}
+            {{- $system = print $system " "}}
+        {{- end}}
+        {{- $system = print $system "Write the response to the user's input by strictly aligning with the facts in the provided documents. If the information needed to answer the question is not available in the documents, inform the user that the question cannot be answered based on the available data." }}
+        {{- if $citations}}
+            {{- $system = print $system " In your response, use the symbols <co> and </co> to indicate when a fact comes from a document in the search result, e.g <co>0</co> for a fact from document 0. Afterwards, list all the citations with their corresponding documents in an ordered list."}}
+        {{- end}}
+        {{- if $hallucinations}}
+            {{- $system = print $system "Finally, after the response is written, include a numbered list of sentences from the response that are potentially hallucinated and not based in the documents."}}
+        {{- end}}
+    {{- end}}
+
+    {{- /* Prompt without tools or documents */}}
+    {{- if (and (not .Tools) (not $documents)) }}
+        {{- $system = print $system " You are a helpful AI assistant."}}
+        {{- if $thinking}}
+            {{- $system = print $system "Respond to every user query in a comprehensive and detailed way. You can write down your thought process before responding. Write your thoughts after 'Here is my thought process:' and write your response after 'Here is my response:' for each user query."}}
+        {{- end}}
+    {{- end}}
+
+    {{- /* Add thinking prompt if no tools or documents */}}
+    {{- if (and $thinking (not .Tools) (not $documents)) }}
+        {{- $system = print $system " You are a helpful AI assistant.Respond to every user query in a comprehensive and detailed way. You can write down your thought process before responding. Write your thoughts after 'Here is my thought process:' and write your response after 'Here is my response:' for each user query."}}
+    {{- end}}
+
+{{- end}}
+{{- /*
+
+------ TEMPLATE EXPANSION ------
+
+*/}}
+{{- /* System Prompt */ -}}
+<|start_of_role|>system<|end_of_role|>{{- $system }}<|end_of_text|>
+
+{{- /* Tools */ -}}
+{{- if .Tools }}
+<|start_of_role|>tools<|end_of_role|>[
+{{- range $index, $_ := .Tools }}
+{{ . }}
+{{- if and (ne (len (slice $.Tools $index)) 1) (gt (len $.Tools) 1) }},
+{{- end}}
+{{- end }}
+]
+{{- end}}
+
+{{- /* Documents */ -}}
+{{- if $documents }}
+<|start_of_role|>documents<|end_of_role|>
+{{ $documents }}<|end_of_text|>
+{{- end}}
+
+{{- /* Standard Messages */}}
+{{- range $index, $_ := .Messages }}
+{{- if (and
+    (ne .Role "system")
+    (or (lt (len .Role) 7) (ne (slice .Role 0 7) "control"))
+    (or (lt (len .Role) 8) (ne (slice .Role 0 8) "document"))
+)}}
+<|start_of_role|>
+{{- if eq .Role "tool" }}tool_response
+{{- else }}{{ .Role }}
+{{- end }}<|end_of_role|>
+{{- if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}<|tool_call|>
+{{- range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{- end }}
+{{- end }}
+{{- if eq (len (slice $.Messages $index)) 1 }}
+{{- if eq .Role "assistant" }}
+{{- else }}<|end_of_text|>
+<|start_of_role|>assistant<|end_of_role|>
+{{- end -}}
+{{- else }}<|end_of_text|>
+{{- end }}
+{{- end }}
+{{- end }}
+"""
+'''
+
+# granite-3.2-vision https://ollama.com/library/granite3.2-vision:latest/blobs/579046ba1157
+granite_32_vision_ollama = \
+'''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- /* Tools */ -}}
+{{- if .Tools -}}
+<|start_of_role|>available_tools<|end_of_role|>
+{{- range $index, $_ := .Tools }}
+{{- $last := eq (len (slice $.Tools $index)) 1 }}
+{{ . }}
+{{- if not $last }}
+{{ end}}
+{{- end -}}
+<|end_of_text|>
+{{ end }}
+
+{{- /* System Prompt */ -}}
+{{- if and (gt (len .Messages) 0) (eq (index .Messages 0).Role "system") -}}
+<|system|>
+{{(index .Messages 0).Content}}
+{{- else -}}
+<|system|>
+A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions.
+{{- end }}
+
+{{- /*Main message loop*/ -}}
+{{- range $index, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $index)) 1 }}
+{{- if eq .Role "system" }}
+
+{{- else if eq .Role "user" }}
+<|user|>
+{{.Content}}
+
+{{- else if eq .Role "assistant" }}
+<|assistant|>
+{{- if .Content }}
+{{.Content}}
+<|end_of_text|>
+{{ end }}
+
+{{- else if eq .Role "assistant_tool_call" }}
+<|start_of_role|>assistant<|end_of_role|><|tool_call|>{{.Content}}<|end_of_text|>
+
+{{- else if eq .Role "tool_response" }}
+<|start_of_role|>tool_response<|end_of_role|>{{.Content}}<|end_of_text|>
+{{- end }}
+
+{{- /* Add generation prompt */ -}}
+{{ if $last }}
+{{- if eq .Role "assistant" }}
+{{- else }}
+<|assistant|>
+{{- end }}
+{{- end }}
+{{- end }}"""
+PARAMETER num_ctx 16384
+PARAMETER temperature 0
+SYSTEM """A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."""
+'''
+
+OLLAMA_TEMPLATES["granite-32"]        = granite_32_ollama
+OLLAMA_TEMPLATES["granite-32-vision"] = granite_32_vision_ollama
+
+pass
 
 
 OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
@@ -2009,7 +2232,23 @@ OLLAMA_TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/yi-34b-chat-bnb-4bit",
         "01-ai/Yi-6B-Chat",
         "01-ai/Yi-34B-Chat",
-    )
+    ),
+    "granite-32": (
+        "unsloth/granite-3.2-2b-instruct-unsloth-bnb-4bit",
+        "unsloth/granite-3.2-2b-instruct",
+        "ibm-granite/granite-3.2-2b-instruct",
+        "unsloth/granite-3.2-2b-instruct-bnb-4bit",
+        "unsloth/granite-3.2-8b-instruct-unsloth-bnb-4bit",
+        "unsloth/granite-3.2-8b-instruct",
+        "ibm-granite/granite-3.2-8b-instruct",
+        "unsloth/granite-3.2-8b-instruct-bnb-4bit",
+    ),
+    "granite-32-vision": (
+        "unsloth/granite-vision-3.2-2b-unsloth-bnb-4bit",
+        "unsloth/granite-vision-3.2-2b",
+        "ibm-granite/granite-vision-3.2-2b",
+        "unsloth/granite-vision-3.2-2b-bnb-4bit",
+    ),
 }
 
 MODEL_TO_OLLAMA_TEMPLATE_MAPPER = {}
