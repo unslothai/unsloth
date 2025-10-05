@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python",
 ]
 dependencies = [
-    "unsloth_zoo>=2025.9.13",
+    "unsloth_zoo>=2025.10.1",
     "torch>=2.4.0",
     "xformers>=0.0.27.post2",
     "bitsandbytes",
