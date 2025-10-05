@@ -636,7 +636,9 @@ class FastBaseModel:
         # Check float32 norm weights
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
             for jj, (name, module) in enumerate(model.named_modules()):
-                if name.endswith("norm") and hasattr(module, "weight"):
+                if (name.endswith(("norm", "norm1", "norm2", "norm3", "norm4")) \
+                    or "layernorm" in name or "layer_norm" in name) \
+                    and hasattr(module, "weight"):
                     module._pre_set_compute_dtype = torch.float32
         pass
         # Edit data-types
