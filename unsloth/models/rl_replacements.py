@@ -27,6 +27,7 @@ import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
 from unsloth import DEVICE_TYPE
+import textwrap
 
 RL_EXTRA_ARGS      = defaultdict(list)
 RL_FUNCTIONS       = defaultdict(list)
