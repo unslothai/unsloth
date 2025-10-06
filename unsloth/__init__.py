@@ -68,6 +68,10 @@ except ModuleNotFoundError:
 except Exception as exception:
     raise exception
 pass
+os.environ["UNSLOTH_ZOO_UTILS_ONLY"] = "1"
+import unsloth_zoo.utils
+# we do this to make compile folder and locks available to modules that need
+# it earlier than the regular unsloth_zoo import
 
 @functools.cache
 def is_hip():
@@ -273,6 +277,7 @@ try:
         #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
         #         except:
         #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
+    os.environ["UNSLOTH_ZOO_UTILS_ONLY"] = "0"
     import unsloth_zoo
 except:
     raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
