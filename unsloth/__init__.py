@@ -70,7 +70,6 @@ except Exception as exception:
 pass
 os.environ["UNSLOTH_ZOO_UTILS_ONLY"] = "1"
 import unsloth_zoo.utils
-print("unsloth: imported unsloth_zoo.utils")
 # we do this to make compile folder and locks available to modules that need
 # it earlier than the regular unsloth_zoo import
 
