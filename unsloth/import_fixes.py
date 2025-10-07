@@ -71,7 +71,7 @@ def fix_xformers_performance_issue():
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
         try:
             if cutlass.exists():
-                lock = get_lock(cutlass)
+                lock = get_lock(str(cutlass))
                 with lock:
                     with open(cutlass, "r+", encoding = "utf-8") as f:
                         text = f.read()
