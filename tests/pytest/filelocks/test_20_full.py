@@ -80,7 +80,7 @@ def test_full_end_to_end_clobber(
     # Fan out
     payloads = [{"args": [unsloth_model_name], "kwargs": payload_common} for _ in range(workers)]
     results = run_many(
-        "tests.unsloth_workers:run_full",
+        "tests.pytest.filelocks.workers:run_full",
         payloads,
         cwd=project_root,
         env=env,
@@ -92,7 +92,7 @@ def test_full_end_to_end_clobber(
     assert model_dir.exists() and any(model_dir.iterdir()), "model dir missing or empty"
 
     check = run_many(
-        "tests.unsloth_workers:validate_local_model",
+        "tests.pytest.filelocks.workers:validate_local_model",
         [{"args": [str(model_dir)], "kwargs": {"load_in_4bit": False}}],
         cwd=project_root,
         env=env,
