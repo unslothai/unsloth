@@ -107,26 +107,26 @@ def fix_vllm_aimv2_issue():
                     with open(ovis_config, "r+", encoding = "utf-8") as f:
                         text = f.read()
                     # See https://github.com/vllm-project/vllm-ascend/issues/2046
-                    if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
-                        text = text.replace(
-                            'AutoConfig.register("aimv2", AIMv2Config)',
-                            '',
-                        )
-                        text = text.replace(
-                            '''backbone_config.pop('model_type')
-                backbone_config = AutoConfig.for_model(model_type,
-                                                       **backbone_config)''',
-                            '''if model_type != "aimv2":
-                    backbone_config.pop('model_type')
-                    backbone_config = AutoConfig.for_model(model_type, **backbone_config)
-                else:
-                    backbone_config = AIMv2Config(**backbone_config)'''
-                        )
-                        f.seek(0)
-                        f.write(text)
-                        f.truncate()
-                        if UNSLOTH_ENABLE_LOGGING:
-                            print("Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`")
+                        if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
+                            text = text.replace(
+                                'AutoConfig.register("aimv2", AIMv2Config)',
+                                '',
+                            )
+                            text = text.replace(
+                                '''backbone_config.pop('model_type')
+                    backbone_config = AutoConfig.for_model(model_type,
+                                                        **backbone_config)''',
+                                '''if model_type != "aimv2":
+                        backbone_config.pop('model_type')
+                        backbone_config = AutoConfig.for_model(model_type, **backbone_config)
+                    else:
+                        backbone_config = AIMv2Config(**backbone_config)'''
+                            )
+                            f.seek(0)
+                            f.write(text)
+                            f.truncate()
+                            if UNSLOTH_ENABLE_LOGGING:
+                                print("Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`")
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")
