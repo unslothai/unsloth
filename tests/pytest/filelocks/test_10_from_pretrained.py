@@ -9,11 +9,13 @@ import pytest
 def unsloth_model_name() -> str:
     # You can override with:  UNSLOTH_TEST_MODEL=your/model
     # The default is a tiny LLaMA random-weight model widely used for tests.
-    model = os.environ.get("UNSLOTH_TEST_MODEL", "unsloth/Qwen3-4B-Thinking-2507")
+    model = os.environ.get("UNSLOTH_TEST_MODEL", "unsloth/Qwen3-4B-Instruct-2507")
     if model == 'qwen':
-        model = "unsloth/Qwen3-4B-Thinking-2507"
+        model = "unsloth/Qwen3-4B-Instruct-2507"
     elif model == 'gemma3':
         model = "unsloth/gemma-3-4b-it"
+    elif model == 'gpt_oss':
+        model = "unsloth/gpt-oss-20b"
     return model
 
 
@@ -69,8 +71,3 @@ def test_from_pretrained_many_processes(
         timeout=120.0,
     )
     assert_all_ok(results)
-
-    # --- Optional: ensure there are no stale lock files left behind.
-    # hf_home = Path(hf_cache_env["HF_HOME"])
-    # leftover_locks = list(hf_home.rglob("*.lock"))
-    # assert not leftover_locks, f"Leftover lock files found: {[str(p) for p in leftover_locks]}"
