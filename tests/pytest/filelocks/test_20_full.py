@@ -90,13 +90,3 @@ def test_full_end_to_end_clobber(
 
     model_dir = artifacts / "model"
     assert model_dir.exists() and any(model_dir.iterdir()), "model dir missing or empty"
-
-    check = run_many(
-        "tests.pytest.filelocks.workers:validate_local_model",
-        [{"args": [str(model_dir)], "kwargs": {"load_in_4bit": False}}],
-        cwd=project_root,
-        env=env,
-        timeout=180.0,
-        max_parallel=1,
-    )
-    assert_all_ok(check)

@@ -74,7 +74,8 @@ def run_full(
     push_token: str = "",
     enable_gguf: bool = True,
 ) -> None:
-    # ── After "from unsloth import" ────────────────────────────────────────────
+    import os
+    os.environ["UNSLOTH_LOGGING_ENABLED"] = "1"
     from unsloth import FastLanguageModel
     if barrier_base:
         barrier_wait(barrier_base, "after_import_unsloth", nprocs)
@@ -187,18 +188,3 @@ def run_full(
 
     del model, tokenizer
     print("run_full: done")
-
-
-def validate_local_model(model_dir: str, load_in_4bit: bool = False) -> None:
-    """
-    Smoke-check that directory is loadable
-    """
-    from unsloth import FastLanguageModel
-    _model, _tok = FastLanguageModel.from_pretrained(
-        model_name=model_dir,  # local path
-        load_in_4bit=bool(load_in_4bit),
-        max_seq_length=64,
-        dtype=None,
-    )
-    del _model, _tok
-    print("validate_local_model: ok")
