@@ -75,7 +75,7 @@ def test_uv_fresh_env_many_imports(
         uninstall_cmd = [uv, "pip", "uninstall", "--python", str(py)]
         install_dev_cmd = [uv, "--no-cache", "--no-config", "pip", "install", "--python", str(py)]
         editable = os.environ.get("UNSLOTH_EDITABLE") == "1"
-        spec = os.environ.get("UNSLOTH_PIP_SPEC") or ["unsloth", "'xformers<=0.0.28.post3'", "'vllm<=0.9.1'", "'transformers<=4.49.0'"]
+        spec = os.environ.get("UNSLOTH_PIP_SPEC") or ["unsloth", "xformers<=0.0.28.post3", "vllm<=0.9.1", "transformers<=4.49.0"]
         uninstall_spec = ["unsloth", "unsloth_zoo"]
         dev_install_spec = ["https://github.com/mmathew23/unsloth.git@locks", "https://github.com/mmathew23/unsloth_zoo.git@locks"]
 
