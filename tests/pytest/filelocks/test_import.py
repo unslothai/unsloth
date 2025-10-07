@@ -75,9 +75,9 @@ def test_uv_fresh_env_many_imports(
         uninstall_cmd = [uv, "pip", "uninstall", "--python", str(py)]
         install_dev_cmd = [uv, "--no-cache", "--no-config", "pip", "install", "--python", str(py)]
         editable = os.environ.get("UNSLOTH_EDITABLE") == "1"
-        spec = os.environ.get("UNSLOTH_PIP_SPEC") or "unsloth 'xformers<=0.0.28.post3' 'vllm<=0.9.1' 'transformers<=4.49.0'"
-        uninstall_spec = "unsloth unsloth_zoo"
-        dev_install_spec = "https://github.com/mmathew23/unsloth.git@locks https://github.com/mmathew23/unsloth_zoo.git@locks"
+        spec = os.environ.get("UNSLOTH_PIP_SPEC") or ["unsloth", "'xformers<=0.0.28.post3'", "'vllm<=0.9.1'", "'transformers<=4.49.0'"]
+        uninstall_spec = ["unsloth", "unsloth_zoo"]
+        dev_install_spec = ["https://github.com/mmathew23/unsloth.git@locks", "https://github.com/mmathew23/unsloth_zoo.git@locks"]
 
         index_url = os.environ.get("UNSLOTH_INDEX_URL")
         extra_index_url = os.environ.get("UNSLOTH_EXTRA_INDEX_URL")
@@ -93,10 +93,10 @@ def test_uv_fresh_env_many_imports(
         if editable:
             install_cmd += ["-e", str(project_root)]
         else:
-            install_cmd += [spec]
+            install_cmd += spec
 
-        uninstall_cmd += [uninstall_spec]
-        install_dev_cmd += [dev_install_spec]
+        uninstall_cmd += uninstall_spec
+        install_dev_cmd += dev_install_spec
         for icmd in [install_cmd, uninstall_cmd, install_dev_cmd]:
             proc = subprocess.run(icmd, capture_output=True, text=True, env=env, cwd=project_root)
             if proc.returncode != 0:
