@@ -131,7 +131,8 @@ def PatchRL(FastLanguageModel):
                 labels = labels[0]
         else:
             labels = None
-
+            
+        os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         with torch.no_grad():
             if has_labels or loss_without_labels:
                 with self.compute_loss_context_manager():
@@ -154,7 +155,7 @@ def PatchRL(FastLanguageModel):
                 # TODO: this needs to be fixed and made cleaner later.
                 if self.args.past_index >= 0:
                     self._past = outputs[self.args.past_index - 1]
-
+        os.environ["UNSLOTH_RETURN_LOGITS"] = "0"
         if prediction_loss_only:
             return (loss, None, None)
 
