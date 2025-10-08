@@ -36,6 +36,7 @@ exclude = ["images*", "tests*", "kernels/moe*"]
 
 [project.optional-dependencies]
 triton = [
+    "triton>=3.0.0 ; ('linux' in sys_platform)",
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 huggingface = [
