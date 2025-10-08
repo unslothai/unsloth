@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.9.10"
+__version__ = "2025.10.1"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -90,6 +90,12 @@ from unsloth import DEVICE_TYPE, DEVICE_COUNT
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
+)
+from unsloth_zoo.rl_environments import (
+    check_python_modules,
+    create_locked_down_function,
+    execute_with_time_limit,
+    Benchmarker,
 )
 from unsloth_zoo.patching_utils import (
     patch_compiling_bitsandbytes,
@@ -1654,11 +1660,12 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
     from torchao.quantization import (
         Float8DynamicActivationInt4WeightConfig,
         Float8DynamicActivationFloat8WeightConfig,
-        Int8DynamicActivationInt4WeightConfig,
+        Int8DynamicActivationIntxWeightConfig,
         Int4WeightOnlyConfig,
         PerRow,
         quantize_,
     )
+    from torchao.quantization.granularity import PerGroup
     from torchao.quantization.qat import QATConfig
     filter_fn = None
     if qat_scheme == "fp8-int4":
@@ -1669,7 +1676,7 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
         base_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
     elif qat_scheme == "int8-int4":
         group_size = 32
-        base_config = Int8DynamicActivationInt4WeightConfig(group_size=group_size)
+        base_config = Int8DynamicActivationIntxWeightConfig(weight_dtype=torch.int4, weight_granularity=PerGroup(group_size))
         filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
     elif qat_scheme == "int4":
         group_size = 128

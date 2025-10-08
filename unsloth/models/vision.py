@@ -637,7 +637,9 @@ class FastBaseModel:
         # Check float32 norm weights
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
             for jj, (name, module) in enumerate(model.named_modules()):
-                if name.endswith("norm") and hasattr(module, "weight"):
+                if (name.endswith(("norm", "norm1", "norm2", "norm3", "norm4")) \
+                    or "layernorm" in name or "layer_norm" in name) \
+                    and hasattr(module, "weight"):
                     module._pre_set_compute_dtype = torch.float32
         pass
         # Edit data-types
@@ -710,6 +712,9 @@ class FastBaseModel:
             model.config.update({"unsloth_version" : __version__})
         pass
         patch_saving_functions(model, vision = True)
+        if tokenizer is None:
+            del model
+            raise RuntimeError("Unsloth: The tokenizer is weirdly not loaded? Please check if there is one.")
         patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation
