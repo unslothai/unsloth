@@ -9,7 +9,7 @@ description = "2-5X faster training, reinforcement learning & finetuning"
 readme = "README.md"
 requires-python = ">=3.9,<3.14"
 license = "Apache-2.0"
-keywords = ["ai", "llm",]
+keywords = ["ai", "llm", "reinforcement learning", "machine learning", "artificial intelligence", "pytorch"]
 authors = [
     {email = "info@unsloth.ai"},
     {name = "Unsloth AI team"},
