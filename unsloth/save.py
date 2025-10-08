@@ -1090,11 +1090,10 @@ def save_to_gguf(
     with use_local_gguf():
         converter_path, supported_text_archs, supported_vision_archs = _download_convert_hf_to_gguf()
 
-    # Step 3: Initial GGUF conversion
-    print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
-    print(f"This might take 3 minutes...")
+        # Step 3: Initial GGUF conversion
+        print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
+        print(f"This might take 3 minutes...")
 
-    with use_local_gguf():
         initial_files, is_vlm_update = convert_to_gguf(
             model_name=model_name,
             input_folder=model_directory,
