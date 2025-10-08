@@ -1716,10 +1716,10 @@ def unsloth_save_pretrained_gguf(
 
     try:
         base_model_name = get_model_name(self.config._name_or_path, load_in_4bit=False)
-        model_name = get_model_name(self.config._name_or_path, load_in_4bit = False).split("/")[-1]
+        model_name = base_model_name.split("/")[-1]
     except:
         base_model_name = self.config._name_or_path
-        model_name = self.config._name_or_path.split("/")[-1]
+        model_name = base_model_name.split("/")[-1]
 
     # Check if push_to_hub is requested
     if push_to_hub:
