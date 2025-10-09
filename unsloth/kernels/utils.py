@@ -18,7 +18,7 @@ MAX_FUSED_SIZE : int = 65536
 next_power_of_2 = triton.next_power_of_2
 import functools
 from typing import Optional
-from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from .. import DEVICE_TYPE, DEVICE_COUNT
 from .fp8 import fp8_e4m3_forward, reconstruct_weight_fp8
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
