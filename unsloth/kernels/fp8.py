@@ -35,7 +35,7 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask=mask)
 
 
-def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtype=torch.bfloat16) -> torch.Tensor:
+def weight_dequant_block(x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtype=torch.bfloat16) -> torch.Tensor:
     if not x.is_contiguous():
         x = x.contiguous()
     if not s.is_contiguous():
@@ -45,7 +45,17 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtyp
     y = torch.empty_like(x, dtype=dtype)
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE']), triton.cdiv(N, meta['BLOCK_SIZE']))
     weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
-    return y.T
+    return y
+
+def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype=torch.bfloat16):
+    if s.shape[1] == 1:
+        # this is row quantized weight, just simple multiplication suffices
+        y = x.to(torch.float32) * s.to(torch.float32)
+        return y.to(dtype).T
+    else:
+        # this is block quantized weight
+        return weight_dequant_block(x, s, dtype=dtype)
+
 
 # Copied from https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
 @triton.jit
@@ -282,7 +292,7 @@ class FP8_E4M3Linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         # W_deq = reconstruct_weight_fp8(ctx.weight, ctx.weight_scale, ctx.block_size[0], ctx.block_size[1])
-        W_deq = weight_dequant(ctx.weight, ctx.weight_scale, ctx.block_size[1])
+        W_deq = ctx.weight.to(torch.bfloat16) * ctx.weight_scale.to(torch.bfloat16)
         grad_X = torch_matmul(grad_output, W_deq.t())
         del W_deq
         return grad_X, None, None
@@ -308,6 +318,12 @@ class FbgemmFp8Linear(torch.autograd.Function):
 
         # The computation still happens on the device where self.weight is even if x_quantized is not on the same device as self.weight
         weight_scale_float32 = weight_scale.to(torch.float32)
+
+        if not weight.is_contiguous():
+            weight = weight.contiguous()
+        if not weight_scale.is_contiguous():
+            weight_scale = weight_scale.contiguous()
+
         output = torch.ops.fbgemm.f8f8bf16_rowwise(
             x_quantized, weight, x_scale, weight_scale_float32, use_fast_accum=True
         )
@@ -324,8 +340,9 @@ class FbgemmFp8Linear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        W_deq = weight_dequant(ctx.weight, ctx.weight_scale, )
+        W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
         grad_X = torch_matmul(grad_output, W_deq.t())
+        del W_deq
         return grad_X, None, None, None, None
 
 @torch.compile
