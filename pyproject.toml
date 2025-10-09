@@ -865,3 +865,25 @@ amd = [
 homepage = "http://www.unsloth.ai"
 documentation = "https://github.com/unslothai/unsloth"
 repository = "https://github.com/unslothai/unsloth"
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+ignore = [
+    "E402",
+    "E722",
+    "F403",
+    "F405",
+    "F811",
+    "F821",
+    "F841",
+    "F401",
+    "E731",
+    "E741",
+    "F601",
+    "E712",
+]
+
+[tool.ruff.format]
