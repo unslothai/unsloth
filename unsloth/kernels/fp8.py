@@ -20,89 +20,6 @@ import math
 
 torch_matmul = torch.matmul
 
-@torch.compile
-def reconstruct_weight_fp8(
-    W_fp8: torch.Tensor,
-    W_scale: torch.Tensor,
-    group_k=None,
-    group_n=None,
-    *,
-    out_dtype=torch.bfloat16,
-):
-    """
-    Dequantize an FP8-block-quantized weight matrix.
-
-    W_fp8: (K, N) tensor in fp8 dtype
-    W_scale: scalar, 1D (num_k_groups * num_n_groups) or 2D (num_k_groups, num_n_groups)
-    group_k, group_n: block sizes (defaults read from attributes)
-    returns: dequantized weight (N, K).contiguous() with block_size metadata set to [group_n, group_k]
-    """
-    if W_fp8.dtype != torch.float8_e4m3fn:
-        import traceback
-        traceback.print_stack()
-        raise ValueError(f'Reconstruct weight from fp8 function called on non fp8 input {W_fp8.dtype}. Returning original input but transposed')
-
-    # infer block sizes if not provided
-    block_from_fp8 = getattr(W_fp8, 'block_size', None)
-    block_from_scale = getattr(W_scale, 'block_size', None)
-    if group_k is None or group_n is None:
-        if block_from_fp8 is not None:
-            group_k, group_n = block_from_fp8
-        elif block_from_scale is not None:
-            group_k, group_n = block_from_scale
-        else:
-            # fallback to default used elsewhere in your codebase
-            group_k, group_n = (128, 128)
-
-    K, N = W_fp8.shape
-    num_k_groups = math.ceil(K / group_k)
-    num_n_groups = math.ceil(N / group_n)
-
-    # Normalize scale to (num_k_groups, num_n_groups)
-    if W_scale.numel() == 1:
-        W_scale = W_scale.reshape(1, 1).expand(num_k_groups, num_n_groups)
-    elif W_scale.dim() == 1 and W_scale.numel() == num_k_groups * num_n_groups:
-        W_scale = W_scale.reshape(num_k_groups, num_n_groups)
-    elif W_scale.dim() == 2 and W_scale.shape == (num_k_groups, num_n_groups):
-        pass
-    else:
-        raise ValueError(
-            f"Unsupported W_scale shape {tuple(W_scale.shape)} "
-            f"for W_fp8.shape={tuple(W_fp8.shape)}, group_k={group_k}, group_n={group_n}"
-        )
-
-    # Move W to same dtype as scale for safe multiplication (and same device)
-    device = W_fp8.device
-    scale_dtype = W_scale.dtype
-    W = W_fp8.to(dtype=scale_dtype, device=device).contiguous()
-
-    # pad to full groups if needed (this keeps block grouping simple)
-    Kpad = num_k_groups * group_k
-    Npad = num_n_groups * group_n
-    if Kpad != K or Npad != N:
-        W_pad = W.new_zeros((Kpad, Npad))
-        W_pad[:K, :N] = W
-        W = W_pad
-    # now W is (Kpad, Npad) and contiguous
-
-    # View into blocks: shape -> (num_k_groups, group_k, num_n_groups, group_n)
-    W_blocks = W.view(num_k_groups, group_k, num_n_groups, group_n)
-
-    # Permute to (num_k_groups, num_n_groups, group_k, group_n) so scales broadcast naturally
-    W_blocks = W_blocks.permute(0, 2, 1, 3)  # may be non-contiguous, but multiplication will allocate a new tensor
-
-    # Broadcast multiply by per-block scales -> result is a new contiguous tensor
-    scales = W_scale.reshape(num_k_groups, num_n_groups, 1, 1).to(device=device, dtype=scale_dtype)
-    W_scaled = W_blocks * scales  # (num_k_groups, num_n_groups, group_k, group_n) - contiguous
-
-    # permute back to (num_k_groups, group_k, num_n_groups, group_n), make contiguous, then reshape to (Kpad, Npad)
-    W_reordered = W_scaled.permute(0, 2, 1, 3).contiguous().reshape(Kpad, Npad).to(dtype=out_dtype)
-
-    # slice off padding, transpose and return contiguous result
-    W_out = W_reordered[:K, :N].T.contiguous()
-    W_out.block_size = [group_n, group_k]  # returning transpose => block_size swapped
-    return W_out
-
 @triton.jit
 def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     pid_m = tl.program_id(axis=0)
@@ -118,15 +35,14 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
     tl.store(y_ptr + offs, y, mask=mask)
 
 
-def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> torch.Tensor:
+def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128, dtype=torch.bfloat16) -> torch.Tensor:
     assert x.is_contiguous() and s.is_contiguous()
     assert x.dim() == 2 and s.dim() == 2
     M, N = x.size()
-    y = torch.empty_like(x, dtype=torch.get_default_dtype())
+    y = torch.empty_like(x, dtype=dtype)
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE']), triton.cdiv(N, meta['BLOCK_SIZE']))
     weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
-    return y
-
+    return y.T
 
 # Copied from https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/inference/kernel.py
 @triton.jit
@@ -381,7 +297,7 @@ class FbgemmFp8Linear(torch.autograd.Function):
         # x_quantized and x_scale are not necessarily on the same device as x, this is an issue.
         # https://github.com/pytorch/FBGEMM/blob/e08af8539c391437f447173863df0f3f6f6f1855/fbgemm_gpu/experimental/gen_ai/src/quantize/quantize.cu#L1237C3-L1237C45
         x_quantized, x_scale = torch.ops.fbgemm.quantize_fp8_per_row(
-            x.view(-1, x.shape[-1]).contiguous(), scale_ub=getattr(weight, 'input_scale_ub')
+            x.view(-1, x.shape[-1]).contiguous(), scale_ub=getattr(weight, 'input_scale_ub', None)
         )
         # moving x_quantized, x_scale here creates glibberish output ... However, if we move the output, it works
         # x_quantized, x_scale = x_quantized.to(x.device), x_scale.to(x.device)
@@ -404,7 +320,7 @@ class FbgemmFp8Linear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        W_deq = reconstruct_weight_fp8(ctx.weight, ctx.weight_scale, ctx.block_size[0], ctx.block_size[1])
+        W_deq = weight_dequant(ctx.weight, ctx.weight_scale, )
         grad_X = torch_matmul(grad_output, W_deq.t())
         return grad_X, None, None, None, None
 
