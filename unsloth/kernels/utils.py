@@ -18,8 +18,9 @@ MAX_FUSED_SIZE : int = 65536
 next_power_of_2 = triton.next_power_of_2
 import functools
 from typing import Optional
+
 from .. import DEVICE_TYPE, DEVICE_COUNT
-from .fp8 import fp8_e4m3_forward, reconstruct_weight_fp8
+from .fp8 import fp8_e4m3_forward, reconstruct_weight_fp8, fbgemm_fp8_linear
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -202,9 +203,9 @@ def get_lora_parameters(proj):
     if weight_fake_quantizer is not None:
         W = weight_fake_quantizer(W)
 
-    W_quant = getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None)
+    W_quant = getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None) or getattr(base_layer, 'weight_scale', None)
 
-    if W.dtype == torch.float8_e4m3fn:
+    if getattr(base_layer, 'quant_method', None)=='fp8':
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, 'block_size', [128,128])
         W_quant.block_size = W.block_size
@@ -245,14 +246,14 @@ def get_lora_parameters_bias(proj):
     base_layer = getattr(proj, "base_layer", proj) # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
 
-    W_quant = getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None)
+    W_quant = getattr(W, "quant_state", None) or getattr(base_layer,'weight_scale_inv', None) or getattr(base_layer, 'weight_scale', None)
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None, base_layer.bias
     pass
 
-    if W.dtype == torch.float8_e4m3fn:
+    if getattr(base_layer, 'quant_method', None)=='fp8':
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, 'block_size', [128,128])
         W_quant.block_size = W.block_size
@@ -715,7 +716,10 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
-        out = fp8_e4m3_forward(X, W, W_quant)
+        if getattr(W, 'quant_method','fp8')=='fp8':
+            out = fp8_e4m3_forward(X, W, W_quant)
+        else:
+            out = fbgemm_fp8_linear(X, W, W_quant, )
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
@@ -763,7 +767,10 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     pass
 
     if W.dtype==torch.float8_e4m3fn:
-        out = fp8_e4m3_forward(X, W, W_quant)
+        if getattr(W, 'quant_method','fp8')=='fp8':
+            out = fp8_e4m3_forward(X, W, W_quant)
+        else:
+            out = fbgemm_fp8_linear(X, W, W_quant, )
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)

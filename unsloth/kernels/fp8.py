@@ -370,3 +370,44 @@ class FP8_E4M3Linear(torch.autograd.Function):
 @torch.compile
 def fp8_e4m3_forward(X, weight, weight_scale):
     return FP8_E4M3Linear.apply(X, weight, weight_scale)
+
+
+class FbgemmFp8Linear(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x,  weight, weight_scale, bias=None):
+        # quantize_fp8_per_row will squash the leading dimensions, so save the desired shape here
+        output_shape = (*x.shape[:-1], -1)
+        # x_quantized and x_scale are not necessarily on the same device as x, this is an issue.
+        # https://github.com/pytorch/FBGEMM/blob/e08af8539c391437f447173863df0f3f6f6f1855/fbgemm_gpu/experimental/gen_ai/src/quantize/quantize.cu#L1237C3-L1237C45
+        x_quantized, x_scale = torch.ops.fbgemm.quantize_fp8_per_row(
+            x.view(-1, x.shape[-1]).contiguous(), scale_ub=getattr(weight, 'input_scale_ub')
+        )
+        # moving x_quantized, x_scale here creates glibberish output ... However, if we move the output, it works
+        # x_quantized, x_scale = x_quantized.to(x.device), x_scale.to(x.device)
+
+        # The computation still happens on the device where self.weight is even if x_quantized is not on the same device as self.weight
+        weight_scale_float32 = weight_scale.to(torch.float32)
+        output = torch.ops.fbgemm.f8f8bf16_rowwise(
+            x_quantized, weight, x_scale, weight_scale_float32, use_fast_accum=True
+        )
+        output = output + bias if bias is not None else output
+        # Hacky for now, we have the output to the device of x
+        output = output.to(x.device, x.dtype)
+        output = output.reshape(output_shape)
+        del x_quantized, x_scale
+
+        ctx.weight = weight
+        ctx.weight_scale = weight_scale
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        W_deq = reconstruct_weight_fp8(ctx.weight, ctx.weight_scale, ctx.block_size[0], ctx.block_size[1])
+        grad_X = torch_matmul(grad_output, W_deq.t())
+        return grad_X, None, None, None, None
+
+@torch.compile
+def fbgemm_fp8_linear(X, weight, weight_scale, bias=None, ):
+    return FbgemmFp8Linear.apply(X, weight, weight_scale, bias)
