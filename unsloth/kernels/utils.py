@@ -293,7 +293,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         # TODO: After adding XPU BNB support, check this function
         if quant_state is None: return W
-        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t(), quant_state)
+        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W, quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -369,7 +369,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
-        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t(), quant_state)
+        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W, quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -445,7 +445,7 @@ else:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
-        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t(), quant_state)
+        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W, quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files

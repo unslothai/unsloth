@@ -50,8 +50,15 @@ def weight_dequant_block(x: torch.Tensor, s: torch.Tensor, block_size: int = 128
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype=torch.bfloat16):
     if s.shape[1] == 1:
         # this is row quantized weight, just simple multiplication suffices
-        y = x.to(torch.float32) * s.to(torch.float32)
-        return y.to(dtype).T
+        if x.shape[0]==s.shape[0]:
+            y = x.to(torch.float32) * s.to(torch.float32)
+        elif x.shape[1]==s.shape[0]:
+            # sometimes, this is called with the transpose of the weight. Adjust for that.
+            y = x.t().to(torch.float32) * s.to(torch.float32)
+            y = y.t()
+        else:
+            raise ValueError(f'Incompatible shapes {x.shape=}, {s.shape=}')
+        return y.to(dtype)
     else:
         # this is block quantized weight
         return weight_dequant_block(x, s, dtype=dtype)
@@ -306,32 +313,43 @@ class FbgemmFp8Linear(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x,  weight, weight_scale, bias=None):
-        # quantize_fp8_per_row will squash the leading dimensions, so save the desired shape here
-        output_shape = (*x.shape[:-1], -1)
-        # x_quantized and x_scale are not necessarily on the same device as x, this is an issue.
-        # https://github.com/pytorch/FBGEMM/blob/e08af8539c391437f447173863df0f3f6f6f1855/fbgemm_gpu/experimental/gen_ai/src/quantize/quantize.cu#L1237C3-L1237C45
-        x_quantized, x_scale = torch.ops.fbgemm.quantize_fp8_per_row(
-            x.view(-1, x.shape[-1]).contiguous(), scale_ub=getattr(weight, 'input_scale_ub', None)
-        )
-        # moving x_quantized, x_scale here creates glibberish output ... However, if we move the output, it works
-        # x_quantized, x_scale = x_quantized.to(x.device), x_scale.to(x.device)
 
-        # The computation still happens on the device where self.weight is even if x_quantized is not on the same device as self.weight
-        weight_scale_float32 = weight_scale.to(torch.float32)
+        if weight.shape[0]!=weight_scale.shape[0]:
+            if weight.shape[1]==weight_scale.shape[0]:
+                # This is generally the case when we do backward pass. The only way is to dequantize as there is no column wise fp8 matmul
+                W_deq = weight_dequant(weight, weight_scale).T
+                x = torch_matmul(x, W_deq)
+                del W_deq
+                return x
+            else:
+                raise ValueError(f"Shapes are incompatible {weight.shape=}, {weight_scale.shape=}, {x.shape=}")
+        else:
+            # quantize_fp8_per_row will squash the leading dimensions, so save the desired shape here
+            output_shape = (*x.shape[:-1], -1)
+            # x_quantized and x_scale are not necessarily on the same device as x, this is an issue.
+            # https://github.com/pytorch/FBGEMM/blob/e08af8539c391437f447173863df0f3f6f6f1855/fbgemm_gpu/experimental/gen_ai/src/quantize/quantize.cu#L1237C3-L1237C45
+            x_quantized, x_scale = torch.ops.fbgemm.quantize_fp8_per_row(
+                x.view(-1, x.shape[-1]).contiguous(), scale_ub=getattr(weight, 'input_scale_ub', None)
+            )
+            # moving x_quantized, x_scale here creates glibberish output ... However, if we move the output, it works
+            # x_quantized, x_scale = x_quantized.to(x.device), x_scale.to(x.device)
 
-        if not weight.is_contiguous():
-            weight = weight.contiguous()
-        if not weight_scale.is_contiguous():
-            weight_scale = weight_scale.contiguous()
+            # The computation still happens on the device where self.weight is even if x_quantized is not on the same device as self.weight
+            weight_scale_float32 = weight_scale.to(torch.float32)
 
-        output = torch.ops.fbgemm.f8f8bf16_rowwise(
-            x_quantized, weight, x_scale, weight_scale_float32, use_fast_accum=True
-        )
-        output = output + bias if bias is not None else output
-        # Hacky for now, we have the output to the device of x
-        output = output.to(x.device, x.dtype)
-        output = output.reshape(output_shape)
-        del x_quantized, x_scale
+            if not weight.is_contiguous():
+                weight = weight.contiguous()
+            if not weight_scale.is_contiguous():
+                weight_scale = weight_scale.contiguous()
+
+            output = torch.ops.fbgemm.f8f8bf16_rowwise(
+                x_quantized, weight, x_scale, weight_scale_float32, use_fast_accum=True
+            )
+            output = output + bias if bias is not None else output
+            # Hacky for now, we have the output to the device of x
+            output = output.to(x.device, x.dtype)
+            output = output.reshape(output_shape)
+            del x_quantized, x_scale
 
         ctx.weight = weight
         ctx.weight_scale = weight_scale
@@ -341,7 +359,7 @@ class FbgemmFp8Linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq)
+        grad_X = torch_matmul(grad_output, W_deq.t())
         del W_deq
         return grad_X, None, None, None, None
 
