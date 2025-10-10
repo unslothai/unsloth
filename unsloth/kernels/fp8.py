@@ -292,7 +292,7 @@ class FP8_E4M3Linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         # W_deq = reconstruct_weight_fp8(ctx.weight, ctx.weight_scale, ctx.block_size[0], ctx.block_size[1])
-        W_deq = ctx.weight.to(torch.bfloat16) * ctx.weight_scale.to(torch.bfloat16)
+        W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
         grad_X = torch_matmul(grad_output, W_deq.t())
         del W_deq
         return grad_X, None, None
@@ -341,7 +341,7 @@ class FbgemmFp8Linear(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
-        grad_X = torch_matmul(grad_output, W_deq.t())
+        grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
 

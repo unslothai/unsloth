@@ -293,7 +293,7 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         # TODO: After adding XPU BNB support, check this function
         if quant_state is None: return W
-        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t().contiguous(), quant_state)
+        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t(), quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -369,7 +369,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
-        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t().contiguous(), quant_state)
+        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t(), quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -445,7 +445,7 @@ else:
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         if quant_state is None: return W
-        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t().contiguous(), quant_state)
+        if W.dtype == torch.float8_e4m3fn: return weight_dequant(W.t(), quant_state)
         if type(quant_state) is not list:
             # New quant_state as a class
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -716,13 +716,12 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
-        quant_method = getattr(W, 'quant_method', None) or getattr(W_quant, 'quant_method', None)
-        if quant_method=='fp8':
+        if W_quant.ndim==2 and W_quant.shape[1]>1:
+            # This is block quantized FP8 matmul
             out = fp8_e4m3_forward(X, W, W_quant)
-        elif quant_method=='fbgemm_fp8':
-            out = fbgemm_fp8_linear(X, W, W_quant, )
         else:
-            raise ValueError(f'no quant method found. {W.shape=} {W_quant.shape}')
+            # Row quantized FP8
+            out = fbgemm_fp8_linear(X, W, W_quant, )
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
@@ -770,13 +769,12 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     pass
 
     if W.dtype==torch.float8_e4m3fn:
-        quant_method = getattr(W, 'quant_method', None) or getattr(W_quant, 'quant_method', None)
-        if quant_method=='fp8':
+        if W_quant.ndim==2 and W_quant.shape[1]>1:
+            # This is block quantized FP8 matmul
             out = fp8_e4m3_forward(X, W, W_quant)
-        elif quant_method=='fbgemm_fp8':
-            out = fbgemm_fp8_linear(X, W, W_quant, )
         else:
-            raise ValueError(f'no quant method found. {W.shape=} {W_quant.shape}')
+            # Row quantized FP8
+            out = fbgemm_fp8_linear(X, W, W_quant, )
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)
