@@ -20,7 +20,7 @@ import functools
 from typing import Optional
 
 from .. import DEVICE_TYPE, DEVICE_COUNT
-from .fp8 import fp8_e4m3_forward, fbgemm_fp8_linear, weight_dequant
+from .fp8 import weight_dequant, fp8_linear
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -716,12 +716,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
-        if W_quant.ndim==2 and W_quant.shape[1]>1:
-            # This is block quantized FP8 matmul
-            out = fp8_e4m3_forward(X, W, W_quant)
-        else:
-            # Row quantized FP8
-            out = fbgemm_fp8_linear(X, W, W_quant, )
+        out = fp8_linear(X, W, W_quant, bias)
     elif bsz == 1 and q_len == 1:
         out = fast_gemv(X, W, W_quant, out = out)
     else:
@@ -769,12 +764,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     pass
 
     if W.dtype==torch.float8_e4m3fn:
-        if W_quant.ndim==2 and W_quant.shape[1]>1:
-            # This is block quantized FP8 matmul
-            out = fp8_e4m3_forward(X, W, W_quant)
-        else:
-            # Row quantized FP8
-            out = fbgemm_fp8_linear(X, W, W_quant, )
+        out = fp8_linear(X, W, W_quant, )
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)

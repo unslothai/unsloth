@@ -51,14 +51,14 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, dtype=torch.bfloat16):
     if s.shape[1] == 1:
         # this is row quantized weight, just simple multiplication suffices
         if x.shape[0]==s.shape[0]:
-            y = x.to(torch.float32) * s.to(torch.float32)
+            y = x.to(dtype) * s.to(dtype)
         elif x.shape[1]==s.shape[0]:
             # sometimes, this is called with the transpose of the weight. Adjust for that.
-            y = x.t().to(torch.float32) * s.to(torch.float32)
+            y = x.t().to(dtype) * s.to(dtype)
             y = y.t()
         else:
             raise ValueError(f'Incompatible shapes {x.shape=}, {s.shape=}')
-        return y.to(dtype)
+        return y
     else:
         # this is block quantized weight
         return weight_dequant_block(x, s, dtype=dtype)
@@ -366,3 +366,13 @@ class FbgemmFp8Linear(torch.autograd.Function):
 @torch.compile
 def fbgemm_fp8_linear(X, weight, weight_scale, bias=None, ):
     return FbgemmFp8Linear.apply(X, weight, weight_scale, bias)
+
+@torch.compile
+def fp8_linear(X, weight, weight_scale, bias=None):
+    if weight_scale.ndim==2 and weight_scale.shape[1]>1:
+        # This is block quantized FP8 matmul
+        out = fp8_e4m3_forward(X, weight, weight_scale)
+    else:
+        # Row quantized FP8
+        out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
+    return out
