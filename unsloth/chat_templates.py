@@ -895,6 +895,19 @@ DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message # No system mes
 
 CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
+
+# Qwen2.5 Coder templates
+CHAT_TEMPLATES["qwen-2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen25-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-coder"] = qwen25_default_system_message
 pass
 
 # =========================================== Phi-4

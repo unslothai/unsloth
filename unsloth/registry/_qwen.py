@@ -3,6 +3,7 @@ from unsloth.registry.registry import ModelInfo, ModelMeta, QuantType, _register
 _IS_QWEN_2_5_REGISTERED = False
 _IS_QWEN_2_5_VL_REGISTERED = False
 _IS_QWEN_QWQ_REGISTERED = False
+_IS_QWEN_2_5_CODER_REGISTERED = False
 class QwenModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
@@ -26,6 +27,12 @@ class QwenQVQPreviewModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{size}B-Preview"
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
+
+class Qwen2_5CoderModelInfo(ModelInfo):
+    @classmethod
+    def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
+        key = f"{base_name}{version}-Coder-{size}B"
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
     
 # Qwen2.5 Model Meta
@@ -76,6 +83,18 @@ QwenQVQPreviewMeta = ModelMeta(
     quant_types=[QuantType.NONE, QuantType.BNB],
 )
 
+# Qwen2.5 Coder Model Meta
+Qwen_2_5_CoderMeta = ModelMeta(
+    org="Qwen",
+    base_name="Qwen",
+    instruct_tags=[None, "Instruct"],
+    model_version="2.5",
+    model_sizes=["0.5", "1.5", "3", "7", "14", "32"],
+    model_info_cls=Qwen2_5CoderModelInfo,
+    is_multimodal=False,
+    quant_types=[QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
+)
+
 def register_qwen_2_5_models(include_original_model: bool = False):
     global _IS_QWEN_2_5_REGISTERED
     if _IS_QWEN_2_5_REGISTERED:
@@ -98,10 +117,18 @@ def register_qwen_qwq_models(include_original_model: bool = False):
     _register_models(QwenQVQPreviewMeta, include_original_model=include_original_model)
     _IS_QWEN_QWQ_REGISTERED = True
 
+def register_qwen_2_5_coder_models(include_original_model: bool = False):
+    global _IS_QWEN_2_5_CODER_REGISTERED
+    if _IS_QWEN_2_5_CODER_REGISTERED:
+        return
+    _register_models(Qwen_2_5_CoderMeta, include_original_model=include_original_model)
+    _IS_QWEN_2_5_CODER_REGISTERED = True
+
 def register_qwen_models(include_original_model: bool = False):
     register_qwen_2_5_models(include_original_model=include_original_model)
     register_qwen_2_5_vl_models(include_original_model=include_original_model)
     register_qwen_qwq_models(include_original_model=include_original_model)
+    register_qwen_2_5_coder_models(include_original_model=include_original_model)
 
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
