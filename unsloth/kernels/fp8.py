@@ -17,6 +17,7 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+from fbgemm_gpu.experimental.gemm.triton_gemm.fp8_gemm import triton_quantize_fp8_block
 
 torch_matmul = torch.matmul
 
@@ -367,11 +368,61 @@ class FbgemmFp8Linear(torch.autograd.Function):
 def fbgemm_fp8_linear(X, weight, weight_scale, bias=None, ):
     return FbgemmFp8Linear.apply(X, weight, weight_scale, bias)
 
+
+class FP8_torch_linear(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, X, weight, weight_scale, bias=None):
+
+        orig_shape = X.shape
+        X = X.view(-1,X.shape[-1])
+
+        bs_n, bs_k = getattr(weight, 'block_size', None) or getattr(weight_scale, 'block_size', [128,128])
+        bs_m = bs_n
+
+        m,n = weight.shape
+        p,q = weight_scale.shape
+
+        if triton.cdiv(m,bs_n)!=p or triton.cdiv(n,bs_k)!=q:
+            if triton.cdiv(m,bs_n)==q and triton.cdiv(n,bs_k)==p:
+                # weights are tranposed during backward pass for training :)
+                # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
+                weight_scale = weight_scale.T
+            else:
+                raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}")
+
+        xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
+        output = torch.ops.fbgemm.f8f8bf16_blockwise(xq, weight.contiguous(), xs, weight_scale.contiguous(),bs_m,bs_n, bs_k)
+        output = output + bias if bias is not None else output
+
+        output = output.view(*orig_shape[:-1], -1)
+
+        del xq
+        del xs
+
+        ctx.weight = weight
+        ctx.weight_scale = weight_scale
+        ctx.block_size = [bs_m, bs_n, bs_k]
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
+        grad_X = torch_matmul(grad_output, W_deq.t())
+        del W_deq
+        return grad_X, None, None, None, None
+
+@torch.compile
+def fp8_torch_linear(X, weight, weight_scale, bias=None):
+    return FP8_torch_linear.apply(X, weight, weight_scale, bias)
+
+
 @torch.compile
 def fp8_linear(X, weight, weight_scale, bias=None):
     if weight_scale.ndim==2 and weight_scale.shape[1]>1:
         # This is block quantized FP8 matmul
-        out = fp8_e4m3_forward(X, weight, weight_scale)
+        #out = fp8_e4m3_forward(X, weight, weight_scale)
+        out = fp8_torch_linear(X, weight, weight_scale, bias)
     else:
         # Row quantized FP8
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
