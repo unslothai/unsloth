@@ -21,7 +21,10 @@ from ._utils import *
 from ._utils import patch_unsloth_smart_gradient_checkpointing
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
-from ._utils import _prepare_model_for_qat
+from ._utils import (
+    _get_inference_mode_context_manager,
+    _prepare_model_for_qat,
+)
 from torch.nn.functional import scaled_dot_product_attention
 from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
@@ -2030,7 +2033,7 @@ def unsloth_fast_generate(
 
     # Mixed precision autocast
     with (
-        torch.inference_mode(),
+        _get_inference_mode_context_manager(self),
         torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
     ):
         output = self._old_generate(*args, **kwargs)

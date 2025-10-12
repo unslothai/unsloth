@@ -12,11 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
+import os
+import re
+import tempfile
 from .mapper import INT_TO_FLOAT_MAPPER, FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from packaging.version import Version
-from transformers import __version__ as transformers_version
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    TorchAoConfig,
+    __version__ as transformers_version,
+)
+from unsloth.models._utils import TorchAOConfig
+from unsloth_zoo.utils import Version
+import torch
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -144,3 +156,119 @@ def get_model_name(model_name, load_in_4bit = True):
                 'pip install --upgrade --no-cache-dir "git+https://github.com/unslothai/unsloth-zoo.git"\n'
             )
     return new_model_name if new_model_name is not None else model_name
+
+
+def _get_torchao_fp8_config():
+    """
+    Return a `torchao.quantization.Float8DynamicActivationFloat8WeightConfig`
+    to be used for `load_in_fp8=True`.
+    """
+    from torchao.quantization import Float8DynamicActivationFloat8WeightConfig, PerRow
+
+    return Float8DynamicActivationFloat8WeightConfig(
+        granularity=PerRow(),
+        activation_value_lb=1e-12,
+    )
+
+
+def _offline_quantize_to_fp8(model_name: str) -> str:
+    """
+    Quantizes the model to fp8 using torchao and saving the quantized model to a
+    temporary location. Return the path to the quantized model.
+
+    Note: Once on-the-fly quantization is added in vllm in
+    https://github.com/vllm-project/vllm/pull/26327, we should
+    dynamically quantize the model there instead:
+
+      llm = LLM(
+        ...
+        hf_overrides={"quantization_config_file": "torchao_config.json"},
+      )
+    """
+    temp_dir = tempfile.gettempdir()
+    new_model_name = model_name.split("/")[-1] + "-fp8"
+    new_model_name = os.path.join(temp_dir, new_model_name)
+    print(f"Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
+    if not os.path.isdir(new_model_name):
+        qconfig = _get_torchao_fp8_config()
+        qconfig = TorchAoConfig(qconfig)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto",
+            device_map="auto",
+            quantization_config=qconfig,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model.save_pretrained(new_model_name, safe_serialization=False)
+        tokenizer.save_pretrained(new_model_name)
+    return new_model_name
+
+
+def _tag_model_with_fp8_torchao_config(model: torch.nn.Module):
+    """
+    Tag a model with a `TorchAOConfig` so downstream callers will know what to do with it.
+    """
+    base_config = _get_torchao_fp8_config()
+    model.torchao_config = TorchAOConfig(
+        qat_scheme=None,
+        base_config_and_filter_fns=[(base_config, None)],
+    )
+
+
+def _check_load_in_fp8_settings(
+    fast_inference: bool,
+    full_finetuning: bool,
+    load_in_4bit: bool,
+    load_in_8bit: bool,
+    load_in_16bit: bool,
+    use_exact_model_name: bool,
+):
+    """
+    Assuming `load_in_fp8=True`, raise appropriate errors on incompatible settings
+    and environment. Currently this feature requires:
+    1. H100 GPUs or after
+    2. torchao 0.15.0+ (or nightly)
+    3. torch 2.9.0+
+    4. If fbgemm_gpu_genai is installed, require 1.4.1+
+    """
+    if not fast_inference:
+        raise ValueError("Unsloth: `load_in_fp8` is only supported for `fast_inference` for now")
+    if full_finetuning:
+        raise ValueError("Unsloth: `load_in_fp8` is not compatible with full finetuning")
+    if load_in_4bit or load_in_8bit or load_in_16bit:
+        raise ValueError(
+            "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
+        )
+    if use_exact_model_name:
+        raise ValueError("Unsloth: `load_in_fp8` requires `use_exact_model_name=False`")
+
+    # Check if this is Hopper or above
+    if not (torch.cuda.is_available()
+        and torch.version.cuda
+        and torch.cuda.get_device_capability() >= (9, 0)
+    ):
+        raise ValueError("Unsloth: `load_in_fp8` requires H100 GPUs or after")
+
+    # Check if torch >= 2.9.0
+    if Version(torch.__version__) < Version("2.9.0"):
+        raise ValueError("Unsloth: `load_in_fp8` requires torch 2.9.0+")
+
+    # Check if torchao has this PR: https://github.com/pytorch/ao/pull/3158,
+    # which will be released in 0.15.0.
+    error_message = "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly)"
+    if importlib.util.find_spec("torchao") is None:
+        raise ValueError(error_message)
+    import torchao
+
+    if Version(torchao.__version__) < Version("0.15.0"):
+        raise ValueError(error_message)
+
+    # If fbgemm_gpu_genai is installed, check if it's >= 1.4.1
+    if (
+        importlib.util.find_spec("fbgemm_gpu") is not None and
+        importlib.util.find_spec("fbgemm_gpu.experimental") is not None
+    ):
+        import fbgemm_gpu.experimental.gen_ai
+
+        if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
+            raise ValueError("Unsloth: `load_in_fp8` is only compatible with fbgemm_gpu_genai 1.4.1+")

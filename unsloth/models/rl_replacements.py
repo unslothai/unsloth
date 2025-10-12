@@ -510,6 +510,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         if compute_efficient:
             return None, None
         else:
+            from unsloth.models._utils import _get_inference_mode_context_manager
+
             # Otherwise, calculate normally:
             if not hasattr(self, "_autocast_dtype"):
                 self._autocast_dtype = (
@@ -536,7 +538,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             )
 
             with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
-                with torch.inference_mode():
+                with _get_inference_mode_context_manager(model):
                     if pixel_values is None:
                         attention_mask = input_ids != self.processing_class.pad_token_id
                         attention_mask = attention_mask.to(attention_mask.dtype)

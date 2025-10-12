@@ -2012,7 +2012,7 @@ except:
 
 @dataclass
 class TorchAOConfig:
-    qat_scheme: str = "int4"
+    qat_scheme: Optional[str] = "int4"
 
     # Each (config, filter_fn) pair defines a quantization rule
     base_config_and_filter_fns: List[
@@ -2262,3 +2262,22 @@ def verify_fp8_support_if_applicable(model_config):
         raise ValueError(
             f"Unsloth: FP8 quantization is only supported on L4 and higher GPUs with compute capability 8.9 or higher. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
         )
+
+
+def _get_inference_mode_context_manager(model: torch.nn.Module):
+    """
+    If the state dict was quantized using torchao, we will run into
+    the following error when calling ops like aten.t() in inference mode.
+    This is a bug in PyTorch that affects all tensor subclasses.
+
+        Cannot set version_counter for inference tensor
+
+    For now, we work around this issue by using `torch.no_grad()` in this case.
+    See https://github.com/pytorch/pytorch/issues/164872 for more details.
+    Otherwise, just return `torch.inference_mode()`.
+    """
+    torchao_config = getattr(model, "torchao_config", None)
+    if torchao_config is not None and torchao_config.qat_scheme is None:
+        return torch.no_grad()
+    else:
+        return torch.inference_mode()
