@@ -421,8 +421,11 @@ def fp8_torch_linear(X, weight, weight_scale, bias=None):
 def fp8_linear(X, weight, weight_scale, bias=None):
     if weight_scale.ndim==2 and weight_scale.shape[1]>1:
         # This is block quantized FP8 matmul
-        #out = fp8_e4m3_forward(X, weight, weight_scale)
-        out = fp8_torch_linear(X, weight, weight_scale, bias)
+        out = fp8_e4m3_forward(X, weight, weight_scale)
+        # These operations fall apart when X have large values in it. So disabling for the timebeing?
+        # The above operation makes the training loop ~4x slower per step but the output is correct :(
+        # TODO: Fix the outlier handling in torch implementation and enable this
+        # out = fp8_torch_linear(X, weight, weight_scale, bias)
     else:
         # Row quantized FP8
         out = fbgemm_fp8_linear(X, weight, weight_scale, bias)
