@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
 import triton
 import ctypes
 
@@ -211,6 +212,10 @@ torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
 
 
+# Whether torchao can be imported
+_HAS_TORCHAO = importlib.util.find_spec("torchao") is not None
+
+
 def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
@@ -329,12 +334,33 @@ def _maybe_fake_quantize_activations(
     return X
 
 
+def _maybe_dequantize_torchao_float8_tensor(w: torch.Tensor) -> torch.Tensor:
+    """
+    Dequantize `w` if it is a `torchao.quantization.Float8Tensor` and only
+    during the backward pass, when the tensor is no longer rowwise scaled
+    because it's been transposed.
+    """
+    if not _HAS_TORCHAO:
+        return w
+    from torchao.quantization import Float8Tensor
+    if not isinstance(w, Float8Tensor):
+        return w
+    # In the backward pass, rowwise scaled becomes colwise scaled after we
+    # transpose the weight tensor. Use this case to detect backward
+    assert w.ndim == 2
+    if w.block_size[0] == w.shape[0] and w.block_size[1] == 1:
+        return w.dequantize()
+    else:
+        return w
+
+
 # INTEL GPU Specific Logic
 if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
 
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
         # TODO: After adding XPU BNB support, check this function
+        W = _maybe_dequantize_torchao_float8_tensor(W)
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -441,6 +467,7 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+        W = _maybe_dequantize_torchao_float8_tensor(W)
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -551,6 +578,7 @@ else:
 
     @torch.inference_mode
     def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+        W = _maybe_dequantize_torchao_float8_tensor(W)
         if quant_state is None:
             return W
         if W.dtype == torch.float8_e4m3fn:
@@ -987,8 +1015,8 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     if W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
-        W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
-        out = torch_matmul(X, W, out = out)
+        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
 

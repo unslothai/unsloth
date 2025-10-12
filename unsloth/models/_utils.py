@@ -2012,7 +2012,7 @@ except:
 
 @dataclass
 class TorchAOConfig:
-    qat_scheme: str = "int4"
+    qat_scheme: Optional[str] = "int4"
 
     # Each (config, filter_fn) pair defines a quantization rule
     base_config_and_filter_fns: List[
