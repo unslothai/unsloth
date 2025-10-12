@@ -2376,11 +2376,16 @@ class FastLlamaModel:
                     print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
                     new_dtype = model.get_input_embeddings().modules_to_save.default.weight.dtype
-                    if new_dtype == torch.float16:
-                        # See https://github.com/unslothai/unsloth/pull/1200
-                        # Tesla T4 must use float32 and not float16
-                        new_dtype = torch.float32
-                    pass
+                    # COMMENTED OUT: Original code forced fp16->fp32 casting for numerical stability
+                    # However, this casting creates a precision mismatch that breaks the backward pass in 
+                    # cut_cross_entropy/cce_backward.py which requires embeddings to be strictly bf16 or fp16.
+                    # Instead of casting here, we've added FP16GradScaler in trainer.py to allow FP16 gradients
+
+                    # if new_dtype == torch.float16:
+                    #     # See https://github.com/unslothai/unsloth/pull/1200
+                    #     # Tesla T4 must use float32 and not float16
+                    #     new_dtype = torch.float32
+                    # pass
 
                     model.get_input_embeddings().modules_to_save.default\
                         .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
@@ -2396,11 +2401,16 @@ class FastLlamaModel:
                     print("Unsloth: Training lm_head in mixed precision to save VRAM")
 
                     new_dtype = model.get_output_embeddings().modules_to_save.default.weight.dtype
-                    if new_dtype == torch.float16:
-                        # See https://github.com/unslothai/unsloth/pull/1200
-                        # Tesla T4 must use float32 and not float16
-                        new_dtype = torch.float32
-                    pass
+                    # COMMENTED OUT: Original code forced fp16->fp32 casting for numerical stability
+                    # However, this casting creates a precision mismatch that breaks the backward pass in 
+                    # cut_cross_entropy/cce_backward.py which requires embeddings to be strictly bf16 or fp16.
+                    # Instead of casting here, we've added FP16GradScaler in trainer.py to allow FP16 gradients
+
+                    # if new_dtype == torch.float16:
+                    #     # See https://github.com/unslothai/unsloth/pull/1200
+                    #     # Tesla T4 must use float32 and not float16
+                    #     new_dtype = torch.float32
+                    # pass
 
                     model.get_output_embeddings().modules_to_save.default\
                         .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
@@ -2665,11 +2675,16 @@ class FastLlamaModel:
             assert(hasattr(model.get_input_embeddings(), "modules_to_save"))
 
             new_dtype = model.get_input_embeddings().modules_to_save.default.weight.dtype
-            if new_dtype == torch.float16:
-                # See https://github.com/unslothai/unsloth/pull/1200
-                # Tesla T4 must use float32 and not float16
-                new_dtype = torch.float32
-            pass
+            # COMMENTED OUT: Original code forced fp16->fp32 casting for numerical stability
+            # However, this casting creates a precision mismatch that breaks the backward pass in 
+            # cut_cross_entropy/cce_backward.py which requires embeddings to be strictly bf16 or fp16.
+            # Instead of casting here, we've added FP16GradScaler in trainer.py to allow FP16 gradients
+
+            # if new_dtype == torch.float16:
+            #     # See https://github.com/unslothai/unsloth/pull/1200
+            #     # Tesla T4 must use float32 and not float16
+            #     new_dtype = torch.float32
+            # pass
 
             model.get_input_embeddings().modules_to_save.default\
                 .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
@@ -2681,11 +2696,16 @@ class FastLlamaModel:
             assert(hasattr(model.get_output_embeddings(), "modules_to_save"))
 
             new_dtype = model.get_output_embeddings().modules_to_save.default.weight.dtype
-            if new_dtype == torch.float16:
-                # See https://github.com/unslothai/unsloth/pull/1200
-                # Tesla T4 must use float32 and not float16
-                new_dtype = torch.float32
-            pass
+            # COMMENTED OUT: Original code forced fp16->fp32 casting for numerical stability
+            # However, this casting creates a precision mismatch that breaks the backward pass in 
+            # cut_cross_entropy/cce_backward.py which requires embeddings to be strictly bf16 or fp16.
+            # Instead of casting here, we've added FP16GradScaler in trainer.py to allow FP16 gradients
+
+            # if new_dtype == torch.float16:
+            #     # See https://github.com/unslothai/unsloth/pull/1200
+            #     # Tesla T4 must use float32 and not float16
+            #     new_dtype = torch.float32
+            # pass
 
             model.get_output_embeddings().modules_to_save.default\
                 .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
