@@ -44,7 +44,13 @@ from .fast_lora import (
     apply_lora_o,
     fast_lora_forward,
 )
-from .utils import fast_dequantize, fast_gemv, QUANT_STATE, fast_linear_forward, matmul_lora
+from .utils import (
+    fast_dequantize,
+    fast_gemv,
+    QUANT_STATE,
+    fast_linear_forward,
+    matmul_lora,
+)
 
 from .flex_attention import (
     HAS_FLEX_ATTENTION,
@@ -55,9 +61,12 @@ from .flex_attention import (
 )
 
 import os
+
 if "UNSLOTH_ZOO_IS_PRESENT" not in os.environ:
     try:
-        print("🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.")
+        print(
+            "🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning."
+        )
     except:
         print("Unsloth: Will patch your computer to enable 2x faster free finetuning.")
     pass

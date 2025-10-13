@@ -32,6 +32,8 @@ eval_dataset = dataset.select(range(2000, 2200))
 print(f"✅ Dataset loaded successfully!")
 print(f"   📈 Training samples: {len(train_dataset)}")
 print(f"   📊 Evaluation samples: {len(eval_dataset)}")
+
+
 # Convert dataset to OAI messages
 def format_data(sample):
     return {
@@ -59,6 +61,7 @@ def format_data(sample):
             },
         ],
     }
+
 
 print("\n🔄 Formatting dataset for vision training...")
 system_message = "You are an expert french ocr system."
