@@ -12,21 +12,28 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from tests.utils.cleanup_utils import safe_remove_directory
 
+
 def formatting_prompts_func(examples):
     convos = examples["messages"]
-    texts = [tokenizer.apply_chat_template(convo, tokenize=False, add_generation_prompt=False) for convo in convos]
+    texts = [
+        tokenizer.apply_chat_template(
+            convo, tokenize=False, add_generation_prompt=False
+        )
+        for convo in convos
+    ]
     return {"text": texts}
 
-print(f"\n{'='*80}")
+
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 1: Loading Base Model and Initial Training")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 if torch.cuda.is_bf16_supported():
     compute_dtype = torch.bfloat16
-    attn_implementation = 'flash_attention_2'
+    attn_implementation = "flash_attention_2"
 else:
     compute_dtype = torch.float16
-    attn_implementation = 'sdpa'
+    attn_implementation = "sdpa"
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name="unsloth/Llama-3.1-8B-Instruct",
@@ -35,7 +42,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
     load_in_8bit=False,
     full_finetuning=False,
-    attn_implementation=attn_implementation
+    attn_implementation=attn_implementation,
 )
 
 tokenizer = get_chat_template(
@@ -44,19 +51,29 @@ tokenizer = get_chat_template(
 )
 
 # Load small dataset for quick training
-dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split="train[:100]")
+dataset_train = load_dataset(
+    "allenai/openassistant-guanaco-reformatted", split="train[:100]"
+)
 dataset_train = dataset_train.map(formatting_prompts_func, batched=True)
 
 print("✅ Base model loaded successfully!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 2: First Fine-tuning")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 model = FastLanguageModel.get_peft_model(
     model,
     r=16,
-    target_modules=['k_proj', 'q_proj', 'v_proj', 'o_proj', "gate_proj", "down_proj", "up_proj"],
+    target_modules=[
+        "k_proj",
+        "q_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "down_proj",
+        "up_proj",
+    ],
     lora_alpha=16,
     lora_dropout=0,
     bias="none",
@@ -97,21 +114,21 @@ trainer = SFTTrainer(
 trainer_stats = trainer.train()
 print("✅ First fine-tuning completed!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 3: Save with Forced 4bit Merge")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 model.save_pretrained_merged(
-    save_directory='./test_4bit_model',
+    save_directory="./test_4bit_model",
     tokenizer=tokenizer,
-    save_method="forced_merged_4bit"
+    save_method="forced_merged_4bit",
 )
 
 print("✅ Model saved with forced 4bit merge!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 4: Loading 4bit Model and Second Fine-tuning")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 # Clean up first model
 del model
@@ -137,7 +154,15 @@ print("✅ 4bit model loaded successfully!")
 model_4bit = FastLanguageModel.get_peft_model(
     model_4bit,
     r=16,
-    target_modules=['k_proj', 'q_proj', 'v_proj', 'o_proj', "gate_proj", "down_proj", "up_proj"],
+    target_modules=[
+        "k_proj",
+        "q_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "down_proj",
+        "up_proj",
+    ],
     lora_alpha=16,
     lora_dropout=0,
     bias="none",
@@ -177,14 +202,14 @@ trainer_4bit = SFTTrainer(
 trainer_4bit.train()
 print("✅ Second fine-tuning on 4bit model completed!")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 5: Testing TypeError on Regular Merge (Should Fail)")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 try:
     model_4bit.save_pretrained_merged(
-        save_directory='./test_should_fail',
-        tokenizer=tokenizer_4bit
+        save_directory="./test_should_fail",
+        tokenizer=tokenizer_4bit,
         # No save_method specified, should default to regular merge
     )
     assert False, "Expected TypeError but merge succeeded!"
@@ -194,23 +219,23 @@ except TypeError as e:
     print("✅ Correct TypeError raised for 4bit base model regular merge attempt!")
     print(f"Error message: {str(e)}")
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 PHASE 6: Successful Save with Forced 4bit Method")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 try:
     model_4bit.save_pretrained_merged(
-        save_directory='./test_4bit_second',
+        save_directory="./test_4bit_second",
         tokenizer=tokenizer_4bit,
-        save_method="forced_merged_4bit"
+        save_method="forced_merged_4bit",
     )
     print("✅ Successfully saved 4bit model with forced 4bit method!")
 except Exception as e:
     assert False, f"Phase 6 failed unexpectedly: {e}"
 
-print(f"\n{'='*80}")
+print(f"\n{'=' * 80}")
 print("🔍 CLEANUP")
-print(f"{'='*80}")
+print(f"{'=' * 80}")
 
 # Cleanup
 safe_remove_directory("./outputs")

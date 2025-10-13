@@ -16,6 +16,7 @@ class _CountingFakeQuantizer(torch.nn.Module):
     """
     Dummy fake quantizer that counts the number of times it has been called.
     """
+
     def __init__(self):
         super().__init__()
         self.count = 0
@@ -31,15 +32,15 @@ def _get_model(qat_scheme: str, full_finetuning: bool):
     to use QAT. If `full_finetuning` is False, return the PEFT (LoRA) model.
     """
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "unsloth/Qwen3-1.7B",
-        load_in_4bit = False,
-        full_finetuning = full_finetuning,
-        qat_scheme = qat_scheme if full_finetuning else None,
+        model_name="unsloth/Qwen3-1.7B",
+        load_in_4bit=False,
+        full_finetuning=full_finetuning,
+        qat_scheme=qat_scheme if full_finetuning else None,
     )
     if not full_finetuning:
         model = FastLanguageModel.get_peft_model(
             model,
-            qat_scheme = qat_scheme,
+            qat_scheme=qat_scheme,
         )
     return model, tokenizer
 
@@ -88,6 +89,7 @@ def _test_fake_quantizers_are_called(
     """
     Verify that the fake quantizers are actually called when the model is called.
     """
+
     def _swap_fake_quantizers(model: torch.nn.Module):
         for name, child in model.named_children():
             if isinstance(child, FakeQuantizerBase):

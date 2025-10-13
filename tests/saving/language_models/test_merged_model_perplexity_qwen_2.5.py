@@ -1,7 +1,11 @@
 from unsloth import FastLanguageModel, FastVisionModel, UnslothVisionDataCollator
 from unsloth.chat_templates import get_chat_template
 from trl import SFTTrainer, SFTConfig
-from transformers import DataCollatorForLanguageModeling, DataCollatorForSeq2Seq, TrainingArguments
+from transformers import (
+    DataCollatorForLanguageModeling,
+    DataCollatorForSeq2Seq,
+    TrainingArguments,
+)
 from datasets import load_dataset, Dataset
 import torch
 from tqdm import tqdm
@@ -19,7 +23,11 @@ REPO_ROOT = Path(__file__).parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 from tests.utils.cleanup_utils import safe_remove_directory
-from tests.utils.perplexity_eval import ppl_model, add_to_comparison, print_model_comparison
+from tests.utils.perplexity_eval import (
+    ppl_model,
+    add_to_comparison,
+    print_model_comparison,
+)
 
 
 alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -32,6 +40,7 @@ alpaca_prompt = """Below is an instruction that describes a task, paired with an
 
 ### Response:
 {}"""
+
 
 # Define helper functions outside of main
 def formatting_prompts_func(examples):
@@ -65,7 +74,7 @@ def formatting_prompts_func(examples):
         "instruction": instructions,
         "input": inputs,
         "output": outputs,
-        "text": texts
+        "text": texts,
     }
 
 
@@ -88,7 +97,9 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit=False, load_in_8bit=Fal
     # )
 
     # Load dataset fresh in subprocess
-    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split="eval")
+    dataset_ppl = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split="eval"
+    )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
@@ -132,21 +143,18 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit=False, load_in_8bit=Fal
             "instruction": instructions,
             "input": inputs,
             "output": outputs,
-            "text": texts
+            "text": texts,
         }
-
-
 
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched=True)
 
     # Compute perplexity using the passed dataset
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-
     # IMPORTANT: Convert to Python float if it's a tensor
     if torch.is_tensor(ppl_value):
         ppl_value = ppl_value.cpu().item()  # Move to CPU and convert to Python scalar
-    elif hasattr(ppl_value, 'item'):
+    elif hasattr(ppl_value, "item"):
         ppl_value = ppl_value.item()  # Convert numpy or other array types
     else:
         ppl_value = float(ppl_value)  # Ensure it's a float
@@ -161,16 +169,17 @@ def load_and_compute_8bit_ppl(result_queue, load_in_4bit=False, load_in_8bit=Fal
     # torch.cuda.empty_cache()
     # gc.collect()
 
+
 # Main execution code should be wrapped in this guard
 if __name__ == "__main__":
-    mp.set_start_method('spawn', force=True)
+    mp.set_start_method("spawn", force=True)
 
     if torch.cuda.is_bf16_supported():
         compute_dtype = torch.bfloat16
-        attn_implementation = 'flash_attention_2'
+        attn_implementation = "flash_attention_2"
     else:
         compute_dtype = torch.float16
-        attn_implementation = 'sdpa'
+        attn_implementation = "sdpa"
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name="unsloth/Qwen2.5-7B-Instruct",
@@ -179,12 +188,15 @@ if __name__ == "__main__":
         load_in_4bit=True,
         load_in_8bit=False,
         full_finetuning=False,
-        attn_implementation=attn_implementation
+        attn_implementation=attn_implementation,
     )
 
-
-    dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split="train")
-    dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split="eval")
+    dataset_train = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split="train"
+    )
+    dataset_ppl = load_dataset(
+        "allenai/openassistant-guanaco-reformatted", split="eval"
+    )
 
     dataset_train = dataset_train.map(formatting_prompts_func, batched=True)
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched=True)
@@ -194,7 +206,15 @@ if __name__ == "__main__":
     model = FastLanguageModel.get_peft_model(
         model,
         r=16,
-        target_modules=['k_proj', 'q_proj', 'v_proj', 'o_proj', "gate_proj", "down_proj", "up_proj"],
+        target_modules=[
+            "k_proj",
+            "q_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "down_proj",
+            "up_proj",
+        ],
         lora_alpha=16,
         lora_dropout=0,
         bias="none",
@@ -240,8 +260,7 @@ if __name__ == "__main__":
     # saving and merging the model to local disk
     print("merge and save to local disk")
     model.save_pretrained_merged(
-        save_directory='./unsloth_out/merged_qwen_text_model',
-        tokenizer=tokenizer
+        save_directory="./unsloth_out/merged_qwen_text_model", tokenizer=tokenizer
     )
 
     # print("cleaning")
@@ -259,8 +278,9 @@ if __name__ == "__main__":
         load_in_8bit=False,
     )
 
-    add_to_comparison("merged model load 4bit", ppl_model(merged_model, merged_tokenizer, dataset_ppl))
-
+    add_to_comparison(
+        "merged model load 4bit", ppl_model(merged_model, merged_tokenizer, dataset_ppl)
+    )
 
     print("Computing 8-bit model perplexity in subprocess...")
     result_queue = mp.Queue()
@@ -279,7 +299,10 @@ if __name__ == "__main__":
         load_in_8bit=False,
     )
 
-    add_to_comparison("merged model loaded 16bits", ppl_model(merged_model, merged_tokenizer, dataset_ppl))
+    add_to_comparison(
+        "merged model loaded 16bits",
+        ppl_model(merged_model, merged_tokenizer, dataset_ppl),
+    )
 
     print_model_comparison()
 

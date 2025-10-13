@@ -82,6 +82,7 @@ def test_all_model_registration():
     missing_models = _test_model_uploaded(registered_models)
     assert not missing_models, f"Missing following models: {missing_models}"
 
+
 def test_quant_type():
     # Test that the quant_type is correctly set for model paths
     # NOTE: for models registered under org="unsloth" with QuantType.NONE aliases QuantType.UNSLOTH
