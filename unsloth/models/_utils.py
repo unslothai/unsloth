@@ -432,7 +432,12 @@ try:
 except:
     pass
 from transformers import __version__ as transformers_version
-from transformers import PretrainedConfig
+
+try:
+    from transformers import PreTrainedConfig
+except:
+    from transformers import PretrainedConfig
+
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
 
 for model_name in model_architectures:
