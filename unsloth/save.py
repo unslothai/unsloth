@@ -2525,7 +2525,7 @@ def unsloth_save_pretrained_torchao(
     del arguments["torchao_config"]
 
     if not isinstance(self, PeftModelForCausalLM) and not isinstance(self, PeftModel):
-      self.save_pretrained(save_directory,safe_serialization=False)
+      self.save_pretrained(save_directory)
       tokenizer.save_pretrained(save_directory)
     else:
       unsloth_generic_save(**arguments)
