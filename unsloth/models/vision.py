@@ -92,7 +92,13 @@ PRE_COMPILE_INFERENCE = [
     "gpt_oss",
 ]
 
-from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
+from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig
+try:
+    from transformers import PreTrainedConfig
+    PretrainedConfig = PreTrainedConfig
+except:
+    from transformers import PretrainedConfig
+
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
 
 from transformers import GenerationConfig, CompileConfig, HybridCache
