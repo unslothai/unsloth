@@ -205,9 +205,9 @@ def get_lora_parameters(proj):
 
     W_quant = next((x for x in [getattr(W, "quant_state", None), getattr(base_layer, "weight_scale_inv", None), getattr(base_layer, "weight_scale", None)] if x is not None), None)
 
-    if getattr(base_layer, 'quant_method', None)=='fp8':
+    if getattr(base_layer, 'quant_method', None) == 'fp8':
         # we need to somehow store and pass this information :)
-        W.block_size = getattr(base_layer, 'block_size', [128,128])
+        W.block_size = getattr(base_layer, 'block_size', [128, 128])
         W_quant.block_size = W.block_size
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
@@ -253,9 +253,9 @@ def get_lora_parameters_bias(proj):
         return W, W_quant, None, None, None, base_layer.bias
     pass
 
-    if getattr(base_layer, 'quant_method', None)=='fp8':
+    if getattr(base_layer, 'quant_method', None) == 'fp8':
         # we need to somehow store and pass this information :)
-        W.block_size = getattr(base_layer, 'block_size', [128,128])
+        W.block_size = getattr(base_layer, 'block_size', [128, 128])
         W_quant.block_size = W.block_size
 
     adapter = getattr(proj, "active_adapters", None)
@@ -763,7 +763,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         reshape = False
     pass
 
-    if W.dtype==torch.float8_e4m3fn:
+    if W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant, )
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
