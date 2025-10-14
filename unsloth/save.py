@@ -44,6 +44,7 @@ except:
     pass
 pass
 from pathlib import Path
+from peft import PeftModelForCausalLM, PeftModel
 
 __all__ = [
     "print_quantization_methods",
@@ -2522,7 +2523,12 @@ def unsloth_save_pretrained_torchao(
     arguments["save_method"]  = "merged_16bit" # Must be 16bit
     del arguments["self"]
     del arguments["torchao_config"]
-    unsloth_generic_save(**arguments)
+
+    if not isinstance(self, PeftModelForCausalLM) and not isinstance(self, PeftModel):
+      self.save_pretrained(save_directory)
+      tokenizer.save_pretrained(save_directory)
+    else:
+      unsloth_generic_save(**arguments)
     for _ in range(3):
         gc.collect()
 
