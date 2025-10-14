@@ -220,6 +220,11 @@ class FastLanguageModel(FastLlamaModel):
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
+            if "architecture" in autoconfig_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
@@ -231,6 +236,11 @@ class FastLanguageModel(FastLlamaModel):
             is_peft = True
         except Exception as error:
             peft_error = str(error)
+            if "architecture" in peft_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_peft = False
         pass
 
@@ -634,6 +644,11 @@ class FastModel(FastBaseModel):
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
+            if "architecture" in autoconfig_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
@@ -645,6 +660,11 @@ class FastModel(FastBaseModel):
             is_peft = True
         except Exception as error:
             peft_error = str(error)
+            if "architecture" in peft_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_peft = False
         pass
         # Old transformers versions check

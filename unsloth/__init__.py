@@ -82,7 +82,18 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    raise NotImplementedError("Unsloth currently only works on NVIDIA GPUs and Intel GPUs.")
+    # Check torch.accelerator
+    if hasattr(torch, "accelerator"):
+        if not torch.accelerator.is_available():
+            raise NotImplementedError("Unsloth cannot find any torch accelerators? You need a GPU.")
+        accelerator = str(torch.accelerator.current_accelerator())
+        if accelerator in ("cuda", "xpu", "hip"):
+            raise RuntimeError(
+                f"Unsloth: Weirdly `torch.cuda.is_available()`, `torch.xpu.is_available()` and `is_hip` all failed.\n"\
+                f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"\
+                f"Please reinstall torch - it's most likely broken :("
+            )
+    raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
 pass
 DEVICE_TYPE : str = get_device_type()
 
@@ -147,6 +158,8 @@ from .import_fixes import fix_vllm_aimv2_issue
 fix_vllm_aimv2_issue(); del fix_vllm_aimv2_issue;
 from .import_fixes import ignore_logger_messages
 ignore_logger_messages(); del ignore_logger_messages;
+from .import_fixes import patch_ipykernel_hf_xet
+patch_ipykernel_hf_xet(); del patch_ipykernel_hf_xet;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -240,7 +253,7 @@ elif DEVICE_TYPE == "xpu":
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.9.6"):
+    if Version(unsloth_zoo_version) < Version("2025.10.2"):
         print(
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
