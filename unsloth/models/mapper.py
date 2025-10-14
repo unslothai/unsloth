@@ -114,7 +114,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-1.1-7b-it",
         "google/gemma-1.1-7b-it",
     ),
-    "unsloth/Starling-LM-7B-beta-bnb-4bit" : (
+    "unsloth/Starling-LM-7B-beta" : (
         "unsloth/Starling-LM-7B-beta",
         "Nexusflow/Starling-LM-7B-beta",
     ),
@@ -1011,6 +1011,26 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/granite-4.0-h-small-base" : (
         "unsloth/granite-4.0-h-small-base",
         "ibm-granite/granite-4.0-h-small-base",
+    ),
+    "unsloth/Qwen3-VL-4B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-4B-Thinking",
+        "Qwen/Qwen3-VL-4B-Thinking",
+        "unsloth/Qwen3-VL-4B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-8B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-8B-Thinking",
+        "Qwen/Qwen3-VL-8B-Thinking",
+        "unsloth/Qwen3-VL-8B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-4B-Instruct",
+        "Qwen/Qwen3-VL-4B-Instruct",
+        "unsloth/Qwen3-VL-4B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-8B-Instruct",
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "unsloth/Qwen3-VL-8B-Instruct-bnb-4bit",
     ),
 }
 

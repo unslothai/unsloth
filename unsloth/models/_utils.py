@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.10.1"
+__version__ = "2025.10.3"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -432,7 +432,12 @@ try:
 except:
     pass
 from transformers import __version__ as transformers_version
-from transformers import PretrainedConfig
+
+try:
+    from transformers import PreTrainedConfig
+except:
+    from transformers import PretrainedConfig
+
 model_architectures = ["llama", "mistral", "gemma", "gemma2", "qwen2", "granite", "qwen3", "qwen3_moe", "falcon_h1"]
 
 for model_name in model_architectures:
