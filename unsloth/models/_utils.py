@@ -1652,7 +1652,7 @@ def error_out_no_vllm(*args, **kwargs):
 
 
 class TorchAOMetadata:
-    def __init__(qat_scheme, base_config, filter_fn, group_size):
+    def __init__(self, qat_scheme, base_config, filter_fn, group_size):
         self.qat_scheme = qat_scheme
         self.base_config = base_config
         self.filter_fn = filter_fn
