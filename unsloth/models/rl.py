@@ -183,6 +183,7 @@ selective_log_softmax            = RL_REPLACEMENTS["selective_log_softmax"]
 calculate_pad_tokens_in_prompt   = RL_REPLACEMENTS["calculate_pad_tokens_in_prompt"]
 create_completion_attention_mask = RL_REPLACEMENTS["create_completion_attention_mask"]
 left_pack_padding                = RL_REPLACEMENTS["left_pack_padding"]
+align_logprobs_with_mask         = RL_REPLACEMENTS["align_logprobs_with_mask"]
 
 RLTrainer_replacement = '''
 import os
@@ -225,6 +226,7 @@ torch_compile_options = {{
 {calculate_pad_tokens_in_prompt_code}
 {create_completion_attention_mask_code}
 {left_pack_padding_code}
+{align_logprobs_with_mask_code}
 
 {RL_pre}
 
@@ -758,7 +760,6 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         "    mask_truncated_completions = True\n"\
         "    epsilon_high = 0.28\n"\
         "    beta = 0.0\n"\
-        "    loss_type = 'bnpo'\n"\
         "\n"
         extra_args += check_dr_grpo
     pass
@@ -830,7 +831,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     calculate_pad_tokens_in_prompt_code = inspect.getsource(calculate_pad_tokens_in_prompt)
     create_completion_attention_mask_code = inspect.getsource(create_completion_attention_mask)
     left_pack_padding_code = inspect.getsource(left_pack_padding)
-
+    align_logprobs_with_mask_code = inspect.getsource(align_logprobs_with_mask)
     # Get final source code
     RLTrainer_source = RLTrainer_replacement.format(
         RLTrainer_name       = RLTrainer_name,
@@ -859,6 +860,7 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
         calculate_pad_tokens_in_prompt_code   = calculate_pad_tokens_in_prompt_code,
         create_completion_attention_mask_code = create_completion_attention_mask_code,
         left_pack_padding_code                = left_pack_padding_code,
+        align_logprobs_with_mask_code         = align_logprobs_with_mask_code,
     )
 
     if RLTrainer_name == "SFTTrainer":
@@ -942,15 +944,19 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
             "if hasattr(model, 'vllm_engine') and hasattr(args, 'use_vllm'):\n" + \
             " " * 12 + "if (getattr(args, 'use_vllm', False) == False):\n" + \
             " " * 16 + "args.use_vllm = True\n"
+            #" " * 16 + "args.vllm_importance_sampling_correction = True\n" + \
+            #" " * 16 + "args.vllm_importance_sampling_cap = 2.0\n"
 
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
                 vllm_setter += \
-                " " * 12 + "args.vllm_mode='colocate'\n"
-
+                " " * 12 + "args.vllm_mode='colocate'\n"               
+    
             init = init.replace(replacer, replacer + vllm_setter)
         pass
     pass
+
+    #breakpoint()
 
     vllm_part = re.findall(
         r"(\n[\s]{8}"\
@@ -960,6 +966,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
         init,
         flags = re.MULTILINE | re.DOTALL,
     )
+    
     if len(vllm_part) == 1:
         vllm_part, args = vllm_part[0][0], vllm_part[0][1]
         # Strip all comments
