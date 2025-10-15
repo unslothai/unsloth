@@ -22,6 +22,13 @@ try:
 except ImportError:
     triton_quantize_fp8_block = None
 
+try:
+    from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
+        blockwise_fp8_gemm as torchao_blockwise_gemm,
+    )
+except ImportError:
+    torchao_blockwise_gemm = None
+
 from unsloth_zoo.temporary_patches.common import torch_compile
 
 torch_matmul = torch.matmul
@@ -82,7 +89,7 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     # this is a deviation from the original implementation.
     s = 1.0 if s == 0 else s
     y = x / s
-    y = y.to(y_ptr.dtype)
+    y = y.to(y_ptr.dtype.element_ty)
     tl.store(y_ptr + offs, y)
     tl.store(s_ptr + pid, s)
 
@@ -264,7 +271,28 @@ def w8a8_block_fp8_matmul_triton(
     )
     return C
 
-class FP8_E4M3Linear(torch.autograd.Function):
+def torchao_block_matmul(
+    act_q: torch.Tensor,
+    weight_q: torch.Tensor,
+    act_scale: torch.Tensor,
+    weight_scale: torch.Tensor,
+    block_size: tuple[int, int],
+    output_dtype: torch.dtype = torch.bfloat16,
+):
+    out = torchao_blockwise_gemm(
+        act_q.contiguous(),
+        act_scale.contiguous(),
+        weight_q.contiguous(),
+        weight_scale.contiguous(),
+        block_size=block_size[1],
+    )
+    return out.to(output_dtype)
+
+# This torchao FP8 matmul seems to be ~3x faster than the w8a8_block_fp8_matmul_triton. Though this is 15-30% slower than fbgemm implementation.
+# But this gives very comparable results when it comes to training loss, so we prefer using it when available.
+fp8_block_matmul = torchao_block_matmul if torchao_blockwise_gemm is not None else w8a8_block_fp8_matmul_triton
+
+class FP8BlockQuantLinear(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, X, weight, weight_scale):
@@ -285,7 +313,7 @@ class FP8_E4M3Linear(torch.autograd.Function):
             weight = weight.contiguous()
         # this is replica of https://github.com/huggingface/transformers/blob/01c9e1ba683b3e50d7c76bf92f2d470759fd5e81/src/transformers/integrations/finegrained_fp8.py#L331-L353
         qinput, scale = act_quant(X, block_size[1])
-        output = w8a8_block_fp8_matmul_triton(
+        output = fp8_block_matmul(
             qinput,
             weight,
             scale,
@@ -308,8 +336,8 @@ class FP8_E4M3Linear(torch.autograd.Function):
         return grad_X, None, None
 
 @torch_compile
-def fp8_e4m3_forward(X, weight, weight_scale):
-    return FP8_E4M3Linear.apply(X, weight, weight_scale)
+def fp8_block_quant_forward(X, weight, weight_scale):
+    return FP8BlockQuantLinear.apply(X, weight, weight_scale)
 
 
 class FbgemmFp8Linear(torch.autograd.Function):
@@ -427,9 +455,9 @@ def fp8_torch_linear(X, weight, weight_scale, bias=None):
 def fp8_linear(X, weight, weight_scale, bias=None):
     if weight_scale.ndim == 2 and weight_scale.shape[1] > 1:
         # This is block quantized FP8 matmul
-        out = fp8_e4m3_forward(X, weight, weight_scale)
+        out = fp8_block_quant_forward(X, weight, weight_scale)
         # These operations fall apart when X have large values in it. So disabling for the timebeing?
-        # The above operation makes the training loop ~4x slower per step but the output is correct :(
+        # The above operation makes the training loop ~15-30% slower if torchao is available ~4x slower if not :(
         # TODO: Fix the outlier handling in torch implementation and enable this
         # out = fp8_torch_linear(X, weight, weight_scale, bias)
     else:
