@@ -1711,8 +1711,7 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
     while hasttr(model, "model"):
         model._torchao_metadata = torchao_metadata
         model = model.model
-    if hasattr(model, "model"):
-        model._torchao_metadata = torchao_metadata
+    model._torchao_metadata = torchao_metadata
     quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
     return model
 pass
