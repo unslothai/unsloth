@@ -1651,6 +1651,14 @@ def error_out_no_vllm(*args, **kwargs):
     raise NotImplementedError("Unsloth: vLLM is not yet supported for fast inference for this model! Please use `.generate` instead")
 
 
+class TorchAOMetadata:
+    def __init__(qat_scheme, base_config, filter_fn, group_size):
+        self.qat_scheme = qat_scheme
+        self.base_config = base_config
+        self.filter_fn = filter_fn
+        self.group_size = group_size
+pass
+
 def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.Module:
     """
     Transform a model for Quantization-Aware Training (QAT) during fine-tuning.
@@ -1673,6 +1681,8 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
     from torchao.quantization.granularity import PerGroup
     from torchao.quantization.qat import QATConfig
     filter_fn = None
+    group_size = None
+    base_config = None
     if qat_scheme == "fp8-int4":
         group_size = 128
         base_config = Float8DynamicActivationInt4WeightConfig()
@@ -1690,6 +1700,19 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
     else:
         raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
     pass
+    # Save TorchAO schemes
+    torchao_metadata = TorchAOMetadata(
+        qat_scheme = qat_scheme,
+        base_config = base_config,
+        filter_fn = filter_fn,
+        group_size = group_size,
+    )
+    inner_model = model
+    while hasttr(model, "model"):
+        model._torchao_metadata = torchao_metadata
+        model = model.model
+    if hasattr(model, "model"):
+        model._torchao_metadata = torchao_metadata
     quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
     return model
 pass
