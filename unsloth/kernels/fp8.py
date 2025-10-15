@@ -48,7 +48,7 @@ def weight_dequant_block(x: torch.Tensor, s: torch.Tensor, block_size: int = 128
         s = s.contiguous()
     assert x.dim() == 2 and s.dim() == 2
     M, N = x.size()
-    y = torch.empty_like(x, dtype=dtype)
+    y = torch.empty_like(x, dtype = dtype)
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE']), triton.cdiv(N, meta['BLOCK_SIZE']))
     weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE=block_size)
     return y
@@ -77,13 +77,12 @@ def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
     offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     x = tl.load(x_ptr + offs).to(tl.float32)
     s = tl.max(tl.abs(x)) / 448.0
-    if s==0:
-        # For a row of all zeros, lets return zeros as is
-        # for LoRA, there are cases where dY has 0 in it and we should not let it be NaN
-        # this is a deviation from the original implementation.
-        s = 1.0
+    # For a row of all zeros, lets return zeros as is
+    # for LoRA, there are cases where dY has 0 in it and we should not let it be NaN
+    # this is a deviation from the original implementation.
+    s = 1.0 if s == 0 else s
     y = x / s
-    y = y.to(y_ptr.dtype.element_ty)
+    y = y.to(y_ptr.dtype)
     tl.store(y_ptr + offs, y)
     tl.store(s_ptr + pid, s)
 
@@ -92,12 +91,12 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
         x = x.contiguous()
     assert x.shape[-1] % block_size == 0
     y = torch.empty_like(x, dtype=torch.float8_e4m3fn)
-    s = x.new_empty(*x.size()[:-1], x.size(-1) // block_size, dtype=torch.float32)
+    s = x.new_empty(*x.size()[:-1], x.size(-1) // block_size, dtype = torch.float32)
 
     def grid(meta):
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
-    act_quant_kernel[grid](x, y, s, BLOCK_SIZE=block_size)
+    act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
     return y, s
 
 
@@ -159,7 +158,7 @@ def _w8a8_block_fp8_matmul(
     offs_bsn = offs_bn // group_n
     Bs_ptrs = Bs + offs_bsn * stride_Bs_n
 
-    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype = tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.0)
         b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.0)
@@ -184,7 +183,7 @@ def _w8a8_block_fp8_matmul(
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     c_ptrs = C + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
-    tl.store(c_ptrs, c, mask=c_mask)
+    tl.store(c_ptrs, c, mask = c_mask)
 
 
 def w8a8_block_fp8_matmul_triton(
@@ -224,7 +223,7 @@ def w8a8_block_fp8_matmul_triton(
     assert triton.cdiv(K, block_k) == Bs.shape[1]
 
     C_shape = A.shape[:-1] + (N,)
-    C = A.new_empty(C_shape, dtype=output_dtype)
+    C = A.new_empty(C_shape, dtype = output_dtype)
 
     BLOCK_SIZE_M = 128
     if M < BLOCK_SIZE_M:
@@ -258,10 +257,10 @@ def w8a8_block_fp8_matmul_triton(
         As.stride(-1),
         Bs.stride(1),
         Bs.stride(0),
-        BLOCK_SIZE_M=BLOCK_SIZE_M,
-        BLOCK_SIZE_N=BLOCK_SIZE_N,
-        BLOCK_SIZE_K=BLOCK_SIZE_K,
-        GROUP_SIZE_M=8,
+        BLOCK_SIZE_M = BLOCK_SIZE_M,
+        BLOCK_SIZE_N = BLOCK_SIZE_N,
+        BLOCK_SIZE_K = BLOCK_SIZE_K,
+        GROUP_SIZE_M = 8,
     )
     return C
 
@@ -274,8 +273,8 @@ class FP8_E4M3Linear(torch.autograd.Function):
         p,q = weight_scale.shape
         block_size = getattr(weight, 'block_size', None) or getattr(weight_scale, 'block_size', None)
         assert block_size is not None, "block_size is not set"
-        if triton.cdiv(m,block_size[0]) != p or triton.cdiv(n,block_size[1]) != q:
-            if triton.cdiv(m,block_size[0]) == q and triton.cdiv(n,block_size[1]) == p:
+        if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
+            if triton.cdiv(m, block_size[0]) == q and triton.cdiv(n, block_size[1]) == p:
                 # weights are tranposed during backward pass for training :)
                 # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
                 weight_scale = weight_scale.T
@@ -303,7 +302,6 @@ class FP8_E4M3Linear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        # W_deq = reconstruct_weight_fp8(ctx.weight, ctx.weight_scale, ctx.block_size[0], ctx.block_size[1])
         W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
         grad_X = torch_matmul(grad_output, W_deq.t())
         del W_deq
@@ -317,7 +315,7 @@ def fp8_e4m3_forward(X, weight, weight_scale):
 class FbgemmFp8Linear(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, x,  weight, weight_scale, bias=None):
+    def forward(ctx, x, weight, weight_scale, bias=None):
 
         if weight.shape[0] != weight_scale.shape[0]:
             if weight.shape[1] == weight_scale.shape[0]:
@@ -334,7 +332,7 @@ class FbgemmFp8Linear(torch.autograd.Function):
             # x_quantized and x_scale are not necessarily on the same device as x, this is an issue.
             # https://github.com/pytorch/FBGEMM/blob/e08af8539c391437f447173863df0f3f6f6f1855/fbgemm_gpu/experimental/gen_ai/src/quantize/quantize.cu#L1237C3-L1237C45
             x_quantized, x_scale = torch.ops.fbgemm.quantize_fp8_per_row(
-                x.view(-1, x.shape[-1]).contiguous(), scale_ub=getattr(weight, 'input_scale_ub', None)
+                x.view(-1, x.shape[-1]).contiguous(), scale_ub = getattr(weight, 'input_scale_ub', None)
             )
             # moving x_quantized, x_scale here creates glibberish output ... However, if we move the output, it works
             # x_quantized, x_scale = x_quantized.to(x.device), x_scale.to(x.device)
@@ -348,7 +346,7 @@ class FbgemmFp8Linear(torch.autograd.Function):
                 weight_scale = weight_scale.contiguous()
 
             output = torch.ops.fbgemm.f8f8bf16_rowwise(
-                x_quantized, weight, x_scale, weight_scale_float32, use_fast_accum=True
+                x_quantized, weight, x_scale, weight_scale_float32, use_fast_accum = True
             )
             output = output + bias if bias is not None else output
             # Hacky for now, we have the output to the device of x
@@ -378,16 +376,16 @@ class FP8_torch_linear(torch.autograd.Function):
     def forward(ctx, X, weight, weight_scale, bias=None):
 
         orig_shape = X.shape
-        X = X.view(-1,X.shape[-1])
+        X = X.view(-1, X.shape[-1])
 
-        bs_n, bs_k = getattr(weight, 'block_size', None) or getattr(weight_scale, 'block_size', [128,128])
+        bs_n, bs_k = getattr(weight, 'block_size', None) or getattr(weight_scale, 'block_size', [128, 128])
         bs_m = bs_n
 
         m,n = weight.shape
         p,q = weight_scale.shape
 
-        if triton.cdiv(m,bs_n) != p or triton.cdiv(n,bs_k) != q:
-            if triton.cdiv(m,bs_n) == q and triton.cdiv(n,bs_k) == p:
+        if triton.cdiv(m, bs_n) != p or triton.cdiv(n, bs_k) != q:
+            if triton.cdiv(m, bs_n) == q and triton.cdiv(n, bs_k) == p:
                 # weights are tranposed during backward pass for training :)
                 # We tranpose weight scale to counter that. Note that transposing weight would cause issues with matmul with input X
                 weight_scale = weight_scale.T
@@ -395,7 +393,11 @@ class FP8_torch_linear(torch.autograd.Function):
                 raise ValueError(f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}")
 
         xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
-        output = torch.ops.fbgemm.f8f8bf16_blockwise(xq, weight.contiguous(), xs, weight_scale.contiguous(),bs_m,bs_n, bs_k)
+        ## TODO: Investigate and resolve the high divergence of this output from baseline
+        # WARNING: This causes the outputs to diverge from expected when X has high values in it.
+        # That results in the model producing gibberish, especially on longer sequences and training loss starting at high values like 8 instead of <1 ideally
+        # Please refrain from using this till this issue is resolved. This exists here just for a future headstart.
+        output = torch.ops.fbgemm.f8f8bf16_blockwise(xq, weight.contiguous(), xs, weight_scale.contiguous(), bs_m, bs_n, bs_k)
         output = output + bias if bias is not None else output
 
         output = output.view(*orig_shape[:-1], -1)
@@ -423,7 +425,7 @@ def fp8_torch_linear(X, weight, weight_scale, bias=None):
 
 @torch_compile
 def fp8_linear(X, weight, weight_scale, bias=None):
-    if weight_scale.ndim==2 and weight_scale.shape[1]>1:
+    if weight_scale.ndim == 2 and weight_scale.shape[1] > 1:
         # This is block quantized FP8 matmul
         out = fp8_e4m3_forward(X, weight, weight_scale)
         # These operations fall apart when X have large values in it. So disabling for the timebeing?
