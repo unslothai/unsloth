@@ -71,7 +71,7 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 pass
-from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from unsloth import DEVICE_TYPE, DEVICE_COUNT, DEVICE_TYPE_TORCH
 
 __all__ = [
     "FastBaseModel",
@@ -204,10 +204,10 @@ def unsloth_base_fast_generate(
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float16)
+        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
-        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
 
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
@@ -590,6 +590,7 @@ class FastBaseModel:
                 token = token,
                 attn_implementation = "sdpa" if supports_sdpa else "eager",
             )
+            model_config.model_name = model_name
 
             if fast_inference:
                 fast_inference, model_name = fast_inference_setup(model_name, model_config)
