@@ -87,7 +87,7 @@ import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
-from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from unsloth import DEVICE_TYPE, DEVICE_COUNT, DEVICE_TYPE_TORCH
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
