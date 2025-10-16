@@ -1764,7 +1764,8 @@ def unsloth_fast_generate(
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
     # Mixed precision autocast
-    with torch.inference_mode(), torch.autocast(device_type = DEVICE_TYPE, dtype = dtype):
+    device_type = DEVICE_TYPE if DEVICE_TYPE != "hip" else "cuda" # hip doesn't work
+    with torch.inference_mode(), torch.autocast(device_type = device_type, dtype = dtype):
         output = self._old_generate(*args, **kwargs)
     pass
 
