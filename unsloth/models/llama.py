@@ -27,7 +27,7 @@ from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs, fix_lora_auto_mapping
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
-from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from unsloth import DEVICE_TYPE, DEVICE_COUNT, DEVICE_TYPE_TORCH
 
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
@@ -732,7 +732,7 @@ def LlamaModel_fast_forward(
         position_ids = torch.arange(
             past_key_values_length, seq_length + past_key_values_length,
             dtype  = torch.int32,
-            device = f"{DEVICE_TYPE}:0",
+            device = f"{DEVICE_TYPE_TORCH}:0",
         )
         position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
     elif position_ids is not None:
@@ -905,13 +905,13 @@ def LlamaModel_fast_forward(
                     is_causal = True,
                     sliding_window = self.config.sliding_window,
                 )\
-                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = DEVICE_TYPE,)\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = DEVICE_TYPE_TORCH,)\
                     .squeeze(0).squeeze(0)
 
                 self.GA_mask = AttentionMaskConverter(
                     is_causal = True,
                 )\
-                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = DEVICE_TYPE,)\
+                    .to_causal_4d(1, n, n, dtype = inputs_embeds.dtype, device = DEVICE_TYPE_TORCH,)\
                     .squeeze(0).squeeze(0)
             pass
         pass
@@ -1028,11 +1028,11 @@ def _LlamaModel_fast_forward_inference(attention_fast_forward_inference=LlamaAtt
         bsz, q_len, hd = X.shape
         assert(q_len == 1)
         # Get saved buffers to reduce memory movement
-        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE}:0")
-        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE}:0")
+        residual = torch.empty((bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
+        _XX = torch.empty((2, bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
         XX, XX2 = _XX[0], _XX[1]
-        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE}:0")
-        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE}:0")
+        variance = torch.empty((bsz, q_len, 1), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0")
+        temp_mlp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = f"{DEVICE_TYPE_TORCH}:0")
         temp_gates, temp_ups = tuple(temp_mlp[0].to(torch.device(x)) for x in range(DEVICE_COUNT)), tuple(temp_mlp[1].to(torch.device(x)) for x in range(DEVICE_COUNT))
 
         seq_len = past_key_values[0][0].shape[-2]
@@ -1378,7 +1378,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = getattr(config, "head_dim", None)
             if dim is None: dim = int((config.hidden_size // config.num_attention_heads))
-            device = DEVICE_TYPE
+            device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
         pass
 
@@ -1490,7 +1490,7 @@ class LlamaExtendedRotaryEmbedding(torch.nn.Module):
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
-            device = DEVICE_TYPE
+            device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
         pass
 
@@ -1610,7 +1610,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             base = config.rope_theta
             partial_rotary_factor = config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
             dim = int((config.hidden_size // config.num_attention_heads))
-            device = DEVICE_TYPE
+            device = DEVICE_TYPE_TORCH
             max_position_embeddings = config.max_position_embeddings
         pass
 
@@ -1764,8 +1764,7 @@ def unsloth_fast_generate(
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
     # Mixed precision autocast
-    device_type = DEVICE_TYPE if DEVICE_TYPE != "hip" else "cuda" # hip doesn't work
-    with torch.inference_mode(), torch.autocast(device_type = device_type, dtype = dtype):
+    with torch.inference_mode(), torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype):
         output = self._old_generate(*args, **kwargs)
     pass
 
@@ -2389,7 +2388,7 @@ class FastLlamaModel:
                     pass
 
                     model.get_input_embeddings().modules_to_save.default\
-                        .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
+                        .to(device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True)
                     model.get_input_embeddings().modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old embed_tokens to CPU - should be disk!
@@ -2409,7 +2408,7 @@ class FastLlamaModel:
                     pass
 
                     model.get_output_embeddings().modules_to_save.default\
-                        .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
+                        .to(device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True)
                     model.get_output_embeddings().modules_to_save.default.requires_grad_(True)
 
                     # [TODO] Move old lm_head to CPU - should be disk!
@@ -2678,7 +2677,7 @@ class FastLlamaModel:
             pass
 
             model.get_input_embeddings().modules_to_save.default\
-                .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
+                .to(device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True)
             model.get_input_embeddings().modules_to_save.default.requires_grad_(True)
         pass
 
@@ -2694,7 +2693,7 @@ class FastLlamaModel:
             pass
 
             model.get_output_embeddings().modules_to_save.default\
-                .to(device = DEVICE_TYPE, dtype = new_dtype, non_blocking = True)
+                .to(device = DEVICE_TYPE_TORCH, dtype = new_dtype, non_blocking = True)
             model.get_output_embeddings().modules_to_save.default.requires_grad_(True)
         pass
 

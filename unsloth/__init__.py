@@ -96,6 +96,8 @@ def get_device_type():
     raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
 pass
 DEVICE_TYPE : str = get_device_type()
+# HIP fails for autocast and other torch functions. Use CUDA instead
+DEVICE_TYPE_TORCH = DEVICE_TYPE if DEVICE_TYPE != "hip" else DEVICE_TYPE
 
 @functools.cache
 def get_device_count():
