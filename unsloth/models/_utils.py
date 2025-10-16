@@ -1726,7 +1726,7 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
     inner_model = model
     while hasattr(inner_model, "model"):
         inner_model._torchao_config = torchao_config
-        inner_model = model.model
+        inner_model = inner_model.model
     inner_model._torchao_config = torchao_config
     # Quantize with TorchAO
     quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
