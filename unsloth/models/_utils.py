@@ -1667,7 +1667,7 @@ except:
 @dataclass
 class TorchAOConfig:
     qat_scheme : str = "int4"
-    base_config : AOBaseConfig = Int4WeightOnlyConfig
+    base_config : AOBaseConfig = Int4WeightOnlyConfig(group_size = 128)
     filter_fn : Callable = None
     group_size : int = 128
 pass
