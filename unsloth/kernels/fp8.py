@@ -297,8 +297,8 @@ class FP8BlockQuantLinear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, weight, weight_scale):
         # block_size = getattr(weight, 'block_size', [128,128])
-        m,n = weight.shape
-        p,q = weight_scale.shape
+        m, n = weight.shape
+        p, q = weight_scale.shape
         block_size = getattr(weight, 'block_size', None) or getattr(weight_scale, 'block_size', None)
         assert block_size is not None, "block_size is not set"
         if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
@@ -321,11 +321,9 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             block_size,
             output_dtype=X.dtype,
         )
-
         ctx.weight = weight
         ctx.weight_scale = weight_scale
         ctx.block_size = block_size
-
         return output.to(X.dtype)
 
     @staticmethod
@@ -344,7 +342,6 @@ class FbgemmFp8Linear(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, weight, weight_scale, bias=None):
-
         if weight.shape[0] != weight_scale.shape[0]:
             if weight.shape[1] == weight_scale.shape[0]:
                 # This is generally the case when we do backward pass. The only way is to dequantize as there is no column wise fp8 matmul
@@ -384,7 +381,6 @@ class FbgemmFp8Linear(torch.autograd.Function):
 
         ctx.weight = weight
         ctx.weight_scale = weight_scale
-
         return output
 
     @staticmethod
@@ -409,8 +405,8 @@ class FP8_torch_linear(torch.autograd.Function):
         bs_n, bs_k = getattr(weight, 'block_size', None) or getattr(weight_scale, 'block_size', [128, 128])
         bs_m = bs_n
 
-        m,n = weight.shape
-        p,q = weight_scale.shape
+        m, n = weight.shape
+        p, q = weight_scale.shape
 
         if triton.cdiv(m, bs_n) != p or triton.cdiv(n, bs_k) != q:
             if triton.cdiv(m, bs_n) == q and triton.cdiv(n, bs_k) == p:
@@ -436,7 +432,6 @@ class FP8_torch_linear(torch.autograd.Function):
         ctx.weight = weight
         ctx.weight_scale = weight_scale
         ctx.block_size = [bs_m, bs_n, bs_k]
-
         return output
 
     @staticmethod

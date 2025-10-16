@@ -764,7 +764,7 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
     pass
 
     if W.dtype == torch.float8_e4m3fn:
-        out = fp8_linear(X, W, W_quant, )
+        out = fp8_linear(X, W, W_quant)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)
