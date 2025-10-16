@@ -85,7 +85,7 @@ def get_device_type():
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
-            raise NotImplementedError("Unsloth cannot find any torch accelerators? You need a GPU.")
+            raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
         if accelerator in ("cuda", "xpu", "hip"):
             raise RuntimeError(
@@ -160,6 +160,8 @@ from .import_fixes import ignore_logger_messages
 ignore_logger_messages(); del ignore_logger_messages;
 from .import_fixes import patch_ipykernel_hf_xet
 patch_ipykernel_hf_xet(); del patch_ipykernel_hf_xet;
+from .import_fixes import patch_trackio
+patch_trackio(); del patch_trackio;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
