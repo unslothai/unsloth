@@ -1652,14 +1652,17 @@ def error_out_no_vllm(*args, **kwargs):
     raise NotImplementedError("Unsloth: vLLM is not yet supported for fast inference for this model! Please use `.generate` instead")
 
 
-from torchao.core.config import AOBaseConfig
 try:
-    from torchao.quantization import Int4WeightOnlyConfig
+    from torchao.core.config import AOBaseConfig
+    try:
+        from torchao.quantization import Int4WeightOnlyConfig
+    except:
+        print("Unsloth: TorchAO changed `torchao.quantization.Int4WeightOnlyConfig`")
+        Int4WeightOnlyConfig = None
+    pass
 except:
-    print("Unsloth: TorchAO changed `torchao.quantization.Int4WeightOnlyConfig`")
-    Int4WeightOnlyConfig = None
-pass
-
+    AOBaseConfig = None
+    pass
 @dataclass
 class TorchAOConfig:
     qat_scheme : str = "int4"
