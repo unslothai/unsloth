@@ -590,6 +590,7 @@ class FastBaseModel:
                 token = token,
                 attn_implementation = "sdpa" if supports_sdpa else "eager",
             )
+            model_config.model_name = model_name
 
             if fast_inference:
                 fast_inference, model_name = fast_inference_setup(model_name, model_config)
