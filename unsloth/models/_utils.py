@@ -1664,7 +1664,7 @@ pass
 class TorchAOConfig:
     qat_scheme : str = "int4"
     base_config : AOBaseConfig = Int4WeightOnlyConfig
-    filter_fn : Callable = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+    filter_fn : Callable = None
     group_size : int = 128
 pass
 
@@ -1694,11 +1694,11 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
             filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
         elif qat_scheme == "fp8-fp8":
             from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
-            base_config = Float8DynamicActivationFloat8WeightConfig(granularity=PerRow())
+            base_config = Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
         elif qat_scheme == "int8-int4":
             from torchao.quantization import Int8DynamicActivationIntxWeightConfig
             group_size = 32
-            base_config = Int8DynamicActivationIntxWeightConfig(weight_dtype=torch.int4, weight_granularity=PerGroup(group_size))
+            base_config = Int8DynamicActivationIntxWeightConfig(weight_dtype = torch.int4, weight_granularity = PerGroup(group_size))
             filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
         elif qat_scheme == "int4":
             from torchao.quantization import Int4WeightOnlyConfig
