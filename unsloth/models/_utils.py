@@ -458,8 +458,8 @@ for model_name in model_architectures:
     config = re.sub(
         r"(\*\*kwargs)[\s]{0,}\,[\s]{0,}\)[\s]{0,}\:",
         r"rope_scaling=None,"\
-        r"\n        \*\*kwargs):\n"\
-        r"\n        self\.rope_scaling = rope_scaling\n",
+        r"\n        **kwargs):\n"\
+        r"\n        self.rope_scaling = rope_scaling\n",
         config,
     )
 
