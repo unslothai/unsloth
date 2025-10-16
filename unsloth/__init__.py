@@ -97,7 +97,8 @@ def get_device_type():
 pass
 DEVICE_TYPE : str = get_device_type()
 # HIP fails for autocast and other torch functions. Use CUDA instead
-DEVICE_TYPE_TORCH = DEVICE_TYPE if DEVICE_TYPE != "hip" else DEVICE_TYPE
+DEVICE_TYPE_TORCH = DEVICE_TYPE
+if DEVICE_TYPE_TORCH == "hip": DEVICE_TYPE_TORCH = "cuda"
 
 @functools.cache
 def get_device_count():
