@@ -1195,12 +1195,15 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(dtype))
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
-            print("RETURN_LOGITS", RETURN_LOGITS)
             # < 1024 Normal Unsloth uses less VRAM!
-            if bsz*q_len <= 1024: RETURN_LOGITS = True
+            if DEVICE_TYPE == "hip":
+                # [TODO] AMD GPUs fail on chunked_cross_entropy loss!
+                # RuntimeError: Triton Error [HIP]:  Code: 1, Messsage: invalid argument
+                RETURN_LOGITS = False
+            elif bsz*q_len <= 1024:
+                RETURN_LOGITS = True
 
             if not RETURN_LOGITS and labels is not None:
-
                 n_items = kwargs.get("num_items_in_batch", None)
                 if n_items is None: n_items = kwargs.get("n_items", None)
 
