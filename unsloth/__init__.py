@@ -85,7 +85,7 @@ def get_device_type():
     # Check torch.accelerator
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
-            raise NotImplementedError("Unsloth cannot find any torch accelerators? You need a GPU.")
+            raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
         if accelerator in ("cuda", "xpu", "hip"):
             raise RuntimeError(
@@ -96,6 +96,9 @@ def get_device_type():
     raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
 pass
 DEVICE_TYPE : str = get_device_type()
+# HIP fails for autocast and other torch functions. Use CUDA instead
+DEVICE_TYPE_TORCH = DEVICE_TYPE
+if DEVICE_TYPE_TORCH == "hip": DEVICE_TYPE_TORCH = "cuda"
 
 @functools.cache
 def get_device_count():
@@ -146,7 +149,9 @@ pass
 # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
 if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
     os.environ["UNSLOTH_ENABLE_CCE"] = "0"
-pass
+elif DEVICE_TYPE == "hip":
+    # CCE also fails in HIP / AMD
+    os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 
 # Fix other issues
 import importlib.util
@@ -160,6 +165,8 @@ from .import_fixes import ignore_logger_messages
 ignore_logger_messages(); del ignore_logger_messages;
 from .import_fixes import patch_ipykernel_hf_xet
 patch_ipykernel_hf_xet(); del patch_ipykernel_hf_xet;
+from .import_fixes import patch_trackio
+patch_trackio(); del patch_trackio;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
