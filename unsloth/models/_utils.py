@@ -1708,10 +1708,10 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: str) -> torch.nn.
         group_size = group_size,
     )
     inner_model = model
-    while hasttr(model, "model"):
-        model._torchao_metadata = torchao_metadata
-        model = model.model
-    model._torchao_metadata = torchao_metadata
+    while hasattr(inner_model, "model"):
+        inner_model._torchao_metadata = torchao_metadata
+        inner_model = model.model
+    inner_model._torchao_metadata = torchao_metadata
     quantize_(model, QATConfig(base_config, step="prepare"), filter_fn=filter_fn)
     return model
 pass
