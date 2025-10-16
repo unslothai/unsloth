@@ -1195,7 +1195,6 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(dtype))
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
-            print("RETURN_LOGITS", RETURN_LOGITS)
             # < 1024 Normal Unsloth uses less VRAM!
             if bsz*q_len <= 1024: RETURN_LOGITS = True
 
