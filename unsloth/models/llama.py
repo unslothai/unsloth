@@ -1930,6 +1930,7 @@ class FastLlamaModel:
             token = token,
             attn_implementation = "sdpa",
         )
+        model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
 
         # Check if RoPE Scaling is even allowed
