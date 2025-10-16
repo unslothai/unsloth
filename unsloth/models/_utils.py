@@ -1683,7 +1683,7 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
     from torchao.quantization.granularity import PerGroup
     from torchao.quantization.qat import QATConfig
 
-    if isinstance(qat_scheme, TorchAOConfig):
+    if not isinstance(qat_scheme, TorchAOConfig):
         filter_fn = None
         group_size = None
         base_config = None
