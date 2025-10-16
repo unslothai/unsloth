@@ -149,7 +149,9 @@ pass
 # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
 if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
     os.environ["UNSLOTH_ENABLE_CCE"] = "0"
-pass
+elif DEVICE_TYPE == "hip":
+    # CCE also fails in HIP / AMD
+    os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 
 # Fix other issues
 import importlib.util
