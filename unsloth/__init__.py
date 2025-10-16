@@ -96,6 +96,9 @@ def get_device_type():
     raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
 pass
 DEVICE_TYPE : str = get_device_type()
+# HIP fails for autocast and other torch functions. Use CUDA instead
+DEVICE_TYPE_TORCH = DEVICE_TYPE
+if DEVICE_TYPE_TORCH == "hip": DEVICE_TYPE_TORCH = "cuda"
 
 @functools.cache
 def get_device_count():
@@ -146,7 +149,9 @@ pass
 # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
 if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
     os.environ["UNSLOTH_ENABLE_CCE"] = "0"
-pass
+elif DEVICE_TYPE == "hip":
+    # CCE also fails in HIP / AMD
+    os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 
 # Fix other issues
 import importlib.util
