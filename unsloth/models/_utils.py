@@ -1662,6 +1662,7 @@ try:
     pass
 except:
     AOBaseConfig = None
+    Int4WeightOnlyConfig = None
     pass
 @dataclass
 class TorchAOConfig:
