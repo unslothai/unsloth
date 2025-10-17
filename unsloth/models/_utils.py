@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.10.4"
+__version__ = "2025.10.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -87,7 +87,14 @@ import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
-from unsloth import DEVICE_TYPE, DEVICE_COUNT, DEVICE_TYPE_TORCH
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -1331,6 +1338,7 @@ pass
 
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation
+    # Fixes Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
@@ -1346,6 +1354,32 @@ def patch_gradient_accumulation_fix(Trainer):
 
             # Also fix passing in num_items_in_batch
             if not hasattr(Trainer, "_old_compute_loss"):
+
+                # Fix transformers 4.57.0 causing `Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.`
+                function = inspect.getsource(Trainer.compute_loss)
+                if "loss *=" in function or "loss*=" in function:
+                    where = function.find("def")
+                    function = function.split("\n")
+                    function = "\n".join(x[where:] for x in function)
+
+                    # Import all variables that need importing
+                    import transformers.trainer
+                    items_in_trainer = dir(transformers.trainer)
+                    good_items = []
+                    for item in items_in_trainer:
+                        if item in function: good_items.append(item)
+                    pass
+                    exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
+
+                    # Replace loss*= with loss = loss *
+                    function = re.sub(
+                        r"loss[\s]{0,}\*\=",
+                        "loss = loss *",
+                        function,
+                    )
+                    exec(function, globals())
+                    Trainer.compute_loss = compute_loss
+                pass
                 Trainer._old_compute_loss = Trainer.compute_loss
                 Trainer.compute_loss = _unsloth_pre_compute_loss
             pass
