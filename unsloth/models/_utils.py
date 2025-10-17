@@ -87,7 +87,14 @@ import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
-from unsloth import DEVICE_TYPE, DEVICE_COUNT, DEVICE_TYPE_TORCH
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -1331,6 +1338,7 @@ pass
 
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation
+    # Fixes Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
