@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.10.4"
+__version__ = "2025.10.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -82,12 +82,19 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
-from unsloth import DEVICE_TYPE, DEVICE_COUNT, DEVICE_TYPE_TORCH
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -349,7 +356,8 @@ class _RaiseUninitialized(logging.Handler):
             ("score.weight" not in record_lower) and \
             ("classifier.weight" not in record_lower) and \
             ("cls.predictions" not in record_lower) and \
-            ("predictions.decoder" not in record_lower):
+            ("predictions.decoder" not in record_lower) and \
+            (os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1") == "1"):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
@@ -1331,6 +1339,7 @@ pass
 
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes gradient accumulation
+    # Fixes Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.
     import inspect
     if hasattr(Trainer, "get_batch_samples"):
         if Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples": return
@@ -1346,6 +1355,32 @@ def patch_gradient_accumulation_fix(Trainer):
 
             # Also fix passing in num_items_in_batch
             if not hasattr(Trainer, "_old_compute_loss"):
+
+                # Fix transformers 4.57.0 causing `Output 0 of UnslothFusedLossBackward is a view and is being modified inplace.`
+                function = inspect.getsource(Trainer.compute_loss)
+                if "loss *=" in function or "loss*=" in function:
+                    where = function.find("def")
+                    function = function.split("\n")
+                    function = "\n".join(x[where:] for x in function)
+
+                    # Import all variables that need importing
+                    import transformers.trainer
+                    items_in_trainer = dir(transformers.trainer)
+                    good_items = []
+                    for item in items_in_trainer:
+                        if item in function: good_items.append(item)
+                    pass
+                    exec("from transformers.trainer import (" + ", ".join(x for x in good_items) + ")", globals())
+
+                    # Replace loss*= with loss = loss *
+                    function = re.sub(
+                        r"loss[\s]{0,}\*\=",
+                        "loss = loss *",
+                        function,
+                    )
+                    exec(function, globals())
+                    Trainer.compute_loss = compute_loss
+                pass
                 Trainer._old_compute_loss = Trainer.compute_loss
                 Trainer.compute_loss = _unsloth_pre_compute_loss
             pass
@@ -1667,9 +1702,14 @@ except:
 @dataclass
 class TorchAOConfig:
     qat_scheme : str = "int4"
-    base_config : AOBaseConfig = Int4WeightOnlyConfig
-    filter_fn : Callable = None
+    base_config : AOBaseConfig = field(
+        default_factory = lambda: Int4WeightOnlyConfig(group_size = 128)
+    )
     group_size : int = 128
+    filter_fn: Optional[Callable] = None
+    def __post_init__(self):
+        if self.filter_fn is None:
+            self.filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= self.group_size
 pass
 
 def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]) -> torch.nn.Module:
@@ -1707,7 +1747,7 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
         elif qat_scheme == "int4":
             from torchao.quantization import Int4WeightOnlyConfig
             group_size = 128
-            base_config = Int4WeightOnlyConfig(group_size=group_size)
+            base_config = Int4WeightOnlyConfig(group_size = group_size)
             filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
@@ -1716,15 +1756,15 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
         torchao_config = TorchAOConfig(
             qat_scheme = qat_scheme,
             base_config = base_config,
-            filter_fn = filter_fn,
             group_size = group_size,
+            filter_fn = filter_fn,
         )
     else:
         torchao_config = qat_scheme
         qat_scheme  = torchao_config.qat_scheme
         base_config = torchao_config.base_config
-        filter_fn   = torchao_config.filter_fn
         group_size  = torchao_config.group_size
+        filter_fn   = torchao_config.filter_fn
 
     # Save Torchao metadata everywhere
     inner_model = model
