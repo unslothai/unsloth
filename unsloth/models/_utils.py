@@ -82,7 +82,7 @@ platform_system = platform_system()
 import numpy as np
 import contextlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import functools
 import warnings, subprocess, re, inspect, psutil, os, math
 from unsloth_zoo.utils import Version
@@ -1667,9 +1667,14 @@ except:
 @dataclass
 class TorchAOConfig:
     qat_scheme : str = "int4"
-    base_config : AOBaseConfig = Int4WeightOnlyConfig
-    filter_fn : Callable = None
+    base_config : AOBaseConfig = field(
+        default_factory = lambda: Int4WeightOnlyConfig(group_size = 128)
+    )
     group_size : int = 128
+    filter_fn: Optional[Callable] = None
+    def __post_init__(self):
+        if self.filter_fn is None:
+            self.filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= self.group_size
 pass
 
 def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]) -> torch.nn.Module:
@@ -1707,7 +1712,7 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
         elif qat_scheme == "int4":
             from torchao.quantization import Int4WeightOnlyConfig
             group_size = 128
-            base_config = Int4WeightOnlyConfig(group_size=group_size)
+            base_config = Int4WeightOnlyConfig(group_size = group_size)
             filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
@@ -1716,15 +1721,15 @@ def _prepare_model_for_qat(model: torch.nn.Module, qat_scheme: Union[str, TorchA
         torchao_config = TorchAOConfig(
             qat_scheme = qat_scheme,
             base_config = base_config,
-            filter_fn = filter_fn,
             group_size = group_size,
+            filter_fn = filter_fn,
         )
     else:
         torchao_config = qat_scheme
         qat_scheme  = torchao_config.qat_scheme
         base_config = torchao_config.base_config
-        filter_fn   = torchao_config.filter_fn
         group_size  = torchao_config.group_size
+        filter_fn   = torchao_config.filter_fn
 
     # Save Torchao metadata everywhere
     inner_model = model
