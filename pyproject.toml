@@ -40,7 +40,6 @@ triton = [
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 huggingfacenotorch = [
-    "unsloth_zoo>=2025.10.5",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -60,6 +59,7 @@ huggingfacenotorch = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
+    "unsloth_zoo>=2025.10.5",
     "torchvision",
     "unsloth[triton]",
 ]
