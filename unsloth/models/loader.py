@@ -45,6 +45,14 @@ except:
 pass
 from huggingface_hub import HfFileSystem
 import importlib.util
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
@@ -195,6 +203,12 @@ class FastLanguageModel(FastLlamaModel):
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+        # Check if pre-quantized models are allowed
+        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+            model_name = model_name.removesuffix("-unsloth-bnb-4bit")
+            model_name = model_name.removesuffix("-bnb-4bit")
+        pass
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
@@ -306,6 +320,12 @@ class FastLanguageModel(FastLlamaModel):
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
+            # Check if pre-quantized models are allowed
+            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+                model_name = model_name.removesuffix("-unsloth-bnb-4bit")
+                model_name = model_name.removesuffix("-bnb-4bit")
+            pass
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -618,6 +638,12 @@ class FastModel(FastBaseModel):
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+        # Check if pre-quantized models are allowed
+        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+            model_name = model_name.removesuffix("-unsloth-bnb-4bit")
+            model_name = model_name.removesuffix("-bnb-4bit")
+        pass
 
         # Check modelscope
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -833,7 +859,12 @@ class FastModel(FastBaseModel):
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
-
+            # Check if pre-quantized models are allowed
+            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+                model_name = model_name.removesuffix("-unsloth-bnb-4bit")
+                model_name = model_name.removesuffix("-bnb-4bit")
+            pass
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
