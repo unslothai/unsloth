@@ -26,7 +26,7 @@ import torch
 import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
-from .device_type import (
+from ..device_type import (
     is_hip,
     get_device_type,
     DEVICE_TYPE,
