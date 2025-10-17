@@ -27,5 +27,6 @@ pip install .
 cd "$WORKDIR"
 rm -rf "$TMPDIR"
 
+pip install --no-deps unsloth unsloth-zoo
 pip install "unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo"
 pip install "unsloth[base] @ git+https://github.com/unslothai/unsloth"
