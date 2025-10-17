@@ -45,7 +45,7 @@ except:
 pass
 from huggingface_hub import HfFileSystem
 import importlib.util
-from ...device_type import (
+from ..device_type import (
     is_hip,
     get_device_type,
     DEVICE_TYPE,
