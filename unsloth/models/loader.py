@@ -52,6 +52,7 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+    ALLOW_BITSANDBYTES,
 )
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
@@ -199,6 +200,10 @@ class FastLanguageModel(FastLlamaModel):
                 )
             pass
         pass
+        # Check if 4bit is allowed specifically for AMD
+        if not ALLOW_BITSANDBYTES:
+            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            load_in_4bit = False
 
         old_model_name = model_name
         if not use_exact_model_name:
@@ -638,6 +643,11 @@ class FastModel(FastBaseModel):
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+
+        # Check if 4bit is allowed specifically for AMD
+        if not ALLOW_BITSANDBYTES:
+            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            load_in_4bit = False
         # Check if pre-quantized models are allowed
         # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
         if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
