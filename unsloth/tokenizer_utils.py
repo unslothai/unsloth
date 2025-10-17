@@ -34,6 +34,7 @@ from unsloth_zoo.tokenizer_utils import (
 from unsloth_zoo.training_utils import (
     fix_zero_training_loss,
 )
+from unsloth_zoo.utils import get_lock
 
 __all__ = [
     "load_correct_tokenizer",
@@ -347,56 +348,62 @@ def fix_sentencepiece_tokenizer(
     # We need to manually edit the sentencepiece tokenizer!
     from transformers.utils import sentencepiece_model_pb2
 
-    if not os.path.exists(temporary_location):
-        os.makedirs(temporary_location)
-    pass
+    os.makedirs(temporary_location, exist_ok = True)
+    lock = get_lock(f"{temporary_location}/tokenizer.model", timeout = 20)
+    try:
+        with lock:
 
-    # Check if tokenizer.model exists
-    if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
-        return new_tokenizer
-    pass
+            # Check if tokenizer.model exists
+            if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
+                return new_tokenizer
+            pass
 
-    # First save the old tokenizer
-    old_tokenizer.save_pretrained(temporary_location)
+            # First save the old tokenizer
+            old_tokenizer.save_pretrained(temporary_location)
 
-    tokenizer_file = sentencepiece_model_pb2.ModelProto()
-    tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
+            tokenizer_file = sentencepiece_model_pb2.ModelProto()
+            tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
 
-    # Now save the new tokenizer
-    new_tokenizer.save_pretrained(temporary_location)
+            # Now save the new tokenizer
+            new_tokenizer.save_pretrained(temporary_location)
 
-    # Now correct the old tokenizer's .model file
-    for old_token, new_token in token_mapping.items():
-        ids = old_tokenizer([old_token], add_special_tokens = False).input_ids
-        ids = ids[0]
-        if (len(ids) != 1):
-            # Skip this token!
-            print(f"Skip mapping {old_token} to {new_token} since {new_token} is already in the tokenizer!")
-            continue
+            # Now correct the old tokenizer's .model file
+            for old_token, new_token in token_mapping.items():
+                ids = old_tokenizer([old_token], add_special_tokens = False).input_ids
+                ids = ids[0]
+                if (len(ids) != 1):
+                    # Skip this token!
+                    print(f"Skip mapping {old_token} to {new_token} since {new_token} is already in the tokenizer!")
+                    continue
+                pass
+                ids = ids[0]
+                # [TODO] Hack for Starling - try except
+                try:
+                    tokenizer_piece = tokenizer_file.pieces[ids]
+                except:
+                    continue
+                assert(tokenizer_piece.piece == old_token)
+                tokenizer_piece.piece = new_token
+            pass
+
+            # And now write it
+            with open(f"{temporary_location}/tokenizer.model", "wb") as file:
+                file.write(tokenizer_file.SerializeToString())
+            pass
+
+            # And load it!
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(
+                temporary_location,
+                eos_token = new_tokenizer.eos_token,
+                pad_token = new_tokenizer.pad_token,
+            )
+            return tokenizer
         pass
-        ids = ids[0]
-        # [TODO] Hack for Starling - try except
-        try:
-            tokenizer_piece = tokenizer_file.pieces[ids]
-        except:
-            continue
-        assert(tokenizer_piece.piece == old_token)
-        tokenizer_piece.piece = new_token
-    pass
-
-    # And now write it
-    with open(f"{temporary_location}/tokenizer.model", "wb") as file:
-        file.write(tokenizer_file.SerializeToString())
-    pass
-
-    # And load it!
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        temporary_location,
-        eos_token = new_tokenizer.eos_token,
-        pad_token = new_tokenizer.pad_token,
-    )
-    return tokenizer
+    except Exception as e:
+        if os.environ.get("UNSLOTH_LOGGING_ENABLED", "0") == "1":
+            logger.error(f"Unsloth: Failed to fix sentencepiece tokenizer because {str(e)}")
+        pass
 pass
 
 
@@ -421,50 +428,57 @@ def fix_sentencepiece_gguf(saved_location):
     pass
 
     # Load tokenizer.model
-    tokenizer_file = sentencepiece_model_pb2.ModelProto()
-    if not os.path.isfile(f"{saved_location}/tokenizer.model"): return
-    tokenizer_file.ParseFromString(open(f"{saved_location}/tokenizer.model", "rb").read())
-    sentence_piece_size = len(tokenizer_file.pieces)
+    lock = get_lock(f"{saved_location}/tokenizer.model", timeout = 20)
+    try:
+        with lock:
+            tokenizer_file = sentencepiece_model_pb2.ModelProto()
+            if not os.path.isfile(f"{saved_location}/tokenizer.model"): return
+            tokenizer_file.ParseFromString(open(f"{saved_location}/tokenizer.model", "rb").read())
+            sentence_piece_size = len(tokenizer_file.pieces)
 
-    # Load added_tokens_json
-    if not os.path.isfile(f"{saved_location}/added_tokens.json"): return
-    with open(f"{saved_location}/added_tokens.json", "r", encoding = "utf-8") as file:
-        added_tokens_json = json.load(file)
-    pass
-    if len(added_tokens_json) == 0: return
+            # Load added_tokens_json
+            if not os.path.isfile(f"{saved_location}/added_tokens.json"): return
+            with open(f"{saved_location}/added_tokens.json", "r", encoding = "utf-8") as file:
+                added_tokens_json = json.load(file)
+            pass
+            if len(added_tokens_json) == 0: return
 
-    added_tokens_json = dict(sorted(added_tokens_json.items(), key = lambda item: item[1]))
-    new_size = sentence_piece_size + len(added_tokens_json)
+            added_tokens_json = dict(sorted(added_tokens_json.items(), key = lambda item: item[1]))
+            new_size = sentence_piece_size + len(added_tokens_json)
 
-    # Confirm added_tokens_json is correct
-    added_tokens_ids = np.array(list(added_tokens_json.values()))
-    diff = np.diff(added_tokens_ids)
-    if (diff.min() != 1 or diff.max() != 1): return
-    if (added_tokens_ids.min() != sentence_piece_size): return
+            # Confirm added_tokens_json is correct
+            added_tokens_ids = np.array(list(added_tokens_json.values()))
+            diff = np.diff(added_tokens_ids)
+            if (diff.min() != 1 or diff.max() != 1): return
+            if (added_tokens_ids.min() != sentence_piece_size): return
 
-    # Edit sentence piece tokens with added_tokens_json
-    logger.warning(
-        f"Unsloth: Extending {saved_location}/tokenizer.model with added_tokens.json.\n"\
-        f"Originally tokenizer.model is of size ({sentence_piece_size}).\n"\
-        f"But we need to extend to sentencepiece vocab size ({new_size})."
-    )
-    new_tokens = deepcopy(tokenizer_file.pieces[-len(added_tokens_ids):])
-    for new_token, added_token in zip(new_tokens, added_tokens_json.keys()):
-        new_token.piece = added_token.encode("utf-8")
-        new_token.score = -1000.0
-        new_token.type  = SentencePieceTokenTypes.USER_DEFINED
-    pass
+            # Edit sentence piece tokens with added_tokens_json
+            logger.warning(
+                f"Unsloth: Extending {saved_location}/tokenizer.model with added_tokens.json.\n"\
+                f"Originally tokenizer.model is of size ({sentence_piece_size}).\n"\
+                f"But we need to extend to sentencepiece vocab size ({new_size})."
+            )
+            new_tokens = deepcopy(tokenizer_file.pieces[-len(added_tokens_ids):])
+            for new_token, added_token in zip(new_tokens, added_tokens_json.keys()):
+                new_token.piece = added_token.encode("utf-8")
+                new_token.score = -1000.0
+                new_token.type  = SentencePieceTokenTypes.USER_DEFINED
+            pass
 
-    tokenizer_file.pieces.extend(new_tokens)
+            tokenizer_file.pieces.extend(new_tokens)
 
-    with open(f"{saved_location}/tokenizer.model", "wb") as file:
-        file.write(tokenizer_file.SerializeToString())
-    pass
+            with open(f"{saved_location}/tokenizer.model", "wb") as file:
+                file.write(tokenizer_file.SerializeToString())
+            pass
 
-    # Add padding tokens
-    # actual_vocab_size = model.config.vocab_size
-    # padding = actual_vocab_size - len(tokenizer_file.pieces)
-    return
+            # Add padding tokens
+            # actual_vocab_size = model.config.vocab_size
+            # padding = actual_vocab_size - len(tokenizer_file.pieces)
+            return
+    except Exception as e:
+        if os.environ.get("UNSLOTH_LOGGING_ENABLED", "0") == "1":
+            logger.error(f"Unsloth: Failed to fix sentencepiece gguf because {str(e)}")
+        pass
 pass
 
 

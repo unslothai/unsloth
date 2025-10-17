@@ -62,6 +62,7 @@ pass
 
 # Fix Xformers performance issues since 0.0.25
 def fix_xformers_performance_issue():
+    from unsloth_zoo.utils import get_lock
     if importlib.util.find_spec("xformers") is None: return
     xformers_version = importlib_version("xformers")
     if Version(xformers_version) < Version("0.0.29"):
@@ -70,19 +71,21 @@ def fix_xformers_performance_issue():
         cutlass = Path(xformers_location) / "ops" / "fmha" / "cutlass.py"
         try:
             if cutlass.exists():
-                with open(cutlass, "r+", encoding = "utf-8") as f:
-                    text = f.read()
-                    # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
-                    if "num_splits_key=-1," in text:
-                        text = text.replace(
-                            "num_splits_key=-1,",
-                            "num_splits_key=None,",
-                        )
-                        f.seek(0)
-                        f.write(text)
-                        f.truncate()
-                        if UNSLOTH_ENABLE_LOGGING:
-                            print("Unsloth: Patching Xformers to fix some performance issues.")
+                lock = get_lock(str(cutlass))
+                with lock:
+                    with open(cutlass, "r+", encoding = "utf-8") as f:
+                        text = f.read()
+                        # See https://github.com/facebookresearch/xformers/issues/1176#issuecomment-2545829591
+                        if "num_splits_key=-1," in text:
+                            text = text.replace(
+                                "num_splits_key=-1,",
+                                "num_splits_key=None,",
+                            )
+                            f.seek(0)
+                            f.write(text)
+                            f.truncate()
+                            if UNSLOTH_ENABLE_LOGGING:
+                                print("Unsloth: Patching Xformers to fix some performance issues.")
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching Xformers with error = {str(e)}")
@@ -90,6 +93,7 @@ pass
 
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
+    from unsloth_zoo.utils import get_lock
     if importlib.util.find_spec("vllm") is None: return
     vllm_version = importlib_version("vllm")
     if Version(vllm_version) < Version("0.10.1"):
@@ -98,29 +102,31 @@ def fix_vllm_aimv2_issue():
         ovis_config = Path(vllm_version) / "transformers_utils" / "configs" / "ovis.py"
         try:
             if ovis_config.exists():
-                with open(ovis_config, "r+", encoding = "utf-8") as f:
-                    text = f.read()
+                lock = get_lock(ovis_config)
+                with lock:
+                    with open(ovis_config, "r+", encoding = "utf-8") as f:
+                        text = f.read()
                     # See https://github.com/vllm-project/vllm-ascend/issues/2046
-                    if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
-                        text = text.replace(
-                            'AutoConfig.register("aimv2", AIMv2Config)',
-                            '',
-                        )
-                        text = text.replace(
-                            '''backbone_config.pop('model_type')
-                backbone_config = AutoConfig.for_model(model_type,
-                                                       **backbone_config)''',
-                            '''if model_type != "aimv2":
-                    backbone_config.pop('model_type')
-                    backbone_config = AutoConfig.for_model(model_type, **backbone_config)
-                else:
-                    backbone_config = AIMv2Config(**backbone_config)'''
-                        )
-                        f.seek(0)
-                        f.write(text)
-                        f.truncate()
-                        if UNSLOTH_ENABLE_LOGGING:
-                            print("Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`")
+                        if 'AutoConfig.register("aimv2", AIMv2Config)' in text:
+                            text = text.replace(
+                                'AutoConfig.register("aimv2", AIMv2Config)',
+                                '',
+                            )
+                            text = text.replace(
+                                '''backbone_config.pop('model_type')
+                    backbone_config = AutoConfig.for_model(model_type,
+                                                        **backbone_config)''',
+                                '''if model_type != "aimv2":
+                        backbone_config.pop('model_type')
+                        backbone_config = AutoConfig.for_model(model_type, **backbone_config)
+                    else:
+                        backbone_config = AIMv2Config(**backbone_config)'''
+                            )
+                            f.seek(0)
+                            f.write(text)
+                            f.truncate()
+                            if UNSLOTH_ENABLE_LOGGING:
+                                print("Unsloth: Patching vLLM to fix `'aimv2' is already used by a Transformers config, pick another name.`")
         except Exception as e:
             if UNSLOTH_ENABLE_LOGGING:
                 print(f"Unsloth: Failed patching vLLM with error = {str(e)}")

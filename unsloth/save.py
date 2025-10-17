@@ -16,6 +16,7 @@ from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
 from unsloth_zoo.llama_cpp import convert_to_gguf, quantize_gguf, use_local_gguf, install_llama_cpp, check_llama_cpp, _download_convert_hf_to_gguf
+from unsloth_zoo.utils import get_lock
 from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
 from peft.tuners.lora import Linear4bit as Peft_Linear4bit
 from peft.tuners.lora import Linear as Peft_Linear
@@ -1070,130 +1071,140 @@ def save_to_gguf(
     print(print_info)
 
     # Step 1: Ensure llama.cpp is installed
+    lock = get_lock("llama.cpp", timeout=-1)
     try:
-        quantizer_location, converter_location = check_llama_cpp()
-        print("Unsloth: llama.cpp found in the system. Skipping installation.")
-    except:
-        print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
-        if IS_KAGGLE_ENVIRONMENT:
-            # Kaggle: no CUDA support due to environment limitations
-            quantizer_location, converter_location = install_llama_cpp(
-                gpu_support=False,
-                print_output=print_output
-            )
-        else:
-            quantizer_location, converter_location = install_llama_cpp(
-                gpu_support=False,  # GGUF conversion doesn't need CUDA
-                print_output=print_output
-            )
-
-    # Step 2: Download and patch converter script
-    print("Unsloth: Preparing converter script...")
-    with use_local_gguf():
-        converter_path, supported_text_archs, supported_vision_archs = _download_convert_hf_to_gguf()
-
-        # Step 3: Initial GGUF conversion
-        print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
-        print(f"This might take 3 minutes...")
-
-        initial_files, is_vlm_update = convert_to_gguf(
-            model_name=model_name,
-            input_folder=model_directory,
-            model_dtype = model_dtype,
-            quantization_type=first_conversion,
-            converter_location=converter_path,
-            supported_text_archs=supported_text_archs,
-            supported_vision_archs=supported_vision_archs,
-            is_vlm=is_vlm,
-            is_gpt_oss=is_gpt_oss,
-            max_shard_size="50GB",
-            print_output=print_output,
-        )
-    # update is_vlm switch
-    is_vlm = is_vlm_update
-    # Check conversion success
-    for file in initial_files:
-        if not os.path.exists(file):
-            if IS_KAGGLE_ENVIRONMENT:
-                raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\n"
-                    "You are in a Kaggle environment with limited disk space (20GB).\n"
-                    "Try saving to /tmp for more space or use a smaller model.\n"
-                    "Alternatively, save the 16bit model first, then convert manually."
-                )
-            else:
-                raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\n"
-                    "Please check disk space and try again."
-                )
-
-    print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
-
-    # Step 4: Additional quantizations using llama-quantize
-    all_saved_locations = initial_files.copy()
-
-    # Get CPU count for quantization
-    n_cpus = psutil.cpu_count()
-    if n_cpus is None: n_cpus = 1
-    n_cpus *= 2
-
-    if not is_gpt_oss:
-        base_gguf = initial_files[0]
-        quants_created = False
-        for quant_method in quantization_method:
-            if quant_method != first_conversion:
-                print(f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes...")
-                output_location = f"{model_name}.{quant_method.upper()}.gguf"
-
-                try:
-                    # Use the quantize_gguf function we created
-                    quantized_file = quantize_gguf(
-                        input_gguf=base_gguf,
-                        output_gguf=output_location,
-                        quant_type=quant_method,
-                        quantizer_location=quantizer_location,
+        with lock:
+            try:
+                quantizer_location, converter_location = check_llama_cpp()
+                print("Unsloth: llama.cpp found in the system. Skipping installation.")
+            except:
+                print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
+                if IS_KAGGLE_ENVIRONMENT:
+                    # Kaggle: no CUDA support due to environment limitations
+                    quantizer_location, converter_location = install_llama_cpp(
+                        gpu_support=False,
                         print_output=print_output
                     )
-                    all_saved_locations.append(quantized_file)
-                    quants_created = True
-                except Exception as e:
+                else:
+                    quantizer_location, converter_location = install_llama_cpp(
+                        gpu_support=False,  # GGUF conversion doesn't need CUDA
+                        print_output=print_output
+                    )
+    except Exception as e:
+        logger.error(f"Unsloth: Error installing llama.cpp: {e}", exc_info=True)
+
+    # Step 2: Download and patch converter script
+    save_lock = get_lock(f"save_to_gguf_{model_name}", timeout=-1)
+    try:
+        with save_lock:
+            print("Unsloth: Preparing converter script...")
+            with use_local_gguf():
+                converter_path, supported_text_archs, supported_vision_archs = _download_convert_hf_to_gguf()
+
+                # Step 3: Initial GGUF conversion
+                print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
+                print(f"This might take 3 minutes...")
+
+                initial_files, is_vlm_update = convert_to_gguf(
+                    model_name=model_name,
+                    input_folder=model_directory,
+                    model_dtype = model_dtype,
+                    quantization_type=first_conversion,
+                    converter_location=converter_path,
+                    supported_text_archs=supported_text_archs,
+                    supported_vision_archs=supported_vision_archs,
+                    is_vlm=is_vlm,
+                    is_gpt_oss=is_gpt_oss,
+                    max_shard_size="50GB",
+                    print_output=print_output,
+                )
+            # update is_vlm switch
+            is_vlm = is_vlm_update
+            # Check conversion success
+            for file in initial_files:
+                if not os.path.exists(file):
                     if IS_KAGGLE_ENVIRONMENT:
                         raise RuntimeError(
-                            f"Unsloth: Quantization failed for {output_location}\n"\
-                            "You are in a Kaggle environment, which might be the reason this is failing.\n"\
-                            "Kaggle only provides 20GB of disk space in the working directory.\n"\
-                            "Merging to 16bit for 7b models use 16GB of space.\n"\
-                            "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
-                            "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
-                            "You can try saving it to the `/tmp` directory for larger disk space.\n"\
-                            "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"\
-                            "Error: {e}"
+                            f"Unsloth: Conversion failed for {file}\n"
+                            "You are in a Kaggle environment with limited disk space (20GB).\n"
+                            "Try saving to /tmp for more space or use a smaller model.\n"
+                            "Alternatively, save the 16bit model first, then convert manually."
                         )
                     else:
                         raise RuntimeError(
-                            f"Unsloth: Quantization failed for {output_location}\n"\
-                            "You might have to compile llama.cpp yourself, then run this again.\n"\
-                            "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
-                            "You must run this in the same folder as you're saving your model.\n"\
-                            "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
-                            "cd llama.cpp && make clean && make all -j\n"\
-                            "Once that's done, redo the quantization.\n"\
-                            "Error: {e}"
+                            f"Unsloth: Conversion failed for {file}\n"
+                            "Please check disk space and try again."
                         )
+
+            print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
+
+            # Step 4: Additional quantizations using llama-quantize
+            all_saved_locations = initial_files.copy()
+
+            # Get CPU count for quantization
+            n_cpus = psutil.cpu_count()
+            if n_cpus is None: n_cpus = 1
+            n_cpus *= 2
+
+            if not is_gpt_oss:
+                base_gguf = initial_files[0]
+                quants_created = False
+                for quant_method in quantization_method:
+                    if quant_method != first_conversion:
+                        print(f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes...")
+                        output_location = f"{model_name}.{quant_method.upper()}.gguf"
+
+                        try:
+                            # Use the quantize_gguf function we created
+                            quantized_file = quantize_gguf(
+                                input_gguf=base_gguf,
+                                output_gguf=output_location,
+                                quant_type=quant_method,
+                                quantizer_location=quantizer_location,
+                                print_output=print_output
+                            )
+                            all_saved_locations.append(quantized_file)
+                            quants_created = True
+                        except Exception as e:
+                            if IS_KAGGLE_ENVIRONMENT:
+                                raise RuntimeError(
+                                    f"Unsloth: Quantization failed for {output_location}\n"\
+                                    "You are in a Kaggle environment, which might be the reason this is failing.\n"\
+                                    "Kaggle only provides 20GB of disk space in the working directory.\n"\
+                                    "Merging to 16bit for 7b models use 16GB of space.\n"\
+                                    "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"\
+                                    "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"\
+                                    "You can try saving it to the `/tmp` directory for larger disk space.\n"\
+                                    "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"\
+                                    "Error: {e}"
+                                )
+                            else:
+                                raise RuntimeError(
+                                    f"Unsloth: Quantization failed for {output_location}\n"\
+                                    "You might have to compile llama.cpp yourself, then run this again.\n"\
+                                    "You do not need to close this Python program. Run the following commands in a new terminal:\n"\
+                                    "You must run this in the same folder as you're saving your model.\n"\
+                                    "git clone --recursive https://github.com/ggerganov/llama.cpp\n"\
+                                    "cd llama.cpp && make clean && make all -j\n"\
+                                    "Once that's done, redo the quantization.\n"\
+                                    "Error: {e}"
+                                )
+                            pass
+                        pass
                     pass
                 pass
-            pass
-        pass
-        print("Unsloth: Model files cleanup...")
-        if quants_created:
-            all_saved_locations.remove(base_gguf)
-            Path(base_gguf).unlink()
+                print("Unsloth: Model files cleanup...")
+                if quants_created:
+                    all_saved_locations.remove(base_gguf)
+                    Path(base_gguf).unlink()
 
-            # flip the list to get [text_model, mmproj] order. for text models stays the same.
-            all_saved_locations.reverse()
-    else:
-        print("Unsloth: GPT-OSS model - skipping additional quantizations")
-    pass
+                    # flip the list to get [text_model, mmproj] order. for text models stays the same.
+                    all_saved_locations.reverse()
+            else:
+                print("Unsloth: GPT-OSS model - skipping additional quantizations")
+            pass
+    except Exception as e:
+        logger.error(f"Unsloth: Error saving to GGUF: {e}", exc_info=True)
 
     if is_gpt_oss:
         want_full_precision = True
@@ -2180,13 +2191,18 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
     os.makedirs(save_directory, exist_ok=True)
 
     # Call the unsloth_save_model function with the custom directory
-    unsloth_save_model(
-        model,
-        tokenizer,
-        save_directory=save_directory,
-        save_method="lora",
-        push_to_hub=False,
-    )
+    save_lock = get_lock(save_directory, timeout=-1)
+    try:
+        with save_lock:
+            unsloth_save_model(
+                model,
+                tokenizer,
+                save_directory=save_directory,
+                save_method="lora",
+                push_to_hub=False,
+            )
+    except Exception as e:
+        logger.error(f"Unsloth: Error saving LoRA to custom directory: {e}", exc_info=True)
 
 # Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
@@ -2203,59 +2219,69 @@ def unsloth_convert_lora_to_ggml_and_push_to_hub(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
 ):
-    if not os.path.exists("llama.cpp"):
-        if IS_KAGGLE_ENVIRONMENT:
-            python_install = install_python_non_blocking(["protobuf"])
-            python_install.wait()
-            install_llama_cpp_blocking(use_cuda=False)
-            makefile = None
-        else:
-            git_clone = install_llama_cpp_clone_non_blocking()
-            python_install = install_python_non_blocking(["protobuf"])
-            git_clone.wait()
-            makefile = install_llama_cpp_make_non_blocking()
-            python_install.wait()
-    else:
-        makefile = None
+    llama_lock = get_lock("llama.cpp", timeout=-1)
+    try:
+        with llama_lock:
+            if not os.path.exists("llama.cpp"):
+                if IS_KAGGLE_ENVIRONMENT:
+                    python_install = install_python_non_blocking(["protobuf"])
+                    python_install.wait()
+                    install_llama_cpp_blocking(use_cuda=False)
+                    makefile = None
+                else:
+                    git_clone = install_llama_cpp_clone_non_blocking()
+                    python_install = install_python_non_blocking(["protobuf"])
+                    git_clone.wait()
+                    makefile = install_llama_cpp_make_non_blocking()
+                    python_install.wait()
+            else:
+                makefile = None
+    except Exception as e:
+        logger.error(f"Unsloth: Error installing llama.cpp: {e}", exc_info=True)
 
     for _ in range(3):
         gc.collect()
 
-    lora_directory_push = "lora-to-ggml-push"
-    save_lora_to_custom_dir(self, tokenizer, lora_directory_push)
-
-    model_type = self.config.model_type
-    output_file = os.path.join(lora_directory_push, "ggml-adapter-model.bin")
-
-    print(f"Unsloth: Converting auto-saved LoRA adapters at {lora_directory_push} to GGML format.")
-    print(f"The output file will be {output_file}")
-
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_push} {output_file} llama"
-
+    lora_lock = get_lock("lora-to-ggml-push", timeout=-1)
     try:
-        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
-            for line in sp.stdout:
-                print(line, end="", flush=True)
-            for line in sp.stderr:
-                print(line, end="", flush=True)
-            sp.wait()
-            if sp.returncode != 0:
-                raise subprocess.CalledProcessError(sp.returncode, command)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: Conversion failed with return code {e.returncode}")
-        return
+        with lora_lock:
+            lora_directory_push = "lora-to-ggml-push"
+            save_lora_to_custom_dir(self, tokenizer, lora_directory_push)
 
-    print(f"Unsloth: Conversion completed! Output file: {output_file}")
+            model_type = self.config.model_type
+            output_file = os.path.join(lora_directory_push, "ggml-adapter-model.bin")
 
-    print("Unsloth: Uploading GGML file to Hugging Face Hub...")
-    username = upload_to_huggingface(
-        self, repo_id, token,
-        "GGML converted LoRA", "ggml", output_file, None, private,
-    )
-    link = f"{repo_id.lstrip('/')}"
-    print("Unsloth: Done.")
-    print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
-    print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
+            print(f"Unsloth: Converting auto-saved LoRA adapters at {lora_directory_push} to GGML format.")
+            print(f"The output file will be {output_file}")
+
+            command = f"python3 llama.cpp/convert-lora-to-ggml.py {lora_directory_push} {output_file} llama"
+
+            try:
+                with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+                    for line in sp.stdout:
+                        print(line, end="", flush=True)
+                    for line in sp.stderr:
+                        print(line, end="", flush=True)
+                    sp.wait()
+                    if sp.returncode != 0:
+                        raise subprocess.CalledProcessError(sp.returncode, command)
+            except subprocess.CalledProcessError as e:
+                print(f"Error: Conversion failed with return code {e.returncode}")
+                return
+
+            print(f"Unsloth: Conversion completed! Output file: {output_file}")
+
+            print("Unsloth: Uploading GGML file to Hugging Face Hub...")
+            username = upload_to_huggingface(
+                self, repo_id, token,
+                "GGML converted LoRA", "ggml", output_file, None, private,
+            )
+            link = f"{repo_id.lstrip('/')}"
+            print("Unsloth: Done.")
+            print(f"Converted LoRA to GGML and uploaded to https://huggingface.co/{link}")
+            print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
+    except Exception as e:
+        logger.error(f"Unsloth: Error converting LoRA to GGML and pushing to Hugging Face Hub: {e}", exc_info=True)
 
 def unsloth_convert_lora_to_ggml_and_save_locally(
     self,
@@ -2264,50 +2290,60 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
 ):
-    if not os.path.exists("llama.cpp"):
-        if IS_KAGGLE_ENVIRONMENT:
-            python_install = install_python_non_blocking(["protobuf"])
-            python_install.wait()
-            install_llama_cpp_blocking(use_cuda=False)
-            makefile = None
-        else:
-            git_clone = install_llama_cpp_clone_non_blocking()
-            python_install = install_python_non_blocking(["protobuf"])
-            git_clone.wait()
-            makefile = install_llama_cpp_make_non_blocking()
-            python_install.wait()
-    else:
-        makefile = None
+    llama_lock = get_lock("llama.cpp", timeout=-1)
+    try:
+        with llama_lock:
+            if not os.path.exists("llama.cpp"):
+                if IS_KAGGLE_ENVIRONMENT:
+                    python_install = install_python_non_blocking(["protobuf"])
+                    python_install.wait()
+                    install_llama_cpp_blocking(use_cuda=False)
+                    makefile = None
+                else:
+                    git_clone = install_llama_cpp_clone_non_blocking()
+                    python_install = install_python_non_blocking(["protobuf"])
+                    git_clone.wait()
+                    makefile = install_llama_cpp_make_non_blocking()
+                    python_install.wait()
+            else:
+                makefile = None
+    except Exception as e:
+        logger.error(f"Unsloth: Error installing llama.cpp: {e}", exc_info=True)
 
     for _ in range(3):
         gc.collect()
 
-    # Use the provided save_directory for local saving
-    save_lora_to_custom_dir(self, tokenizer, save_directory)
-
-    model_type = self.config.model_type
-    output_file = os.path.join(save_directory, "ggml-adapter-model.bin")
-
-    print(f"Unsloth: Converting auto-saved LoRA adapters at {save_directory} to GGML format.")
-    print(f"The output file will be {output_file}")
-
-    command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
-
+    lora_lock = get_lock("lora-to-ggml-save", timeout=-1)
     try:
-        with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
-            for line in sp.stdout:
-                print(line, end="", flush=True)
-            for line in sp.stderr:
-                print(line, end="", flush=True)
-            sp.wait()
-            if sp.returncode != 0:
-                raise subprocess.CalledProcessError(sp.returncode, command)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: Conversion failed with return code {e.returncode}")
-        return
-    print("Unsloth: Done.")
-    print(f"Unsloth: Conversion completed! Output file: {output_file}")
-    print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
+        with lora_lock:
+            # Use the provided save_directory for local saving
+            save_lora_to_custom_dir(self, tokenizer, save_directory)
+
+            model_type = self.config.model_type
+            output_file = os.path.join(save_directory, "ggml-adapter-model.bin")
+
+            print(f"Unsloth: Converting auto-saved LoRA adapters at {save_directory} to GGML format.")
+            print(f"The output file will be {output_file}")
+
+            command = f"python3 llama.cpp/convert-lora-to-ggml.py {save_directory} {output_file} llama"
+
+            try:
+                with subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1, universal_newlines=True) as sp:
+                    for line in sp.stdout:
+                        print(line, end="", flush=True)
+                    for line in sp.stderr:
+                        print(line, end="", flush=True)
+                    sp.wait()
+                    if sp.returncode != 0:
+                        raise subprocess.CalledProcessError(sp.returncode, command)
+            except subprocess.CalledProcessError as e:
+                print(f"Error: Conversion failed with return code {e.returncode}")
+                return
+            print("Unsloth: Done.")
+            print(f"Unsloth: Conversion completed! Output file: {output_file}")
+            print("\nThis GGML making function was made by Maheswar. Ping him @Maheswar on the Unsloth Discord or on HuggingFace (@mahiatlinux) if you like this!")
+    except Exception as e:
+        logger.error(f"Unsloth: Error converting LoRA to GGML and saving locally: {e}", exc_info=True)
 pass
 
 
@@ -2335,9 +2371,14 @@ def save_to_gguf_generic(
     if repo_id is not None and token is None:
         raise RuntimeError("Unsloth: Please specify a token for uploading!")
 
-    if not os.path.exists(os.path.join("llama.cpp", "unsloth_convert_hf_to_gguf.py")):
-        install_llama_cpp(just_clone_repo = True)
-    pass
+    llama_lock = get_lock("llama.cpp", timeout=-1)
+    try:
+        with llama_lock:
+            if not os.path.exists(os.path.join("llama.cpp", "unsloth_convert_hf_to_gguf.py")):
+                install_llama_cpp(just_clone_repo = True)
+            pass
+    except Exception as e:
+        logger.error(f"Unsloth: Error installing llama.cpp: {e}", exc_info=True)
 
     # Use old style quantization_method
     new_quantization_methods = []
@@ -2371,32 +2412,37 @@ def save_to_gguf_generic(
 
     # Go through all types and save individually - somewhat inefficient
     # since we save F16 / BF16 multiple times
-    for quantization_type in new_quantization_methods:
-        metadata = _convert_to_gguf(
-            save_directory,
-            print_output = True,
-            quantization_type = quantization_type,
-        )
-        if repo_id is not None:
-            prepare_saving(
-                model,
-                repo_id,
-                push_to_hub = True,
-                max_shard_size = "50GB",
-                private = True,
-                token = token,
-            )
+    convert_lock = get_lock("save_to_gguf_generic", timeout=-1)
+    try:
+        with convert_lock:
+            for quantization_type in new_quantization_methods:
+                metadata = _convert_to_gguf(
+                    save_directory,
+                    print_output = True,
+                    quantization_type = quantization_type,
+                )
+                if repo_id is not None:
+                    prepare_saving(
+                        model,
+                        repo_id,
+                        push_to_hub = True,
+                        max_shard_size = "50GB",
+                        private = True,
+                        token = token,
+                    )
 
-            from huggingface_hub import HfApi
-            api = HfApi(token = token)
-            api.upload_folder(
-                folder_path = save_directory,
-                repo_id = repo_id,
-                repo_type = "model",
-                allow_patterns = ["*.gguf"],
-            )
-        pass
-    pass
+                    from huggingface_hub import HfApi
+                    api = HfApi(token = token)
+                    api.upload_folder(
+                        folder_path = save_directory,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                        allow_patterns = ["*.gguf"],
+                    )
+                pass
+            pass
+    except Exception as e:
+        logger.error(f"Unsloth: Error saving to GGUF: {e}", exc_info=True)
     return metadata
 pass
 
