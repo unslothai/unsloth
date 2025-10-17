@@ -81,7 +81,7 @@ if DEVICE_TYPE == "hip":
         if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(Params4bit):
             ALLOW_PREQUANTIZED_MODELS = False
         import bitsandbytes
-        ALLOW_BITSANDBYTES = Version(bitsandbytes.__version__) >= Version("0.48.2.dev0")
+        ALLOW_BITSANDBYTES = Version(bitsandbytes.__version__) > Version("0.48.2.dev0")
     except:
         pass
 pass
