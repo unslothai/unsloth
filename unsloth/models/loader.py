@@ -52,6 +52,7 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+    ALLOW_BITSANDBYTES,
 )
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
@@ -199,6 +200,10 @@ class FastLanguageModel(FastLlamaModel):
                 )
             pass
         pass
+        # Check if 4bit is allowed specifically for AMD
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
+            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            load_in_4bit = False
 
         old_model_name = model_name
         if not use_exact_model_name:
@@ -634,6 +639,10 @@ class FastModel(FastBaseModel):
                 "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
                 "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
             )
+        # Check if 4bit is allowed specifically for AMD
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
+            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            load_in_4bit = False
 
         old_model_name = model_name
         if not use_exact_model_name:
