@@ -356,7 +356,8 @@ class _RaiseUninitialized(logging.Handler):
             ("score.weight" not in record_lower) and \
             ("classifier.weight" not in record_lower) and \
             ("cls.predictions" not in record_lower) and \
-            ("predictions.decoder" not in record_lower):
+            ("predictions.decoder" not in record_lower) and \
+            (os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1") == "1"):
             raise Exception(
                 f"Unsloth: Critical error since some weights are not initialized.\n"\
                 f"Please try updating Unsloth, transformers and timm via:\n"\
