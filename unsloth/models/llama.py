@@ -27,7 +27,14 @@ from transformers import __version__ as transformers_version
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config, add_dtype_kwargs, fix_lora_auto_mapping
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
-from unsloth import DEVICE_TYPE, DEVICE_COUNT, DEVICE_TYPE_TORCH
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 
 transformers_version = Version(transformers_version)
 # Transformers moved rotary embeddings out of all attention layers
