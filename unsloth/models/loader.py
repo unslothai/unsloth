@@ -201,7 +201,7 @@ class FastLanguageModel(FastLlamaModel):
             pass
         pass
         # Check if 4bit is allowed specifically for AMD
-        if not ALLOW_BITSANDBYTES:
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
             load_in_4bit = False
 
@@ -640,7 +640,7 @@ class FastModel(FastBaseModel):
                 "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
             )
         # Check if 4bit is allowed specifically for AMD
-        if not ALLOW_BITSANDBYTES:
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
             load_in_4bit = False
 
