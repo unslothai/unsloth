@@ -28,6 +28,7 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 from .fp8 import weight_dequant, fp8_linear
+import functools
 
 # torch.cuda.amp.custom_fwd is deprecated >= 2.4
 import torch
@@ -71,10 +72,7 @@ else:
 pass
 
 
-def is_hip():
-    return triton.runtime.driver.active.get_current_target().backend == "hip"
-
-
+@functools.lru_cache(1)
 def is_cdna():
     return is_hip() and triton.runtime.driver.active.get_current_target().arch in ('gfx940', 'gfx941', 'gfx942')
 
