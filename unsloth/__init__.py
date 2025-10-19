@@ -69,7 +69,31 @@ except Exception as exception:
     raise exception
 pass
 
-from .device_type import (
+import importlib.util
+from pathlib import Path
+from importlib.metadata import version as importlib_version
+# Check for unsloth_zoo
+try:
+    unsloth_zoo_version = importlib_version("unsloth_zoo")
+    if Version(unsloth_zoo_version) < Version("2025.10.4"):
+        print(
+            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
+            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
+        )
+        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
+        #     try:
+        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
+        #     except:
+        #         try:
+        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+        #         except:
+        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
+    import unsloth_zoo
+except:
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
+pass
+
+from unsloth_zoo.device_type import (
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -84,6 +108,7 @@ if (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
+    os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 elif (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="1") and \
     ("expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")):
     warnings.warn(
@@ -95,6 +120,11 @@ elif (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY"
         r"expandable\_segments\:True\,?",
         "",
         os.environ["PYTORCH_CUDA_ALLOC_CONF"],
+    )
+    os.environ["PYTORCH_HIP_ALLOC_CONF"] = re.sub(
+        r"expandable\_segments\:True\,?",
+        "",
+        os.environ["PYTORCH_HIP_ALLOC_CONF"],
     )
 pass
 # We support Pytorch 2
@@ -108,6 +138,7 @@ if (major_torch < 2):
 elif (major_torch == 2) and (minor_torch < 2):
     # Disable expandable_segments
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+    del os.environ["PYTORCH_HIP_ALLOC_CONF"]
 pass
 
 # CCE fails on Torch 2.8 and above
@@ -119,9 +150,6 @@ elif DEVICE_TYPE == "hip":
     os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 
 # Fix other issues
-import importlib.util
-from pathlib import Path
-from importlib.metadata import version as importlib_version
 from .import_fixes import fix_xformers_performance_issue
 fix_xformers_performance_issue(); del fix_xformers_performance_issue;
 from .import_fixes import fix_vllm_aimv2_issue
@@ -224,27 +252,6 @@ elif DEVICE_TYPE == "xpu":
     # currently intel xpu will not support bnb, will add support in the future
     # TODO: check triton for intel installed properly.
     pass
-
-# Check for unsloth_zoo
-try:
-    unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.10.2"):
-        print(
-            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
-            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
-        )
-        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
-        #     try:
-        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        #     except:
-        #         try:
-        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
-        #         except:
-        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    import unsloth_zoo
-except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
-pass
 
 from .models import *
 from .models import __version__
