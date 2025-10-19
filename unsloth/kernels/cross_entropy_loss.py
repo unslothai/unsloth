@@ -21,6 +21,7 @@ from .utils import (
     triton_tanh,
     triton_cast,
     torch_gpu_device,
+    is_cdna,
 )
 from transformers.models.llama.modeling_llama import logger
 from packaging.version import Version
@@ -332,7 +333,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     SOFTCAP          = logit_softcapping,
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE      = logit_scaling,
-                    num_warps        = 32,
+                    num_warps        = 32 if not is_cdna() else 16,
                 )
             # logsumexp(chunked_logsumexp) - x
             # Do the -x separately
