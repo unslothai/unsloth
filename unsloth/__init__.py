@@ -69,6 +69,9 @@ except Exception as exception:
     raise exception
 pass
 
+import importlib.util
+from pathlib import Path
+from importlib.metadata import version as importlib_version
 # Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
@@ -147,9 +150,6 @@ elif DEVICE_TYPE == "hip":
     os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 
 # Fix other issues
-import importlib.util
-from pathlib import Path
-from importlib.metadata import version as importlib_version
 from .import_fixes import fix_xformers_performance_issue
 fix_xformers_performance_issue(); del fix_xformers_performance_issue;
 from .import_fixes import fix_vllm_aimv2_issue
