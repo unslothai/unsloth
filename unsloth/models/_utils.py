@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.10.6"
+__version__ = "2025.10.7"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -163,7 +163,6 @@ warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "triton")
-
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
@@ -213,6 +212,12 @@ if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
         from vllm.lora.models import logger as vllm_lora_model_logger
         vllm_lora_model_logger.addFilter(HideLoggingMessage("Regarding multimodal models, vLLM currently only supports adding"))
         del vllm_lora_model_logger
+    except:
+        pass
+    try:
+        from vllm.attention.utils.fa_utils import logger as vllm_attention_utils_fa_utils_logger
+        vllm_attention_utils_fa_utils_logger.addFilter(HideLoggingMessage("Cannot use FA version"))
+        del vllm_attention_utils_fa_utils_logger
     except:
         pass
 pass
@@ -341,6 +346,14 @@ try:
     from transformers.utils.generic import logger as trainer_logger
     trainer_logger.addFilter(HideLoggingMessage("`use_cache=True`"))
     del trainer_logger
+except:
+    pass
+
+# We detected that you are using `from_pretrained` with a meta device context manager or `torch.set_default_device('meta')
+try:
+    from transformers.modeling_utils import logger as modeling_utils_logger
+    modeling_utils_logger.addFilter(HideLoggingMessage("anti-pattern"))
+    del modeling_utils_logger
 except:
     pass
 
