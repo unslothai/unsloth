@@ -933,10 +933,11 @@ def _get_statistics(statistics = None, force_download = True):
     # You can disable this by commenting the below out
     n_cpus = psutil.cpu_count(logical = False)
     keynames = "\n" + "\n".join(os.environ.keys())
-    if statistics is not None: pass
     # Check modelscope for down detection
     global USE_MODELSCOPE
     USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+
+    if statistics is not None: pass
     elif "\nCOLAB_"  in keynames and n_cpus == 1: statistics = "colab"
     elif "\nCOLAB_"  in keynames: statistics = "colabpro"
     elif "\nKAGGLE_" in keynames: statistics = "kaggle"
