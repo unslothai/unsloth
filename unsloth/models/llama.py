@@ -1217,26 +1217,28 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
 
-                loss = fused_linear_cross_entropy(
-                    hidden_states      = hidden_states,
-                    lm_weight          = lm_head,
-                    labels             = labels,
-                    num_items_in_batch = n_items,
-                    logit_softcapping  = logit_softcapping,
-                )
-                # loss = unsloth_fused_ce_loss(
-                #     trainer              = None,
-                #     hidden_states        = hidden_states,
-                #     lm_head_weight       = lm_head,
-                #     lm_head_bias         = None,
-                #     labels               = labels,
-                #     mask                 = None,
-                #     n_items              = n_items,
-                #     scaling              = getattr(self, "accelerator_scaler", None),
-                #     target_gb            = None,
-                #     torch_compile        = True,
-                #     logit_softcapping    = logit_softcapping,
+                ### DISABLED since T4 breaks
+                # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages` may help.
+                # loss = fused_linear_cross_entropy(
+                #     hidden_states      = hidden_states,
+                #     lm_weight          = lm_head,
+                #     labels             = labels,
+                #     num_items_in_batch = n_items,
+                #     logit_softcapping  = logit_softcapping,
                 # )
+                loss = unsloth_fused_ce_loss(
+                    trainer              = None,
+                    hidden_states        = hidden_states,
+                    lm_head_weight       = lm_head,
+                    lm_head_bias         = None,
+                    labels               = labels,
+                    mask                 = None,
+                    n_items              = n_items,
+                    scaling              = getattr(self, "accelerator_scaler", None),
+                    target_gb            = None,
+                    torch_compile        = True,
+                    logit_softcapping    = logit_softcapping,
+                )
                 if not return_dict:
                     output = (logits,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
