@@ -905,6 +905,26 @@ if Version(peft_version) < Version("0.12.0"):
 pass
 
 # =============================================
+import importlib
+global USE_MODELSCOPE
+USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+if USE_MODELSCOPE:
+    if importlib.util.find_spec("modelscope") is None:
+        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
+    pass
+pass
+
+import socket
+@functools.lru_cache(1)
+def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
+    if os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1": return False
+    try:
+        socket.setdefaulttimeout(timeout)
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect((host, port))
+        return True
+    except socket.error as ex:
+        return False
+pass
 
 import psutil
 def _get_statistics(statistics = None, force_download = True):
@@ -912,61 +932,81 @@ def _get_statistics(statistics = None, force_download = True):
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     # You can disable this by commenting the below out
-    try:
-        n_cpus = psutil.cpu_count(logical = False)
-        keynames = "\n" + "\n".join(os.environ.keys())
-        if statistics is not None: pass
-        elif "\nCOLAB_"  in keynames and n_cpus == 1: statistics = "colab"
-        elif "\nCOLAB_"  in keynames: statistics = "colabpro"
-        elif "\nKAGGLE_" in keynames: statistics = "kaggle"
-        elif "\nRUNPOD_" in keynames: statistics = "runpod"
-        elif "\nAWS_"    in keynames: statistics = "aws"
-        elif "\nAZURE_"  in keynames: statistics = "azure"
-        # elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
-        elif "\nINVOCATION_ID" in keynames: statistics = "lambda"
-        # else: statistics = "other"
-        else:
-            def try_vllm_check():
-                vendor_files = (
-                    "/sys/class/dmi/id/product_version",
-                    "/sys/class/dmi/id/bios_vendor",
-                    "/sys/class/dmi/id/product_name",
-                    "/sys/class/dmi/id/chassis_asset_tag",
-                    "/sys/class/dmi/id/sys_vendor",
-                )
-                from pathlib import Path
-                for vendor_file in vendor_files:
-                    path = Path(vendor_file)
-                    if path.is_file():
-                        file_content = path.read_text().lower()
-                        if   "amazon"                in file_content: return "aws"
-                        elif "microsoft corporation" in file_content: return "azure"
-                        elif "google"                in file_content: return "gcp"
-                return "other"
-            pass
-            try:    statistics = try_vllm_check()
-            except: statistics = "other"
-        pass
-        if statistics is not None:
-            from transformers import AutoModelForCausalLM
-            stats_model = AutoModelForCausalLM.from_pretrained(
-                f"unslothai/{statistics}",
-                force_download = force_download,
+    n_cpus = psutil.cpu_count(logical = False)
+    keynames = "\n" + "\n".join(os.environ.keys())
+    # Check modelscope for down detection
+    global USE_MODELSCOPE
+    USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
+
+    if statistics is not None: pass
+    elif "\nCOLAB_"  in keynames and n_cpus == 1: statistics = "colab"
+    elif "\nCOLAB_"  in keynames: statistics = "colabpro"
+    elif "\nKAGGLE_" in keynames: statistics = "kaggle"
+    elif "\nRUNPOD_" in keynames: statistics = "runpod"
+    elif "\nAWS_"    in keynames: statistics = "aws"
+    elif "\nAZURE_"  in keynames: statistics = "azure"
+    # elif "\nK_" in keynames or "\nFUNCTION_" in keynames: statistics = "gcp"
+    elif "\nINVOCATION_ID" in keynames: statistics = "lambda"
+    # else: statistics = "other"
+    else:
+        def try_vllm_check():
+            vendor_files = (
+                "/sys/class/dmi/id/product_version",
+                "/sys/class/dmi/id/bios_vendor",
+                "/sys/class/dmi/id/product_name",
+                "/sys/class/dmi/id/chassis_asset_tag",
+                "/sys/class/dmi/id/sys_vendor",
             )
-            del stats_model
+            from pathlib import Path
+            for vendor_file in vendor_files:
+                path = Path(vendor_file)
+                if path.is_file():
+                    file_content = path.read_text().lower()
+                    if   "amazon"                in file_content: return "aws"
+                    elif "microsoft corporation" in file_content: return "azure"
+                    elif "google"                in file_content: return "gcp"
+            return "other"
         pass
-    except:
+        try:    statistics = try_vllm_check()
+        except: statistics = "other"
+    pass
+    if statistics is not None:
+        import tempfile
+        from huggingface_hub import snapshot_download
+        from unsloth_zoo.rl_environments import execute_with_time_limit
+        if has_internet():
+            @execute_with_time_limit(120)
+            def stats_check():
+                with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
+                    snapshot_download(f"unslothai/{statistics}", force_download = True, cache_dir = f, local_dir = f)
+            try:
+                stats_check()
+            except TimeoutError:
+                raise TimeoutError(
+                    "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"\
+                    "Check https://status.huggingface.co/ for more details.\n"\
+                    "As a temporary measure, use modelscope with the same model name ie:\n"\
+                    "```\n"\
+                    "pip install modelscope\n"\
+                    "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"\
+                    "from unsloth import FastLanguageModel\n"\
+                    "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"\
+                    "```"
+                )
         pass
+    pass
 pass
 
 
-def get_statistics():
+def get_statistics(local_files_only = False):
     # We log some basic stats about which environment is being used.
+    # This is also to check if HuggingFace is down or not!
     # We simply download a README.md file from HF - all data is made public.
     # This is simply so we can check if some envs are broken or not.
     # You can disable this by setting UNSLOTH_DISABLE_STATISTICS
     import os
     if "UNSLOTH_DISABLE_STATISTICS" in os.environ: return
+    if local_files_only: return
     from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
     disabled = False
     if not are_progress_bars_disabled():
@@ -975,24 +1015,17 @@ def get_statistics():
     pass
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
-    try:
-        vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
-        if   vram <= 8 : vram = 8
-        elif vram <= 16: vram = 16
-        elif vram <= 20: vram = 20
-        elif vram <= 24: vram = 24
-        elif vram <= 40: vram = 40
-        elif vram <= 48: vram = 48
-        elif vram <= 80: vram = 80
-        else: vram = 96
-        _get_statistics(f"vram-{vram}")
-    except:
-        pass
-    pass
-    try:
-        _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
-    except:
-        pass
+    vram = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024 / 1024
+    if   vram <= 8 : vram = 8
+    elif vram <= 16: vram = 16
+    elif vram <= 20: vram = 20
+    elif vram <= 24: vram = 24
+    elif vram <= 40: vram = 40
+    elif vram <= 48: vram = 48
+    elif vram <= 80: vram = 80
+    else: vram = 96
+    _get_statistics(f"vram-{vram}")
+    _get_statistics(f"{DEVICE_COUNT if DEVICE_COUNT <= 8 else 9}")
     if disabled: enable_progress_bars()
 pass
 
@@ -1590,14 +1623,6 @@ for j, function in enumerate(functions):
         exec(f"def raise_{j}(*args, **kwargs): print('{function}')", globals(), locals())
         try: exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except: continue
-pass
-
-import importlib
-USE_MODELSCOPE = os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1"
-if USE_MODELSCOPE:
-    if importlib.util.find_spec("modelscope") is None:
-        raise ImportError(f'You are using the modelscope hub, please install modelscope by `pip install modelscope -U`')
-    pass
 pass
 
 
