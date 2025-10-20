@@ -915,6 +915,7 @@ if USE_MODELSCOPE:
 pass
 
 import socket
+@functools.lru_cache(1)
 def has_internet(host = "8.8.8.8", port = 53, timeout = 3):
     if os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1": return False
     try:
@@ -974,7 +975,7 @@ def _get_statistics(statistics = None, force_download = True):
         from huggingface_hub import snapshot_download
         from unsloth_zoo.rl_environments import execute_with_time_limit
         if has_internet():
-            @execute_with_time_limit(60)
+            @execute_with_time_limit(120)
             def stats_check():
                 with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
                     snapshot_download(statistics, force_download = True, cache_dir = f, local_dir = f)
