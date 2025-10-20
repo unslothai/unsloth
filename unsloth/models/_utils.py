@@ -998,7 +998,7 @@ def _get_statistics(statistics = None, force_download = True):
 pass
 
 
-def get_statistics():
+def get_statistics(local_files_only = False):
     # We log some basic stats about which environment is being used.
     # This is also to check if HuggingFace is down or not!
     # We simply download a README.md file from HF - all data is made public.
@@ -1006,6 +1006,7 @@ def get_statistics():
     # You can disable this by setting UNSLOTH_DISABLE_STATISTICS
     import os
     if "UNSLOTH_DISABLE_STATISTICS" in os.environ: return
+    if local_files_only: return
     from huggingface_hub.utils import disable_progress_bars, enable_progress_bars, are_progress_bars_disabled
     disabled = False
     if not are_progress_bars_disabled():
