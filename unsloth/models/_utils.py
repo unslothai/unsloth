@@ -214,6 +214,12 @@ if os.environ.get('UNSLOTH_ENABLE_LOGGING', '0') != '1':
         del vllm_lora_model_logger
     except:
         pass
+    try:
+        from vllm.attention.utils.fa_utils import logger as vllm_attention_utils_fa_utils_logger
+        vllm_attention_utils_fa_utils_logger.addFilter(HideLoggingMessage("Cannot use FA version"))
+        del vllm_attention_utils_fa_utils_logger
+    except:
+        pass
 pass
 
 # The speedups for torchdynamo mostly come with GPU Ampere or higher and which is not detected here.
