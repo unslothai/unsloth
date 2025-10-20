@@ -145,8 +145,16 @@ ctypes_c_int32 = ctypes.c_int32
 cdequantize_blockwise_fp32      = bnb.functional.lib.cdequantize_blockwise_fp32
 cdequantize_blockwise_fp16_nf4  = bnb.functional.lib.cdequantize_blockwise_fp16_nf4
 cdequantize_blockwise_bf16_nf4  = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
-cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
-cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+
+if DEVICE_TYPE == "xpu":
+    # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
+    # for xpu, inference gemv using above link
+    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
+    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
+else:
+    cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemm_4bit_inference_naive_fp16
+    cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemm_4bit_inference_naive_bf16
+
 
 torch_device_stream = torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
 
@@ -491,8 +499,12 @@ if  DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         #     assert(out.shape == (1, 1, bout,))
         # pass
 
-        n = 1
-        m = shape[0]
+        if DEVICE_TYPE == "xpu":
+            m = 1
+            n = shape[0]
+        else:
+            n = 1
+            m = shape[0]
         k = shape[1]
         lda = shape[0]
         ldc = shape[0]
