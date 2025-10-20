@@ -1205,7 +1205,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             # < 1024 Normal Unsloth uses less VRAM!
             if DEVICE_TYPE == "hip":
                 # [TODO] AMD GPUs fail on chunked_cross_entropy loss!
-                # RuntimeError: Triton Error [HIP]:  Code: 1, Messsage: invalid argument
+                # RuntimeError: Triton Error [HIP]: Code: 1, Messsage: invalid argument
                 RETURN_LOGITS = False
             elif bsz*q_len <= 1024:
                 RETURN_LOGITS = True
@@ -1217,6 +1217,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
 
+                ### DISABLED since T4 breaks
+                # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages` may help.
                 # loss = fused_linear_cross_entropy(
                 #     hidden_states      = hidden_states,
                 #     lm_weight          = lm_head,
@@ -1242,11 +1244,11 @@ def CausalLM_fast_forward(fast_forward_inference):
                     return (loss,) + output if loss is not None else output
 
                 output = CausalLMOutputWithPast(
-                    loss=loss,
-                    logits=EMPTY_LOGITS,
-                    past_key_values=outputs.past_key_values,
-                    hidden_states=outputs.hidden_states,
-                    attentions=outputs.attentions,
+                    loss = loss,
+                    logits = EMPTY_LOGITS,
+                    past_key_values=  outputs.past_key_values,
+                    hidden_states = outputs.hidden_states,
+                    attentions = outputs.attentions,
                 )
                 return output
             pass
@@ -1922,7 +1924,8 @@ class FastLlamaModel:
         if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         model_patcher.pre_patch()
-        get_statistics() # For debugging - we use a download counter to see if environments are not breaking
+         # For debugging - we use a download counter to see if environments are not breaking or if HF is down
+        get_statistics(kwargs.get("local_files_only", False))
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
