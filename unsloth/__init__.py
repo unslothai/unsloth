@@ -69,35 +69,38 @@ except Exception as exception:
     raise exception
 pass
 
-@functools.cache
-def is_hip():
-    return bool(getattr(getattr(torch, "version", None), "hip", None))
+import importlib.util
+from pathlib import Path
+from importlib.metadata import version as importlib_version
+# Check for unsloth_zoo
+try:
+    unsloth_zoo_version = importlib_version("unsloth_zoo")
+    if Version(unsloth_zoo_version) < Version("2025.10.4"):
+        print(
+            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
+            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
+        )
+        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
+        #     try:
+        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
+        #     except:
+        #         try:
+        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
+        #         except:
+        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
+    import unsloth_zoo
+except:
+    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
 pass
 
-@functools.cache
-def get_device_type():
-    if hasattr(torch, "cuda") and torch.cuda.is_available():
-        if is_hip():
-            return "hip"
-        return "cuda"
-    elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        return "xpu"
-    raise NotImplementedError("Unsloth currently only works on NVIDIA GPUs and Intel GPUs.")
-pass
-DEVICE_TYPE : str = get_device_type()
-
-@functools.cache
-def get_device_count():
-    if DEVICE_TYPE in ("cuda", "hip"):
-        return torch.cuda.device_count()
-    elif DEVICE_TYPE == "xpu":
-        return torch.xpu.device_count()
-    else:
-        return 1
-pass
-
-DEVICE_COUNT : int = get_device_count()
-
+from unsloth_zoo.device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 # Reduce VRAM usage by reducing fragmentation
 # And optimize pinning of memory
 # TODO(billishyahao): need to add hip related optimization...
@@ -105,6 +108,7 @@ if (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", 
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = \
         "expandable_segments:True,"\
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]"
+    os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 elif (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY", "0")=="1") and \
     ("expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")):
     warnings.warn(
@@ -116,6 +120,11 @@ elif (DEVICE_TYPE in ("cuda", "hip")) and (os.environ.get("UNSLOTH_VLLM_STANDBY"
         r"expandable\_segments\:True\,?",
         "",
         os.environ["PYTORCH_CUDA_ALLOC_CONF"],
+    )
+    os.environ["PYTORCH_HIP_ALLOC_CONF"] = re.sub(
+        r"expandable\_segments\:True\,?",
+        "",
+        os.environ["PYTORCH_HIP_ALLOC_CONF"],
     )
 pass
 # We support Pytorch 2
@@ -129,24 +138,28 @@ if (major_torch < 2):
 elif (major_torch == 2) and (minor_torch < 2):
     # Disable expandable_segments
     del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+    del os.environ["PYTORCH_HIP_ALLOC_CONF"]
 pass
 
 # CCE fails on Torch 2.8 and above
 # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages`
 if (major_torch >= 2 and minor_torch >= 8) or (major_torch > 2):
     os.environ["UNSLOTH_ENABLE_CCE"] = "0"
-pass
+elif DEVICE_TYPE == "hip":
+    # CCE also fails in HIP / AMD
+    os.environ["UNSLOTH_ENABLE_CCE"] = "0"
 
 # Fix other issues
-import importlib.util
-from pathlib import Path
-from importlib.metadata import version as importlib_version
 from .import_fixes import fix_xformers_performance_issue
 fix_xformers_performance_issue(); del fix_xformers_performance_issue;
 from .import_fixes import fix_vllm_aimv2_issue
 fix_vllm_aimv2_issue(); del fix_vllm_aimv2_issue;
 from .import_fixes import ignore_logger_messages
 ignore_logger_messages(); del ignore_logger_messages;
+from .import_fixes import patch_ipykernel_hf_xet
+patch_ipykernel_hf_xet(); del patch_ipykernel_hf_xet;
+from .import_fixes import patch_trackio
+patch_trackio(); del patch_trackio;
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":
@@ -181,7 +194,10 @@ if DEVICE_TYPE == "cuda":
     else: from triton.common.build import libcuda_dirs
 
     # Try loading bitsandbytes and triton
-    import bitsandbytes as bnb
+    try:
+        import bitsandbytes as bnb
+    except:
+        print("Unsloth: `bitsandbytes` is not installed - 4bit QLoRA unallowed, but 16bit and full finetuning works!")
     try:
         cdequantize_blockwise_fp32 = bnb.functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
@@ -236,27 +252,6 @@ elif DEVICE_TYPE == "xpu":
     # currently intel xpu will not support bnb, will add support in the future
     # TODO: check triton for intel installed properly.
     pass
-
-# Check for unsloth_zoo
-try:
-    unsloth_zoo_version = importlib_version("unsloth_zoo")
-    if Version(unsloth_zoo_version) < Version("2025.9.6"):
-        print(
-            "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"\
-            "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
-        )
-        # if os.environ.get("UNSLOTH_DISABLE_AUTO_UPDATES", "0") == "0":
-        #     try:
-        #         os.system("pip install --upgrade --no-cache-dir --no-deps unsloth_zoo")
-        #     except:
-        #         try:
-        #             os.system("pip install --upgrade --no-cache-dir --no-deps --user unsloth_zoo")
-        #         except:
-        #             raise ImportError("Unsloth: Please update unsloth_zoo via `pip install --upgrade --no-cache-dir --no-deps unsloth_zoo`")
-    import unsloth_zoo
-except:
-    raise ImportError("Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo`")
-pass
 
 from .models import *
 from .models import __version__

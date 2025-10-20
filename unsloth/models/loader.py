@@ -45,6 +45,15 @@ except:
 pass
 from huggingface_hub import HfFileSystem
 import importlib.util
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+    ALLOW_BITSANDBYTES,
+)
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from unsloth_zoo.utils import Version, _get_dtype
@@ -191,10 +200,24 @@ class FastLanguageModel(FastLlamaModel):
                 )
             pass
         pass
+        # Check if 4bit is allowed specifically for AMD
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
+            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            load_in_4bit = False
 
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+        # Check if pre-quantized models are allowed
+        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+            model_name = model_name.lower().removesuffix("-bnb-4bit")
+        # Change -BF16 to all False for 4bit, 8bit etc
+        if model_name.lower().endswith("-bf16"):
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_16bit = True
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
@@ -220,6 +243,11 @@ class FastLanguageModel(FastLlamaModel):
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
+            if "architecture" in autoconfig_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
@@ -231,6 +259,11 @@ class FastLanguageModel(FastLlamaModel):
             is_peft = True
         except Exception as error:
             peft_error = str(error)
+            if "architecture" in peft_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_peft = False
         pass
 
@@ -296,6 +329,17 @@ class FastLanguageModel(FastLlamaModel):
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
+            # Check if pre-quantized models are allowed
+            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+                model_name = model_name.lower().removesuffix("-bnb-4bit")
+            # Change -BF16 to all False for 4bit, 8bit etc
+            if model_name.lower().endswith("-bf16"):
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_16bit = True
+
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -604,10 +648,24 @@ class FastModel(FastBaseModel):
                 "compatible with `full_finetuning=True`. If you wish to use QAT with LoRA, "
                 "please pass in `qat_scheme` in `FastLanguageModel.get_peft_model(...)` instead."
             )
+        # Check if 4bit is allowed specifically for AMD
+        if not ALLOW_BITSANDBYTES and not use_exact_model_name:
+            print("Unsloth: AMD currently is not stable with 4bit bitsandbytes. Disabling for now.")
+            load_in_4bit = False
 
         old_model_name = model_name
         if not use_exact_model_name:
             model_name = get_model_name(model_name, load_in_4bit)
+        # Check if pre-quantized models are allowed
+        # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+        if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+            model_name = model_name.lower().removesuffix("-bnb-4bit")
+        # Change -BF16 to all False for 4bit, 8bit etc
+        if model_name.lower().endswith("-bf16"):
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_16bit = True
 
         # Check modelscope
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -634,6 +692,11 @@ class FastModel(FastBaseModel):
             is_model = True
         except Exception as error:
             autoconfig_error = str(error)
+            if "architecture" in autoconfig_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_model = False
         try:
             peft_config = PeftConfig.from_pretrained(
@@ -645,6 +708,11 @@ class FastModel(FastBaseModel):
             is_peft = True
         except Exception as error:
             peft_error = str(error)
+            if "architecture" in peft_error:
+                raise ValueError(
+                    f"`{model_name}` is not supported yet in `transformers=={transformers_version}`.\n"\
+                    f"Please update transformers via `pip install --upgrade transformers` and try again."
+                )
             is_peft = False
         pass
         # Old transformers versions check
@@ -813,6 +881,16 @@ class FastModel(FastBaseModel):
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
+            # Check if pre-quantized models are allowed
+            # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
+            if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+                model_name = model_name.lower().removesuffix("-bnb-4bit")
+            # Change -BF16 to all False for 4bit, 8bit etc
+            if model_name.lower().endswith("-bf16"):
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_16bit = True
 
             model_config = AutoConfig.from_pretrained(
                 model_name,
