@@ -163,15 +163,6 @@ warnings.filterwarnings(action = "ignore", category = FutureWarning,  module = "
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocessing")
 warnings.filterwarnings(action = "ignore", category = RuntimeWarning, module = "multiprocess")
 warnings.filterwarnings(action = "ignore", category = UserWarning,    module = "triton")
-try:
-    # pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True
-    # was provided to the `Field()` function, which has no effect in the context it was used.
-    # 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment.
-    # This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
-    from pydantic.warnings import UnsupportedFieldAttributeWarning
-    warnings.filterwarnings(action = "ignore", category = UnsupportedFieldAttributeWarning)
-except:
-    pass
 # Stop "Special tokens have been added in the vocabulary, ..."
 import logging
 logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.CRITICAL+1)
