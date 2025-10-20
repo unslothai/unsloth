@@ -1205,7 +1205,7 @@ def CausalLM_fast_forward(fast_forward_inference):
             # < 1024 Normal Unsloth uses less VRAM!
             if DEVICE_TYPE == "hip":
                 # [TODO] AMD GPUs fail on chunked_cross_entropy loss!
-                # RuntimeError: Triton Error [HIP]:  Code: 1, Messsage: invalid argument
+                # RuntimeError: Triton Error [HIP]: Code: 1, Messsage: invalid argument
                 RETURN_LOGITS = False
             elif bsz*q_len <= 1024:
                 RETURN_LOGITS = True
@@ -1217,36 +1217,36 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
 
-                # loss = fused_linear_cross_entropy(
-                #     hidden_states      = hidden_states,
-                #     lm_weight          = lm_head,
-                #     labels             = labels,
-                #     num_items_in_batch = n_items,
-                #     logit_softcapping  = logit_softcapping,
-                # )
-                loss = unsloth_fused_ce_loss(
-                    trainer              = None,
-                    hidden_states        = hidden_states,
-                    lm_head_weight       = lm_head,
-                    lm_head_bias         = None,
-                    labels               = labels,
-                    mask                 = None,
-                    n_items              = n_items,
-                    scaling              = getattr(self, "accelerator_scaler", None),
-                    target_gb            = None,
-                    torch_compile        = True,
-                    logit_softcapping    = logit_softcapping,
+                loss = fused_linear_cross_entropy(
+                    hidden_states      = hidden_states,
+                    lm_weight          = lm_head,
+                    labels             = labels,
+                    num_items_in_batch = n_items,
+                    logit_softcapping  = logit_softcapping,
                 )
+                # loss = unsloth_fused_ce_loss(
+                #     trainer              = None,
+                #     hidden_states        = hidden_states,
+                #     lm_head_weight       = lm_head,
+                #     lm_head_bias         = None,
+                #     labels               = labels,
+                #     mask                 = None,
+                #     n_items              = n_items,
+                #     scaling              = getattr(self, "accelerator_scaler", None),
+                #     target_gb            = None,
+                #     torch_compile        = True,
+                #     logit_softcapping    = logit_softcapping,
+                # )
                 if not return_dict:
                     output = (logits,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
 
                 output = CausalLMOutputWithPast(
-                    loss=loss,
-                    logits=EMPTY_LOGITS,
-                    past_key_values=outputs.past_key_values,
-                    hidden_states=outputs.hidden_states,
-                    attentions=outputs.attentions,
+                    loss = loss,
+                    logits = EMPTY_LOGITS,
+                    past_key_values=  outputs.past_key_values,
+                    hidden_states = outputs.hidden_states,
+                    attentions = outputs.attentions,
                 )
                 return output
             pass
