@@ -349,8 +349,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     replacement_string = """        if "image_sizes" in prompt_inputs:
             output["image_sizes"] = prompt_inputs["image_sizes"]
+        
         if self.use_vllm:
-            output["sampling_per_token_logps"] = sampling_per_token_logps"""
+            try:
+                output["sampling_per_token_logps"] = sampling_per_token_logps
+            except NameError:
+                output["sampling_per_token_logps"] = None"""
+
     function = function.replace(string_to_find, replacement_string)
 
     return function
