@@ -345,7 +345,23 @@ def fix_sentencepiece_tokenizer(
 ):
     # From https://github.com/google/sentencepiece/issues/121
     # We need to manually edit the sentencepiece tokenizer!
-    from transformers.utils import sentencepiece_model_pb2
+    try:
+        from transformers.convert_slow_tokenizer import import_protobuf
+        sentencepiece_model_pb2 = import_protobuf()
+    except Exception as e:
+        try:
+            import google.protobuf
+            from unsloth_zoo.utils import Version
+            protobuf_version = Version(google.protobuf.__version__)
+            if protobuf_version > Version("3.20.3"):
+                raise RuntimeError(
+                    f"Unsloth: Your protobuf version = {protobuf_version} is too new.\n"\
+                    f"Please downgrade via `pip install --force-reinstall protobuf==3.20.3`"
+                )
+        except:
+            # This will only work for older SentencePiece versions <= 3.20.3
+            from transformers.utils import sentencepiece_model_pb2
+    pass
 
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
