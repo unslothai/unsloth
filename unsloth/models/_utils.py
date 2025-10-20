@@ -983,7 +983,8 @@ def _get_statistics(statistics = None, force_download = True):
                 stats_check()
             except TimeoutError:
                 raise TimeoutError(
-                    "Unsloth: HuggingFace seems to be down :( Check https://status.huggingface.co/\n"\
+                    "Unsloth: HuggingFace seems to be down after trying for 120 seconds :(\n"\
+                    "Check https://status.huggingface.co/ for more details.\n"\
                     "As a temporary measure, use modelscope with the same model name ie:\n"\
                     "```\n"\
                     "pip install modelscope\n"\
