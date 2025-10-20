@@ -984,11 +984,13 @@ def _get_statistics(statistics = None, force_download = True):
             except TimeoutError:
                 raise TimeoutError(
                     "Unsloth: HuggingFace seems to be down :( Check https://status.huggingface.co/\n"\
-                    "As a temporary measure, use modelscope ie:\n"\
+                    "As a temporary measure, use modelscope with the same model name ie:\n"\
+                    "```\n"\
                     "pip install modelscope\n"\
                     "import os; os.environ['UNSLOTH_USE_MODELSCOPE'] = '1'\n"\
                     "from unsloth import FastLanguageModel\n"\
-                    "model = FastLanguageModel.from_pretrained(...)"
+                    "model = FastLanguageModel.from_pretrained('unsloth/gpt-oss-20b')\n"\
+                    "```"
                 )
         pass
     pass
