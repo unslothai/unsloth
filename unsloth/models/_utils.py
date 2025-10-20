@@ -352,6 +352,14 @@ try:
 except:
     pass
 
+# We detected that you are using `from_pretrained` with a meta device context manager or `torch.set_default_device('meta')
+try:
+    from transformers.modeling_utils import logger as modeling_utils_logger
+    modeling_utils_logger.addFilter(HideLoggingMessage("anti-pattern"))
+    del modeling_utils_logger
+except:
+    pass
+
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
