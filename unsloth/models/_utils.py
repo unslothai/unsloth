@@ -169,7 +169,7 @@ try:
     # 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment.
     # This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
     from pydantic.warnings import UnsupportedFieldAttributeWarning
-    warnings.filterwarnings(action = "ignore", category = UnsupportedFieldAttributeWarning, module = "pydantic")
+    warnings.filterwarnings(action = "ignore", category = UnsupportedFieldAttributeWarning)
 except:
     pass
 # Stop "Special tokens have been added in the vocabulary, ..."
