@@ -210,10 +210,14 @@ class FastLanguageModel(FastLlamaModel):
             model_name = get_model_name(model_name, load_in_4bit)
         # Check if pre-quantized models are allowed
         # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
-        if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
-            model_name = model_name.removesuffix("-unsloth-bnb-4bit")
-            model_name = model_name.removesuffix("-bnb-4bit")
-        pass
+        if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+            model_name = model_name.lower().removesuffix("-bnb-4bit")
+        # Change -BF16 to all False for 4bit, 8bit etc
+        if model_name.lower().endswith("-BF16"):
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_16bit = True
 
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
@@ -327,10 +331,15 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
             # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
-            if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
-                model_name = model_name.removesuffix("-unsloth-bnb-4bit")
-                model_name = model_name.removesuffix("-bnb-4bit")
-            pass
+            if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+                model_name = model_name.lower().removesuffix("-bnb-4bit")
+            # Change -BF16 to all False for 4bit, 8bit etc
+            if model_name.lower().endswith("-BF16"):
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_16bit = True
+
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
@@ -649,10 +658,14 @@ class FastModel(FastBaseModel):
             model_name = get_model_name(model_name, load_in_4bit)
         # Check if pre-quantized models are allowed
         # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
-        if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
-            model_name = model_name.removesuffix("-unsloth-bnb-4bit")
-            model_name = model_name.removesuffix("-bnb-4bit")
-        pass
+        if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+            model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+            model_name = model_name.lower().removesuffix("-bnb-4bit")
+        # Change -BF16 to all False for 4bit, 8bit etc
+        if model_name.lower().endswith("-BF16"):
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_16bit = True
 
         # Check modelscope
         if USE_MODELSCOPE and not os.path.exists(model_name):
@@ -870,10 +883,15 @@ class FastModel(FastBaseModel):
                 model_name = get_model_name(model_name, load_in_4bit)
             # Check if pre-quantized models are allowed
             # For eg AMD GPUs need blocksize = 128, but our pre-quants are blocksize = 64
-            if not ALLOW_PREQUANTIZED_MODELS and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
-                model_name = model_name.removesuffix("-unsloth-bnb-4bit")
-                model_name = model_name.removesuffix("-bnb-4bit")
-            pass
+            if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(("-unsloth-bnb-4bit", "-bnb-4bit")):
+                model_name = model_name.lower().removesuffix("-unsloth-bnb-4bit")
+                model_name = model_name.lower().removesuffix("-bnb-4bit")
+            # Change -BF16 to all False for 4bit, 8bit etc
+            if model_name.lower().endswith("-BF16"):
+                load_in_4bit = False
+                load_in_8bit = False
+                load_in_16bit = True
+
             model_config = AutoConfig.from_pretrained(
                 model_name,
                 token = token,
