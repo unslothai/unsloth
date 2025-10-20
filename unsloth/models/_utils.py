@@ -978,7 +978,7 @@ def _get_statistics(statistics = None, force_download = True):
             @execute_with_time_limit(120)
             def stats_check():
                 with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
-                    snapshot_download(statistics, force_download = True, cache_dir = f, local_dir = f)
+                    snapshot_download(f"unslothai/{statistics}", force_download = True, cache_dir = f, local_dir = f)
             try:
                 stats_check()
             except TimeoutError:
