@@ -710,7 +710,7 @@ def grpo_trainer_compute_loss(function_name, function):
             self._metrics["completion_length"].append(completion_length.item())
             self._metrics["kl"].append(mean_kl.item())
 
-        if self.use_vllm:
+        if self.use_vllm and delta is not None:
             mean_delta = torch.mean(delta) if delta.numel() > 0 else torch.tensor(0.0, device=self.model.device)
             max_delta = torch.max(delta) if delta.numel() > 0 else torch.tensor(0.0, device=self.model.device)
             self._metrics[mode]["sampling/sampling_logp_difference/mean"].append(
