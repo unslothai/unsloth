@@ -28,7 +28,7 @@ pass
 from ..kernels import (
     post_patch_loss_function,
 )
-from ._utils import __version__, importlib_version
+from ._utils import __version__, importlib_version, _prepare_model_for_qat
 from ._utils import *
 from ..save import patch_saving_functions
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -71,7 +71,14 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 pass
-from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 
 __all__ = [
     "FastBaseModel",
@@ -92,7 +99,13 @@ PRE_COMPILE_INFERENCE = [
     "gpt_oss",
 ]
 
-from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
+from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig
+try:
+    from transformers import PreTrainedConfig
+    PretrainedConfig = PreTrainedConfig
+except:
+    from transformers import PretrainedConfig
+
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
 
 from transformers import GenerationConfig, CompileConfig, HybridCache
@@ -198,10 +211,10 @@ def unsloth_base_fast_generate(
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float16)
+        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
-        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
 
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
@@ -403,7 +416,8 @@ class FastBaseModel:
         pass
         if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-        get_statistics() # For debugging - we use a download counter to see if environments are not breaking
+        # For debugging - we use a download counter to see if environments are not breaking or if HF is down
+        get_statistics(kwargs.get("local_files_only", False))
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -584,6 +598,7 @@ class FastBaseModel:
                 token = token,
                 attn_implementation = "sdpa" if supports_sdpa else "eager",
             )
+            model_config.model_name = model_name
 
             if fast_inference:
                 fast_inference, model_name = fast_inference_setup(model_name, model_config)
@@ -790,6 +805,7 @@ class FastBaseModel:
         loftq_config               = {},
         task_type                  = TaskType.CAUSAL_LM,
         temporary_location         = "_unsloth_temporary_saved_buffers",
+        qat_scheme                 = None,
         **kwargs
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -865,6 +881,11 @@ class FastBaseModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         model = _get_peft_model(model, lora_config)
+        # Apply QAT + LoRA if specified
+        if qat_scheme is not None:
+            print("Unsloth: Applying QAT to mitigate quantization degradation")
+            model = _prepare_model_for_qat(model, qat_scheme)
+        pass
         # Fix LoraConfig.auto_mapping is None
         fix_lora_auto_mapping(model)
         # Enable gradients on modules which are trainable
