@@ -2606,8 +2606,9 @@ def unsloth_save_pretrained_torchao(
 
     torchao_save_directory = save_directory + "-torchao"
 
-    # TorchAO does not support safe_serialization right now for 0.13.0. 0.14.0 yes!
-    safe_serialization = Version(importlib_version("torchao")) >= Version("0.14.0")
+    # TorchAO does not support safe_serialization right now 0.14.0 seems broken!
+    safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
+    safe_serialization = False
     if push_to_hub:
         if token is None and push_to_hub: token = get_token()
         model.push_to_hub(torchao_save_directory, safe_serialization = safe_serialization, token = token)
