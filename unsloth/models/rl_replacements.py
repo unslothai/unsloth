@@ -181,40 +181,6 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 def grpo_trainer__prepare_inputs(function_name, function):
     if  function_name != "_prepare_inputs": return function
 
-    import re
-    # This matches the function signature, decorators and any comments immediately following
-    pattern = r"(\s*@profiling_decorator\s*\n\s*def _prepare_inputs\s*\([^\)]*\)\s*(->\s*[^:]+)?\s*:\s*\n(?:[ ]*#[^\n]*\n)*)"
-
-    match = re.search(pattern, function)
-    insert = (
-        "        if hasattr(self, 'llm'):\n"
-        "           if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-        "               self.llm.wake_up()\n"
-    )
-    if match:
-        header_and_comments = match.group(1)
-        # Find where the code block starts after comments
-        code_start_index = match.end(1)
-        rest_of_function = function[code_start_index:]
-
-        # Remove any old wake_up call that might be at the start of the function body
-        rest_of_function = re.sub(
-            r"^\s*if hasattr\(self, 'llm'\):.*?self\.llm\.wake_up\(\).*?\n",
-            "",
-            rest_of_function,
-            flags=re.DOTALL | re.MULTILINE
-        )
-
-        # We also need to remove the old wake up call from the beginning of the function
-        # since it's injected before the comments.
-        header_and_comments = re.sub(
-            r"(:\s*\n)\s*if hasattr\(self, 'llm'\):.*?self\.llm\.wake_up\(\).*?\n",
-            r"\1",
-            header_and_comments,
-            flags=re.DOTALL | re.MULTILINE
-        )
-
-        # function = header_and_comments + insert + rest_of_function
     # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
@@ -228,16 +194,6 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "self.accelerator.unwrap_model(self.model)",
         "self.accelerator.unwrap_model(self.model, keep_fp32_wrapper = False)",
     )
-    sleep_and_cache = (
-        "if hasattr(self, 'llm'):\n"
-        "            if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-        "                self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
-        "        "
-    )
-    # if re.search(r"\n\s*return ", function):
-    #     function = re.sub(r"(\n\s*)return ", f"\\1{sleep_and_cache}return ", function, count=1)
-    # else:
-    #     function = function.rstrip() + "\n    " + sleep_and_cache
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
