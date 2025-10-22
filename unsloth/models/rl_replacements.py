@@ -303,6 +303,34 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
 
+    if 'wake_up()' not in function:
+        # Sleep functionality has been added to trl in v0.23.0. We do not want to redo this.
+        # https://github.com/huggingface/trl/commit/edbe8234bc7e528f72ac76607de9d3e4753e2709
+
+        pattern = re.compile(r'.*self\.llm\.generate\(.*\).*', re.MULTILINE)
+        matches = list(pattern.finditer(function))
+        patched = function
+
+        # Generally there's only one match. But this is just to make sure we don't miss any.
+        for match in reversed(matches):
+            line = match.group(0)
+            indent_match = re.match(r'(\s*)', line)
+            indent = indent_match.group(1) if indent_match else ''
+
+            wrapped = (
+                f"{indent}if hasattr(self, 'llm'):\n"
+                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                f"{indent}        self.llm.wake_up()\n\n"
+                f"{line}\n\n"
+                f"{indent}if hasattr(self, 'llm'):\n"
+                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+                f"{indent}        self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))"
+            )
+
+            patched = patched[:match.start()] + wrapped + patched[match.end():]
+
+        function = patched
+
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
