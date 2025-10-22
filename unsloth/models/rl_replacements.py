@@ -277,12 +277,10 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
                 f"{indent}if hasattr(self, 'llm'):\n"
                 f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
                 f"{indent}        self.llm.wake_up()\n"
-                f"{indent}        torch.cuda.empty_cache()\n\n"
                 f"{line}\n\n"
                 f"{indent}if hasattr(self, 'llm'):\n"
                 f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
                 f"{indent}        self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
-                f"{indent}        torch.cuda.empty_cache()"
             )
 
             patched = patched[:match.start()] + wrapped + patched[match.end():]
