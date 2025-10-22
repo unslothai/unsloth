@@ -320,11 +320,13 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             wrapped = (
                 f"{indent}if hasattr(self, 'llm'):\n"
                 f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                f"{indent}        self.llm.wake_up()\n\n"
+                f"{indent}        self.llm.wake_up()\n"
+                f"{indent}        torch.cuda.empty_cache()\n\n"
                 f"{line}\n\n"
                 f"{indent}if hasattr(self, 'llm'):\n"
                 f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                f"{indent}        self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))"
+                f"{indent}        self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
+                f"{indent}        torch.cuda.empty_cache()"
             )
 
             patched = patched[:match.start()] + wrapped + patched[match.end():]
@@ -446,13 +448,13 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
     if function_name != "_get_per_token_logps_and_entropies": return function
 
     # Just copy over from _get_per_token_logps replacement function above. For now this returns None anyway
-    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None, 
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size = None,
                                            compute_entropy = False, compute_efficient = False, *args, **kwargs):
         # if True: # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
         #     return None, None  # logps, entropies Unsloth efficient GRPO
         if compute_efficient:
             return None, None
-        else: 
+        else:
             # Otherwise, calculate normally:
             if not hasattr(self, '_autocast_dtype'):
                 self._autocast_dtype = torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16
@@ -462,12 +464,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             pixel_attention_mask, image_sizes = kwargs.get('pixel_attention_mask',None), kwargs.get('image_sizes',None)
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-           
+
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper=False)
 
             with torch.amp.autocast(device_type = 'cuda', dtype = self._autocast_dtype):
                 with torch.inference_mode():
-                    if pixel_values is None: 
+                    if pixel_values is None:
                         attention_mask =  input_ids != self.processing_class.pad_token_id
                         attention_mask = attention_mask.to(attention_mask.dtype)
                         # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
@@ -490,7 +492,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             image_sizes = image_sizes,
                             logits_to_keep = logits_to_keep + 1,
                         ).logits
-                    
+
 
                 entropies = None
                 if compute_entropy:
@@ -580,7 +582,7 @@ def grpo_trainer_compute_loss(function_name, function):
         # per_token_loss = -(per_token_loss - self.beta * per_token_kl)
         # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
         old_hidden_states = inputs.get("old_per_token_logps", None)
-        
+
         input_ids = input_ids[:, -logits_to_keep:]
 
         # Get logit softcapping and logit scale
