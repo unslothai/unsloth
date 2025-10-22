@@ -1032,6 +1032,26 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/Qwen3-VL-8B-Instruct",
         "unsloth/Qwen3-VL-8B-Instruct-bnb-4bit",
     ),
+    "unsloth/Qwen3-VL-2B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-2B-Thinking",
+        "Qwen/Qwen3-VL-2B-Thinking",
+        "unsloth/Qwen3-VL-2B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-2B-Thinking-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-2B-Thinking",
+        "Qwen/Qwen3-VL-2B-Thinking",
+        "unsloth/Qwen3-VL-2B-Thinking-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-32B-Instruct",
+        "Qwen/Qwen3-VL-32B-Instruct",
+        "unsloth/Qwen3-VL-32B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3-VL-32B-Instruct",
+        "Qwen/Qwen3-VL-32B-Instruct",
+        "unsloth/Qwen3-VL-32B-Instruct-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}

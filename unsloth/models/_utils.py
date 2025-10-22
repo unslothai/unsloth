@@ -357,6 +357,14 @@ try:
 except:
     pass
 
+# Skipping import of cpp extensions due to incompatible torch version
+try:
+    from torchao import logger as torchao_logger
+    torchao_logger.addFilter(HideLoggingMessage("Skipping import"))
+    del torchao_logger
+except:
+    pass
+
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
