@@ -214,7 +214,7 @@ def grpo_trainer__prepare_inputs(function_name, function):
             flags=re.DOTALL | re.MULTILINE
         )
 
-        function = header_and_comments + insert + rest_of_function
+        # function = header_and_comments + insert + rest_of_function
     # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
@@ -234,10 +234,10 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "                self.llm.sleep(os.environ.get('VLLM_SLEEP_MODE', 1))\n"
         "        "
     )
-    if re.search(r"\n\s*return ", function):
-        function = re.sub(r"(\n\s*)return ", f"\\1{sleep_and_cache}return ", function, count=1)
-    else:
-        function = function.rstrip() + "\n    " + sleep_and_cache
+    # if re.search(r"\n\s*return ", function):
+    #     function = re.sub(r"(\n\s*)return ", f"\\1{sleep_and_cache}return ", function, count=1)
+    # else:
+    #     function = function.rstrip() + "\n    " + sleep_and_cache
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__prepare_inputs)
