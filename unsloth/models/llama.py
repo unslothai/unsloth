@@ -1208,7 +1208,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # RuntimeError: Triton Error [HIP]: Code: 1, Messsage: invalid argument
                 RETURN_LOGITS = False
             elif bsz*q_len <= 1024:
-                RETURN_LOGITS = True
+                # Uses 800MB more VRAM it seems than fused CE Loss
+                RETURN_LOGITS = False
 
             if not RETURN_LOGITS and labels is not None:
                 n_items = kwargs.get("num_items_in_batch", None)
