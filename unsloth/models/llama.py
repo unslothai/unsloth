@@ -3034,18 +3034,15 @@ class FastLlamaModel:
                 module.gradient_checkpointing = use_gradient_checkpointing
         pass
 
-        # Also re-enable training for embeddings for NEFTune
-        if hasattr(model, "get_input_embeddings"):
-            embeddings = model.get_input_embeddings()
-            if hasattr(embeddings, "training"): embeddings.training = True
-        pass
-        if hasattr(model, "get_output_embeddings"):
-            embeddings = model.get_output_embeddings()
-            if hasattr(embeddings, "training"): embeddings.training = True
-        pass
+        for get_embeddings_fn in (
+            'get_input_embeddings', 
+            'get_output_embeddings'):
+            
+            if hasattr(model, get_embeddings_fn):
+                embeddings = getattr(model, get_embeddings_fn)()
+                if hasattr(embeddings, "training"):
+                    embeddings.training = True
         return model
-    pass
-pass
 
 from .rl import PatchFastRL
 PatchFastRL(FastLanguageModel = FastLlamaModel)
