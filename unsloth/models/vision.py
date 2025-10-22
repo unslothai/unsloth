@@ -28,7 +28,7 @@ pass
 from ..kernels import (
     post_patch_loss_function,
 )
-from ._utils import __version__, importlib_version
+from ._utils import __version__, importlib_version, _prepare_model_for_qat
 from ._utils import *
 from ..save import patch_saving_functions
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
@@ -71,7 +71,14 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 pass
-from unsloth import DEVICE_TYPE, DEVICE_COUNT
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
 
 __all__ = [
     "FastBaseModel",
@@ -92,7 +99,13 @@ PRE_COMPILE_INFERENCE = [
     "gpt_oss",
 ]
 
-from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig, PretrainedConfig
+from transformers import GenerationConfig, CompileConfig, HybridCache, AutoConfig
+try:
+    from transformers import PreTrainedConfig
+    PretrainedConfig = PreTrainedConfig
+except:
+    from transformers import PretrainedConfig
+
 HAS_TORCH_DTYPE = "torch_dtype" in PretrainedConfig.__doc__
 
 from transformers import GenerationConfig, CompileConfig, HybridCache
@@ -198,10 +211,10 @@ def unsloth_base_fast_generate(
 
     # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-        autocaster = torch.autocast(device_type = "cuda", dtype = torch.float16)
+        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
-        autocaster = torch.autocast(device_type = "cuda", dtype = dtype)
+        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
 
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
@@ -403,7 +416,8 @@ class FastBaseModel:
         pass
         if old_hf_transfer != "0": os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-        get_statistics() # For debugging - we use a download counter to see if environments are not breaking
+        # For debugging - we use a download counter to see if environments are not breaking or if HF is down
+        get_statistics(kwargs.get("local_files_only", False))
 
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
@@ -505,7 +519,7 @@ class FastBaseModel:
             bnb_config.get_loading_attributes = lambda *args, **kwargs: {}
 
         # Cannot be None, since HF now checks for the config
-        if load_in_4bit:
+        if load_in_4bit or load_in_8bit:
             # Ignore load_in_4bit / load_in_8bit for MXFP4 - best to get config file
             if "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower():
                 pass
@@ -524,8 +538,8 @@ class FastBaseModel:
                 quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quantization_config["quant_method"]]
                 quantizer_kwargs = {}
                 # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
-                # if "dequantize" in inspect.signature(quantizer).parameters:
-                #     quantizer_kwargs["dequantize"] = True
+                if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
+                    quantizer_kwargs["dequantize"] = True
                 quantization_config = quantizer.from_dict(quantization_config, **quantizer_kwargs)
                 kwargs["quantization_config"] = quantization_config
             pass
@@ -549,7 +563,7 @@ class FastBaseModel:
                 # attn_implementation   = attn_implementation,
                 **kwargs,
             )
-            if hasattr(model, 'generate'):
+            if hasattr(model, "generate"):
                 model.fast_generate = model.generate
                 model.fast_generate_batches = error_out_no_vllm
             if offload_embedding:
@@ -584,6 +598,7 @@ class FastBaseModel:
                 token = token,
                 attn_implementation = "sdpa" if supports_sdpa else "eager",
             )
+            model_config.model_name = model_name
 
             if fast_inference:
                 fast_inference, model_name = fast_inference_setup(model_name, model_config)
@@ -612,8 +627,17 @@ class FastBaseModel:
             llm = load_vllm(**load_vllm_kwargs)
 
             # Convert to HF format
-            _, quant_state_dict = get_vllm_state_dict(llm, config = model_config, is_vision_model = True)
-            model = convert_vllm_to_huggingface(quant_state_dict, model_config, dtype, bnb_config, is_vision_model = True)
+            _, quant_state_dict = get_vllm_state_dict(
+                llm,
+                config = model_config,
+                is_vision_model = True,
+            )
+            model = convert_vllm_to_huggingface(
+                quant_state_dict,
+                model_config,
+                dtype, bnb_config,
+                is_vision_model = True,
+            )
             model.vllm_engine = llm
             model.fast_generate = model.vllm_engine.generate
             model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
@@ -627,7 +651,9 @@ class FastBaseModel:
         # Check float32 norm weights
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
             for jj, (name, module) in enumerate(model.named_modules()):
-                if name.endswith("norm") and hasattr(module, "weight"):
+                if (name.endswith(("norm", "norm1", "norm2", "norm3", "norm4")) \
+                    or "layernorm" in name or "layer_norm" in name) \
+                    and hasattr(module, "weight"):
                     module._pre_set_compute_dtype = torch.float32
         pass
         # Edit data-types
@@ -700,6 +726,9 @@ class FastBaseModel:
             model.config.update({"unsloth_version" : __version__})
         pass
         patch_saving_functions(model, vision = True)
+        if tokenizer is None:
+            del model
+            raise RuntimeError("Unsloth: The tokenizer is weirdly not loaded? Please check if there is one.")
         patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation
@@ -754,52 +783,6 @@ class FastBaseModel:
     pass
 
     @staticmethod
-    def pre_compile_for_inference(model_type, model, tokenizer):
-        """
-        We need to invoke torch.compile to save VRAM usage and make it faster downstream.
-        Sometimes torch.compile can use 3GB weirdly on large batches, then it goes down to <1GB.
-        So we invoke torch.compile on short batches to reduce VRAM usage.
-        """
-        if model_type is None or model is None or tokenizer is None: return
-        if str(model_type).lower() not in PRE_COMPILE_INFERENCE: return
-        if getattr(tokenizer, "chat_template", None) is None: return
-        # Check if already compiled and exit
-        for module in model.modules():
-            if hasattr(module, "_pre_compiled_for_inference"): return
-        pass
-        print(f"🦥 Unsloth: Pre compiling {model_type.title()} model for faster inference - this might take 3 minutes or so!")
-        print("========= Pre compiling model for faster inference. Please be patient thank you! =========")
-        # Do single inference
-        messages = [
-            [
-                 {"role": "user", "content": f"What is 1+1 equal to?"},
-            ],
-        ]*1
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt = True,
-            return_tensors = "pt",
-            return_dict = True,
-        ).to(model.device)
-        _ = model.generate(**inputs, max_new_tokens = 1)
-        # Do batched inference
-        messages = [
-            [
-                 {"role": "user", "content": f"1+1"},
-            ],
-        ]*4
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt = True,
-            return_tensors = "pt",
-            return_dict = True,
-        ).to(model.device)
-        _ = model.generate(**inputs, max_new_tokens = 2)
-        # Set we already pre compiled
-        model._pre_compiled_for_inference = True
-    pass
-
-    @staticmethod
     def get_peft_model(
         model,
         r                          = 16,
@@ -822,6 +805,7 @@ class FastBaseModel:
         loftq_config               = {},
         task_type                  = TaskType.CAUSAL_LM,
         temporary_location         = "_unsloth_temporary_saved_buffers",
+        qat_scheme                 = None,
         **kwargs
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -897,12 +881,21 @@ class FastBaseModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
         model = _get_peft_model(model, lora_config)
+        # Apply QAT + LoRA if specified
+        if qat_scheme is not None:
+            print("Unsloth: Applying QAT to mitigate quantization degradation")
+            model = _prepare_model_for_qat(model, qat_scheme)
+        pass
         # Fix LoraConfig.auto_mapping is None
         fix_lora_auto_mapping(model)
         # Enable gradients on modules which are trainable
         requires_grad_for_gradient_checkpointing(model)
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
-        model = FastBaseModel.post_patch_model(model, use_gradient_checkpointing, trust_remote_code = trust_remote_code)
+        model = FastBaseModel.post_patch_model(
+            model,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+            trust_remote_code = trust_remote_code,
+        )
         model.max_seq_length = max_seq_length
         # Save to modules as well
         for module in model.modules():
@@ -998,14 +991,15 @@ class FastBaseModel:
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
         # Set weight[padding_idx] = 0
-        with torch.no_grad():
-            for name, module in model.named_modules():
-                if type(module) is torch.nn.Embedding:
-                    if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
-                        if module.padding_idx < module.weight.shape[0]:
-                            module.weight[module.padding_idx] = 0
-        # Patch for torch.compiled inference
-        # FastBaseModel.pre_compile_for_inference(model_type, model, tokenizer)
+        # Only do this if tokenizer is defined since eos_token == pad_token sometimes!
+        pad_token_id = getattr(tokenizer, "pad_token_id", None)
+        if tokenizer is not None and getattr(tokenizer, "eos_token_id", None) != pad_token_id:
+            with torch.no_grad():
+                for name, module in model.named_modules():
+                    if type(module) is torch.nn.Embedding:
+                        if getattr(module, "weight", None) is not None and getattr(module, "padding_idx", None) is not None:
+                            if module.padding_idx == pad_token_id and module.padding_idx < module.weight.shape[0]:
+                                module.weight[module.padding_idx] = 0
         return model
     pass
 

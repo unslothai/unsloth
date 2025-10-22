@@ -26,7 +26,15 @@ import torch
 import inspect
 from collections import defaultdict
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS, left_pack_padding
-from unsloth import DEVICE_TYPE
+from ..device_type import (
+    is_hip,
+    get_device_type,
+    DEVICE_TYPE,
+    DEVICE_TYPE_TORCH,
+    DEVICE_COUNT,
+    ALLOW_PREQUANTIZED_MODELS,
+)
+import textwrap
 
 RL_EXTRA_ARGS      = defaultdict(list)
 RL_FUNCTIONS       = defaultdict(list)
@@ -295,10 +303,57 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         if self.use_vllm:"""
             function = function.replace(replace_part, new_replacement)
 
-
     return function
 pass
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate_and_score_completions)
+
+
+# Fix {"reasoning_effort" : "high"} not applied
+def grpo_trainer_fix_maybe_apply_chat_template(function_name, function):
+    spaces = function.find("def ")
+    if spaces % 4 != 0: return function
+    spaces += 4
+    replacement = """
+        _chat_template_ = getattr(self.processing_class, "chat_template", None)
+        if _chat_template_ is None: _chat_template_ = ""
+        _supported_keys_ = set(("prompt", "chosen", "rejected", "completion", "messages", "label"))
+
+        prompts_text = []
+        for _example_ in __INPUTS__REPLACEMENT__:
+            _tokenizer_kwargs_ = {}
+            if type(_example_) is not dict:
+                _example_ = {"prompt": _example_}
+            _left_keys_ = _example_.keys() - _supported_keys_
+            for k in _left_keys_:
+                if k in _chat_template_:
+                    v = _example_[k]
+                    if type(v) is str:
+                        _tokenizer_kwargs_[k] = v
+            _x_ = maybe_apply_chat_template(_example_, self.processing_class, **_tokenizer_kwargs_)["prompt"]
+            prompts_text.append(_x_)
+    """
+    replacement = textwrap.dedent(replacement).strip()
+    replacement = textwrap.indent(replacement, spaces*" ")
+    replacement = f"\n{replacement}\n"
+    what = 'prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]'
+    function = function.replace(what, replacement.replace("__INPUTS__REPLACEMENT__", "inputs"))
+
+    """prompts_text = [
+        maybe_apply_chat_template({"prompt": prompt}, self.processing_class)["prompt"] for prompt in prompts
+    ]"""
+    function = re.sub(
+        r"prompts_text = \["\
+        r"[\s]{0,}"\
+        r"maybe_apply_chat_template\(\{[\"\']prompt[\"\'][\s]{0,}\:[\s]{0,}prompt[\s]{0,}\}[\s]{0,}\,[\s]{0,}self\.processing_class\)"\
+        r"\[[\"\']prompt[\"\']\] for prompt in prompts"\
+        r"[\s]{0,}"\
+        r"\]",
+        replacement.replace("__INPUTS__REPLACEMENT__", "prompts"),
+        function,
+    )
+    return function
+pass
+RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer_fix_maybe_apply_chat_template)
 
 
 # Remove _move_model_to_vllm
