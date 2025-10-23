@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2025.10.8"
+__version__ = "2025.10.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -354,14 +354,6 @@ try:
     from transformers.modeling_utils import logger as modeling_utils_logger
     modeling_utils_logger.addFilter(HideLoggingMessage("anti-pattern"))
     del modeling_utils_logger
-except:
-    pass
-
-# Skipping import of cpp extensions due to incompatible torch version
-try:
-    from torchao import logger as torchao_logger
-    torchao_logger.addFilter(HideLoggingMessage("Skipping import"))
-    del torchao_logger
 except:
     pass
 
